@@ -33,6 +33,7 @@ is built in.
 | Time zones | "What time is it in Tokyo?", "I've just landed in New York." |
 | Your music | "Play a random rock song.", "Play something by ABBA." |
 | A TV | "Turn on the TV.", "Volume up a bit.", "Channel down." |
+| Smart-home devices on your own network | "Turn on the bed heater.", "Is the kettle on?", "Switch everything off." |
 | The device itself | "Turn your volume down to 40 percent." |
 
 Weather, currency and share prices use free public services that need no account. Web search
@@ -132,7 +133,7 @@ Press **TAB** twice. Move with **fn**+**F**/**X** (or plain **F**/**X**), change
 |---|---|
 | Assistant | Language, vision, speech-to-text and text-to-speech models; voice; spoken replies on/off; fast replies; the assistant's name |
 | Device | Volume, brightness, microphone gain, time zone, start at power-on, internet via phone, microphone, flip camera image, home city and country, your name, date order, units |
-| Your data | Calendar (edit, add, delete, delete all), reminders, memory (edit, add, delete, forget everything), TV remote, music library, start a new conversation |
+| Your data | Calendar (edit, add, delete, delete all), reminders, memory (edit, add, delete, forget everything), TV remote, smart home (devices by room, setting up, the Tapo account), music library, start a new conversation |
 | AI service | Address, API key, web search key, compress audio |
 | About | Status and connection test, exit to launcher |
 
@@ -180,6 +181,42 @@ For anything else, *Your data → TV remote → Learn a button* records a button
 remote. Give it a standard name (`power`, `volume_up`, `mute`, `input`, …) to replace the
 built-in code, or any name of your own.
 
+### Smart home
+
+Zero Bot can switch smart-home devices on your own Wi-Fi or wired network, talking to each
+device directly: nothing goes through the makers' cloud services. Supported so far: **TP-Link
+Tapo** smart plugs and power strips (tested against simulated P110 plugs and a P304M strip; each
+socket of a strip is switched on its own). Other families (lights, heating, blinds, speakers,
+TVs) are added one driver at a time.
+
+1. On your home network, open *Your data → Smart home → Find devices on this network*. Only do
+   this on a network you own. The scan only asks devices to identify themselves, the way the
+   makers' apps do; it does not log in to anything or change anything.
+2. Devices that need it are listed under *To set up*; *Set up…* walks through what the device
+   asks for (press a button, accept a prompt, type a code or password). Tapo plugs obey only
+   the Tapo account they were set up with, so they ask for its e-mail address and password. Only
+   the e-mail and a scrambled form of the password are kept on the device. Because a plug locks
+   itself after a few wrong passwords, a password a plug has refused is not tried again, by any
+   later run either, until you type it again (*Smart home → Tapo account*).
+3. What each device controls is then listed by room. On its page you can set the name you will
+   say (*Called*), a *Room* (guessed from the name where it starts with one, such as "Bedroom
+   lamp"), whether the *Assistant may use it*, and *Ask before switching on*. That last one is on
+   by default for anything whose name suggests heat (heater, kettle, iron, …): the assistant then
+   asks "Turn on Bed heater?" and switches it only after you say yes. Turn it off for something
+   you use every day.
+
+A room's name means the lights in that room. Everything can be switched off at once, but not on.
+The assistant also asks first before changing more than eight things at once, before setting
+heating above 25 or below 10 °C, at a volume above 70, when several blinds would move, and
+whenever the request involved a web page or a photo; and it makes at most 12 changes a minute.
+These rules are enforced by the app, not left to the model.
+
+Saved devices belong to the network they were found on (its name together with the router's
+hardware address). On any other network, and always while the device is online through your
+phone's Bluetooth, the assistant has no smart-home tool at all and no saved device is contacted.
+Some makers' local protocols have no password at all; anyone on your Wi-Fi can switch such
+devices, with or without this app.
+
 ## Your data and privacy
 
 - Settings are in `~/.config/zero-bot/settings.json`, readable only by your user. An API key you
@@ -187,6 +224,10 @@ built-in code, or any name of your own.
   password.
 - Calendar, reminders, memories and learned remote buttons are plain JSON files in
   `~/.local/share/zero-bot/`. Delete a file to reset that part.
+- Smart-home devices are kept per network in `~/.local/share/zero-bot/smarthome.json`, readable
+  only by your user, with what a device needs to be talked to (for Tapo, the account e-mail and a
+  SHA-1 of its password). While the assistant may use devices, their names and states are sent
+  to your AI service with each request; addresses and account details never are.
 - What you say, type and photograph is sent to the AI service you configured. Web searches go to
   Tavily; weather, currency and share-price lookups go to Open-Meteo, open.er-api.com and Yahoo
   Finance.
@@ -241,11 +282,15 @@ build/cli/zero_bot --tool weather '{"location":"Lisbon"}'
 ```
 
 Model names come from `~/.config/zero-bot/settings.json` (`llm_model`, `stt_model`,
-`tts_model`). Set `ZB_DRY_RUN=1` to stop tools from playing music or sending infrared.
+`tts_model`). Set `ZB_DRY_RUN=1` to stop tools from playing music, sending infrared or switching
+smart-home devices. `--home-refresh` reads the smart-home devices saved for the current network.
+`ZB_TEST_NETWORK=1` replaces the real network with a stand-in "Test network" on which only
+devices at a 127.x address are ever contacted and nothing is scanned; the tests use it.
 
 `tests/agent_eval.py` runs a scored set of requests through this build and reports which tools
 were called, whether the answers hold up, and how long each took. See the notes at the top of
-the file.
+the file. `tests/run_unit.sh` builds and runs the tests that need neither a device nor an AI
+service, and `tests/tapo_e2e.py` runs the command-line build against two simulated Tapo plugs.
 
 ## Troubleshooting
 
@@ -279,8 +324,9 @@ src/core/       settings, calendar/reminder/memory store, music library, utiliti
 src/platform/   display, keyboard, audio, camera, infrared, subprocess helpers
 src/ui/         chat screen, menus, settings pages, app controller
 src/net/        HTTP client (libcurl)
+src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers
 scripts/        toolchain setup, packaging, deployment
-tests/          scored agent test set
+tests/          scored agent test set, unit tests, Tapo end-to-end test with a simulated plug
 packaging/      launcher entry and icon
 extras/         device-tree overlay for the Wi-Fi channel fix
 third_party/    nlohmann/json (MIT)

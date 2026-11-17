@@ -44,11 +44,16 @@ src/core/           settings, calendar/reminder/memory store, music library, bre
 src/net/            libcurl wrapper with a shared connection/DNS/TLS-session cache
 src/platform/       display, keyboard, audio (recorder, speaker, music), codecs, camera,
                     infrared, subprocess helpers
-src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast), per-network storage and
-                    control (home), Tapo transports (tapo)
+src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast); driver.h, the contract every
+                    device family implements; home.h, the layer above it: store.cpp (the 0600
+                    file, migration, the network gate), targets.cpp (names, rooms, groups),
+                    control.cpp (commands, safety rules, locking, status, refresh, pairing),
+                    tool.cpp (the smart_home tool); color.h (colour names and conversions);
+                    drivers/ (one per family; registry.cpp lists them); Tapo transport (tapo)
 src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
                     pages, breathing screen, theme
-tests/              scored agent test set (needs a live service)
+tests/              scored agent test set (needs a live service), device-free unit tests
+                    (run_unit.sh), Tapo end to end (tapo_e2e.py), simulated devices (mocks/)
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
 ```
 
@@ -87,6 +92,13 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   byte-identical between calls and the service can reuse its cached prefix.
 - **Music holds** (`audio::Music::hold`): music waits for the spoken reply to finish, and stays
   quiet from a spoken question to the end of its answer.
+- **Smart-home questions**: a change that needs the user's yes (a thing with *Ask before
+  switching on*, heating outside 10 to 25 degrees, more than eight things, loud volume, after a
+  web page or photo) makes `home::execute` answer `CONFIRM: ...` and remember the change. The loop
+  reports every user message (`home::user_spoke`) and every final reply (`home::assistant_replied`);
+  the same change goes ahead only when it is asked for again in the very next message, that
+  message reads as a yes, and the question was actually put. There is deliberately no parameter
+  the model could set to skip this. `web_search` and `look` call `home::saw_untrusted_text()`.
 
 ## 5. Building
 
@@ -107,8 +119,16 @@ decoding are loaded at run time with `dlopen` and are optional.
 
 ## 6. Testing
 
-There is no device-free unit test suite yet (planned before the refactor; see section 9). What
-exists:
+What exists:
+
+- **Device-free tests**: `tests/run_unit.sh` (g++, nothing else) builds and runs
+  `tests/unit/smarthome_test.cpp` (store and migration, names and rooms, schema snapshots in
+  `tests/snapshots/`, the safety questions, rate limits, locking, pairing, the Tapo driver's
+  refusals, colours; devices are a fake driver) and `tests/unit/http_test.cpp` (the request
+  options for devices, against a local peer). `ZB_UPDATE_SNAPSHOTS=1` rewrites the snapshots:
+  read the diff before committing it. `ZB_BUILD_WRAPPER=cmd` runs each compile through `cmd`.
+- **Tapo end to end**: `tests/tapo_e2e.py` runs `build/cli/zero_bot` against two simulated plugs
+  (`tests/mocks/mock_tapo.py`, a TPAP P110 and a KLAP P304M) on ports the system picks.
 
 - **Command-line modes** in `src/main.cpp` (work in the `cli` build):
   `--ask "text"`, `--chat`, `--tool NAME 'JSON'`, `--steer "text"` (inject input during the
@@ -123,7 +143,10 @@ exists:
   times) and `--fast 0|1`. Expect one or two flaky cases; compare against a run of the
   previous code before blaming a change.
 - **Environment switches**: `ZB_DRY_RUN=1` (tools do not play music, send infrared or switch
-  devices), `ZB_NO_AUDIO=1`, `ZB_FAKE_CAMERA=file.jpg`, `ZB_FAST_MODE=0|1`, `ZB_DATE_ORDER=dmy|mdy`.
+  devices), `ZB_NO_AUDIO=1`, `ZB_FAKE_CAMERA=file.jpg`, `ZB_FAST_MODE=0|1`, `ZB_DATE_ORDER=dmy|mdy`,
+  `ZB_TEST_NETWORK=1` (a stand-in network, id `net-58678b031ae6e411`, instead of the real one:
+  only devices at 127.x addresses are contacted and nothing is scanned; use it for any smart-home
+  test on a PC, never `--discover`).
 - **Screens**: `build/sim/zero_bot --shots out/` and look at the PNGs. Every UI change should
   be checked this way before it goes to the device. The script in `App::render_shots` walks
   the menus by counting key presses, so adding a settings row shifts later screenshots: fix
@@ -194,6 +217,9 @@ key, real audio), say so plainly rather than implying it was.
 - Give tools the allowed names as an `enum` (smart-home devices) rather than describing them.
 - Text that came from the network or a device (names, descriptions) is untrusted: strip
   control characters, cap the length, pass it as data.
+- nlohmann::json: a function taking `const json &` called with `{x}`, where `x` is already a
+  json value, gets a copy of `x`, not a one-element array (nested lists do become arrays). Build
+  lists as `std::vector<json>` or `json::array({...})`. It also sorts object keys when dumping.
 
 **The loop**
 - Requests chained inside one run shared one budget of rounds and the last was silently
@@ -204,7 +230,10 @@ key, real audio), say so plainly rather than implying it was.
 **Devices and protocols**
 - Tapo plugs lock out after rejected logins. The transport never retries a rejected login,
   checks the account e-mail against the plug's announced owner before trying, and is tested
-  against a simulated plug (`mock_tapo.py`), never by trial and error on real plugs.
+  against a simulated plug (`tests/mocks/mock_tapo.py`), never by trial and error on real plugs.
+  The transport only remembers a refusal while the program runs, so the driver keeps it in the
+  file (`secrets.tapo.refused`) until a password is typed again: one wrong password, one attempt,
+  however often the app is restarted.
 - Smart-home discovery uses only what the devices' own apps use (mDNS, SSDP, the vendor's
   broadcast). No address sweeps, no port scans, opt-in per network with a warning. "This
   network" is the SSID plus the router's hardware address, not the SSID alone.
@@ -237,9 +266,24 @@ in the README's settings table. Fix the screenshot key-press counts.
 **A screen.** Follow `breath_view` or `chat_view`: create objects once, update only what
 changed, drive it from `App::periodic`, route keys in `App::handle_key`, add a `--shots` frame.
 
-**A smart-home device family.** Recognise its announcement in `discovery.cpp` (`kServices` or a
-vendor query), add a driver beside `tapo`, and teach `home.cpp` to read and switch it. Build
-and test the protocol against a mock of the device first.
+**A smart-home device family.** It is a driver: a class implementing `home::Driver`
+(`src/smarthome/driver.h`) in `src/smarthome/drivers/<family>.{h,cpp}`, which defines
+`std::unique_ptr<home::Driver> make_<family>_driver();`. Registering it is one line, `X(<family>) \`,
+in the list in `src/smarthome/drivers/registry.cpp`. Discovery must report the family's devices
+under the kind its `claims()` accepts (`kServices` or a vendor query in `discovery.cpp`), and
+`kind_label` in `settings_pages.cpp` gives the type a name on screen. Nothing else changes: the
+shared layer does names, rooms, the tool's schema (it grows with the capabilities a home has),
+the safety questions, rate limits, locking, fan-out and the generic pairing pages. The rules a
+driver keeps: map only allow-listed types (lights, plugs, switches, thermostats, covers, fans,
+speakers, TVs, scenes, read-only sensors; never locks, garage doors, alarms, cameras, valves or
+cooking appliances); state in the units and keys documented in `home.h`; secrets only in
+`Device::auth` or `secrets()`, never in errors; never retry a rejected code or password, even in
+a later run; honour `Device::port`; deadlines of about 2.5 s for a change and 4 s for listing;
+no threads, sockets or connections of its own between calls; errors are short sentences. Use
+the `http::Request` options (`timeout_ms`, `insecure`, `pinned_pubkey`, `want_peer_cert`,
+`no_redirect`, digest, client certificate) and `color.h` rather than private copies. Build and
+test the protocol against a simulated device in `tests/mocks/` first, with an end-to-end test
+like `tests/tapo_e2e.py` on `ZB_TEST_NETWORK`, and add the family to the README.
 
 **Releasing.** Bump `project(... VERSION ...)` in `CMakeLists.txt`, build all three presets,
 run the full agent set, `scripts/package-deb.sh`, scan tracked files, the binary and the
