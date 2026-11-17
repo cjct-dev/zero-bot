@@ -1,0 +1,256 @@
+# Guide for coding agents
+
+This file is for an AI coding agent (or a new developer) picking up Zero Bot. It explains what
+the app is, the hardware it runs on, how the code is laid out, how to build, test and deploy,
+and the mistakes already made so that they are not made again. `README.md` is the user-facing
+description; read it first. `docs/agent-architecture.html` has diagrams of the request loop.
+
+## 1. What this is
+
+Zero Bot is a pocket voice assistant for the M5Stack CardputerZero. The user presses TAB,
+speaks, presses TAB again; the app transcribes the speech, runs a tool-calling chat model, and
+speaks the answer. It also takes typed input. It is a native C++17 app drawing with LVGL 9
+straight to the framebuffer. All "intelligence" comes from an OpenAI-compatible service the
+user configures (chat with tool calling, speech-to-text, text-to-speech, vision). The device is
+online-only by design: without a network there is no inference, so do not add offline fallbacks.
+
+Hard rule for this public repository: **never commit the name, address, keys or model names of
+any particular AI provider, or any personal detail** (names, network names, addresses, e-mail).
+Scan staged changes and the built binary (`strings`) before every push. The build uses
+`-ffile-prefix-map` so the binary does not embed the build machine's paths; keep it.
+
+## 2. The hardware, and what it means for code
+
+| Part | Detail | Consequence |
+|---|---|---|
+| CPU / RAM | Raspberry Pi CM0: four Cortex-A53 at 1 GHz, about 350 MB usable RAM, zram swap | Starting a process is expensive (ffmpeg: 1 to 3 s; ffplay and rpicam-jpeg: 1 to 2 s). Prefer in-process work or a kept-open helper. Never spawn on the UI thread. |
+| Screen | 320x170, RGB565, `/dev/fb0`, driven over SPI | Sending pixels costs several times what drawing them does. Redraw only what changed; keep animated areas small; 8 to 12 updates a second is plenty. |
+| Keyboard | TCA8418 keypad, `/dev/input/by-path/platform-3f804000.i2c-event` | The driver's fn layer sends its own key codes (arrows on fn+F/Z/X/C, volume on fn+A/S/D, brightness on fn+U/I, media on fn+Q/W/E, F1..F10 on fn+digits). The sym layer also arrives as dedicated codes. No auto-repeat from the driver: `input.cpp` synthesizes it. |
+| Audio | ES8389 codec through PipeWire (`pw-cat`), tiny speaker, weak microphone | The mic needs digital gain and normalising. Use `pw-cat`/`wpctl`, not ALSA directly. Bluetooth headsets must stay output-only (see lessons). |
+| Camera | IMX219 via `rpicam-jpeg`, mounted upside down | Photos are rotated 180 degrees by default (`camera_flip`). |
+| Radio | CYW43439: 2.4 GHz Wi-Fi and Bluetooth share one radio | Bluetooth audio stutters when the Wi-Fi signal is weak. Nothing in the app can fix that. |
+| Infrared | TX `/dev/lirc0`, RX `/dev/lirc1` | Used by the TV remote tool, including learning buttons. |
+| Battery | bq27220 gauge under `/sys/class/power_supply/bq27220-0/` | Reads 0 current on USB power. Idle cost matters most: the app is meant to be left running. |
+| Launcher | `APPLaunch.service` (a systemd user service) lists `/usr/share/APPLaunch/applications/*.desktop` and stays alive behind the app | The app owns the screen while it runs. Holding ESC returns to the launcher. |
+
+## 3. Code layout
+
+```
+src/main.cpp        entry point and the command-line test modes (section 6)
+src/agent/          the request loop (agent), service client (llm), system prompt (prompt),
+                    tools, sentence queue for speech (speech), arithmetic (calc)
+src/core/           settings, calendar/reminder/memory store, music library, breathing timing,
+                    start-at-power-on, phone tethering, utilities (dates, files, strings)
+src/net/            libcurl wrapper with a shared connection/DNS/TLS-session cache
+src/platform/       display, keyboard, audio (recorder, speaker, music), codecs, camera,
+                    infrared, subprocess helpers
+src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast), per-network storage and
+                    control (home), Tapo transports (tapo)
+src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
+                    pages, breathing screen, theme
+tests/              scored agent test set (needs a live service)
+scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
+```
+
+Threads: the UI thread runs LVGL and the main loop in `ui/app.cpp`. The agent has one worker
+thread (`Agent::worker`), speech has one (`SpeechQueue::run`), keys are read on one, music has
+one per queue. Anything a worker wants on screen goes through `uiq::post()`; never touch LVGL
+from another thread. Slow work started from a menu uses `background(work, done)` in
+`settings_pages.cpp`.
+
+State on disk (all under the user's home, mode 0600 where they hold secrets):
+`~/.config/zero-bot/settings.json`, and in `~/.local/share/zero-bot/`: `calendar.json`,
+`reminders.json`, `memory.json`, `ir_learned.json`, `music_index.json`, `smarthome.json`.
+
+## 4. How a request flows
+
+1. `App::handle_key` starts or stops the recorder (TAB) or collects typed text, then calls
+   `Agent::submit_audio` / `submit_text`.
+2. `Agent::run_turn` absorbs queued inputs (transcribing audio), then loops for up to
+   `kMaxRounds` model calls: stream a reply, run any tool calls, repeat.
+3. Text streams sentence by sentence into `SpeechQueue`, which synthesizes and plays it.
+
+Things in that loop that exist for a reason; do not remove them without re-running the tests:
+
+- **Fast mode** turns the model's reasoning off for speed. With reasoning off the model
+  sometimes claims an action without calling the tool. So a reply that used no tool is held
+  back and checked once ("second look") before it is spoken, and two regex guards
+  (`claims_action`, `claims_not_saved`) catch "done" and "that isn't saved" said without a call.
+- **`say`**: tools whose effect is fully known up front (timer, calendar, switch) take the
+  confirmation sentence as a parameter, so success is spoken without a second model call.
+- **Steering**: input that arrives while a request is being worked on is added to the same
+  request. While the microphone is open nothing new is spoken and no action runs
+  (`Agent::set_listening`).
+- **Numeric dates** are spelt out by rule (`util::spell_numeric_dates`) before the model sees
+  them, in the user's date order with the year filled in.
+- **Timestamps** ride on each user message, not in the system prompt, so the prompt stays
+  byte-identical between calls and the service can reuse its cached prefix.
+- **Music holds** (`audio::Music::hold`): music waits for the spoken reply to finish, and stays
+  quiet from a spoken question to the end of its answer.
+
+## 5. Building
+
+Everything is fetched into the project folder; nothing is installed system-wide.
+
+```sh
+scripts/setup-toolchain.sh             # once: cross compiler, device sysroot, LVGL, CMake (about 2 GB)
+export PATH="$PWD/.tools/bin:$PATH"
+cmake --preset cli && cmake --build --preset cli    # screenless agent for this PC: fastest loop
+cmake --preset sim && cmake --build --preset sim    # desktop build with an SDL window
+cmake --preset cp0 && cmake --build --preset cp0    # cross build for the device
+```
+
+The three builds share all the sources except that `cli` leaves out `src/ui/` and the display
+and input code. Libraries: libcurl, libcrypto (OpenSSL 3.5 on the device, possibly newer on a
+PC: use only non-deprecated interfaces), FreeType and libpng for the UI. MP3 encoding and Opus
+decoding are loaded at run time with `dlopen` and are optional.
+
+## 6. Testing
+
+There is no device-free unit test suite yet (planned before the refactor; see section 9). What
+exists:
+
+- **Command-line modes** in `src/main.cpp` (work in the `cli` build):
+  `--ask "text"`, `--chat`, `--tool NAME 'JSON'`, `--steer "text"` (inject input during the
+  first tool), `--talk-over MS[:text]` (hold the microphone open during a request),
+  `--follow-ups "a|b|c"` (chain requests inside one run), `--stt FILE.wav`, `--tts "text" OUT.raw`,
+  `--discover` (smart-home scan), `--home-refresh` (read saved smart-home devices),
+  `--shots DIR` (render every screen to PNG; `sim` build), `--keydump`, `--version`.
+- **Scored agent set**: `tests/agent_eval.py` runs spoken-style requests through the `cli`
+  build against a live service and checks tool calls, arguments and answers. It needs
+  `ZB_API_BASE`, `ZB_API_KEY`, optionally `ZB_SEARCH_KEY`, and model names in `ZB_EVAL_LLM_MODEL`
+  etc. Use `--only`, `--repeat N` (models are not deterministic: repeat a changed case 5 to 8
+  times) and `--fast 0|1`. Expect one or two flaky cases; compare against a run of the
+  previous code before blaming a change.
+- **Environment switches**: `ZB_DRY_RUN=1` (tools do not play music, send infrared or switch
+  devices), `ZB_NO_AUDIO=1`, `ZB_FAKE_CAMERA=file.jpg`, `ZB_FAST_MODE=0|1`, `ZB_DATE_ORDER=dmy|mdy`.
+- **Screens**: `build/sim/zero_bot --shots out/` and look at the PNGs. Every UI change should
+  be checked this way before it goes to the device. The script in `App::render_shots` walks
+  the menus by counting key presses, so adding a settings row shifts later screenshots: fix
+  the counts in the same change.
+- **A fresh state per test**: point `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` at
+  a temporary folder. Do the same on the device so the user's calendar and data are untouched.
+
+When a model-facing change is made (prompt, tool description, tool schema, loop), run the
+affected cases repeated, then the whole set once. When something cannot be tested (a physical
+key, real audio), say so plainly rather than implying it was.
+
+## 7. Working with the device
+
+- The device is reached over USB ADB as root: left-side switch on Slave, cable in the
+  right-hand USB-C port, ADB enabled in the device's Settings > Developer. Use `scripts/adbx`
+  (it recovers an "offline" link). With a phone also attached, set `ANDROID_SERIAL`.
+- **The link drops under load and can corrupt transfers.** `scripts/deploy.sh` verifies an MD5
+  after each push; do the same for anything else you copy. Wrap device commands in `timeout`.
+  A long-running test should be started detached (`setsid nohup`) and polled.
+- Run things as the app's user: `sudo -u pi env HOME=/home/pi XDG_RUNTIME_DIR=/run/user/1000 ...`.
+  NetworkManager actions are only authorised from the user's own service manager.
+- Installing replaces `/usr/bin/zero_bot`; a running copy keeps the old code until the user
+  leaves (hold ESC) and reopens it. Do not restart the app or inject keys while the user is
+  using it; check `pgrep -x zero_bot` first.
+- Never use `pkill -f` or `pgrep -f` with a pattern that appears in your own command line: it
+  kills your own shell. Find processes by exact name or by listening port.
+- This development PC's firewall drops multicast replies, so smart-home discovery finds
+  nothing here. Run `zero_bot --discover` on the device.
+
+## 8. Lessons learnt (each of these cost real time)
+
+**Networking**
+- Name lookups took exactly 5 s each on the device: the C library asks for IPv4 and IPv6 at
+  once over one socket and the second reply was lost. `main()` sets
+  `RES_OPTIONS=single-request` before anything resolves. Other programs run on the device
+  (curl, python) need the same or they look like a slow service.
+- An outage page from a proxy is HTML, not JSON. `llm.cpp:api_error` turns statuses into plain
+  sentences; errors the user must read are shown with `Menu::problem` (stays until dismissed),
+  not a toast.
+- On a phone's Bluetooth tether uploads run at about 10 kB/s. Speech is sent as MP3 and replies
+  fetched as Opus for that reason. The tether is never a "home network": the smart-home tool
+  and scan do not exist on it.
+- The Wi-Fi chip's firmware ignored the country code, hiding channels 12 and 13;
+  `docs/wifi-channels-12-13.md` has the device-tree fix.
+
+**Audio**
+- The music player's default buffer is about 12 ms and skipped whenever the processor was busy.
+  It is started with `PULSE_LATENCY_MSEC=300`. Synthetic tests (silent playback while counting
+  graph errors) did not show the problem; recording the speaker through the microphone and
+  comparing with the source did.
+- Recording from "the default input" let the system switch a connected Bluetooth headset into
+  phone-call mode, which is silent on this hardware in both directions. The recorder asks for
+  the built-in microphone by name.
+- Music must not start before the spoken reply, nor resume between a question and its answer.
+  That is what the hold flags are for.
+- `pw-cat` raw input counts underruns while its source is slow to start; that is not a fault.
+
+**The model**
+- Turning reasoning off made requests about 2 s faster and wrong about a fifth of the time
+  until the second look and the guards went in. Measure accuracy and latency together.
+- A prompt rule alone was not reliable for numeric dates or for ages; doing the work in code
+  and handing the model the answer was. Field names matter: `years_since_first` was misread
+  as an ordinal, `age_on_that_day` was not.
+- New wording in one tool description changed behaviour elsewhere (the assistant began asking
+  to confirm misheard words). Re-run neighbouring cases, not only the ones you touched.
+- A "past" escape-hatch parameter on the calendar tool was used by the model to bypass the
+  check it was meant to refine. Do not give the model a way round a guard.
+- Give tools the allowed names as an `enum` (smart-home devices) rather than describing them.
+- Text that came from the network or a device (names, descriptions) is untrusted: strip
+  control characters, cap the length, pass it as data.
+
+**The loop**
+- Requests chained inside one run shared one budget of rounds and the last was silently
+  dropped. A follow-up now gets a fresh budget, and running out is spoken.
+- Anything "known" about the world goes stale: the calendar refuses one-off events in the past
+  because a date said without a year means its next occurrence.
+
+**Devices and protocols**
+- Tapo plugs lock out after rejected logins. The transport never retries a rejected login,
+  checks the account e-mail against the plug's announced owner before trying, and is tested
+  against a simulated plug (`mock_tapo.py`), never by trial and error on real plugs.
+- Smart-home discovery uses only what the devices' own apps use (mDNS, SSDP, the vendor's
+  broadcast). No address sweeps, no port scans, opt-in per network with a warning. "This
+  network" is the SSID plus the router's hardware address, not the SSID alone.
+- Before promising a device can be controlled, check whether it has a local interface at all.
+  Several popular products are cloud-only.
+
+**Process**
+- Do not report something as fixed when only the mechanism was fixed and the symptom was not
+  reproduced; say which it is.
+- A wrapper that "recovers" a shared resource by restarting it (the ADB server) breaks other
+  work using it. Prefer the narrowest recovery.
+- Temporary folders are cleared; anything worth keeping goes in the repository or in
+  `.local-notes/` (git-ignored, may hold private network details, never to be published).
+
+## 9. Adding things
+
+**A tool.** In `src/agent/tools.cpp`: write `t_name(const json &, Context &)` returning text or
+JSON for the model (use `fail("...")` for errors, phrased as an instruction about what to do
+next); add it to `build()` with a description written for the model and a compact schema; add
+it to `kConfirmable` if success is fully known from the arguments. If it needs the screen or
+hardware, add a callback to `tools::Context` and an event in `AgentEvents`, set in
+`Agent::run_turn` and handled in `App::wire_agent` through `uiq::post`. Honour `dry_run()`.
+Add cases to `tests/agent_eval.py`, including a neighbour that must not trigger it. Document
+it in `README.md`.
+
+**A setting.** Add the field to `Settings` (`src/core/settings.{h,cpp}`: member, `to_json`,
+`from_json`), a row in `open_settings` (and the setup guide if a new user needs it), and a line
+in the README's settings table. Fix the screenshot key-press counts.
+
+**A screen.** Follow `breath_view` or `chat_view`: create objects once, update only what
+changed, drive it from `App::periodic`, route keys in `App::handle_key`, add a `--shots` frame.
+
+**A smart-home device family.** Recognise its announcement in `discovery.cpp` (`kServices` or a
+vendor query), add a driver beside `tapo`, and teach `home.cpp` to read and switch it. Build
+and test the protocol against a mock of the device first.
+
+**Releasing.** Bump `project(... VERSION ...)` in `CMakeLists.txt`, build all three presets,
+run the full agent set, `scripts/package-deb.sh`, scan tracked files, the binary and the
+package for anything private, then commit, push and attach the `.deb` to a GitHub release.
+
+## 10. Planned work
+
+A clean-up and optimisation pass is planned once the current features are finished: first a
+device-free safety net (unit tests for dates, repeats, parsers, the hold logic and breathing
+timing; a scripted fake model service for the loop; stable screenshots), then the changes.
+Known costs to address then: the status bar is redrawn every tick even when nothing changed;
+the main loop polls about 60 times a second; `ffmpeg` is started for every photo thumbnail;
+some settings rows run subprocesses on the UI thread; `Settings` is shared between threads
+without a lock.
