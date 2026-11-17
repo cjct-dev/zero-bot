@@ -28,6 +28,9 @@ struct MenuPage {
     std::string title;
     std::function<std::vector<MenuItem>()> build;   // re-run whenever the page is shown or refreshed
     std::string hint;                               // overrides the default footer hint
+    // The values change by themselves (a timer's time left): tick() reads the ones on screen
+    // again and redraws those whose text has changed. Their value functions must be cheap.
+    bool live = false;
 };
 
 class Menu {
@@ -65,4 +68,7 @@ private:
     bool editing_ = false;
     std::function<void(const std::string &)> edit_done_;
     int toast_ticks_ = 0;
+    // On a live page: the rows on screen with a value, and the text each shows.
+    struct LiveValue { size_t item; lv_obj_t *label; std::string text; };
+    std::vector<LiveValue> live_;
 };
