@@ -19,6 +19,8 @@ install -D -m 0644 "$ROOT/packaging/zero_bot.desktop" "$PKG/usr/share/APPLaunch/
 install -D -m 0644 "$ROOT/packaging/zero_bot.png" "$PKG/usr/share/APPLaunch/share/images/zero_bot.png"
 install -D -m 0644 "$ROOT/README.md" "$PKG/usr/share/doc/zero-bot/README.md"
 install -D -m 0644 "$ROOT/LICENSE" "$PKG/usr/share/doc/zero-bot/copyright"
+install -D -m 0644 "$ROOT/licenses/THIRD-PARTY-NOTICES.md" "$PKG/usr/share/doc/zero-bot/THIRD-PARTY-NOTICES.md"
+install -D -m 0644 "$ROOT/licenses/Apache-2.0.txt" "$PKG/usr/share/doc/zero-bot/Apache-2.0.txt"
 
 SIZE=$(du -sk "$PKG" | cut -f1)
 mkdir -p "$WORK/control"

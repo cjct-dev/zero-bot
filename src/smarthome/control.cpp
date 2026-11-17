@@ -1273,31 +1273,40 @@ bool pairing_submit(const std::string &network_id, const std::string &device_id,
     return ok;
 }
 
-void unpair(const std::string &network_id, const std::string &device_id) {
+std::string unpair(const std::string &network_id, const std::string &device_id) {
     std::string why;
     Saved saved;
-    if (!on_network(network_id, why) || !find_saved(network_id, device_id, saved)) return;
+    if (!on_network(network_id, why)) return why;
+    if (!find_saved(network_id, device_id, saved)) return "";
     Driver *drv = driver_for(saved);
-    if (!drv) return;
+    if (!drv) return "";
+    // The driver decides what is forgotten. Some devices hold the pairing themselves (a HomeKit
+    // accessory takes only one controller): forgetting it here without telling the device would
+    // leave the device paired with an app that no longer has the key, refusing every new pairing.
     Device dev = saved;
     PairStep next;
+    bool told = false;
     {
         std::lock_guard<std::mutex> lk(device_lock(dev.id));
         try {
-            if (may_contact(dev, why) && still_on(network_id, why)) drv->unpair(dev);
-            dev.auth = json::object();   // whatever the device said, nothing of the pairing is kept
+            if (may_contact(dev, why) && still_on(network_id, why)) { drv->unpair(dev); told = true; }
             next = drv->next_step(dev);
         } catch (const std::exception &) {
-            dev.auth = json::object();
+            why = "something went wrong while talking to it";
         }
     }
+    const bool kept = !dev.auth.empty();
     modify_entry(network_id, [&](NetworkEntry &e) {
         for (auto &d : e.devices)
             if (d.id == device_id) {
-                d.auth = json::object();
-                d.needs_setup = next.kind != Pairing::None;
+                d.auth = dev.auth;
+                d.info = dev.info;   // a driver may correct the discovery record (a HomeKit accessory is free again)
+                d.needs_setup = !kept && next.kind != Pairing::None;
             }
     });
+    if (!kept) return "";
+    if (told && why.empty()) return "It could not be reached, so it is still paired. Try again while it is switched on and on this network.";
+    return "It is still paired: " + (why.empty() ? std::string("it could not be reached.") : why);
 }
 
 // ---------------------------------------------------------------- for the device-free tests

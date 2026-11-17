@@ -54,8 +54,8 @@ src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast); driver.h, the con
 src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
                     pages, breathing screen, alarm banner, theme
 tests/              scored agent test set (needs a live service), device-free unit tests
-                    (run_unit.sh: smart home, HTTP options, timers, Fire TV), Tapo and Fire TV end
-                    to end (tapo_e2e.py, firetv_e2e.py),
+                    (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit), Tapo, Fire TV
+                    and HomeKit end to end (tapo_e2e.py, firetv_e2e.py, homekit_e2e.py),
                     the loop against a scripted chat service (home_chat_e2e.py), simulated devices
                     and service (mocks/)
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
@@ -144,8 +144,9 @@ What exists:
   `tests/unit/smarthome_test.cpp` (store and migration, names and rooms, schema snapshots in
   `tests/snapshots/`, the safety questions, rate limits, locking, pairing, the Tapo driver's
   refusals, colours, discovery from sample packets through `discovery::devices_from`; devices are
-  a fake driver), `tests/unit/firetv_test.cpp` (the Fire TV driver's known answers, with the
-  test certificates in `tests/mocks/firetv/`), `tests/unit/http_test.cpp` (the request
+  a fake driver), `tests/unit/firetv_test.cpp` and `tests/unit/homekit_test.cpp` (each driver's
+  known answers; Fire TV's test certificates are in `tests/mocks/firetv/`),
+  `tests/unit/http_test.cpp` (the request
   options for devices, against a local peer) and `tests/unit/timers_test.cpp` (the timer tool,
   storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it keeps everything
   it writes in a temporary folder of its own, so running it by hand is safe too), then runs the
@@ -157,7 +158,11 @@ What exists:
 - **Fire TV end to end**: `tests/firetv_e2e.py` runs `build/unit/firetv_cli` (built by
   `run_unit.sh`) against `tests/mocks/firetv/mock_firetv.py`: pairing, waking, refusals and hostile
   answers, checked from the simulated TV's side. It takes a few minutes (it waits out real wake-up
-  times).
+  times). `tests/homekit_e2e.py` does the same for `build/unit/homekit_cli` against a simulated
+  HomeKit bridge (`tests/mocks/homekit/mock_homekit.py`): pairing, refused codes, bridged
+  accessories switched off, changed databases, Unpair.
+- **Code ported from other projects** keeps their notices in the source file and in
+  `licenses/THIRD-PARTY-NOTICES.md`, which the package installs; add to it with any new port.
 - **The request loop, scripted**: `tests/home_chat_e2e.py` runs `build/cli/zero_bot --chat` against
   `tests/mocks/mock_chat.py` (a chat-completions service that answers from a script, photo
   questions included) and simulated plugs and strips, with `ZB_FAKE_CAMERA` for a photo of a sign

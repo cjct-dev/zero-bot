@@ -36,9 +36,13 @@ const ServiceKind kServices[] = {
 };
 
 // Most specific first: a device seen several ways is listed as the first of these it matches.
-const char *const kKindOrder[] = {"tapo",   "hue_bridge", "homekit", "shelly",     "wled",   "esphome", "elgato",
-                                  "nanoleaf", "sonos",    "fire_tv", "android_tv", "roku",   "wemo",    "matter",
-                                  "cast",   "tplink",     "airplay"};
+// Televisions and speakers come before HomeKit, which many of them also announce (for AirPlay 2
+// and Apple Home): the HomeKit driver refuses those categories, and pairing one over HomeKit
+// would use up its only HomeKit pairing for nothing. Nanoleaf stays after HomeKit while there is
+// no Nanoleaf driver.
+const char *const kKindOrder[] = {"tapo",    "hue_bridge", "sonos",   "fire_tv", "android_tv", "roku",   "cast",
+                                  "homekit", "shelly",     "wled",    "esphome", "elgato",     "nanoleaf", "wemo",
+                                  "matter",  "tplink",     "airplay"};
 
 // TP-Link's own discovery query (what the Tapo app broadcasts): a 16-byte header with no body.
 const unsigned char kTapoQuery[] = {0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
@@ -286,6 +290,12 @@ std::vector<Device> merge(const Seen &seen) {
         if (txt.count("md")) d.model = clean(txt["md"]);
         for (const char *key : {"id", "sf", "ci", "bridgeid", "modelid", "ve"})
             if (txt.count(key)) d.info[key] = txt[key];
+        if (kind == "homekit") {
+            // ff: pair with the authentication chip's method when bit 0 is set; c#: goes up when
+            // the accessory's database changes; pv: the protocol version.
+            for (const char *key : {"ff", "c#", "pv"})
+                if (txt.count(key)) d.info[key] = txt[key];
+        }
         if (kind == "fire_tv") {
             // The SRV port is Amazon's own discovery service, not the remote-control API the driver
             // uses (it knows that port), so it is not kept as the device's port. "c" is the TV's

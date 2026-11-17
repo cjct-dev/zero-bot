@@ -10,6 +10,7 @@
 #define ZB_DRIVERS(X) \
     X(tapo, "Tapo")   \
     X(firetv, "Fire TV") \
+    X(homekit, "HomeKit") \
     /* end of the list */
 
 #define ZB_DECLARE(family, name) std::unique_ptr<home::Driver> make_##family##_driver();

@@ -602,13 +602,21 @@ void open_home_device(Menu &menu, const std::string &network_id, const std::stri
             if (!d.auth.empty())
                 items.push_back(MenuItem::action("Unpair", [&menu, network_id, device_id] {
                     menu.confirm("Unpair this device? It will need setting up again.", "Unpair", [&menu, network_id, device_id] {
-                        background([network_id, device_id] { home::unpair(network_id, device_id); return 0; },
-                                   [&menu](int) { if (menu.open()) menu.refresh(); });
+                        background([network_id, device_id] { return home::unpair(network_id, device_id); },
+                                   [&menu](const std::string &why) {
+                                       if (!menu.open()) return;
+                                       if (!why.empty()) menu.problem("Not unpaired", why);
+                                       menu.refresh();
+                                   });
                     });
                 }, true));
         }
-        items.push_back(MenuItem::action("Remove from this list", [&menu, network_id, device_id] {
-            menu.confirm("Remove this device?", "Remove", [&menu, network_id, device_id] { home::remove_device(network_id, device_id); menu.pop(); });
+        // A device that holds the pairing itself (a HomeKit accessory) stays paired to this app
+        // when it is only removed from the list, and then refuses other controllers.
+        const std::string remove_question = d.auth.empty() ? "Remove this device?"
+                                                           : "Remove this device? It stays paired with Zero Bot: unpair it first to use it with another app.";
+        items.push_back(MenuItem::action("Remove from this list", [&menu, network_id, device_id, remove_question] {
+            menu.confirm(remove_question, "Remove", [&menu, network_id, device_id] { home::remove_device(network_id, device_id); menu.pop(); });
         }, true));
         return items;
     };

@@ -103,7 +103,8 @@ PairStep pairing_step(const std::string &network_id, const std::string &device_i
 // Hands the driver what the user typed ("" for a button or prompt step). A refusal is reported
 // and never tried again by itself.
 bool pairing_submit(const std::string &network_id, const std::string &device_id, const std::string &input, std::string &err);
-void unpair(const std::string &network_id, const std::string &device_id);
+// "" once the pairing is gone; otherwise why it is kept (the device could not be told).
+std::string unpair(const std::string &network_id, const std::string &device_id);
 
 // Asks every controllable device on the network (or just one) for its things, names and states,
 // and saves them: aliases, rooms and the two switches a user sets survive. Returns a short

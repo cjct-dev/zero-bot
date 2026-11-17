@@ -124,7 +124,10 @@ public:
     // A code or password the device rejected must never be retried automatically.
     virtual PairStep next_step(const Device &) const { return {}; }
     virtual bool pair(Device &, const std::string & /*input*/, std::string & /*err*/) { return true; }
-    virtual void unpair(Device &) {}
+    // Forgets the pairing by clearing dev.auth. A driver that must also tell the device (HomeKit)
+    // leaves dev.auth as it was when it could not, so that Unpair can be tried again: the app
+    // keeps whatever unpair leaves.
+    virtual void unpair(Device &dev) { dev.auth = json::object(); }
 
     // Lists the device's things with names, rooms, types, capabilities and current state.
     virtual bool enumerate(Device &dev, std::vector<Thing> &out, std::string &err) = 0;

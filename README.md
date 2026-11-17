@@ -215,6 +215,21 @@ device directly: nothing goes through the makers' cloud services. Supported so f
 
 - **TP-Link Tapo** smart plugs and power strips (tested against simulated P110 plugs and a P304M
   strip; each socket of a strip is switched on its own).
+- **Accessories that work with Apple HomeKit**, over Wi-Fi or Ethernet: one driver for many
+  brands, such as hubs and bridges (Hive, tado, Netatmo, ecobee, Aqara, IKEA) and Wi-Fi plugs,
+  lights and thermostats that carry a HomeKit setup code. Zero Bot pairs with the accessory
+  itself on your network, using the 8-digit setup code from its label, box or maker's app (or the
+  text of its QR code); no Apple device, Apple account or internet connection is involved. It can
+  switch lights, plugs and switches, dim and colour lights, set heating targets and modes, move
+  blinds, set fan speeds, and read temperature, humidity, motion and door or window sensors.
+  Locks, garage doors, alarms, cameras, doorbells, valves and taps are never offered, even when a
+  bridge has them; televisions, speakers and set-top boxes are left to their own drivers. An
+  accessory has only one owner controller, so it is paired either with Zero Bot or with Apple Home,
+  not both (*Unpair* in Zero Bot hands it back; do that while the accessory is on and on this
+  network, or Zero Bot keeps the pairing and says so). Accessories that use HomeKit only over
+  Bluetooth or Thread are not supported. If the handheld is lost while paired, reset the
+  accessory's HomeKit pairing from its maker's app. Tested so far only against a simulated
+  accessory.
 - **Amazon Fire TV** (Fire OS televisions, sticks and cubes; the newer Vega OS sticks are
   untested), worked the way Amazon's Fire TV phone app does: it can move around the menus (up,
   down, left, right, OK, back, home, menu), play and pause, rewind and fast-forward, open an
@@ -226,7 +241,7 @@ device directly: nothing goes through the makers' cloud services. Supported so f
   does not document this interface, so a Fire TV software update could change it. Tested so far
   only against a simulated TV.
 
-Other families (lights, heating, blinds, speakers) are added one driver at a time.
+Other families (Hue, Shelly, WiZ, Kasa and more) are added one driver at a time.
 
 1. On your home network, open *Your data → Smart home → Find devices on this network*. Only do
    this on a network you own. The scan only asks devices to identify themselves, the way the
@@ -241,7 +256,9 @@ Other families (lights, heating, blinds, speakers) are added one driver at a tim
    again, by any later run either, until you type it again (*Smart home → Tapo account*). A Fire
    TV asks you to turn it on and choose *I have accepted it*; the TV then shows a 4-digit code to
    type, valid for 5 minutes. A code the TV refuses is never sent again: start again and the TV
-   shows a new one.
+   shows a new one. A HomeKit accessory asks for its 8-digit setup code (like 123-45-678); a code
+   it refuses is not sent again until you type it again, because accessories stop pairing after
+   too many wrong codes.
 3. What each device controls is then listed by room. On its page you can set the name you will
    say (*Called*), a *Room* (guessed from the name where it starts with one, such as "Bedroom
    lamp"), whether the *Assistant may use it*, and *Ask before switching on*. That last one is on
@@ -340,9 +357,10 @@ devices at a 127.x address are ever contacted and nothing is scanned; the tests 
 were called, whether the answers hold up, and how long each took. See the notes at the top of
 the file. `tests/run_unit.sh` builds and runs the tests that need neither a device nor an AI
 service (the smart-home layer, and the timers: the timer tool, how timers are stored, the
-countdown and the alarm, and the Fire TV driver), `tests/tapo_e2e.py` runs the command-line build
-against two simulated Tapo plugs, `tests/firetv_e2e.py` runs the Fire TV driver against a simulated
-TV, and `tests/home_chat_e2e.py` runs its conversation loop against a scripted chat
+countdown and the alarm, and the Fire TV and HomeKit drivers), `tests/tapo_e2e.py` runs the
+command-line build against two simulated Tapo plugs, `tests/firetv_e2e.py` and
+`tests/homekit_e2e.py` run those drivers against a simulated TV and a simulated HomeKit bridge, and
+`tests/home_chat_e2e.py` runs its conversation loop against a scripted chat
 service to check that a change needing your yes waits for one.
 
 ## Troubleshooting
@@ -382,7 +400,8 @@ src/ui/         chat screen, menus, settings pages, alarm banner, app controller
 src/net/        HTTP client (libcurl)
 src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers
 scripts/        toolchain setup, packaging, deployment
-tests/          scored agent test set, unit tests (smart home, timers, Fire TV), end-to-end tests with simulated Tapo plugs and a Fire TV
+tests/          scored agent test set, unit tests (smart home, timers, Fire TV, HomeKit), end-to-end tests with simulated devices
+licenses/       third-party notices and the Apache-2.0 text
 packaging/      launcher entry and icon
 extras/         device-tree overlay for the Wi-Fi channel fix
 third_party/    nlohmann/json (MIT)
@@ -391,4 +410,8 @@ third_party/    nlohmann/json (MIT)
 ## Licence
 
 MIT. See [LICENSE](LICENSE). Bundled: [nlohmann/json](https://github.com/nlohmann/json) (MIT).
-Built with [LVGL](https://lvgl.io) (MIT).
+Built with [LVGL](https://lvgl.io) (MIT). The Fire TV driver follows parts of firehose-remote and
+hms-firetv (both MIT); the HomeKit driver follows parts of aiohomekit and Apple's HomeKit ADK (both
+Apache-2.0). Their notices are in [licenses/THIRD-PARTY-NOTICES.md](licenses/THIRD-PARTY-NOTICES.md),
+and the package installs them with the Apache-2.0 text in `/usr/share/doc/zero-bot/`. "HomeKit" is
+a trademark of Apple Inc.; Zero Bot is not made or endorsed by Apple or Amazon.

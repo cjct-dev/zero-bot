@@ -87,6 +87,7 @@ struct FakeDriver : home::Driver {
     int delay_ms = 0;
     bool many = false;                                         // offers apply_many
     bool wants_pairing = false;                                // each device wants a code of its own (in Device::auth)
+    bool unpair_unreached = false;                             // unpair cannot reach the device, so keeps the pairing
     bool account_pairing = false;                              // one code serves every device, like a Tapo account
     std::string reject;                                        // pair() refuses this input
     std::string slow_device;                                   // enumerate() of this device takes slow_ms
@@ -124,7 +125,10 @@ struct FakeDriver : home::Driver {
         else d.auth["key"] = "secret-" + input;
         return true;
     }
-    void unpair(home::Device &d) override { d.auth = json::object(); }
+    void unpair(home::Device &d) override {
+        contact("unpair", d.id);
+        if (!unpair_unreached) d.auth = json::object();
+    }
     bool enumerate(home::Device &d, std::vector<home::Thing> &out, std::string &err) override {
         contact("enumerate", d.id);
         if (d.id == slow_device) std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
@@ -197,7 +201,7 @@ struct FakeDriver : home::Driver {
     void reset() {
         std::lock_guard<std::mutex> lk(mtx);
         listing.clear(); live.clear(); broken.clear(); log.clear();
-        delay_ms = 0; many = false; wants_pairing = false; account_pairing = false; reject.clear();
+        delay_ms = 0; many = false; wants_pairing = false; account_pairing = false; reject.clear(); unpair_unreached = false;
         slow_device.clear(); slow_ms = 0;
         active = 0; most = 0; device_active.clear(); device_most = 0;
         on_contact = nullptr; call_ms = 0; calls.clear();
@@ -1457,8 +1461,16 @@ void test_pairing() {
     CHECK(home::refresh(g_net.id(), "fake:tv") == "1 device ready.");
     const std::string r = run({{"action", "status"}});
     CHECK_MSG(has(r, "Lounge TV") && !has(r, "secret"), r);
-    home::unpair(g_net.id(), "fake:tv");
+    // A device that holds the pairing itself and could not be told keeps it, and says so.
+    g_fake->unpair_unreached = true;
+    std::string why = home::unpair(g_net.id(), "fake:tv");
     e = home::entry(g_net.id());
+    CHECK_MSG(has(why, "still paired"), why);
+    CHECK(e.devices[0].auth.value("key", "") == "secret-1234" && !e.devices[0].needs_setup);
+    g_fake->unpair_unreached = false;
+    why = home::unpair(g_net.id(), "fake:tv");
+    e = home::entry(g_net.id());
+    CHECK_MSG(why.empty(), why);
     CHECK(e.devices[0].auth.empty() && e.devices[0].needs_setup && home::catalog(e).empty());
     g_fake->wants_pairing = false;
 
@@ -1820,10 +1832,10 @@ std::string dns_record(const std::string &name, int type, const std::string &dat
     return r + data;
 }
 
-// One mDNS answer announcing a Fire TV: the service, its host and port, its TXT keys and address.
-std::string fire_tv_answer(const std::string &instance, const std::string &host, const std::string &ip_bytes,
-                           const std::vector<std::string> &txt) {
-    const std::string type = "_amzn-wplay._tcp.local", full = instance + "." + type;
+// One mDNS answer announcing a service: its instance, host and port, TXT keys and address.
+std::string service_answer(const std::string &type, const std::string &instance, const std::string &host,
+                           const std::string &ip_bytes, const std::vector<std::string> &txt) {
+    const std::string full = instance + "." + type;
     std::string srv = std::string("\0\0\0\0\xC0\xA5", 6) + dns_name(host);   // priority, weight, port 49317
     std::string kv;
     for (const auto &t : txt) { kv += static_cast<char>(t.size()); kv += t; }
@@ -1836,8 +1848,13 @@ std::string fire_tv_answer(const std::string &instance, const std::string &host,
     return pkt;
 }
 
+std::string fire_tv_answer(const std::string &instance, const std::string &host, const std::string &ip_bytes,
+                           const std::vector<std::string> &txt) {
+    return service_answer("_amzn-wplay._tcp.local", instance, host, ip_bytes, txt);
+}
+
 void test_discovery() {
-    Section s("discovery: a Fire TV's wake-up address from mDNS and the DIAL answer; other TVs' DIAL answers add nothing");
+    Section s("discovery: a Fire TV's wake-up address (mDNS, DIAL), HomeKit's keys; a TV that also speaks HomeKit stays a TV");
     const std::string dial_st = "urn:dial-multiscreen-org:service:dial:1";
     const std::string generic = "HTTP/1.1 200 OK\r\nST: upnp:rootdevice\r\nSERVER: Linux/2.6 UPnP/1.1 quick_ssdp/1.1\r\n\r\n";
     auto dial = [&](const std::string &ip, const std::string &wakeup, bool by_usn) {
@@ -1876,6 +1893,21 @@ void test_discovery() {
     CHECK(three && three->kind == "fire_tv" && info(three, "wakeup") == "MAC=00:00:5e:00:53:05;Timeout=10");
     CHECK_MSG(!other || other->kind != "fire_tv", "a DIAL answer alone never makes a Fire TV");
     CHECK(!other || info(other, "wakeup").empty());
+
+    // HomeKit: the keys its driver reads are kept; a TV that also announces HomeKit stays a TV.
+    const std::string hap = "_hap._tcp.local";
+    const auto mixed = discovery::devices_from({
+        {"mdns", "192.0.2.50", service_answer(hap, "Hive Hub", "hub.local", std::string("\xC0\x00\x02\x32", 4),
+                                              {"id=AA:BB:CC:00:00:01", "ci=2", "sf=1", "ff=1", "c#=7", "pv=1.1", "md=Hub"})},
+        {"mdns", "192.0.2.60", fire_tv_answer("AFTKA0000004", "fire4.local", std::string("\xC0\x00\x02\x3C", 4), {})},
+        {"mdns", "192.0.2.60", service_answer(hap, "Living Room TV", "fire4.local", std::string("\xC0\x00\x02\x3C", 4),
+                                              {"id=AA:BB:CC:00:00:02", "ci=31", "sf=1"})},
+    });
+    const discovery::Device *hub = nullptr, *tv = nullptr;
+    for (const auto &d : mixed) { if (d.ip == "192.0.2.50") hub = &d; if (d.ip == "192.0.2.60") tv = &d; }
+    CHECK(hub && hub->kind == "homekit" && info(hub, "ff") == "1" && info(hub, "c#") == "7" && info(hub, "pv") == "1.1");
+    CHECK(hub && info(hub, "sf") == "1" && info(hub, "ci") == "2");
+    CHECK_MSG(tv && tv->kind == "fire_tv", tv ? tv->kind : "no device at the TV's address");
 }
 
 // ---------------------------------------------------------------- names and colours
