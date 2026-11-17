@@ -50,7 +50,7 @@
         "type": "string"
       },
       "target": {
-        "description": "A device, room or group, exactly as listed. A room means the lights in that room. \"all\" is only for switching everything off or checking everything.",
+        "description": "A device, room or group, exactly as listed. A room means the lights in that room: when the user names a room (\"the lounge\"), use the room itself, not a device whose name mentions it. \"all\" is only for switching everything off or checking everything.",
         "enum": [
           "Bedroom lamp",
           "Bedside light",

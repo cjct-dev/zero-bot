@@ -87,7 +87,8 @@ json spec_for(const std::vector<Item> &items) {
                                      : "What to do; status with no target reports all of them",
                               actions);
     std::string target = plugs_only ? "The device's name, exactly as listed." : "A device, room or group, exactly as listed.";
-    if (lights) target += " A room means the lights in that room.";
+    if (lights) target += " A room means the lights in that room: when the user names a room (\"the lounge\"), use the "
+                          "room itself, not a device whose name mentions it.";
     if (all) target += plugs_only ? " \"all\" means every device, for switching everything off or checking everything"
                                   : " \"all\" is only for switching everything off or checking everything.";
     if (overflow) target += (all && plugs_only ? ". " : " ") + std::string("Other device names are also accepted.");

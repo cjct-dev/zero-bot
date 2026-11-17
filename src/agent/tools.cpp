@@ -912,8 +912,9 @@ std::vector<Tool> build() {
               {"all", B("For cancel: true to cancel every timer")}},
              {"action"}), t_timer},
         {"reminder_set", "Setting a reminder",
-         "Set a reminder: a message the device chimes and speaks at a clock time or on a date ('remind me at 6 "
-         "on Friday to call the bank', 'wake me at half six'). Calling this is the only way one gets set. Give at "
+         "Set a reminder or an alarm: a message the device chimes and speaks at a clock time or on a date ('remind "
+         "me at 6 on Friday to call the bank', 'wake me at half six', 'set an alarm for 7'). Calling this is the "
+         "only way one gets set. Give at "
          "for the clock time. A countdown from now ('set a timer', 'in 5 minutes', 'for an hour') is a timer: use "
          "timer instead. If the user gave no time at all, ask when. It fires only while this app is running. For "
          "an appointment that belongs in the calendar, use calendar_add with remind_minutes_before instead.",
