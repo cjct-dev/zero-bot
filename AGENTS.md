@@ -321,10 +321,8 @@ package for anything private, then commit, push and attach the `.deb` to a GitHu
 
 ## 10. Planned work
 
-A clean-up and optimisation pass is planned once the current features are finished: first a
-device-free safety net (unit tests for dates, repeats, parsers, the hold logic and breathing
-timing; a scripted fake model service for the loop; stable screenshots), then the changes.
-Known costs to address then: the status bar is redrawn every tick even when nothing changed;
-the main loop polls about 60 times a second; `ffmpeg` is started for every photo thumbnail;
-some settings rows run subprocesses on the UI thread; `Settings` is shared between threads
-without a lock.
+Plans are kept locally, not in this repository. On the maintainer's machine, `.local-notes/TICKETS.md`
+(git-ignored) holds the sprints, a board and one entry per ticket; if it exists, read the tickets
+for the current sprint before starting, keep their status current while you work, and check the
+file with `python3 .local-notes/tools/tickets.py check`. Lessons worth keeping belong in section 8
+of this file.
