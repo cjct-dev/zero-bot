@@ -12,6 +12,7 @@ namespace tools {
 struct Context {
     std::atomic<bool> *cancel = nullptr;
     std::function<void(const std::string &jpeg_path)> on_image;   // a photo was taken
+    std::function<void(const std::string &pattern, int minutes)> on_breathe;   // start a breathing exercise on screen
     bool in_conversation = false;   // called from a live request, whose spoken reply is still to come
 };
 

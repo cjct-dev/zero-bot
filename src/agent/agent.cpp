@@ -276,6 +276,7 @@ void Agent::run_turn() {
     tool_ctx.in_conversation = true;
     tool_ctx.cancel = &cancel_;
     tool_ctx.on_image = ev_.image;
+    tool_ctx.on_breathe = ev_.breathe;
     SpeechQueue &speech = SpeechQueue::get();
     const bool speak = Settings::get().speak_replies && !getenv("ZB_NO_AUDIO");
 

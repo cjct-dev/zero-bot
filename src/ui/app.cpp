@@ -11,6 +11,7 @@
 
 #include "agent/agent.h"
 #include "agent/speech.h"
+#include "ui/breath_view.h"
 #include "agent/llm.h"
 #include "core/music_lib.h"
 #include "core/settings.h"
@@ -44,6 +45,10 @@ void on_signal(int) { g_exit = true; }
 struct App {
     ChatView chat;
     Menu menu;
+    BreathView breath;
+    // A breathing exercise the assistant has asked for, started once its spoken reply has finished.
+    std::string breath_pattern;
+    int breath_minutes = 0;
     audio::Recorder recorder;
     unsigned long rec_start = 0;
     unsigned long last_delete = 0;   // for the double tap that starts a new conversation
@@ -77,6 +82,9 @@ struct App {
         ev.answer_discard = [this] { uiq::post([this] { chat.discard_answer(); }); };
         ev.tool = [this](const std::string &label) { uiq::post([this, label] { chat.add_tool(label); }); };
         ev.error = [this](const std::string &m) { uiq::post([this, m] { chat.add_note(m, theme::kListen); }); };
+        ev.breathe = [this](const std::string &pattern, int minutes) {
+            uiq::post([this, pattern, minutes] { breath_pattern = pattern; breath_minutes = minutes; });
+        };
         ev.image = [this](const std::string &jpeg) {
             // Runs on the agent thread: shrink the photo so the screen only decodes a thumbnail.
             // Each thumbnail gets its own name because the image cache is keyed by path.
@@ -301,6 +309,16 @@ struct App {
 
         if (control_key(ev)) return;
 
+        // A breathing exercise takes the whole screen. ESC ends it; TAB ends it and starts listening,
+        // since wanting to say something is a fair reason to stop. Other keys are left alone so a
+        // stray press does not break the calm.
+        if (breath.active()) {
+            if (ev.state != 1) return;
+            if (ev.key == Key::Esc) { breath.stop(); esc_armed = false; return; }
+            if (ev.key != Key::Tab) return;
+            breath.stop();
+        }
+
         // ESC: a short press backs out of whatever is happening, a long hold leaves the app.
         if (ev.key == Key::Esc) {
             if (ev.state == 1) { esc_down = now; esc_armed = true; }
@@ -446,6 +464,19 @@ struct App {
             update_footer();
             chat.tick();
             menu.tick();
+            if (breath.active()) {
+                last_activity = now;                       // the screen stays lit for the whole exercise
+                if (breath.tick(now)) audio::chime(1);     // a soft note when the last breath is done
+            }
+        }
+        // Wait for the assistant to finish its sentence before the orb takes over the screen.
+        if (breath_minutes > 0 && !recorder.active() && Agent::get().state() == AgentState::Idle && !Agent::get().busy() &&
+            !Agent::get().has_pending() && !SpeechQueue::get().active()) {
+            if (menu.open()) menu.close();
+            if (chat.typing()) chat.typing_end();
+            if (dimmed) { display::set_brightness(Settings::get().brightness); dimmed = false; }
+            breath.start(breath_pattern, breath_minutes);
+            breath_minutes = 0;
         }
         if (settings_dirty_at && now - settings_dirty_at > 1500) {
             settings_dirty_at = 0;
@@ -549,6 +580,12 @@ struct App {
             snap("muted");
             handle_key(vol);                       // unmute again
             level_until = 0;
+            for (const auto &shot : {std::make_pair("box", 2500L), std::make_pair("box", 6000L), std::make_pair("sigh", 9000L)}) {
+                breath.start(shot.first, 5);
+                breath.show_at(shot.second);
+                snap(shot.second == 2500L ? "breathing-in" : shot.second == 6000L ? "breathing-hold" : "breathing-out");
+            }
+            breath.stop();
         }
 
         Store &store = Store::get();
@@ -649,6 +686,7 @@ int run_app(const std::string &shots_dir, bool keydump) {
     static App app;
     app.chat.create(screen);
     app.menu.create(screen);
+    app.breath.create(screen);
     if (shots) return app.render_shots(shots_dir);
 
     signal(SIGINT, on_signal);

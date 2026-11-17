@@ -16,6 +16,7 @@
 #include "core/tether.h"
 #include "net/http.h"
 #include "platform/audio.h"
+#include "core/breath.h"
 #include "smarthome/home.h"
 #include "platform/camera.h"
 #include "platform/display.h"
@@ -729,6 +730,19 @@ std::string t_music(const json &a, Context &ctx) {
 }
 
 // ---------------------------------------------------------------- TV remote
+// ---------------------------------------------------------------- breathing
+std::string t_breathe(const json &a, Context &ctx) {
+    const std::string wanted = util::lower(str_arg(a, "pattern"));
+    const breath::Pattern &p = breath::pattern(wanted);
+    double minutes = breath::kDefaultMinutes;
+    num_arg(a, "minutes", minutes);
+    const int m = breath::clamp_minutes(minutes);
+    if (ctx.on_breathe) ctx.on_breathe(p.id, m);
+    return json{{"started", p.title}, {"minutes", m},
+                {"note", "The exercise appears on screen as soon as you finish speaking, and the user follows the orb. "
+                         "Say one short, calm sentence and nothing more."}}.dump();
+}
+
 // ---------------------------------------------------------------- smart home
 std::string t_smart_home(const json &a, Context &) {
     const std::string action = util::lower(str_arg(a, "action")), device = str_arg(a, "device");
@@ -818,7 +832,7 @@ json E(const std::string &desc, std::vector<std::string> values) {
 // model supplies the confirmation up front in "say", and when the tool succeeds that is spoken
 // straight away instead of paying for a second model call just to say "done".
 const char *const kConfirmable[] = {"calendar_add", "calendar_update", "calendar_delete", "reminder_set", "reminder_cancel",
-                                    "memory_save", "memory_delete", "music", "tv_remote", "device", "smart_home"};
+                                    "memory_save", "memory_delete", "music", "tv_remote", "device", "smart_home", "breathe"};
 
 std::vector<Tool> build() {
     std::vector<Tool> list = {
@@ -955,6 +969,16 @@ std::vector<Tool> build() {
               {"repeat", N("How many times to press (default 1)")},
               {"brand", S("Optional TV brand: samsung, lg, sony, panasonic, philips, toshiba, vizio")}}, {"key"}),
          t_tv_remote},
+        {"breathe", "Starting a breathing exercise",
+         "Show a guided breathing exercise on the screen: an orb grows and shrinks to pace the breath. Use it when "
+         "the user says they are stressed, anxious, overwhelmed, cannot settle or sleep, or asks to meditate, "
+         "breathe or calm down. Start it straight away; do not ask which kind or for how long unless they bring it "
+         "up, and do not give advice instead.",
+         obj({{"pattern", E("box: in, hold, out, hold for four seconds each (the default). calm: slow breathing, "
+                            "in for four, out for six. sigh: two breaths in and one long breath out, good for "
+                            "winding down", {"box", "calm", "sigh"})},
+              {"minutes", N("Length in minutes, 1 to 20. Leave out for the usual five")}}),
+         t_breathe},
         {"smart_home", "Using a home device",
          "Switch one of the user's smart-home devices on this network on or off, or check whether it is on. "
          "Calling this is the only way a device gets switched. The devices that exist are listed in the device "

@@ -22,6 +22,7 @@ struct AgentEvents {   // called from worker threads
     std::function<void()> answer_discard;                      // a draft was withdrawn because the user steered
     std::function<void(const std::string &label)> tool;
     std::function<void(const std::string &jpeg_path)> image;
+    std::function<void(const std::string &pattern, int minutes)> breathe;   // show a breathing exercise once the reply is spoken
     std::function<void(const std::string &message)> error;
 };
 
