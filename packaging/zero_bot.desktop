@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Zero Bot
+Comment=Voice assistant with tools
+Exec=/usr/bin/zero_bot
+Icon=share/images/zero_bot.png
+Terminal=false

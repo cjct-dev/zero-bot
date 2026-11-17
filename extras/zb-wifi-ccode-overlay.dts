@@ -1,0 +1,17 @@
+// zb-wifi-ccode: make brcmfmac pass the regulatory country (e.g. GB) to the
+// CYW43439 Wi-Fi firmware as "<ISO code>, rev 0". Without this the driver has
+// no country mapping for this chip and the firmware stays on its default
+// country (US), which only scans 2.4 GHz channels 1-11.
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2835";
+
+	fragment@0 {
+		target-path = "/soc/mmcnr@7e300000/wifi@1";
+		__overlay__ {
+			brcm,ccode-map-trivial;
+		};
+	};
+};

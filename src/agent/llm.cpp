@@ -1,0 +1,287 @@
+#include "agent/llm.h"
+
+#include <algorithm>
+#include <unistd.h>
+
+#include "core/settings.h"
+#include "net/http.h"
+
+namespace llm {
+
+namespace {
+
+std::vector<std::string> auth_headers(bool json_body) {
+    std::vector<std::string> h = {"Authorization: Bearer " + Settings::get().eff_api_key()};
+    if (json_body) h.push_back("Content-Type: application/json");
+    return h;
+}
+
+std::string endpoint(const char *path) { return Settings::get().eff_api_base() + path; }
+
+std::string api_error(const http::Response &res) {
+    if (!res.error.empty()) return res.error;
+    const json j = json::parse(res.body, nullptr, false);
+    if (j.is_object() && j.contains("error")) {
+        const json &e = j["error"];
+        if (e.is_string()) return e.get<std::string>();
+        if (e.is_object()) return util::jget(e, "message", std::string("service error"));
+    }
+    return res.describe();
+}
+
+std::string dump(const json &j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); }
+
+}  // namespace
+
+ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt) {
+    ChatResult out;
+    if (!Settings::get().configured()) { out.error = "No AI service is configured. Open settings to add one."; return out; }
+
+    json body = {{"model", opt.model}, {"messages", messages}, {"stream", true},
+                 {"max_tokens", opt.max_tokens}, {"temperature", opt.temperature}};
+    if (tools.is_array() && !tools.empty()) {
+        body["tools"] = tools;
+        body["tool_choice"] = "auto";
+    }
+    // Reasoning models think privately before answering, which costs a second or more per
+    // call. Fast mode asks them not to. Servers that reject the field get one retry without it.
+    static std::atomic<bool> effort_rejected{false};
+    const std::string effort = !opt.effort.empty() ? opt.effort : opt.fast ? "none" : "";
+    const bool sent_effort = !effort.empty() && !effort_rejected;
+    if (sent_effort) body["reasoning_effort"] = effort;
+
+    // With reasoning switched off, some models still leak their thinking markers into the
+    // answer: a "<think>...</think>" block, or the answer, a stray "</think>", then the answer
+    // again. Neither may reach the speaker, so text is passed on only once it is known to be
+    // clear of a marker.
+    std::string held;
+    bool thinking = false, answer_over = false;
+    auto emit = [&](const std::string &text) {
+        if (text.empty()) return;
+        out.content += text;
+        if (opt.on_text) opt.on_text(text);
+    };
+    auto filter_text = [&](const std::string &piece, bool final) {
+        static const std::string open = "<think>", close = "</think>";
+        if (answer_over) return;
+        held += piece;
+        for (;;) {
+            const size_t c = held.find(close);
+            if (thinking) {
+                if (c == std::string::npos) { if (held.size() > close.size()) held.erase(0, held.size() - close.size()); break; }
+                held.erase(0, c + close.size());
+                thinking = false;
+                continue;
+            }
+            const size_t o = held.find(open);
+            if (c != std::string::npos && (o == std::string::npos || c < o)) {
+                emit(held.substr(0, c));
+                held.clear();
+                answer_over = true;
+                break;
+            }
+            if (o != std::string::npos) {
+                emit(held.substr(0, o));
+                held.erase(0, o + open.size());
+                thinking = true;
+                continue;
+            }
+            // Keep back a tail that could be the start of a marker split across chunks.
+            size_t keep = 0;
+            for (size_t n = std::min(held.size(), close.size() - 1); n > 0 && !final; --n)
+                if (close.compare(0, n, held, held.size() - n, n) == 0 || open.compare(0, n, held, held.size() - n, n) == 0) { keep = n; break; }
+            emit(held.substr(0, held.size() - keep));
+            held.erase(0, held.size() - keep);
+            break;
+        }
+        if (final && thinking) held.clear();
+    };
+
+    std::string pending;  // partial SSE line carried between network chunks
+    auto handle_line = [&](const std::string &line) {
+        if (line.compare(0, 5, "data:") != 0) return;
+        const std::string payload = util::trim(line.substr(5));
+        if (payload.empty() || payload == "[DONE]") return;
+        const json ev = json::parse(payload, nullptr, false);
+        if (!ev.is_object()) return;
+        if (ev.contains("error")) {
+            const json &e = ev["error"];
+            out.error = e.is_string() ? e.get<std::string>() : util::jget(e, "message", std::string("service error"));
+            return;
+        }
+        if (!ev.contains("choices") || !ev["choices"].is_array() || ev["choices"].empty()) return;
+        const json &choice = ev["choices"][0];
+        if (!choice.contains("delta") || !choice["delta"].is_object()) return;
+        const json &delta = choice["delta"];
+        if (delta.contains("content") && delta["content"].is_string()) {
+            const std::string piece = delta["content"].get<std::string>();
+            if (!piece.empty()) filter_text(piece, false);
+        }
+        if (delta.contains("tool_calls") && delta["tool_calls"].is_array()) {
+            for (const json &tc : delta["tool_calls"]) {
+                const size_t idx = static_cast<size_t>(util::jget(tc, "index", 0));
+                if (out.tool_calls.size() <= idx) out.tool_calls.resize(idx + 1);
+                ToolCall &call = out.tool_calls[idx];
+                const std::string id = util::jget(tc, "id", std::string());
+                if (!id.empty()) call.id = id;
+                if (tc.contains("function") && tc["function"].is_object()) {
+                    const json &fn = tc["function"];
+                    const std::string name = util::jget(fn, "name", std::string());
+                    if (!name.empty()) call.name = name;
+                    if (fn.contains("arguments") && fn["arguments"].is_string())
+                        call.args += fn["arguments"].get<std::string>();
+                }
+            }
+        }
+    };
+
+    http::Request req;
+    req.method = "POST";
+    req.url = endpoint("/chat/completions");
+    req.headers = auth_headers(true);
+    req.headers.push_back("Accept: text/event-stream");
+    req.body = dump(body);
+    req.timeout_s = 180;
+    req.cancel = opt.cancel;
+    req.on_data = [&](const char *data, size_t n) {
+        pending.append(data, n);
+        size_t pos;
+        while ((pos = pending.find('\n')) != std::string::npos) {
+            std::string line = pending.substr(0, pos);
+            pending.erase(0, pos + 1);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            handle_line(line);
+        }
+    };
+    http::Response res = http::send(req);
+    if (sent_effort && res.status == 400 && out.content.empty() && out.tool_calls.empty()) {
+        effort_rejected = true;
+        body.erase("reasoning_effort");
+        req.body = dump(body);
+        pending.clear();
+        held.clear();
+        thinking = answer_over = false;
+        out = ChatResult();
+        res = http::send(req);
+    }
+    // Upstream hiccups (5xx, dropped connections) are common on mobile links. If nothing has
+    // been produced yet, try again a couple of times before giving up.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const bool transient = res.error != "cancelled" && (res.status >= 500 || res.status == 429 || res.status == 0 ||
+                                                            (!res.error.empty() && res.error != "timed out"));
+        if (res.ok() && out.error.empty()) break;
+        if (!transient || !out.content.empty() || !out.tool_calls.empty()) break;
+        if (opt.cancel && opt.cancel->load()) break;
+        usleep((attempt + 1) * 400 * 1000);
+        pending.clear();
+        held.clear();
+        thinking = answer_over = false;
+        out = ChatResult();
+        res = http::send(req);
+    }
+    if (!pending.empty()) handle_line(pending);
+    filter_text("", true);
+
+    if (res.error == "cancelled") { out.cancelled = true; return out; }
+    if (!res.ok() && out.error.empty()) out.error = api_error(res);
+    // Drop empty slots and give every call an id (some servers omit them).
+    std::vector<ToolCall> calls;
+    for (auto &c : out.tool_calls) {
+        if (c.name.empty()) continue;
+        if (c.id.empty()) c.id = "call_" + std::to_string(calls.size());
+        if (util::trim(c.args).empty()) c.args = "{}";
+        calls.push_back(c);
+    }
+    out.tool_calls.swap(calls);
+    return out;
+}
+
+std::string transcribe(const std::string &wav, std::string &err, std::atomic<bool> *cancel) {
+    const Settings &s = Settings::get();
+    if (!s.configured()) { err = "No AI service is configured."; return ""; }
+    if (s.stt_model.empty()) { err = "No speech-to-text model is selected in settings."; return ""; }
+    http::Request req;
+    req.method = "POST";
+    req.url = endpoint("/audio/transcriptions");
+    req.headers = auth_headers(false);
+    req.multipart = {{"model", "", "", s.stt_model},
+                     {"response_format", "", "", "json"},
+                     {"file", "speech.wav", "audio/wav", wav}};
+    req.timeout_s = 60;
+    req.cancel = cancel;
+    const http::Response res = http::send(req);
+    if (!res.ok()) { err = api_error(res); return ""; }
+    const json j = json::parse(res.body, nullptr, false);
+    if (!j.is_object()) { err = "unexpected reply from the speech service"; return ""; }
+    return util::trim(util::jget(j, "text", std::string()));
+}
+
+bool synthesize(const std::string &text, std::string &pcm, std::string &err, std::atomic<bool> *cancel) {
+    const Settings &s = Settings::get();
+    if (!s.configured()) { err = "No AI service is configured."; return false; }
+    if (s.tts_model.empty()) { err = "No text-to-speech model is selected in settings."; return false; }
+    http::Request req;
+    req.method = "POST";
+    req.url = endpoint("/audio/speech");
+    req.headers = auth_headers(true);
+    req.body = dump({{"model", s.tts_model}, {"input", text}, {"voice", s.tts_voice.empty() ? "alloy" : s.tts_voice},
+                     {"response_format", "pcm"}});
+    req.timeout_s = 60;
+    req.cancel = cancel;
+    const http::Response res = http::send(req);
+    if (!res.ok()) { err = api_error(res); return false; }
+    pcm = res.body;
+    // Some servers answer with a WAV container even when PCM was requested.
+    if (pcm.size() > 44 && pcm.compare(0, 4, "RIFF") == 0) {
+        const size_t data = pcm.find("data", 12);
+        pcm.erase(0, data == std::string::npos ? 44 : data + 8);
+    }
+    return true;
+}
+
+std::string describe_image(const std::string &jpeg, const std::string &question, std::string &err,
+                           std::atomic<bool> *cancel) {
+    const json messages = json::array({
+        {{"role", "system"},
+         {"content", "You are the eyes of a pocket voice assistant. Answer the question about the photo accurately "
+                     "and briefly, in plain text. Transcribe any visible text exactly when it matters. If the photo "
+                     "is too dark, blurred or does not show what is asked, say so."}},
+        {{"role", "user"},
+         {"content", json::array({{{"type", "text"}, {"text", question}},
+                                  {{"type", "image_url"},
+                                   {"image_url", {{"url", "data:image/jpeg;base64," + util::base64(jpeg)}}}}})}},
+    });
+    ChatOptions opt;
+    opt.model = Settings::get().eff_vision_model();
+    opt.max_tokens = 900;
+    opt.temperature = 0.2;
+    opt.fast = Settings::get().fast_mode;  // reading a sign or a menu needs eyes, not deliberation
+    opt.cancel = cancel;
+    const ChatResult res = chat(messages, json::array(), opt);
+    if (!res.error.empty()) { err = res.error; return ""; }
+    if (res.cancelled) { err = "cancelled"; return ""; }
+    return util::trim(res.content);
+}
+
+std::vector<ModelInfo> list_models(std::string &err) {
+    std::vector<ModelInfo> out;
+    if (!Settings::get().configured()) { err = "No AI service is configured."; return out; }
+    http::Request req;
+    req.url = endpoint("/models");
+    req.headers = auth_headers(false);
+    req.timeout_s = 20;
+    const http::Response res = http::send(req);
+    if (!res.ok()) { err = api_error(res); return out; }
+    const json j = json::parse(res.body, nullptr, false);
+    const json &data = j.is_object() && j.contains("data") ? j["data"] : j;
+    if (!data.is_array()) { err = "unexpected model list"; return out; }
+    for (const json &m : data) {
+        ModelInfo info;
+        info.id = util::jget(m, "id", std::string());
+        info.mode = util::jget(m, "mode", std::string());
+        if (!info.id.empty()) out.push_back(info);
+    }
+    return out;
+}
+
+}  // namespace llm

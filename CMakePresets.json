@@ -1,0 +1,32 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "sim",
+      "displayName": "Desktop simulator",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/sim",
+      "cacheVariables": { "ZB_DESKTOP": "ON", "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "cli",
+      "displayName": "Command-line agent only (no screen code)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/cli",
+      "cacheVariables": { "ZB_CLI_ONLY": "ON", "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "cp0",
+      "displayName": "CardputerZero (aarch64 cross build)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/cp0",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-cp0.cmake",
+      "cacheVariables": { "ZB_DESKTOP": "OFF", "CMAKE_BUILD_TYPE": "Release" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "sim", "configurePreset": "sim" },
+    { "name": "cli", "configurePreset": "cli" },
+    { "name": "cp0", "configurePreset": "cp0" }
+  ]
+}

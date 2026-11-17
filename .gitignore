@@ -1,0 +1,19 @@
+# Build output and downloaded toolchains
+/build/
+/dist/
+/.cache/
+/.tools/
+
+# Local settings and anything that could hold credentials
+.env
+*.env
+env.sh
+settings.json
+*.local.*
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+compile_commands.json
