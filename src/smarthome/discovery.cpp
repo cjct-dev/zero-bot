@@ -122,7 +122,10 @@ struct Seen {
     std::map<std::string, std::string> from;                         // instance -> address the answer came from
     std::map<std::string, json> tapo;                                // address -> discovery result
     std::map<std::string, std::map<std::string, std::string>> ssdp;  // address -> headers
+    std::map<std::string, std::map<std::string, std::string>> dial;  // address -> headers of its DIAL answer
 };
+
+const char kDialService[] = "urn:dial-multiscreen-org:service:dial:1";
 
 void parse_mdns(const unsigned char *buf, size_t len, const std::string &src, Seen &seen) {
     if (len < 12 || len > kMaxPacket) return;
@@ -181,7 +184,7 @@ void parse_tapo(const unsigned char *buf, size_t len, const std::string &src, Se
 }
 
 void parse_ssdp(const char *buf, size_t len, const std::string &src, Seen &seen) {
-    if (len > kMaxPacket || seen.ssdp.count(src)) return;
+    if (len > kMaxPacket) return;
     std::istringstream lines(std::string(buf, len));
     std::map<std::string, std::string> h;
     for (std::string line; std::getline(lines, line) && h.size() < 30;) {
@@ -189,7 +192,16 @@ void parse_ssdp(const char *buf, size_t len, const std::string &src, Seen &seen)
         if (colon == std::string::npos) continue;
         h[util::lower(util::trim(line.substr(0, colon)))] = clean(line.substr(colon + 1), 160);
     }
-    if (!h.empty()) seen.ssdp[src] = h;
+    if (h.empty()) return;
+    // An answer to the DIAL search is kept apart: a TV usually answers ssdp:all first, and only the
+    // DIAL answer carries its wake-up address.
+    const auto st = h.find("st"), usn = h.find("usn");
+    const std::string tail = std::string("::") + kDialService;
+    const bool dial = (st != h.end() && util::lower(st->second) == kDialService) ||
+                      (usn != h.end() && usn->second.size() >= tail.size() &&
+                       util::lower(usn->second.substr(usn->second.size() - tail.size())) == tail);
+    auto &into = dial ? seen.dial : seen.ssdp;
+    if (!into.count(src)) into[src] = h;
 }
 
 // ---------------------------------------------------------------- sockets
@@ -274,6 +286,14 @@ std::vector<Device> merge(const Seen &seen) {
         if (txt.count("md")) d.model = clean(txt["md"]);
         for (const char *key : {"id", "sf", "ci", "bridgeid", "modelid", "ve"})
             if (txt.count(key)) d.info[key] = txt[key];
+        if (kind == "fire_tv") {
+            // The SRV port is Amazon's own discovery service, not the remote-control API the driver
+            // uses (it knows that port), so it is not kept as the device's port. "c" is the TV's
+            // wake-up address on newer Fire OS, "n" the name its owner gave it.
+            d.port = 0;
+            for (const char *key : {"c", "n"})
+                if (txt.count(key)) d.info[key] = txt[key];
+        }
         if (txt.count("bridgeid")) d.id = "hue:" + util::lower(txt["bridgeid"]);
         else if (txt.count("id")) d.id = kind + ":" + util::lower(txt["id"]);
     }
@@ -316,6 +336,16 @@ std::vector<Device> merge(const Seen &seen) {
         if (!get("hue-bridgeid").empty()) { d.id = "hue:" + util::lower(get("hue-bridgeid")); d.info["bridgeid"] = util::lower(get("hue-bridgeid")); }
     }
 
+    // Many televisions answer the DIAL search, so it never decides what a device is; it only adds
+    // the wake-up address to a Fire TV that announced itself over mDNS from the same address.
+    for (const auto &s : seen.dial) {
+        const auto it = by_ip.find(s.first);
+        if (it == by_ip.end() || it->second.kind != "fire_tv") continue;
+        Device &d = it->second;
+        if (const auto w = s.second.find("wakeup"); w != s.second.end() && !w->second.empty()) d.info["wakeup"] = w->second;
+        if (std::find(d.found_by.begin(), d.found_by.end(), "ssdp") == d.found_by.end()) d.found_by.push_back("ssdp");
+    }
+
     std::vector<Device> out;
     for (auto &entry : by_ip) {
         Device &d = entry.second;
@@ -324,7 +354,7 @@ std::vector<Device> merge(const Seen &seen) {
             if (const auto it = friendly.find(d.ip); it != friendly.end()) {
                 if (!it->second.first.empty()) d.name = it->second.first;
                 if (d.model.empty()) d.model = it->second.second;
-            } else if (d.kind == "fire_tv") d.name = "Fire TV";
+            } else if (d.kind == "fire_tv") d.name = d.info.count("n") && !d.info["n"].empty() ? d.info["n"] : "Fire TV";
         }
         if (d.mac.empty()) d.mac = mac_of(d.ip);
         if (d.id.empty()) d.id = d.kind + ":" + (d.mac.empty() ? d.ip : d.mac);
@@ -338,6 +368,17 @@ std::vector<Device> merge(const Seen &seen) {
 }
 
 }  // namespace
+
+std::vector<Device> devices_from(const std::vector<Packet> &packets) {
+    Seen seen;
+    for (const auto &p : packets) {
+        const auto *bytes = reinterpret_cast<const unsigned char *>(p.bytes.data());
+        if (p.proto == "mdns") parse_mdns(bytes, p.bytes.size(), p.src, seen);
+        else if (p.proto == "ssdp") parse_ssdp(p.bytes.data(), p.bytes.size(), p.src, seen);
+        else if (p.proto == "tapo") parse_tapo(bytes, p.bytes.size(), p.src, seen);
+    }
+    return merge(seen);
+}
 
 std::string mac_of(const std::string &ip) {
     std::ifstream arp("/proc/net/arp");
@@ -496,6 +537,9 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
 
     const std::string q_group = mdns_query(false), q_direct = mdns_query(true);
     const std::string search = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: ssdp:all\r\n\r\n";
+    // The search a Fire TV's own phone app makes: its answer can carry the TV's wake-up address.
+    const std::string dial_search = std::string("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\n"
+                                                "MX: 1\r\nST: ") + kDialService + "\r\n\r\n";
     auto ask_mdns = [&] {
         send_to(m_group, q_group.data(), q_group.size(), "224.0.0.251", 5353);
         send_to(m_direct, q_direct.data(), q_direct.size(), "224.0.0.251", 5353);
@@ -505,7 +549,10 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
         send_to(tapo, kTapoQuery, sizeof(kTapoQuery), "255.255.255.255", 20002);
         send_to(tapo, kTapoQuery, sizeof(kTapoQuery), net.broadcast.c_str(), 20002);
     };
-    auto ask_ssdp = [&] { send_to(ssdp, search.data(), search.size(), "239.255.255.250", 1900); };
+    auto ask_ssdp = [&] {
+        send_to(ssdp, search.data(), search.size(), "239.255.255.250", 1900);
+        send_to(ssdp, dial_search.data(), dial_search.size(), "239.255.255.250", 1900);
+    };
     struct Step { int at_ms; std::function<void()> run; bool done; };
     std::vector<Step> steps = {{0, ask_mdns, false},    {0, ask_tapo, false},    {0, ask_ssdp, false},
                                {1000, ask_mdns, false}, {1000, ask_tapo, false}, {1500, ask_ssdp, false},

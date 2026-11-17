@@ -844,6 +844,17 @@ void test_commands() {
     CHECK_MSG(r == R"({"now":"on","target":"Movie night"})", r);
     r = run({{"action", "pause"}, {"target", "Kitchen speaker"}});
     CHECK_MSG(r == R"({"now":{"playback":"pause"},"target":"Kitchen speaker"})", r);
+    // What is playing is recorded only where the driver reports it: a TV whose play and pause are
+    // one toggle key gets no "playing" in its saved state from a play or a pause.
+    r = run({{"action", "play"}, {"target", "Living room TV"}});
+    CHECK_MSG(!starts(r, "ERROR"), r);
+    {
+        const home::NetworkEntry now = home::entry(g_net.id());
+        const home::Thing *sp = find_thing(now, "fake:speaker", "sp"), *tv = find_thing(now, "fake:tv", "tv");
+        CHECK(sp && sp->state.value("playing", std::string()) == "paused");
+        CHECK(tv && !tv->state.contains("playing"));
+    }
+    g_clock += 60000;   // the commands above count towards the limit of 12 a minute
     r = run({{"action", "set"}, {"target", "Living room TV"}, {"source", "Netflix"}});
     CHECK(g_fake->log.back() == R"(apply fake:tv/tv {"source":"Netflix"})");
     // A room means its lights; things of other kinds in it are left alone.
@@ -1788,6 +1799,85 @@ void test_link_kinds() {
         CHECK_MSG(kind(other) == discovery::Link::Other && has(why, other), std::string(other) + ": " + why);
 }
 
+// ---------------------------------------------------------------- discovery
+std::string dns_name(const std::string &name) {
+    std::string out;
+    size_t from = 0;
+    for (size_t dot; (dot = name.find('.', from)) != std::string::npos || from < name.size(); from = dot + 1) {
+        if (dot == std::string::npos) dot = name.size();
+        out += static_cast<char>(dot - from);
+        out += name.substr(from, dot - from);
+    }
+    return out + '\0';
+}
+
+std::string dns_record(const std::string &name, int type, const std::string &data) {
+    std::string r = dns_name(name);
+    r += static_cast<char>(type >> 8); r += static_cast<char>(type & 255);
+    r += '\0'; r += '\x01';                       // class IN
+    r += std::string(4, '\0');                     // time to live
+    r += static_cast<char>(data.size() >> 8); r += static_cast<char>(data.size() & 255);
+    return r + data;
+}
+
+// One mDNS answer announcing a Fire TV: the service, its host and port, its TXT keys and address.
+std::string fire_tv_answer(const std::string &instance, const std::string &host, const std::string &ip_bytes,
+                           const std::vector<std::string> &txt) {
+    const std::string type = "_amzn-wplay._tcp.local", full = instance + "." + type;
+    std::string srv = std::string("\0\0\0\0\xC0\xA5", 6) + dns_name(host);   // priority, weight, port 49317
+    std::string kv;
+    for (const auto &t : txt) { kv += static_cast<char>(t.size()); kv += t; }
+    std::vector<std::string> rr = {dns_record(type, 12, dns_name(full)), dns_record(full, 33, srv), dns_record(full, 16, kv),
+                                   dns_record(host, 1, ip_bytes)};
+    std::string pkt(12, '\0');
+    pkt[2] = '\x84';
+    pkt[7] = static_cast<char>(rr.size());
+    for (const auto &r : rr) pkt += r;
+    return pkt;
+}
+
+void test_discovery() {
+    Section s("discovery: a Fire TV's wake-up address from mDNS and the DIAL answer; other TVs' DIAL answers add nothing");
+    const std::string dial_st = "urn:dial-multiscreen-org:service:dial:1";
+    const std::string generic = "HTTP/1.1 200 OK\r\nST: upnp:rootdevice\r\nSERVER: Linux/2.6 UPnP/1.1 quick_ssdp/1.1\r\n\r\n";
+    auto dial = [&](const std::string &ip, const std::string &wakeup, bool by_usn) {
+        return "HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=1800\r\n" +
+               (by_usn ? "ST: upnp:rootdevice\r\nUSN: uuid:0000::" + dial_st : "ST: " + dial_st + "\r\nUSN: uuid:0000") +
+               "\r\nLOCATION: http://" + ip + ":60000/dd.xml\r\n" + (wakeup.empty() ? "" : "WAKEUP: " + wakeup + "\r\n") + "\r\n";
+    };
+    const std::vector<discovery::Packet> heard = {
+        {"mdns", "192.0.2.10", fire_tv_answer("AFTKA0000001", "fire1.local", std::string("\xC0\x00\x02\x0A", 4),
+                                              {"c=00:00:5e:00:53:04", "n=Living Room Fire TV", "u=0000-0001"})},
+        {"ssdp", "192.0.2.10", generic},                                     // its answer to ssdp:all comes first
+        {"ssdp", "192.0.2.10", dial("192.0.2.10", "MAC=00:00:5e:00:53:01;Timeout=20", false)},
+        {"mdns", "192.0.2.30", fire_tv_answer("AFTKA0000002", "fire2.local", std::string("\xC0\x00\x02\x1E", 4), {"u=0000-0002"})},
+        {"ssdp", "192.0.2.40", generic},                                     // a Fire TV found by the DIAL USN
+        {"mdns", "192.0.2.40", fire_tv_answer("AFTKA0000003", "fire3.local", std::string("\xC0\x00\x02\x28", 4), {})},
+        {"ssdp", "192.0.2.40", dial("192.0.2.40", "MAC=00:00:5e:00:53:05;Timeout=10", true)},
+        {"ssdp", "192.0.2.20", dial("192.0.2.20", "MAC=00:00:5e:00:53:02;Timeout=20", false)},   // another make of TV
+    };
+    const auto found = discovery::devices_from(heard);
+    auto at = [&](const std::string &ip) -> const discovery::Device * {
+        for (const auto &d : found) if (d.ip == ip) return &d;
+        return nullptr;
+    };
+    auto info = [](const discovery::Device *d, const char *key) {
+        const auto it = d->info.find(key);
+        return it == d->info.end() ? std::string() : it->second;
+    };
+    const auto *one = at("192.0.2.10"), *two = at("192.0.2.30"), *three = at("192.0.2.40"), *other = at("192.0.2.20");
+    CHECK(one && one->kind == "fire_tv" && one->name == "Living Room Fire TV");
+    CHECK_MSG(one && one->port == 0, "the SRV port is Amazon's discovery service, not the API");
+    CHECK(one && info(one, "c") == "00:00:5e:00:53:04");
+    CHECK(one && info(one, "wakeup") == "MAC=00:00:5e:00:53:01;Timeout=20");
+    CHECK(one && std::find(one->found_by.begin(), one->found_by.end(), "ssdp") != one->found_by.end());
+    CHECK(two && two->kind == "fire_tv" && two->name == "Fire TV" && two->port == 0);
+    CHECK(two && info(two, "c").empty() && info(two, "wakeup").empty());
+    CHECK(three && three->kind == "fire_tv" && info(three, "wakeup") == "MAC=00:00:5e:00:53:05;Timeout=10");
+    CHECK_MSG(!other || other->kind != "fire_tv", "a DIAL answer alone never makes a Fire TV");
+    CHECK(!other || info(other, "wakeup").empty());
+}
+
 // ---------------------------------------------------------------- names and colours
 void test_names_and_colours() {
     Section s("names and colours");
@@ -1921,6 +2011,7 @@ int main(int argc, char **argv) {
     test_stand_in();
     test_network_gate();
     test_link_kinds();
+    test_discovery();
     test_names_and_colours();
 
     const std::string rm = "rm -rf '" + dir + "'";

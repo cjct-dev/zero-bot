@@ -61,6 +61,12 @@ struct Options {
 // query, which tells a local firewall apart from a network that isolates its clients.
 bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *heard_self = nullptr);
 
+// What scan() would report had it heard these datagrams (proto "mdns", "ssdp" or "tapo"), for tests.
+struct Packet {
+    std::string proto, src, bytes;
+};
+std::vector<Device> devices_from(const std::vector<Packet> &packets);
+
 // The hardware address the system has recorded for an IP it has exchanged packets with.
 std::string mac_of(const std::string &ip);
 

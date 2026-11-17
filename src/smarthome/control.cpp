@@ -295,7 +295,9 @@ void apply_to_state(const Change &c, Thing &t) {
     if (t.type == "scene") return;   // a scene is an event, not a state
     json j = change_json(c);
     if (j.contains("transport")) {
-        const std::string tr = j["transport"];
+        // Recorded only for a thing whose driver reports what is playing: on a TV whose play and
+        // pause are one toggle key (a Fire TV), "play" says nothing about what happens.
+        const std::string tr = t.state.contains("playing") ? j["transport"].get<std::string>() : "";
         if (tr == "play") t.state["playing"] = "playing";
         else if (tr == "pause") t.state["playing"] = "paused";
         else if (tr == "stop") t.state["playing"] = "stopped";
