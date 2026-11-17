@@ -1,11 +1,13 @@
 #include "core/util.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <mutex>
+#include <regex>
 #include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -213,7 +215,7 @@ bool parse_local(const std::string &text, time_t &out) {
     for (char &c : t)
         if (c == 'T') c = ' ';
     const int n = sscanf(t.c_str(), "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &s);
-    if (n < 3 || y < 1970 || mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+    if (n < 3 || y < 1900 || mo < 1 || mo > 12 || d < 1 || d > 31) return false;
     if (n < 5) { h = n == 4 ? h : 0; mi = 0; }
     if (n < 6) s = 0;
     std::lock_guard<std::mutex> lk(g_tz_mtx);
@@ -225,12 +227,153 @@ bool parse_local(const std::string &text, time_t &out) {
     return out != static_cast<time_t>(-1);
 }
 
-std::string friendly_when(time_t t) {
+LocalTime local_fields(time_t t) {
+    LocalTime f;
+    sscanf(format_time(t, "%Y %m %d %H %M").c_str(), "%d %d %d %d %d", &f.year, &f.month, &f.day, &f.hour, &f.minute);
+    return f;
+}
+
+time_t make_local(int year, int month, int day, int hour, int minute) {
+    std::lock_guard<std::mutex> lk(g_tz_mtx);
+    struct tm tmv;
+    memset(&tmv, 0, sizeof(tmv));
+    tmv.tm_year = year - 1900; tmv.tm_mon = month - 1; tmv.tm_mday = day;
+    tmv.tm_hour = hour; tmv.tm_min = minute; tmv.tm_isdst = -1;
+    return mktime(&tmv);
+}
+
+int days_in_month(int year, int month) {
+    static const int kDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month == 2 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) return 29;
+    return kDays[(month - 1) % 12];
+}
+
+// A two-digit year more than twenty years ahead is far likelier a birth year than a plan.
+int pivot_year(int two_digits) {
+    const int this_year = atoi(format_time(time(nullptr), "%Y").c_str());
+    const int y = 2000 + two_digits;
+    return y > this_year + 20 ? y - 100 : y;
+}
+
+static std::atomic<bool> g_month_first{false};
+void set_month_first(bool month_first) { g_month_first = month_first; }
+bool month_first() { return g_month_first; }
+
+std::string short_date(time_t t) { return format_time(t, month_first() ? "%a %b %-d %H:%M" : "%a %-d %b %H:%M"); }
+std::string short_day(time_t t) { return format_time(t, month_first() ? "%a %b %-d %Y" : "%a %-d %b %Y"); }
+std::string typed_day(time_t t) { return format_time(t, month_first() ? "%m/%d/%Y" : "%d/%m/%Y"); }
+std::string typed_date(time_t t) { return format_time(t, month_first() ? "%m/%d/%Y %H:%M" : "%d/%m/%Y %H:%M"); }
+const char *typed_date_hint() {
+    return month_first() ? "Month/day/year hour:minute, 24-hour clock" : "Day/month/year hour:minute, 24-hour clock";
+}
+
+bool parse_typed(const std::string &text, time_t &out) {
+    std::string t = trim(text);
+    for (char &c : t)
+        if (c == 'T' || c == ',') c = ' ';
+    int a = 0, b = 0, y = 0, h = 0, mi = 0, used = 0;
+    char s1 = 0, s2 = 0;
+    // A leading four-digit year is the unambiguous form whatever the setting.
+    if (sscanf(t.c_str(), "%d%c", &a, &s1) == 2 && a >= 1900 && s1 == '-') return parse_local(t, out);
+    auto is_sep = [](char c) { return c == '/' || c == '.' || c == '-'; };
+    bool has_year = false;
+    if (sscanf(t.c_str(), "%d%c%d%c%d%n", &a, &s1, &b, &s2, &y, &used) == 5 && is_sep(s1) && s2 == s1) {
+        has_year = true;
+        if (y < 100) y = pivot_year(y);
+    } else if (sscanf(t.c_str(), "%d%c%d%n", &a, &s1, &b, &used) == 3 && is_sep(s1)) {
+        y = 0;
+    } else {
+        return false;
+    }
+    const std::string rest = trim(t.substr(static_cast<size_t>(used)));
+    if (!rest.empty()) {
+        char colon = 0;
+        const int n = sscanf(rest.c_str(), "%d%c%d", &h, &colon, &mi);
+        if (n == 1) mi = 0;
+        else if (n != 3 || (colon != ':' && colon != '.')) return false;
+        if (h < 0 || h > 23 || mi < 0 || mi > 59) return false;
+    }
+    const int d = month_first() ? b : a, mo = month_first() ? a : b;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+    char iso[40];
+    if (!has_year) {
+        // No year given: the next time that date comes round.
+        const int this_year = atoi(format_time(time(nullptr), "%Y").c_str());
+        const std::string today = format_time(time(nullptr), "%m-%d");
+        snprintf(iso, sizeof(iso), "%02d-%02d", mo, d);
+        y = iso < today ? this_year + 1 : this_year;
+    }
+    if (y < 1900) return false;
+    snprintf(iso, sizeof(iso), "%04d-%02d-%02d %02d:%02d", y, mo, d, h, mi);
+    if (!parse_local(iso, out)) return false;
+    return format_time(out, "%d") == (d < 10 ? "0" : "") + std::to_string(d);   // rejects 31/02
+}
+
+std::string spell_numeric_dates(const std::string &text) {
+    // day/month or month/day, optionally with a year; "." and "-" only count in the three-part form,
+    // where they cannot be a decimal or a range.
+    static const std::regex pattern(R"((\d{1,2})([/.\-])(\d{1,2})(?:\2(\d{4}|\d{2}))?(?![0-9])(?![/.\-][0-9]))");
+    static const char *const kCues[] = {"on", "for", "from", "until", "till", "by", "since", "before", "after", "date",
+                                        "dated", "starting", "ending", "through", "to", "el", "le", "am", "il", "em"};
+    // A message that is plainly about a date makes any day/month pair in it one.
+    bool about_dates = false;
+    {
+        const std::string low = lower(text);
+        for (const char *word : {"birthday", "anniversary", "born", "calendar", "appointment", "remind", "meeting", "flight"})
+            about_dates = about_dates || low.find(word) != std::string::npos;
+    }
+    std::string out;
+    size_t copied = 0;
+    for (std::sregex_iterator it(text.begin(), text.end(), pattern), end; it != end; ++it) {
+        const std::smatch &m = *it;
+        const size_t at = static_cast<size_t>(m.position(0)), after = at + static_cast<size_t>(m.length(0));
+        if (at > 0 && (isalnum(static_cast<unsigned char>(text[at - 1])) || strchr("/.-", text[at - 1]))) continue;
+        const bool has_year = m[4].matched;
+        if (!has_year) {
+            if (m[2].str() != "/") continue;
+            // Two numbers and a slash is as likely a fraction; take it as a date only where one is expected.
+            size_t w_end = at;
+            while (w_end > 0 && text[w_end - 1] == ' ') --w_end;
+            size_t w_start = w_end;
+            while (w_start > 0 && isalpha(static_cast<unsigned char>(text[w_start - 1]))) --w_start;
+            const std::string before = lower(text.substr(w_start, w_end - w_start));
+            bool cued = about_dates;
+            for (const char *cue : kCues) cued = cued || before == cue;
+            const std::string rest = lower(text.substr(after, 4));
+            cued = cued || rest == " at " || rest == " at";
+            cued = cued || (copied > 0 && (before == "and" || before == "or"));   // "on 3/4 and 5/4"
+            if (!cued) continue;
+        }
+        const int a = atoi(m[1].str().c_str()), b = atoi(m[3].str().c_str());
+        int d = month_first() ? b : a, mo = month_first() ? a : b;
+        if (mo > 12 && d <= 12) std::swap(d, mo);   // only one reading is a real date
+        if (mo < 1 || mo > 12 || d < 1 || d > 31) continue;
+        int y = has_year ? atoi(m[4].str().c_str()) : 0;
+        if (has_year && y < 100) y = pivot_year(y);
+        char iso[40];
+        if (!has_year) {
+            snprintf(iso, sizeof(iso), "%02d-%02d", mo, d);
+            const int this_year = atoi(format_time(time(nullptr), "%Y").c_str());
+            y = iso < format_time(time(nullptr), "%m-%d") ? this_year + 1 : this_year;
+        }
+        time_t when = 0;
+        snprintf(iso, sizeof(iso), "%04d-%02d-%02d 12:00", y, mo, d);
+        if (y < 1900 || !parse_local(iso, when) || atoi(format_time(when, "%d").c_str()) != d) continue;
+        out += text.substr(copied, after - copied);
+        out += " (" + format_time(when, month_first() ? "%A, %B %-d, %Y" : "%A %-d %B %Y") + ")";
+        copied = after;
+    }
+    return copied == 0 ? text : out + text.substr(copied);
+}
+
+std::string friendly_day(time_t t) {
     const time_t now = time(nullptr);
     const std::string day = format_time(t, "%Y-%m-%d");
-    if (day == format_time(now, "%Y-%m-%d")) return "Today " + format_time(t, "%H:%M");
-    if (day == format_time(now + 86400, "%Y-%m-%d")) return "Tomorrow " + format_time(t, "%H:%M");
-    return format_time(t, "%a %d %b %H:%M");
+    if (day == format_time(now, "%Y-%m-%d")) return "Today";
+    if (day == format_time(now + 86400, "%Y-%m-%d")) return "Tomorrow";
+    return format_time(t, month_first() ? "%a %b %-d" : "%a %-d %b");
 }
+
+std::string friendly_when(time_t t) { return friendly_day(t) + " " + format_time(t, "%H:%M"); }
 
 }  // namespace util

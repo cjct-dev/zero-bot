@@ -8,7 +8,7 @@
 
 namespace camera {
 
-std::string capture(const std::string &jpeg_path, int width, int height) {
+std::string capture(const std::string &jpeg_path, int width, int height, bool upside_down) {
     // ZB_FAKE_CAMERA=<file.jpg> lets the simulator and tests supply a picture.
     if (const char *fake = getenv("ZB_FAKE_CAMERA"); fake && *fake) {
         std::string data;
@@ -16,8 +16,9 @@ std::string capture(const std::string &jpeg_path, int width, int height) {
         return util::write_file_atomic(jpeg_path, data) ? "" : "could not save the photo";
     }
     if (!proc::have("rpicam-jpeg")) return "this device has no camera";
+    // The CardputerZero's sensor is mounted the other way up from how the device is held.
     const auto res = proc::run({"rpicam-jpeg", "-n", "-t", "700", "--width", std::to_string(width), "--height",
-                                std::to_string(height), "-q", "82", "-o", jpeg_path},
+                                std::to_string(height), "--rotation", upside_down ? "180" : "0", "-q", "82", "-o", jpeg_path},
                                "", 15000, 4096, true);
     struct stat st;
     if (res.timed_out) return "the camera did not respond";

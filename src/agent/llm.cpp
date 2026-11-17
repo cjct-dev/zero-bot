@@ -29,6 +29,23 @@ std::string api_error(const http::Response &res) {
         if (e.is_string()) return e.get<std::string>();
         if (e.is_object()) return util::jget(e, "message", std::string("service error"));
     }
+    // No structured error: say what the status means rather than showing a web page's markup.
+    const std::string code = "HTTP " + std::to_string(res.status);
+    if (res.status == 401 || res.status == 403) return "The service refused the API key (" + code + ").";
+    if (res.status == 404) return "Nothing answers at that address (" + code + "). Check it ends in /v1.";
+    if (res.status == 429) return "The service is busy or over its limit (" + code + "). Try again shortly.";
+    if (res.status >= 500) {
+        // Services behind a proxy report their own outage with a short code in the page.
+        std::string detail = code;
+        const size_t at = res.body.find("error code: ");
+        if (at != std::string::npos) {
+            const std::string digits = res.body.substr(at + 12, 4);
+            if (digits.find_first_not_of("0123456789") == std::string::npos) detail += ", code " + digits;
+        }
+        return "The AI service is down or unreachable (" + detail + "). This is on the service's side; try again later.";
+    }
+    const size_t first = res.body.find_first_not_of(" \t\r\n");
+    if (first != std::string::npos && res.body[first] == '<') return "The service sent an unexpected reply (" + code + ").";
     return res.describe();
 }
 

@@ -49,6 +49,7 @@ public:
     void choose(const std::string &title, std::vector<std::string> options, const std::string &current,
                 std::function<void(const std::string &)> on_pick);
     void message(const std::string &title, const std::string &body);   // a page of plain text
+    void problem(const std::string &title, const std::string &text);   // wrapped text that stays until ESC
     size_t depth() const { return stack_.size(); }
     // Splits a paragraph into Text rows that fit the screen width.
     static void add_paragraph(std::vector<MenuItem> &items, const std::string &paragraph);

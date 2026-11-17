@@ -20,7 +20,10 @@ void Store::load() {
         e.id = jget(j, "id", 0); e.title = jget(j, "title", std::string());
         e.start = jget<long long>(j, "start", 0); e.end = jget<long long>(j, "end", 0);
         e.notes = jget(j, "notes", std::string()); e.remind_min = jget(j, "remind_min", -1);
-        e.alerted = jget(j, "alerted", false);
+        e.repeat = jget(j, "repeat", std::string()); e.all_day = jget(j, "all_day", false);
+        e.alerted_for = jget<long long>(j, "alerted_for", 0);
+        e.created = jget<long long>(j, "created", 0);
+        if (jget(j, "alerted", false) && !e.alerted_for) e.alerted_for = e.start;   // files from before repeats
         if (e.id > 0 && !e.title.empty()) { events_.push_back(e); max_id = std::max(max_id, e.id); }
     }
     for (auto &j : util::load_json(path_of("reminders.json"), json::array())) {
@@ -43,7 +46,9 @@ void Store::save_calendar() {
     for (auto &e : events_)
         arr.push_back({{"id", e.id}, {"title", e.title}, {"start", static_cast<long long>(e.start)},
                        {"end", static_cast<long long>(e.end)}, {"notes", e.notes},
-                       {"remind_min", e.remind_min}, {"alerted", e.alerted}});
+                       {"remind_min", e.remind_min}, {"repeat", e.repeat}, {"all_day", e.all_day},
+                       {"alerted_for", static_cast<long long>(e.alerted_for)},
+                       {"created", static_cast<long long>(e.created)}});
     util::save_json(path_of("calendar.json"), arr);
 }
 
@@ -69,17 +74,71 @@ std::vector<CalEvent> Store::events() {
     return out;
 }
 
+time_t next_occurrence(const CalEvent &e, time_t from) {
+    if (e.start >= from) return e.start;
+    if (e.repeat.empty()) return 0;
+    const util::LocalTime s = util::local_fields(e.start), f = util::local_fields(from);
+    if (e.repeat == "daily" || e.repeat == "weekly") {
+        const int step = e.repeat == "daily" ? 1 : 7;
+        // Start a little short of the target and walk up; whole days in local time, so a clock
+        // change does not shift the hour.
+        long k = static_cast<long>((from - e.start) / (86400L * step)) - 1;
+        if (k < 0) k = 0;
+        for (int guard = 0; guard < 6; ++guard, ++k) {
+            const time_t t = util::make_local(s.year, s.month, s.day + static_cast<int>(k) * step, s.hour, s.minute);
+            if (t >= from) return t;
+        }
+        return 0;
+    }
+    if (e.repeat == "monthly") {
+        for (int m = std::max(s.year * 12 + s.month - 1, f.year * 12 + f.month - 2), guard = 0; guard < 4; ++m, ++guard) {
+            const int year = m / 12, month = m % 12 + 1;
+            const time_t t = util::make_local(year, month, std::min(s.day, util::days_in_month(year, month)), s.hour, s.minute);
+            if (t >= from) return t;
+        }
+        return 0;
+    }
+    if (e.repeat == "yearly") {
+        for (int year = std::max(s.year, f.year - 1), guard = 0; guard < 4; ++year, ++guard) {
+            const time_t t = util::make_local(year, s.month, std::min(s.day, util::days_in_month(year, s.month)), s.hour, s.minute);
+            if (t >= from) return t;
+        }
+    }
+    return 0;
+}
+
+int years_marked(const CalEvent &e, time_t occurrence) {
+    const time_t first = e.first ? e.first : e.start;
+    if (e.repeat != "yearly" || !e.created || first >= e.created - 86400) return 0;
+    return std::max(0, util::local_fields(occurrence).year - util::local_fields(first).year);
+}
+
+time_t alert_base(const CalEvent &e, time_t occurrence) { return e.all_day ? occurrence + 9 * 3600 : occurrence; }
+
 std::vector<CalEvent> Store::events_between(time_t from, time_t to) {
     std::vector<CalEvent> out;
-    for (auto &e : events())
-        if (e.start >= from && e.start < to) out.push_back(e);
+    for (auto &e : events()) {
+        // An all-day event is still "on" until its day is over.
+        time_t at = next_occurrence(e, e.all_day ? from - 86400 + 1 : from);
+        for (int n = 0; at && at < to && n < 60; ++n) {
+            CalEvent one = e;
+            one.first = e.start;
+            one.start = at;
+            if (e.end) one.end = at + (e.end - e.start);
+            out.push_back(one);
+            if (e.repeat.empty()) break;
+            at = next_occurrence(e, at + 1);
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const CalEvent &a, const CalEvent &b) { return a.start < b.start; });
     return out;
 }
 
 int Store::add_event(CalEvent ev) {
     std::lock_guard<std::mutex> lk(mtx_);
     ev.id = next_id_++;
-    ev.alerted = false;
+    ev.alerted_for = 0;
+    ev.created = time(nullptr);
     events_.push_back(ev);
     save_calendar();
     return ev.id;
@@ -89,9 +148,12 @@ bool Store::update_event(const CalEvent &ev) {
     std::lock_guard<std::mutex> lk(mtx_);
     for (auto &e : events_)
         if (e.id == ev.id) {
-            const bool moved = e.start != ev.start || e.remind_min != ev.remind_min;
+            const bool moved = e.start != ev.start || e.remind_min != ev.remind_min || e.repeat != ev.repeat ||
+                               e.all_day != ev.all_day;
+            const time_t created = e.created ? e.created : ev.created;
             e = ev;
-            if (moved) e.alerted = false;
+            e.created = created ? created : time(nullptr);
+            if (moved) e.alerted_for = 0;
             save_calendar();
             return true;
         }
@@ -193,13 +255,28 @@ std::vector<std::string> Store::take_due_alerts(time_t now) {
     std::vector<std::string> out;
     bool cal_dirty = false, rem_dirty = false;
     for (auto &e : events_) {
-        if (e.alerted || e.remind_min < 0) continue;
-        const time_t at = e.start - static_cast<time_t>(e.remind_min) * 60;
-        if (now < at) continue;
-        e.alerted = true;
+        if (e.remind_min < 0) continue;
+        // The occurrence in play: under way or coming, but not one that ended hours ago while the
+        // device was off. An all-day event stays in play for its whole day.
+        const time_t window = e.all_day ? 86400 - 1 : 6 * 3600;
+        const time_t occ = next_occurrence(e, now - window);
+        if (!occ || occ == e.alerted_for) continue;
+        if (now < alert_base(e, occ) - static_cast<time_t>(e.remind_min) * 60) continue;
+        e.alerted_for = occ;
         cal_dirty = true;
-        if (now - e.start > 6 * 3600) continue;  // long past (device was off); do not nag
-        out.push_back(e.title + (e.remind_min > 0 ? " at " + util::format_time(e.start, "%H:%M") : " now"));
+        std::string when;
+        if (e.all_day) {
+            const std::string day = util::format_time(occ, "%Y-%m-%d");
+            when = day == util::format_time(now, "%Y-%m-%d") ? " today"
+                 : day == util::format_time(now + 86400, "%Y-%m-%d") ? " tomorrow" : " on " + util::friendly_day(occ);
+        } else {
+            when = occ - now > 60 ? " at " + util::format_time(occ, "%H:%M")
+                 : now - occ < 300 ? " now" : " was at " + util::format_time(occ, "%H:%M");
+        }
+        std::string title = e.title;
+        // "Mum's birthday (67 years)" when it was entered with the birth year.
+        if (const int years = years_marked(e, occ)) title += " (" + std::to_string(years) + (years == 1 ? " year)" : " years)");
+        out.push_back(title + when);
     }
     for (auto &r : reminders_) {
         if (r.fired || now < r.due) continue;

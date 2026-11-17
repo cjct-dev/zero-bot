@@ -52,10 +52,17 @@ std::string system_prompt() {
          "such as the home city for weather.\n"
          "- Dates and times you pass to tools are local time in the form YYYY-MM-DD HH:MM. Take relative days "
          "('friday', 'tomorrow') from the list of coming days below.\n"
+         "- A date given without a year means the next time that date comes round: this year if it is still "
+         "ahead, otherwise next year. Work that out yourself and save it; do not ask or refuse because the date "
+         "is far off.\n"
          "- Some tools take 'say': the short confirmation to speak once the call has worked. Fill it in whenever "
-         "that call is all the request needs, in the user's language, so they hear the result without delay.\n"
+         "that call is all the request needs, in the user's language, so they hear the result without delay. "
+         "When it confirms something dated, it says the day (and the time, if there is one) back, so that a "
+         "mishearing is caught at once.\n"
          "- When the user tells you something lasting about themselves (an allergy, their diet, a preference, a "
          "plan, a name) or asks you to remember something, call memory_save in that same turn.\n"
+         "- Birthdays, anniversaries, appointments and plans live in the calendar. Asked when one is, or how old "
+         "someone will be, look it up with calendar_list and its search before saying you do not know.\n"
          "- A follow-up such as 'and porto' or 'make it half past eight' continues the previous request: reuse its "
          "details, and change an existing event or reminder rather than adding another.\n\n";
 
@@ -67,7 +74,8 @@ std::string system_prompt() {
          "write is spoken. Write numbers, times and units so they read naturally, rounded sensibly.\n"
          "- Reply in the language the user uses, unless they ask for a translation.\n"
          "- The speech recogniser makes mistakes, drops punctuation and confuses words that sound alike ('ate' for "
-         "'eight', 'whether' for 'weather'). Work out what was most likely meant.\n"
+         "'eight', 'whether' for 'weather'). Work out what was most likely meant and act on it straight away; "
+         "do not ask the user to confirm a word you have already worked out.\n"
          "- If the user adds something while you are still working, treat it as a correction or refinement of the "
          "same request and answer the corrected request only.\n\n";
 
@@ -78,7 +86,8 @@ std::string system_prompt() {
          "is the time now. Never repeat the brackets back.\n";
     p += "- Time zone: " + zone + ", UTC" + util::format_time(now, "%z") + "\n";
     // Spelling the coming days out removes the weekday arithmetic that goes wrong most often.
-    p += "- Coming days: today " + util::format_time(now, "%a %Y-%m-%d");
+    p += "- The next two weeks, for working out weekdays (later dates are just as usable): today " +
+         util::format_time(now, "%a %Y-%m-%d");
     {
         time_t noon = now;  // step from midday, so a clock change cannot skip or repeat a day
         util::parse_local(util::format_time(now, "%Y-%m-%d") + " 12:00", noon);
@@ -87,7 +96,15 @@ std::string system_prompt() {
     }
     p += "\n";
     if (!s.user_name.empty()) p += "- The user's name: " + s.user_name + "\n";
-    if (!s.home_city.empty()) p += "- Home city: " + s.home_city + "\n";
+    if (!s.home_city.empty())
+        p += "- Home city: " + s.home_city + (s.home_country.empty() ? "" : ", " + s.home_country) + "\n";
+    else if (!s.home_country.empty())
+        p += "- Home country: " + s.home_country + "\n";
+    p += std::string("- Date order: ") +
+         (s.month_first() ? "month first. Numbers such as 3/4 mean March 4, and you say dates as 'March 4'"
+                          : "day first. Numbers such as 3/4 mean 3 April, and you say dates as '3 April'") +
+         ", always with the month as a word. Where a numeric date in a message is followed by its meaning in "
+         "brackets, that meaning (day, month and year) is exact: use it as it stands.\n";
     p += std::string("- Units: ") + (s.units == "imperial" ? "imperial" : "metric") + "\n";
     p += "- Music library on this device: " + std::to_string(MusicLibrary::get().size()) + " tracks\n";
     p += std::string("- Web search: ") +

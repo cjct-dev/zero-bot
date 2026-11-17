@@ -2,7 +2,11 @@
 #pragma once
 #include <string>
 
-enum class Key { None, Char, Enter, Backspace, Delete, Tab, Esc, Up, Down, Left, Right, Home, End, PgUp, PgDn };
+enum class Key {
+    None, Char, Enter, Backspace, Delete, Tab, Esc, Up, Down, Left, Right, Home, End, PgUp, PgDn,
+    // The fn layer's control keys: fn+A/S/D, fn+U/I and fn+Q/W/E on the CardputerZero.
+    Mute, VolumeDown, VolumeUp, BrightnessDown, BrightnessUp, MediaPlay, MediaPrevious, MediaNext,
+};
 
 struct KeyEvent {
     Key key = Key::None;

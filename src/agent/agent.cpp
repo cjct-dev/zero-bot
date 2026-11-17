@@ -54,6 +54,19 @@ void add_note(json &messages, const std::string &note) {
 // True when a draft tells the user that something has been done. Said in a turn where no tool
 // ran, that is a false claim, and it is cheaper to catch here than to pay for the model's
 // reasoning on every call. Covers English and the commonest phrasings in a few other languages.
+// True when a draft says something is not in the calendar or reminders. Only meaningful in a
+// turn where nothing was looked up.
+bool claims_not_saved(const std::string &raw) {
+    std::string text = raw;
+    for (size_t at; (at = text.find("\xE2\x80\x99")) != std::string::npos;) text.replace(at, 3, "'");
+    static const std::regex re(
+        "\\b(don'?t|do not|doesn'?t) (have|see|know|seem to have) [^.!?]{0,60}"
+        "(birthday|anniversary|appointment|calendar|reminder|event|saved|on record|booked|scheduled)"
+        "|\\b(no|nothing|isn'?t|not) [^.!?]{0,40}\\b(in|on) your (calendar|diary|reminders)",
+        std::regex::icase | std::regex::optimize);
+    return std::regex_search(text, re);
+}
+
 bool claims_action(const std::string &raw) {
     std::string text = raw;
     for (size_t at; (at = text.find("\xE2\x80\x99")) != std::string::npos;) text.replace(at, 3, "'");  // typographic apostrophe
@@ -168,6 +181,12 @@ bool Agent::has_pending() {
     return !inputs_.empty();
 }
 
+// Music held back for the length of a request plays once the reply has been heard. With a reply
+// still being spoken the speech queue lets go when it finishes; with none, this does.
+static void release_music() {
+    if (!SpeechQueue::get().active()) audio::Music::get().hold(audio::Music::kExchange, false);
+}
+
 void Agent::worker() {
     for (;;) {
         {
@@ -177,6 +196,7 @@ void Agent::worker() {
         busy_ = true;
         run_turn();
         set_state(AgentState::Idle);
+        release_music();
         busy_ = false;
     }
 }
@@ -193,6 +213,7 @@ std::string Agent::run_blocking(const std::string &text) {
     last_answer_.clear();
     run_turn();
     set_state(AgentState::Idle);
+    release_music();
     busy_ = false;
     g_blocking = false;
     return last_answer_;
@@ -225,7 +246,9 @@ int Agent::absorb_inputs(bool first) {
         // reuse its cached prefix. A prompt that changes every minute costs a second or two per call.
         const std::string stamp = "[" + util::format_time(time(nullptr), "%a %d %b %Y, %H:%M") + "] ";
         std::lock_guard<std::mutex> lk(mtx_);
-        history_.push_back({{"role", "user"}, {"content", stamp + text}});
+        // Numeric dates are spelt out here, by rule, so that the day/month order and the year are
+        // never left to the model's reading.
+        history_.push_back({{"role", "user"}, {"content", stamp + util::spell_numeric_dates(text)}});
         ++added;
     }
     return added;
@@ -250,6 +273,7 @@ void Agent::run_turn() {
 
     const json tool_schema = tools::schema();
     tools::Context tool_ctx;
+    tool_ctx.in_conversation = true;
     tool_ctx.cancel = &cancel_;
     tool_ctx.on_image = ev_.image;
     SpeechQueue &speech = SpeechQueue::get();
@@ -369,6 +393,16 @@ void Agent::run_turn() {
                          "user has not heard that reply. If they asked for something a tool does, call that tool now. "
                          "If no tool can do it, tell them plainly that you cannot. If they were only chatting or "
                          "asking a question, answer without claiming to have done anything.";
+            continue;
+        }
+        // "I don't have Dad's birthday saved", said without looking: the calendar may well have it.
+        if (!unbacked && !acted && !guarded && !speech_started && res.tool_calls.empty() && claims_not_saved(res.content)) {
+            guarded = true;
+            if (began && ev_.answer_discard) ev_.answer_discard();
+            correction = "(Automatic note, not from the user.) Your draft reply began \"" + util::truncate_utf8(res.content, 160) +
+                         "\" but you have not looked: no tool has been called for this request, and the user has not "
+                         "heard that reply. Call calendar_list with search (or reminder_list) now and answer from "
+                         "what it returns.";
             continue;
         }
         if (hold && res.tool_calls.empty()) {

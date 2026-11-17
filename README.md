@@ -23,6 +23,7 @@ is built in.
 | Python, in a sandbox | "Sort these names alphabetically…", longer calculations |
 | What the camera sees | "What am I looking at?", "Translate this menu." |
 | Calendar | "Put dinner with Marta in my calendar for Friday at eight." |
+| Birthdays and repeating events | "Mum's birthday is the 14th of March.", "Bin collection every Tuesday at seven.", "How old will Dad be this year?" |
 | Timers and reminders | "Remind me in ten minutes to check the oven." |
 | Things to remember | "Remember that I'm allergic to shellfish." |
 | Web search | "What time does the Louvre open on Sundays?" |
@@ -44,9 +45,13 @@ needs a [Tavily](https://tavily.com) key.
 | **TAB** | Start talking. Press **TAB** again when you have finished. |
 | **TAB** twice quickly | Open settings. |
 | **ENTER** (or just start typing) | Type a message; **ENTER** sends it. |
+| **del** twice quickly | Start a new conversation: what was said so far is forgotten. Calendar, reminders and saved memories are kept. |
 | **ESC** | Cancel what is happening: recording, typing, a running request, music. |
 | Hold **ESC** | Leave the app and return to the launcher. |
 | **fn**+**F** / **fn**+**X** | Scroll the conversation up and down. |
+| **fn**+**S** / **fn**+**D** | Volume down / up. **fn**+**A** mutes and unmutes. |
+| **fn**+**U** / **fn**+**I** | Screen brightness down / up. |
+| **fn**+**Q** / **fn**+**W** / **fn**+**E** | Music: pause or resume / previous track / next track. |
 
 You do not have to wait for it to finish:
 
@@ -67,7 +72,7 @@ Download `zero-bot_<version>_arm64.deb` from the Releases page, copy it to the C
 (over SSH, ADB or the microSD card) and install it on the device:
 
 ```sh
-sudo apt install ./zero-bot_0.1.0_arm64.deb
+sudo apt install ./zero-bot_0.2.0_arm64.deb
 ```
 
 "Zero Bot" then appears in the launcher within a few seconds. To build the package yourself
@@ -108,7 +113,8 @@ service's list. You can change every model under *Assistant* in settings.
 - **Web search:** add a Tavily key under *AI service → Web search key*.
 - **Music:** copy your music into `~/Music` on the device, then choose *Music library* in
   settings to rescan. MP3 tags (title, artist, album, genre) are read automatically.
-- **Home city, your name, time zone:** under *Device* in settings, or just tell the assistant.
+- **Home city and country, your name, time zone:** under *Device* in settings, or just tell the
+  assistant. The country tells apart cities that share a name (London, Canada).
 - **Internet through your phone:** pair the phone with the device once in the system Bluetooth
   settings and switch on *Bluetooth tethering* in the phone's hotspot settings. When there is no
   Wi-Fi, Zero Bot then connects through the phone by itself the next time you ask something.
@@ -125,7 +131,7 @@ Press **TAB** twice. Move with **fn**+**F**/**X** (or plain **F**/**X**), change
 | Section | What is there |
 |---|---|
 | Assistant | Language, vision, speech-to-text and text-to-speech models; voice; spoken replies on/off; fast replies; the assistant's name |
-| Device | Volume, brightness, microphone gain, time zone, start at power-on, internet via phone, home city, your name, units |
+| Device | Volume, brightness, microphone gain, time zone, start at power-on, internet via phone, flip camera image, home city and country, your name, date order, units |
 | Your data | Calendar (edit, add, delete, delete all), reminders, memory (edit, add, delete, forget everything), TV remote, music library, start a new conversation |
 | AI service | Address, API key, web search key, compress audio |
 | About | Status and connection test, exit to launcher |
@@ -138,10 +144,31 @@ formats the app falls back to uncompressed audio by itself.
 
 *Fast replies* (on by default) asks the model to skip its private reasoning step, and makes up
 for it by double-checking any reply that did not use a tool before it is spoken. On the bundled
-test set this passed 54 of 55 requests at a median of about 3 seconds each on Wi-Fi; with it off
+test set this passed 60 of 61 requests at a median of about 3 seconds each on Wi-Fi; with it off
 the model reasons on every step, which is a second or two slower.
 
-![Calendar](docs/screenshots/calendar.png) ![Editing an event](docs/screenshots/event.png)
+*Dates* (under *Device*, day first by default) decides how a date given in numbers is read: with
+*Day first*, "3/4" is 3 April; with *Month first* it is March 4. The app works this out itself
+before the request reaches the model, fills in the year (the next time that date comes round),
+and uses the same order when it shows dates and when you type one into the calendar editor. Dates
+are always shown and spoken with the month as a word, so a misheard date is easy to catch.
+
+### Calendar
+
+Events can be one-off or repeat every day, week, month or year, and can be timed or all-day.
+Ask for them in plain words, or use *Your data → Calendar* to add and edit them by hand (*All
+day* and *Repeats* are rows on the event page).
+
+- **Birthdays and anniversaries** are saved as all-day events that repeat every year, and alert
+  at 09:00 on the day unless you change the *Alert* row. If you give the year ("born in 1960"),
+  the assistant can tell you the age, and the alert includes it.
+- **Finding one:** "when is Dad's birthday?" searches the coming year by name.
+- A yearly 29 February falls on the 28th in other years; a monthly 31st on the last day of
+  shorter months.
+- Changing or deleting a repeating event changes the whole series. One-off events have to be in
+  the future when you add them by voice.
+
+![Calendar](docs/screenshots/calendar.png) ![Editing an event](docs/screenshots/event.png) ![A birthday](docs/screenshots/event-birthday.png)
 
 ### TV remote
 
@@ -225,6 +252,8 @@ the file.
 - **"No AI service is set up yet."** Enter an address and key under *AI service* in settings.
 - **Voice does nothing, typing works.** No speech models are selected. Choose them under
   *Assistant* in settings.
+- **Photos are upside down.** Toggle *Device → Flip camera image* in settings. It is on by
+  default, which is right for the CardputerZero's built-in camera.
 - **It mishears you.** Raise *Device → Microphone gain*, and speak towards the top of the device.
 - **The device cannot see your Wi-Fi network.** The radio is 2.4 GHz only. On some system images
   it also only scans channels 1 to 11, so a router on channel 12 or 13 is invisible; see

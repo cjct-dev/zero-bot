@@ -66,7 +66,7 @@ void pick_model(Menu &menu, const std::string &title, const std::string &mode, s
         },
         [&menu, title, mode, field, allow_default](const std::pair<std::vector<llm::ModelInfo>, std::string> &r) {
             if (!menu.open()) return;
-            if (!r.second.empty()) { menu.toast("Could not load models: " + r.second); return; }
+            if (!r.second.empty()) { menu.problem("Could not load models", r.second); return; }
             // Services that label what each model is for get a filtered list; others show everything.
             bool labelled = false;
             for (auto &m : r.first) labelled = labelled || !m.mode.empty();
@@ -86,12 +86,34 @@ void pick_model(Menu &menu, const std::string &title, const std::string &mode, s
 // ---------------------------------------------------------------- calendar
 const int kRemindSteps[] = {-1, 0, 5, 10, 15, 30, 60, 120, 1440};
 
-std::string remind_text(int minutes) {
+// All-day events count their alert from 09:00 on the day (see alert_base).
+std::string remind_text(int minutes, bool all_day = false) {
     if (minutes < 0) return "No alert";
+    if (all_day) {
+        if (minutes == 0) return "09:00 on the day";
+        if (minutes >= 1440) return "09:00 the day before";
+        if (minutes >= 60) return std::to_string(9 - minutes / 60) + ":00 on the day";
+        return std::to_string(minutes) + " min before 09:00";
+    }
     if (minutes == 0) return "At start";
     if (minutes >= 1440) return "1 day before";
     if (minutes >= 60) return std::to_string(minutes / 60) + " h before";
     return std::to_string(minutes) + " min before";
+}
+
+const char *const kRepeatSteps[] = {"", "daily", "weekly", "monthly", "yearly"};
+
+std::string repeat_text(const std::string &repeat) {
+    if (repeat == "daily") return "Every day";
+    if (repeat == "weekly") return "Every week";
+    if (repeat == "monthly") return "Every month";
+    if (repeat == "yearly") return "Every year";
+    return "Never";
+}
+
+time_t midnight(time_t t) {
+    const util::LocalTime f = util::local_fields(t);
+    return util::make_local(f.year, f.month, f.day, 0, 0);
 }
 
 bool find_event(int id, CalEvent &out) {
@@ -114,34 +136,60 @@ void open_event(Menu &menu, int id) {
                 Store::get().update_event(e);
             });
         }));
-        items.push_back(MenuItem::val("Starts", [e] { return util::format_time(e.start, "%a %d %b %H:%M"); }, [&menu, e] {
-            menu.edit_text("Start time", util::format_time(e.start, "%Y-%m-%d %H:%M"), false,
+        items.push_back(MenuItem::val(e.repeat.empty() ? "Starts" : "First on",
+                                      [e] { return e.all_day ? util::short_day(e.start) : util::short_date(e.start); }, [&menu, e] {
+            menu.edit_text(e.all_day ? "Date" : "Start time", e.all_day ? util::typed_day(e.start) : util::typed_date(e.start), false,
                            [&menu, e](const std::string &t) mutable {
                                time_t when;
-                               if (!util::parse_local(t, when)) { menu.toast("Use the form 2026-03-14 18:30"); return; }
+                               if (!util::parse_typed(t, when)) {
+                                   menu.toast("Use the form " + (e.all_day ? util::typed_day(e.start) : util::typed_date(e.start)));
+                                   return;
+                               }
+                               if (e.all_day) when = midnight(when);
                                if (e.end) e.end += when - e.start;
                                e.start = when;
                                Store::get().update_event(e);
                            },
-                           "Year-month-day hour:minute, 24-hour clock");
+                           e.all_day ? (util::month_first() ? "Month/day/year" : "Day/month/year") : util::typed_date_hint());
         }));
-        items.push_back(MenuItem::val("Ends", [e] { return e.end ? util::format_time(e.end, "%a %d %b %H:%M") : std::string("not set"); },
-                                      [&menu, e] {
-            menu.edit_text("End time (blank for none)", e.end ? util::format_time(e.end, "%Y-%m-%d %H:%M") : "", false,
-                           [&menu, e](const std::string &t) mutable {
-                               time_t when = 0;
-                               if (!util::trim(t).empty() && !util::parse_local(t, when)) { menu.toast("Use the form 2026-03-14 19:30"); return; }
-                               e.end = when;
-                               Store::get().update_event(e);
-                           });
+        if (!e.repeat.empty()) {
+            const time_t next = next_occurrence(e, midnight(time(nullptr)));
+            if (next && next != e.start)
+                items.push_back(MenuItem::val("Next", [e, next] { return e.all_day ? util::short_day(next) : util::short_date(next); }, nullptr));
+        }
+        items.push_back(MenuItem::val("All day", [e] { return on_off(e.all_day); }, nullptr, [e](int) mutable {
+            e.all_day = !e.all_day;
+            if (e.all_day) { e.start = midnight(e.start); e.end = 0; }
+            else e.start += 9 * 3600;   // a sensible hour to adjust from
+            Store::get().update_event(e);
         }));
+        items.push_back(MenuItem::val("Repeats", [e] { return repeat_text(e.repeat); }, nullptr, [e](int dir) mutable {
+            const int n = sizeof(kRepeatSteps) / sizeof(kRepeatSteps[0]);
+            int idx = 0;
+            for (int i = 0; i < n; ++i)
+                if (e.repeat == kRepeatSteps[i]) idx = i;
+            e.repeat = kRepeatSteps[((idx + dir) % n + n) % n];
+            Store::get().update_event(e);
+        }));
+        if (!e.all_day)
+            items.push_back(MenuItem::val("Ends", [e] { return e.end ? util::short_date(e.end) : std::string("not set"); },
+                                          [&menu, e] {
+                menu.edit_text("End time (blank for none)", e.end ? util::typed_date(e.end) : "", false,
+                               [&menu, e](const std::string &t) mutable {
+                                   time_t when = 0;
+                                   if (!util::trim(t).empty() && !util::parse_typed(t, when)) { menu.toast("Use the form " + util::typed_date(e.start + 3600)); return; }
+                                   e.end = when;
+                                   Store::get().update_event(e);
+                               },
+                               util::typed_date_hint());
+            }));
         items.push_back(MenuItem::val("Notes", [e] { return e.notes; }, [&menu, e] {
             menu.edit_text("Notes", e.notes, false, [e](const std::string &t) mutable {
                 e.notes = util::trim(t);
                 Store::get().update_event(e);
             });
         }));
-        items.push_back(MenuItem::val("Alert", [e] { return remind_text(e.remind_min); }, nullptr, [e](int dir) mutable {
+        items.push_back(MenuItem::val("Alert", [e] { return remind_text(e.remind_min, e.all_day); }, nullptr, [e](int dir) mutable {
             const int n = sizeof(kRemindSteps) / sizeof(kRemindSteps[0]);
             int idx = 0;
             for (int i = 0; i < n; ++i)
@@ -164,13 +212,27 @@ void open_calendar(Menu &menu) {
         std::vector<MenuItem> items;
         const auto events = Store::get().events();
         const time_t now = time(nullptr);
-        bool past_header = false, future_header = false;
+        // Each event once, placed by when it next happens; what is over goes underneath.
+        struct Row { CalEvent e; time_t when; bool past; };
+        std::vector<Row> rows;
         for (auto &e : events) {
-            const bool past = (e.end ? e.end : e.start) < now - 3600;
-            if (past && !past_header) { items.push_back(MenuItem::header("Past")); past_header = true; }
-            if (!past && !future_header) { items.push_back(MenuItem::header("Upcoming")); future_header = true; }
-            const int id = e.id;
-            items.push_back(MenuItem::val(e.title, [e] { return util::friendly_when(e.start); }, [&menu, id] { open_event(menu, id); }));
+            const time_t next = next_occurrence(e, e.all_day ? midnight(now) : now - 3600);
+            const bool running = !next && e.end && e.end >= now - 3600;
+            rows.push_back({e, next ? next : e.start, !next && !running});
+        }
+        std::stable_sort(rows.begin(), rows.end(), [](const Row &a, const Row &b) {
+            return a.past != b.past ? !a.past : a.past ? a.when > b.when : a.when < b.when;
+        });
+        bool past_header = false, future_header = false;
+        for (auto &row : rows) {
+            if (!row.past && !future_header) { items.push_back(MenuItem::header("Upcoming")); future_header = true; }
+            if (row.past && !past_header) { items.push_back(MenuItem::header("Past")); past_header = true; }
+            const int id = row.e.id;
+            const time_t when = row.when;
+            const bool all_day = row.e.all_day;
+            items.push_back(MenuItem::val(row.e.title,
+                                          [when, all_day] { return all_day ? util::friendly_day(when) : util::friendly_when(when); },
+                                          [&menu, id] { open_event(menu, id); }));
         }
         if (events.empty()) items.push_back(MenuItem::header("No events yet. Ask the assistant to add one."));
         items.push_back(MenuItem::header("Manage"));
@@ -412,6 +474,7 @@ struct Setup {
             Menu::add_paragraph(items, "These help with greetings, weather and times.");
             items.push_back(self->edit("Your name", &Settings::user_name, "What should the assistant call you?"));
             items.push_back(self->edit("Home city", &Settings::home_city, "Used for weather when you do not name a place."));
+            items.push_back(self->edit("Home country", &Settings::home_country, "Tells apart cities that share a name."));
             items.push_back(MenuItem::val("Time zone", [] { return S().timezone.empty() ? util::system_timezone() : S().timezone; }, [&m] {
                 m.edit_text("Time zone", S().timezone, false, [&m](const std::string &t) {
                     const std::string zone = util::trim(t);
@@ -421,7 +484,9 @@ struct Setup {
                     util::apply_timezone(zone);
                 }, "A zone such as Europe/London. Leave blank to follow the system clock. Later you can just say \"I'm in Tokyo\".");
             }));
-            items.push_back(MenuItem::val("Units", [] { return S().units == "imperial" ? std::string("Imperial") : std::string("Metric"); }, nullptr,
+            items.push_back(MenuItem::val("Dates", [] { return S().month_first() ? std::string("Month first") : std::string("Day first"); }, nullptr,
+                                          [](int) { S().date_order = S().month_first() ? "dmy" : "mdy"; util::set_month_first(S().month_first()); S().save(); }));
+        items.push_back(MenuItem::val("Units", [] { return S().units == "imperial" ? std::string("Imperial") : std::string("Metric"); }, nullptr,
                                           [](int) { S().units = S().units == "imperial" ? "metric" : "imperial"; S().save(); }));
             items.push_back(MenuItem::action("Continue", [self] { self->step_extras(); }));
             return items;
@@ -471,7 +536,7 @@ struct Setup {
                         return std::make_pair(models, err);
                     },
                     [self, &m](const std::pair<std::vector<llm::ModelInfo>, std::string> &r) {
-                        if (!r.second.empty()) { m.toast("That did not work: " + r.second); return; }
+                        if (!r.second.empty()) { m.problem("That did not work", r.second); return; }
                         Settings &st = S();
                         for (auto &model : r.first) {
                             if (st.llm_model.empty() && (model.mode == "chat" || model.mode.empty())) st.llm_model = model.id;
@@ -625,8 +690,13 @@ void open_settings(Menu &menu, const SettingsHooks &hooks) {
         }));
         items.push_back(MenuItem::val("Use phone when offline", [] { return on_off(S().phone_fallback); }, nullptr,
                                       [](int) { S().phone_fallback = !S().phone_fallback; S().save(); }));
+        items.push_back(MenuItem::val("Flip camera image", [] { return on_off(S().camera_flip); }, nullptr,
+                                      [](int) { S().camera_flip = !S().camera_flip; S().save(); }));
         items.push_back(text_setting("Home city", &Settings::home_city, "Used for weather when you do not name a place."));
+        items.push_back(text_setting("Home country", &Settings::home_country, "Tells apart cities that share a name."));
         items.push_back(text_setting("Your name", &Settings::user_name));
+        items.push_back(MenuItem::val("Dates", [] { return S().month_first() ? std::string("Month first") : std::string("Day first"); }, nullptr,
+                                  [](int) { S().date_order = S().month_first() ? "dmy" : "mdy"; util::set_month_first(S().month_first()); S().save(); }));
         items.push_back(MenuItem::val("Units", [] { return S().units == "imperial" ? std::string("Imperial") : std::string("Metric"); }, nullptr,
                                       [](int) { S().units = S().units == "imperial" ? "metric" : "imperial"; S().save(); }));
 

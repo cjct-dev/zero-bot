@@ -39,5 +39,4 @@ private:
     std::atomic<bool> working_{false};
     bool ended_ = true;
     bool stream_open_ = false;
-    bool music_was_paused_ = false;
 };

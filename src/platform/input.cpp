@@ -106,6 +106,15 @@ struct Decoder {
             case KEY_PAGEUP: ev.key = Key::PgUp; return true;
             case KEY_PAGEDOWN: ev.key = Key::PgDn; return true;
             case KEY_SPACE: ev.key = Key::Char; ev.text = " "; return true;
+            // The keypad driver's fn layer sends these as their own codes.
+            case KEY_MUTE: ev.key = Key::Mute; return true;
+            case KEY_VOLUMEDOWN: ev.key = Key::VolumeDown; return true;
+            case KEY_VOLUMEUP: ev.key = Key::VolumeUp; return true;
+            case KEY_BRIGHTNESSDOWN: ev.key = Key::BrightnessDown; return true;
+            case KEY_BRIGHTNESSUP: ev.key = Key::BrightnessUp; return true;
+            case KEY_PLAYPAUSE: ev.key = Key::MediaPlay; return true;
+            case KEY_PREVIOUSSONG: ev.key = Key::MediaPrevious; return true;
+            case KEY_NEXTSONG: ev.key = Key::MediaNext; return true;
             default: break;
         }
         if (fn) {  // orange layer, in case the driver leaves it to userspace
@@ -118,6 +127,14 @@ struct Decoder {
                 case KEY_N: ev.key = Key::End; return true;
                 case KEY_L: ev.key = Key::PgUp; return true;
                 case KEY_M: ev.key = Key::PgDn; return true;
+                case KEY_A: ev.key = Key::Mute; return true;
+                case KEY_S: ev.key = Key::VolumeDown; return true;
+                case KEY_D: ev.key = Key::VolumeUp; return true;
+                case KEY_U: ev.key = Key::BrightnessDown; return true;
+                case KEY_I: ev.key = Key::BrightnessUp; return true;
+                case KEY_Q: ev.key = Key::MediaPlay; return true;
+                case KEY_W: ev.key = Key::MediaPrevious; return true;
+                case KEY_E: ev.key = Key::MediaNext; return true;
                 default: break;
             }
         }
@@ -134,7 +151,8 @@ struct Decoder {
 
 bool repeats(Key k) {
     return k == Key::Backspace || k == Key::Delete || k == Key::Up || k == Key::Down ||
-           k == Key::Left || k == Key::Right || k == Key::PgUp || k == Key::PgDn;
+           k == Key::Left || k == Key::Right || k == Key::PgUp || k == Key::PgDn ||
+           k == Key::VolumeDown || k == Key::VolumeUp || k == Key::BrightnessDown || k == Key::BrightnessUp;
 }
 
 void reader_thread() {
@@ -197,6 +215,14 @@ int sdl_watch(void *, SDL_Event *e) {
         case SDLK_RETURN: case SDLK_KP_ENTER: ev.key = Key::Enter; break;
         case SDLK_BACKSPACE: ev.key = Key::Backspace; break;
         case SDLK_DELETE: ev.key = Key::Delete; break;
+        // Stand-ins for the device's fn layer: F9/F10/F11 volume, F7/F8 brightness, F5/F6 music.
+        case SDLK_F9: ev.key = Key::Mute; break;
+        case SDLK_F10: ev.key = Key::VolumeDown; break;
+        case SDLK_F11: ev.key = Key::VolumeUp; break;
+        case SDLK_F7: ev.key = Key::BrightnessDown; break;
+        case SDLK_F8: ev.key = Key::BrightnessUp; break;
+        case SDLK_F5: ev.key = Key::MediaPlay; break;
+        case SDLK_F6: ev.key = Key::MediaNext; break;
         case SDLK_TAB: ev.key = Key::Tab; break;
         case SDLK_ESCAPE: ev.key = Key::Esc; break;
         case SDLK_UP: ev.key = Key::Up; break;

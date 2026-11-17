@@ -99,6 +99,11 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text) {
 }  // namespace
 
 int main(int argc, char **argv) {
+    // The C library asks for a name's IPv4 and IPv6 addresses at the same moment over one socket.
+    // Some Wi-Fi routers and adapters lose the second reply, and every lookup then waits out a
+    // five-second timeout (measured on a CardputerZero: 5.04 s against 0.03 s with this option).
+    // Asking one after the other costs a few milliseconds. Must be set before the first lookup.
+    setenv("RES_OPTIONS", "single-request", 0);
     std::string ask, shots, steer, tool_name, tool_args = "{}";
     std::string stt_file, tts_text, tts_out, bench_wav, bench_opus;
     bool chat = false, keydump = false, boot = false;

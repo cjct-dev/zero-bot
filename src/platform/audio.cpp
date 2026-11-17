@@ -203,24 +203,37 @@ void Music::play(std::vector<std::string> paths) {
         index_ = 0;
     }
     running_ = true;
-    paused_ = false;
+    holds_ &= ~kUser;   // asking for music ends a pause the user set earlier
     const int gen = ++generation_;
     if (thread_.joinable()) thread_.join();
     thread_ = std::thread([this, gen]() {
         while (running_ && generation_ == gen) {
+            // Wait for quiet before starting a track: the reply is still to be spoken, or the
+            // microphone is open.
+            if (holds_ != 0) { usleep(50 * 1000); continue; }
             std::string path;
             {
                 std::lock_guard<std::mutex> lk(mtx_);
+                if (holds_ != 0) continue;
                 if (index_ >= queue_.size()) break;
                 path = queue_[index_++];
                 current_ = path;
-                child_ = proc::spawn({"ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path}, false, false);
+                // The player's own audio buffer is about 12 ms, which any busy moment elsewhere on a
+                // small processor outruns: measured on a CardputerZero, playback skipped under load
+                // with the default and held steady with 300 ms. Music does not need low latency.
+                child_ = proc::spawn({"env", "PULSE_LATENCY_MSEC=300", "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path},
+                                     false, false);
+                stopped_ = false;
             }
             skip_ = false;
             for (;;) {
                 usleep(100 * 1000);
                 std::lock_guard<std::mutex> lk(mtx_);
-                if (!running_ || generation_ != gen || skip_) { proc::stop(child_, SIGTERM); break; }
+                if (!running_ || generation_ != gen || skip_) {
+                    if (stopped_) { proc::signal_group(child_, SIGCONT); stopped_ = false; }
+                    proc::stop(child_, SIGTERM);
+                    break;
+                }
                 if (!proc::alive(child_)) break;
             }
         }
@@ -234,19 +247,32 @@ void Music::stop() {
     ++generation_;
     if (thread_.joinable()) thread_.join();
     std::lock_guard<std::mutex> lk(mtx_);
+    if (stopped_) { proc::signal_group(child_, SIGCONT); stopped_ = false; }
     proc::stop(child_, SIGTERM);
     queue_.clear();
     current_.clear();
-    paused_ = false;
+    holds_ &= ~kUser;
 }
 
 void Music::next() { skip_ = true; }
 
-void Music::pause(bool on) {
+void Music::previous() {
+    {
+        // index_ already points past the track that is playing.
+        std::lock_guard<std::mutex> lk(mtx_);
+        index_ = index_ >= 2 ? index_ - 2 : 0;
+    }
+    skip_ = true;
+}
+
+void Music::hold(int reasons, bool on) {
     std::lock_guard<std::mutex> lk(mtx_);
-    if (!child_.running() || paused_ == on) return;
-    proc::signal_group(child_, on ? SIGSTOP : SIGCONT);
-    paused_ = on;
+    if (on) holds_ |= reasons; else holds_ &= ~reasons;
+    if (!child_.running()) return;
+    const bool want_stopped = holds_ != 0;
+    if (want_stopped == stopped_) return;
+    proc::signal_group(child_, want_stopped ? SIGSTOP : SIGCONT);
+    stopped_ = want_stopped;
 }
 
 bool Music::playing() { return running_; }

@@ -40,6 +40,7 @@ public:
     AgentState state();
     std::string detail();       // e.g. the tool currently running
     bool busy() const { return busy_; }
+    bool has_pending();         // a request has been handed over but not yet picked up
     size_t history_size();
 
     // Runs one request to completion on the calling thread and returns the final answer
@@ -53,7 +54,6 @@ private:
     void worker();
     void run_turn();
     int absorb_inputs(bool first);
-    bool has_pending();
     void trim_history();
     void set_state(AgentState s, const std::string &detail = "");
 

@@ -177,6 +177,37 @@ def chk_spanish(t):
         else ["answer should be in Spanish"]
 
 # ---------------------------------------------------------------- the cases
+def chk_numeric_date(month, day):
+    def check(t):
+        d = today().date()
+        year = d.year if d <= datetime.date(d.year, month, day) else d.year + 1
+        return arg(t, "calendar_add", "start", one_of(["%d-%02d-%02d 10:00" % (year, month, day)]),
+                   "%02d-%02d 10:00 (month-day)" % (month, day))
+    return check
+
+def chk_yearly(month_day, year=None):
+    """A calendar_add for an all-day yearly event on month_day ("03-14"), in `year` if one was given."""
+    def check(t):
+        got = calls(t, "calendar_add")
+        for c in got:
+            start = str(c.get("start"))[:10]
+            if c.get("repeat") == "yearly" and c.get("all_day") is True and start[5:] == month_day and \
+               (year is None or start[:4] == str(year) or c.get("since_year") == year):
+                return []
+        return ["calendar_add should be all_day, repeat yearly, on %s%s; got %s" % (month_day, " %d" % year if year else "", got)]
+    return check
+
+def chk_weekly_tuesday(t):
+    ok = stamps(next_weekday(1), "07:00")
+    for c in calls(t, "calendar_add"):
+        if c.get("repeat") == "weekly" and str(c.get("start"))[:16] in ok: return []
+    return ["calendar_add should repeat weekly from next Tuesday 07:00, got %s" % calls(t, "calendar_add")]
+
+def chk_dad_age(t):
+    d = today().date()
+    year = d.year if d <= datetime.date(d.year, 6, 2) else d.year + 1
+    return [] if says_int(t["answer"], year - 1955) else ["answer should give the age %d" % (year - 1955)]
+
 def case(name, request, must=(), must_not=(), checks=(), env=None, steer=None):
     """request: one utterance or a list (a conversation; "/new" starts a fresh one, memories are kept).
     must / must_not / checks apply to the last turn; speech-suitability rules apply to every turn."""
@@ -227,6 +258,19 @@ CASES = [
     case("calendar_add", "put dinner with marta in my calendar for friday at 8pm", must=["calendar_add"],
          checks=[answer(r"friday|8"), lambda t: arg(t, "calendar_add", "start", one_of(FRI_8PM()), "Friday 20:00")]),
     case("calendar_date", "add my flight to lisbon on the 3rd of december at 6 40 am", must=["calendar_add"], checks=[chk_flight]),
+    case("birthday", "my mums birthday is on the 14th of march can you add it to my calendar", must=["calendar_add"],
+         checks=[chk_yearly("03-14"), answer(r"march")]),
+    case("birthday_with_year", "add sarahs birthday shes born on 20/11/1990", must=["calendar_add"],
+         checks=[chk_yearly("11-20", 1990)]),
+    case("repeat_weekly", "add bin collection to my calendar every tuesday at 7am", must=["calendar_add"],
+         checks=[chk_weekly_tuesday]),
+    case("birthday_recall", ["my dads birthday is the 2nd of june 1955 put it in the calendar", "/new",
+                             "when is dads birthday and how old will he be"],
+         must=["calendar_list"], checks=[answer(r"june"), chk_dad_age]),
+    case("numeric_date_day_first", "put the dentist in my calendar on 3/4 at 10am", must=["calendar_add"],
+         checks=[chk_numeric_date(4, 3), answer(r"april", "the month as a word")]),
+    case("numeric_date_month_first", "put the dentist in my calendar on 3/4 at 10am", must=["calendar_add"],
+         env={"ZB_DATE_ORDER": "mdy"}, checks=[chk_numeric_date(3, 4), answer(r"march", "the month as a word")]),
     case("calendar_query", "whats on my calendar this week", must=["calendar_list"]),
     case("memory", "remember that im allergic to shellfish", must=["memory_save"],
          checks=[lambda t: arg(t, "memory_save", "text", has("shellfish"), "about shellfish")]),

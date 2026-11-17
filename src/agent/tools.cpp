@@ -1,6 +1,7 @@
 #include "agent/tools.h"
 
 #include <algorithm>
+#include <sstream>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -74,11 +75,31 @@ struct Place {
     double lat = 0, lon = 0;
 };
 
-bool geocode(const std::string &query, Place &out, std::string &err, Context &ctx) {
+// True when a geocoding hit lies in the country or region the user named ("canada", "UK", "texas").
+bool in_region(const json &r, const std::string &region_in) {
+    std::string region = util::lower(util::trim(region_in));
+    if (region.empty()) return false;
+    static const std::pair<const char *, const char *> kAliases[] = {
+        {"uk", "gb"}, {"britain", "gb"}, {"great britain", "gb"}, {"usa", "us"}, {"america", "us"},
+        {"united states of america", "us"}, {"uae", "ae"}, {"holland", "nl"},
+    };
+    for (const auto &alias : kAliases)
+        if (region == alias.first) region = alias.second;
+    return util::lower(jget(r, "country_code", std::string())) == region ||
+           (region.size() > 2 && (util::contains_ci(jget(r, "country", std::string()), region) ||
+                                  util::contains_ci(jget(r, "admin1", std::string()), region)));
+}
+
+// `country` narrows a bare city name to one country; it is only a preference, so a city that
+// does not exist there still resolves to its best-known namesake.
+bool geocode(const std::string &query, Place &out, std::string &err, Context &ctx, const std::string &country = "") {
     const std::string base = "https://geocoding-api.open-meteo.com/v1/search?language=en&count=";
-    json j = fetch_json(base + "1&name=" + http::url_encode(query), err, ctx);
+    json j = fetch_json(base + (country.empty() ? "1" : "10") + "&name=" + http::url_encode(query), err, ctx);
     if (!err.empty()) return false;
     size_t pick = 0;
+    if (!country.empty() && j.contains("results") && j["results"].is_array())
+        for (size_t i = 0; i < j["results"].size(); ++i)
+            if (in_region(j["results"][i], country)) { pick = i; break; }
     // Spoken requests arrive as "paris france" or "portland oregon", which the service does not
     // match as one name. Search for the leading words and prefer the hit in the region named.
     std::string name = query;
@@ -92,10 +113,7 @@ bool geocode(const std::string &query, Place &out, std::string &err, Context &ct
         if (!err.empty()) return false;
         if (!j.contains("results") || !j["results"].is_array()) continue;
         for (size_t i = 0; i < j["results"].size(); ++i) {
-            const json &r = j["results"][i];
-            if (util::contains_ci(jget(r, "country", std::string()), region) ||
-                util::contains_ci(jget(r, "admin1", std::string()), region) ||
-                util::lower(jget(r, "country_code", std::string())) == util::lower(region)) { pick = i; break; }
+            if (in_region(j["results"][i], region)) { pick = i; break; }
         }
     }
     if (!j.contains("results") || !j["results"].is_array() || j["results"].empty()) {
@@ -254,7 +272,8 @@ std::string t_look(const json &a, Context &ctx) {
     // On a phone's Bluetooth link the upload is the slow part, so a smaller photo is taken there:
     // still plenty to read a sign or menu, at about a third of the bytes.
     const bool slow_link = tether::via_phone();
-    std::string err = slow_link ? camera::capture(path, 960, 720) : camera::capture(path);
+    const bool flip = Settings::get().camera_flip;
+    std::string err = slow_link ? camera::capture(path, 960, 720, flip) : camera::capture(path, 1280, 960, flip);
     if (!err.empty()) return fail(err);
     if (ctx.on_image) ctx.on_image(path);
     std::string jpeg;
@@ -265,11 +284,53 @@ std::string t_look(const json &a, Context &ctx) {
 }
 
 // ---------------------------------------------------------------- calendar
+const char *const kRepeats[] = {"daily", "weekly", "monthly", "yearly"};
+
+// Reads "repeat" into `out`. "none" (or "never") clears it; an absent argument leaves it alone.
+bool repeat_arg(const json &a, std::string &out, std::string &err) {
+    if (!a.contains("repeat")) return true;
+    const std::string r = util::lower(str_arg(a, "repeat"));
+    if (r.empty() || r == "none" || r == "never" || r == "no") { out.clear(); return true; }
+    for (const char *k : kRepeats)
+        if (r == k) { out = r; return true; }
+    if (r == "annually" || r == "annual" || r == "every year") { out = "yearly"; return true; }
+    err = "repeat must be one of none, daily, weekly, monthly, yearly";
+    return false;
+}
+
+time_t day_start(time_t t) {
+    const util::LocalTime f = util::local_fields(t);
+    return util::make_local(f.year, f.month, f.day, 0, 0);
+}
+
+// `e` is either a stored event (start = its first time) or one occurrence from events_between.
 json event_json(const CalEvent &e) {
-    json j = {{"id", e.id}, {"title", e.title}, {"start", util::format_time(e.start, "%A %Y-%m-%d %H:%M")}};
+    const char *fmt = e.all_day ? "%A %Y-%m-%d" : "%A %Y-%m-%d %H:%M";
+    json j = {{"id", e.id}, {"title", e.title}};
+    time_t shown = e.start;
+    if (!e.repeat.empty()) {
+        j["repeats"] = e.repeat;
+        if (!e.first) {
+            // A stored series: say when it next happens, which is what the user wants to hear.
+            j["first"] = util::format_time(e.start, fmt);
+            shown = next_occurrence(e, day_start(time(nullptr)));
+            if (!shown) shown = e.start;
+        }
+        // The age, for a birthday entered with its year.
+        if (const int years = years_marked(e, shown)) {
+            // Stated as flatly as possible: left to subtract, the model is sometimes a year out.
+            j["began"] = util::local_fields(e.first ? e.first : e.start).year;
+            j["age_on_that_day"] = years;
+        }
+    }
+    j[e.repeat.empty() || e.first ? "start" : "next"] = util::format_time(shown, fmt);
+    if (e.all_day) j["all_day"] = true;
     if (e.end) j["end"] = util::format_time(e.end, "%Y-%m-%d %H:%M");
     if (!e.notes.empty()) j["notes"] = e.notes;
-    if (e.remind_min >= 0) j["remind_minutes_before"] = e.remind_min;
+    if (e.remind_min >= 0) {
+        j["remind_minutes_before"] = e.remind_min;
+        if (e.all_day) j["alert_counts_from"] = "09:00 on the day";
+    }
     return j;
 }
 
@@ -278,17 +339,48 @@ std::string t_calendar_add(const json &a, Context &) {
     e.title = str_arg(a, "title");
     if (e.title.empty()) return fail("title is required");
     if (!util::parse_local(str_arg(a, "start"), e.start)) return fail("start must look like 2026-03-14 18:30");
+    std::string err;
+    if (!repeat_arg(a, e.repeat, err)) return fail(err);
+    e.all_day = bool_arg(a, "all_day", false);
+    if (e.all_day) e.start = day_start(e.start);
+    double since;
+    if (e.repeat == "yearly" && num_arg(a, "since_year", since) && since >= 1900 && since <= util::local_fields(e.start).year) {
+        // The year it all began (a birth year): the series starts there, which is what lets a
+        // later answer say how many years it has been.
+        const util::LocalTime f = util::local_fields(e.start);
+        const int year = static_cast<int>(since);
+        e.start = util::make_local(year, f.month, std::min(f.day, util::days_in_month(year, f.month)), f.hour, f.minute);
+    }
     const std::string end = str_arg(a, "end");
     if (!end.empty() && !util::parse_local(end, e.end)) return fail("end must look like 2026-03-14 19:30");
     if (e.end && e.end < e.start) return fail("end is before start");
+    // A year-less date ("the 3rd of April") that has gone by this year is the commonest slip. A
+    // repeating event may start in the past: a birthday is entered with its birth year.
+    if (e.repeat.empty() && e.start < (e.all_day ? day_start(time(nullptr)) : time(nullptr) - 12 * 3600))
+        return fail("that start is in the past; now is " + util::iso_local(time(nullptr)) +
+                    ". A date said without a year means the next time it comes round: call again with the "
+                    "right year. If the user really means a day that has gone, say the calendar only takes "
+                    "coming events");
     e.notes = str_arg(a, "notes");
     double remind;
-    if (num_arg(a, "remind_minutes_before", remind) && remind >= 0) e.remind_min = static_cast<int>(remind);
+    if (num_arg(a, "remind_minutes_before", remind)) { if (remind >= 0) e.remind_min = static_cast<int>(remind); }
+    else if (e.all_day && e.repeat == "yearly") e.remind_min = 0;   // a birthday nobody is told about is no use
     e.id = Store::get().add_event(e);
+    e.created = time(nullptr);
     return json{{"saved", event_json(e)}}.dump();
 }
 
+// Letters and digits only, lower case, so that "dads" finds "Dad's".
+std::string plain_words(const std::string &text) {
+    std::string out;
+    for (const char c : util::lower(text))
+        if (isalnum(static_cast<unsigned char>(c)) || (c & 0x80)) out += c;
+        else if (c == ' ' || c == '-') out += ' ';
+    return out;
+}
+
 std::string t_calendar_list(const json &a, Context &) {
+    const std::string search = plain_words(str_arg(a, "search"));
     time_t from = time(nullptr) - 3600, to = from + 14 * 86400;
     const std::string f = str_arg(a, "from"), t = str_arg(a, "to");
     if (!f.empty() && !util::parse_local(f, from)) return fail("from must look like 2026-03-14");
@@ -296,10 +388,24 @@ std::string t_calendar_list(const json &a, Context &) {
         if (!util::parse_local(t, to)) return fail("to must look like 2026-03-21");
         if (t.size() <= 10) to += 86400;  // a bare date means "through the end of that day"
     } else if (!f.empty()) to = from + 14 * 86400;
+    else if (!search.empty()) to = from + 366 * 86400;   // a name can be looked for a whole year ahead
     json arr = json::array();
-    for (auto &e : Store::get().events_between(from, to)) arr.push_back(event_json(e));
-    return json{{"from", util::format_time(from, "%Y-%m-%d")}, {"to", util::format_time(to - 1, "%Y-%m-%d")},
-                {"events", arr}}.dump();
+    std::vector<int> seen;
+    for (auto &e : Store::get().events_between(from, to)) {
+        if (!search.empty()) {
+            // Every word asked for has to appear; a repeating event is reported once, at its next time.
+            const std::string hay = plain_words(e.title + " " + e.notes);
+            bool match = true;
+            std::istringstream words(search);
+            for (std::string w; words >> w;) match = match && hay.find(w) != std::string::npos;
+            if (!match || std::find(seen.begin(), seen.end(), e.id) != seen.end()) continue;
+            seen.push_back(e.id);
+        }
+        arr.push_back(event_json(e));
+    }
+    json out = {{"from", util::format_time(from, "%Y-%m-%d")}, {"to", util::format_time(to - 1, "%Y-%m-%d")}, {"events", arr}};
+    if (!search.empty() && arr.empty()) out["note"] = "nothing on the calendar matches; try fewer or other words before saying it is not there";
+    return out.dump();
 }
 
 std::string t_calendar_update(const json &a, Context &) {
@@ -318,6 +424,10 @@ std::string t_calendar_update(const json &a, Context &) {
         if (a.contains("notes")) e.notes = str_arg(a, "notes");
         double remind;
         if (num_arg(a, "remind_minutes_before", remind)) e.remind_min = remind < 0 ? -1 : static_cast<int>(remind);
+        std::string err;
+        if (!repeat_arg(a, e.repeat, err)) return fail(err);
+        if (a.contains("all_day")) e.all_day = bool_arg(a, "all_day", e.all_day);
+        if (e.all_day) { e.start = day_start(e.start); e.end = 0; }
         Store::get().update_event(e);
         return json{{"updated", event_json(e)}}.dump();
     }
@@ -408,14 +518,15 @@ std::string t_web_search(const json &a, Context &ctx) {
 
 std::string t_weather(const json &a, Context &ctx) {
     std::string where = str_arg(a, "location");
-    if (where.empty()) where = Settings::get().home_city;
+    std::string country;
+    if (where.empty()) { where = Settings::get().home_city; country = Settings::get().home_country; }
     if (where.empty()) return fail("no location given and no home city is set; ask the user where they are");
     double days_d = 3;
     num_arg(a, "days", days_d);
     const int days = std::max(1, std::min(7, static_cast<int>(days_d)));
     Place p;
     std::string err;
-    if (!geocode(where, p, err, ctx)) return fail(err);
+    if (!geocode(where, p, err, ctx, country)) return fail(err);
     const bool imperial = Settings::get().units == "imperial";
     char url[512];
     snprintf(url, sizeof(url),
@@ -552,7 +663,7 @@ std::string t_set_timezone(const json &a, Context &ctx) {
 }
 
 // ---------------------------------------------------------------- music
-std::string t_music(const json &a, Context &) {
+std::string t_music(const json &a, Context &ctx) {
     const std::string action = util::lower(str_arg(a, "action"));
     audio::Music &player = audio::Music::get();
     MusicLibrary &lib = MusicLibrary::get();
@@ -605,7 +716,12 @@ std::string t_music(const json &a, Context &) {
     if (found.size() > 60) found.resize(60);
     std::vector<std::string> paths;
     for (auto &t : found) paths.push_back(t.path);
-    if (!dry_run()) player.play(paths);
+    if (!dry_run()) {
+        // Queue it now, start it once the reply has been spoken (the agent or the speech queue
+        // lifts the hold), so the song does not begin, stop for the reply and begin again.
+        if (ctx.in_conversation) player.hold(audio::Music::kExchange, true);
+        player.play(paths);
+    }
     const Track &first = found[0];
     return json{{"now_playing", first.title + (first.artist.empty() ? "" : " by " + first.artist)},
                 {"queued_tracks", found.size()}}.dump(-1, ' ', false, json::error_handler_t::replace);
@@ -714,26 +830,43 @@ std::vector<Tool> build() {
          obj({{"question", S("What to find out from the photo, with any detail the answer needs, e.g. \"Transcribe "
                              "all text on the menu and translate it into English\"")}}, {"question"}), t_look},
         {"calendar_add", "Adding to calendar",
-         "Add an event to the user's calendar. Calling this is the only way an event gets saved. Needs a day and a "
-         "time from the user; if either is missing, ask instead of guessing.",
-         obj({{"title", S("Short event title")},
-              {"start", S("Local start time as YYYY-MM-DD HH:MM (24-hour)")},
+         "Add an event to the user's calendar. Calling this is the only way an event gets saved. A timed event "
+         "needs a day and a time from the user; if either is missing, ask instead of guessing. A birthday, "
+         "anniversary or holiday needs only its date: set all_day, and for a birthday or anniversary repeat "
+         "yearly. Birthdays and anniversaries are saved here, not with memory_save.",
+         obj({{"title", S("Short event title, e.g. \"Dinner with Marta\" or \"Mum's birthday\"")},
+              {"start", S("Local start as YYYY-MM-DD HH:MM (24-hour), or YYYY-MM-DD for an all-day event. For a "
+                          "repeating event, the next time it happens")},
+              {"since_year", N("Optional, for a birthday or anniversary: the birth year or the year it began, "
+                               "if the user happened to say it (born 1990 -> 1990). Never ask for it; save "
+                               "without when it was not given")},
               {"end", S("Optional local end time as YYYY-MM-DD HH:MM")},
+              {"all_day", B("True for a whole-day event with no clock time (birthday, holiday, day off)")},
+              {"repeat", E("How often it comes round again. Leave out for a one-off", {"none", "daily", "weekly", "monthly", "yearly"})},
               {"notes", S("Optional extra detail such as place or booking reference")},
-              {"remind_minutes_before", N("Optional: alert this many minutes before the start (0 = at the start)")}},
+              {"remind_minutes_before", N("Optional: alert this many minutes before the start (0 = at the start). "
+                                          "All-day events count from 09:00 on the day, and yearly ones alert "
+                                          "on the day unless told otherwise")}},
              {"title", "start"}), t_calendar_add},
         {"calendar_list", "Checking calendar",
-         "List calendar events in a date range, with their ids. Defaults to the next 14 days.",
-         obj({{"from", S("Optional first day, YYYY-MM-DD")}, {"to", S("Optional last day (inclusive), YYYY-MM-DD")}}),
+         "Look at the calendar: either a date range (the next 14 days by default), or with search the next time "
+         "an event with that name comes up, anywhere in the coming year. Use search for 'when is dad's birthday', "
+         "'when is my dentist appointment'. Results carry ids, and repeating events appear once for each time "
+         "they fall in a range.",
+         obj({{"search", S("Optional words from the event's name, e.g. \"dad\" or \"dentist\"")},
+              {"from", S("Optional first day, YYYY-MM-DD")}, {"to", S("Optional last day (inclusive), YYYY-MM-DD")}}),
          t_calendar_list},
         {"calendar_update", "Updating calendar",
-         "Change an existing calendar event (move it, rename it). Only the fields given are changed. The id is in "
-         "the result of the earlier calendar_add or calendar_list; do not add a second event to move one.",
+         "Change an existing calendar event (move it, rename it, make it repeat). Only the fields given are "
+         "changed, and a repeating event changes as a whole. The id is in the result of the earlier calendar_add "
+         "or calendar_list; do not add a second event to move one.",
          obj({{"id", N("Event id")}, {"title", S("New title")}, {"start", S("New start, YYYY-MM-DD HH:MM")},
               {"end", S("New end, YYYY-MM-DD HH:MM")}, {"notes", S("New notes")},
+              {"all_day", B("Whether it is a whole-day event")},
+              {"repeat", E("How often it repeats; none stops it repeating", {"none", "daily", "weekly", "monthly", "yearly"})},
               {"remind_minutes_before", N("New alert lead time in minutes; -1 removes the alert")}}, {"id"}),
          t_calendar_update},
-        {"calendar_delete", "Updating calendar", "Delete a calendar event by id (from calendar_list).",
+        {"calendar_delete", "Updating calendar", "Delete a calendar event by id (from calendar_list). A repeating event goes as a whole.",
          obj({{"id", N("Event id")}}, {"id"}), t_calendar_delete},
         {"reminder_set", "Setting a reminder",
          "Set a timer, alarm or reminder that makes the device chime and speak. Calling this is the only way one "

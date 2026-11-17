@@ -14,8 +14,22 @@ struct CalEvent {
     time_t end = 0;            // 0 = no end time
     std::string notes;
     int remind_min = -1;       // minutes before start to alert; -1 = no alert
-    bool alerted = false;
+    std::string repeat;        // "", "daily", "weekly", "monthly" or "yearly"; start is the first time
+    bool all_day = false;      // a whole day (birthday, holiday): start is that day's midnight
+    time_t alerted_for = 0;    // the occurrence whose alert has already fired
+    time_t created = 0;        // when it was entered
+    time_t first = 0;          // on entries from events_between: the series' first start (not stored)
 };
+
+// The first time the event happens at or after `from`, or 0 if it never does again. A yearly
+// 29 February falls on the 28th in other years; a monthly 31st on the month's last day.
+time_t next_occurrence(const CalEvent &e, time_t from);
+// The time of day an all-day event's alert is measured from (09:00), so that "on the day" is a
+// useful moment rather than midnight.
+time_t alert_base(const CalEvent &e, time_t occurrence);
+// For a yearly event entered with its original date (a birth year), how many years have passed
+// by `occurrence`; 0 when the first date was simply the next one coming.
+int years_marked(const CalEvent &e, time_t occurrence);
 
 struct Reminder {
     int id = 0;
@@ -36,7 +50,8 @@ public:
     void load();
 
     // Calendar
-    std::vector<CalEvent> events();                               // sorted by start
+    std::vector<CalEvent> events();                               // as stored, sorted by first start
+    // What happens in [from, to): one entry per occurrence, with start and end moved to it.
     std::vector<CalEvent> events_between(time_t from, time_t to);
     int add_event(CalEvent ev);
     bool update_event(const CalEvent &ev);

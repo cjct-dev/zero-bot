@@ -84,6 +84,7 @@ Response send(const Request &req) {
 
     curl_easy_setopt(curl, CURLOPT_URL, req.url.c_str());
     if (g_share) curl_easy_setopt(curl, CURLOPT_SHARE, g_share);
+    curl_easy_setopt(curl, CURLOPT_DNS_CACHE_TIMEOUT, 600L);   // addresses are remembered for ten minutes, not one
     curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);

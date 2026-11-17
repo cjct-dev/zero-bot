@@ -64,7 +64,7 @@ void SpeechQueue::run() {
                 stream_open_ = false;
                 if (queue_.empty()) {
                     working_ = false;
-                    if (music_was_paused_) { audio::Music::get().pause(false); music_was_paused_ = false; }
+                    audio::Music::get().hold(audio::Music::kSpeech | audio::Music::kExchange, false);
                     continue;
                 }
             }
@@ -79,7 +79,7 @@ void SpeechQueue::run() {
                 }
                 if (queue_.empty()) {
                     working_ = false;
-                    if (music_was_paused_) { audio::Music::get().pause(false); music_was_paused_ = false; }
+                    audio::Music::get().hold(audio::Music::kSpeech | audio::Music::kExchange, false);
                 }
                 continue;
             }
@@ -99,10 +99,7 @@ void SpeechQueue::run() {
         watcher.join();
         if (!ok || stale || pcm.empty()) continue;
         if (!stream_open_) {
-            if (audio::Music::get().playing() && !audio::Music::get().paused()) {
-                audio::Music::get().pause(true);
-                music_was_paused_ = true;
-            }
+            audio::Music::get().hold(audio::Music::kSpeech, true);
             if (!speaker().begin(llm::kTtsRate)) continue;
             std::lock_guard<std::mutex> lk(mtx_);
             stream_open_ = true;

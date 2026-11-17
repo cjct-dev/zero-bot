@@ -64,9 +64,20 @@ public:
     void play(std::vector<std::string> paths);    // replace the queue and start
     void stop();
     void next();
-    void pause(bool on);                          // used to duck while talking
+    void previous();                              // back to the track before this one
+    // Reasons the music is kept silent. It plays only while none is set, and a queue started
+    // while one is set waits for it to clear, so a song never starts over the assistant's own
+    // reply only to be cut off by it.
+    enum Hold {
+        kUser = 1,        // paused by the user
+        kMic = 2,         // the microphone is live
+        kSpeech = 4,      // the assistant is speaking
+        kExchange = 8,    // a request is being answered: from the end of the question to the end of the spoken reply
+    };
+    void hold(int reasons, bool on);
+    void pause(bool on) { hold(kUser, on); }
     bool playing();
-    bool paused() const { return paused_; }
+    bool paused() const { return (holds_ & kUser) != 0; }
     std::string current();                        // path of the track playing, or ""
 
 private:
@@ -80,7 +91,8 @@ private:
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> skip_{false};
-    std::atomic<bool> paused_{false};
+    std::atomic<int> holds_{0};
+    bool stopped_ = false;                        // the player process is suspended (guarded by mtx_)
     std::atomic<int> generation_{0};
 };
 

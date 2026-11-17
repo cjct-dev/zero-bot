@@ -292,6 +292,21 @@ void Menu::message(const std::string &title, const std::string &body_text) {
     push(std::move(page));
 }
 
+void Menu::problem(const std::string &title, const std::string &text) {
+    toast_ticks_ = 0;
+    lv_obj_add_flag(toast_, LV_OBJ_FLAG_HIDDEN);
+    MenuPage page;
+    page.title = title;
+    page.hint = "ENTER or ESC to go back";
+    page.build = [this, text]() {
+        std::vector<MenuItem> items;
+        add_paragraph(items, text);
+        items.push_back(MenuItem::action("Back", [this] { pop(); }));
+        return items;
+    };
+    push(std::move(page));
+}
+
 void Menu::toast(const std::string &text) {
     lv_label_set_text(toast_, text.c_str());
     lv_obj_remove_flag(toast_, LV_OBJ_FLAG_HIDDEN);

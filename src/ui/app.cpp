@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "agent/agent.h"
+#include "agent/speech.h"
 #include "agent/llm.h"
 #include "core/music_lib.h"
 #include "core/settings.h"
@@ -31,7 +32,7 @@ namespace ui {
 
 namespace {
 
-constexpr unsigned long kDoubleTapMs = 450;     // two TAB presses this close together open settings
+constexpr unsigned long kDoubleTapMs = 450;     // two presses this close together count as a double tap
 constexpr unsigned long kEscHoldMs = 1200;      // hold ESC this long to leave the app
 constexpr unsigned long kDimAfterMs = 45000;    // idle time before the backlight dims
 constexpr double kMinSpeechSeconds = 0.4;
@@ -45,7 +46,14 @@ struct App {
     Menu menu;
     audio::Recorder recorder;
     unsigned long rec_start = 0;
-    bool music_paused_for_mic = false;
+    unsigned long last_delete = 0;   // for the double tap that starts a new conversation
+    // Volume and brightness keys: what the footer shows for a moment, and settings waiting to be
+    // written once the key has been let go (so a held key does not rewrite the file ten times a second).
+    std::string level_text;
+    unsigned long level_until = 0, settings_dirty_at = 0;
+    bool muted = false;
+    std::atomic<int> volume_wanted{-1};
+    std::atomic<bool> volume_worker{false};
     unsigned long esc_down = 0;
     bool esc_armed = false;
     unsigned long last_activity = 0;
@@ -121,28 +129,26 @@ struct App {
     void start_recording() {
         if (chat.typing()) chat.typing_end();
         Agent::get().interrupt_speech();
-        audio::Music &music = audio::Music::get();
-        music_paused_for_mic = music.playing() && !music.paused();
-        if (music_paused_for_mic) music.pause(true);
+        audio::Music::get().hold(audio::Music::kMic, true);
         if (!recorder.start()) {
             chat.add_note("The microphone could not be started.", theme::kListen);
-            resume_music();
+            audio::Music::get().hold(audio::Music::kMic, false);
             return;
         }
         rec_start = display::now_ms();
     }
 
-    void resume_music() {
-        if (music_paused_for_mic) audio::Music::get().pause(false);
-        music_paused_for_mic = false;
-    }
-
     void finish_recording(bool submit) {
         const double seconds = recorder.seconds();
         std::vector<int16_t> pcm = recorder.stop();
-        resume_music();
+        audio::Music &music = audio::Music::get();
+        const bool sending = submit && seconds >= kMinSpeechSeconds;
+        // Music that was playing stays quiet from the question to the end of the spoken answer,
+        // rather than coming back for the few seconds in between.
+        if (sending) music.hold(audio::Music::kExchange, true);
+        music.hold(audio::Music::kMic, false);
         if (!submit) return;
-        if (seconds < kMinSpeechSeconds) { chat.add_note("That was too short to hear. Press TAB, speak, then press TAB again.", theme::kDim); return; }
+        if (!sending) { chat.add_note("That was too short to hear. Press TAB, speak, then press TAB again.", theme::kDim); return; }
         audio::normalize(pcm);
         auto shared = std::make_shared<std::vector<int16_t>>(std::move(pcm));
         when_online([shared] { Agent::get().submit_audio(std::move(*shared)); });
@@ -184,14 +190,98 @@ struct App {
     // ------------------------------------------------------------ keys
     void open_menu() {
         SettingsHooks hooks;
-        hooks.new_conversation = [this] {
-            Agent::get().reset_conversation();
-            chat.clear();
-            welcome();
-        };
+        hooks.new_conversation = [this] { new_conversation(); };
         hooks.exit_app = [] { g_exit = true; };
         hooks.run_setup = [this] { menu.close(); run_setup(); };
         open_settings(menu, hooks);
+    }
+
+    // Forgets what has been said so far. Calendar, reminders and saved memories are untouched.
+    void new_conversation() {
+        Agent::get().reset_conversation();
+        chat.clear();
+        chat.add_note("New conversation. What was said before is forgotten.", theme::kDim);
+        audio::chime(1);
+    }
+
+    // Applies the newest volume off the UI thread; the mixer command takes a moment, and a held
+    // key asks for many steps in a row.
+    void apply_volume(int percent) {
+        volume_wanted = percent;
+        if (volume_worker.exchange(true)) return;
+        std::thread([this] {
+            for (;;) {
+                const int v = volume_wanted.exchange(-1);
+                if (v < 0) {
+                    volume_worker = false;
+                    if (volume_wanted < 0 || volume_worker.exchange(true)) return;   // nothing arrived meanwhile
+                    continue;
+                }
+                audio::set_volume(v);
+            }
+        }).detach();
+    }
+
+    static std::string level_bar(const char *label, int percent) {
+        std::string bar;
+        for (int i = 0; i < 10; ++i) bar += i < (percent + 5) / 10 ? "\xE2\x96\xAE" : "\xE2\x96\xAF";   // ▮ ▯
+        return std::string(label) + "  " + bar + "  " + std::to_string(percent) + "%";
+    }
+
+    void show_level(const std::string &text) {
+        level_text = text;
+        level_until = display::now_ms() + 1500;
+        if (menu.open()) { menu.toast(text); menu.refresh(); }
+    }
+
+    // The fn-layer control keys work everywhere: while talking, typing, in settings.
+    bool control_key(const KeyEvent &ev) {
+        Settings &s = Settings::get();
+        audio::Music &music = audio::Music::get();
+        switch (ev.key) {
+            case Key::VolumeUp:
+            case Key::VolumeDown: {
+                if (ev.state == 0) return true;
+                const int step = ev.key == Key::VolumeUp ? 5 : -5;
+                s.volume = std::max(0, std::min(100, (s.volume + (step > 0 ? 0 : 4)) / 5 * 5 + step));
+                muted = false;
+                apply_volume(s.volume);
+                settings_dirty_at = display::now_ms();
+                show_level(level_bar("Volume", s.volume));
+                return true;
+            }
+            case Key::Mute:
+                if (ev.state != 1) return true;
+                muted = !muted;
+                apply_volume(muted ? 0 : s.volume);
+                show_level(muted ? "Muted   ·   fn+A to unmute" : level_bar("Volume", s.volume));
+                return true;
+            case Key::BrightnessUp:
+            case Key::BrightnessDown: {
+                if (ev.state == 0) return true;
+                const int step = ev.key == Key::BrightnessUp ? 10 : -10;
+                s.brightness = std::max(10, std::min(100, (s.brightness + (step > 0 ? 0 : 9)) / 10 * 10 + step));
+                display::set_brightness(s.brightness);
+                settings_dirty_at = display::now_ms();
+                show_level(level_bar("Brightness", s.brightness));
+                return true;
+            }
+            case Key::MediaPlay:
+                if (ev.state != 1) return true;
+                if (!music.playing()) show_level("No music playing. Ask for some.");
+                else { music.pause(!music.paused()); show_level(music.paused() ? "Music paused" : "Music playing"); }
+                return true;
+            case Key::MediaNext:
+            case Key::MediaPrevious:
+                if (ev.state != 1) return true;
+                if (!music.playing()) { show_level("No music playing. Ask for some."); return true; }
+                if (music.paused()) music.pause(false);
+                if (ev.key == Key::MediaNext) music.next(); else music.previous();
+                show_level(ev.key == Key::MediaNext ? "Next track" : "Previous track");
+                return true;
+            default:
+                return false;
+        }
     }
 
     void handle_key(const KeyEvent &ev) {
@@ -200,6 +290,8 @@ struct App {
             last_activity = now;
             if (dimmed) { display::set_brightness(Settings::get().brightness); dimmed = false; }
         }
+
+        if (control_key(ev)) return;
 
         // ESC: a short press backs out of whatever is happening, a long hold leaves the app.
         if (ev.key == Key::Esc) {
@@ -243,6 +335,14 @@ struct App {
             return;
         }
         switch (ev.key) {
+            // Two taps of the delete key (not a held key, and not while typing, where it deletes
+            // text) start a new conversation.
+            case Key::Backspace:
+            case Key::Delete:
+                if (ev.state != 1) break;
+                if (last_delete && now - last_delete < kDoubleTapMs) { last_delete = 0; new_conversation(); }
+                else last_delete = now;
+                break;
             case Key::Enter: if (ev.state == 1) chat.typing_begin(""); break;
             case Key::Char: if (ev.text != " ") chat.typing_begin(ev.text); break;
             case Key::Up: chat.scroll(34); break;
@@ -266,6 +366,11 @@ struct App {
     void update_footer() {
         Agent &agent = Agent::get();
         const Settings &s = Settings::get();
+        if (level_until && display::now_ms() < level_until && !recorder.active() && !chat.typing()) {
+            chat.footer_hints(level_text);
+            return;
+        }
+        level_until = 0;
         if (recorder.active()) {
             chat.footer_listening(recorder.level(), recorder.seconds(), recorder.has_audio());
             chat.set_status(s.agent_name, theme::kListen);
@@ -333,11 +438,19 @@ struct App {
             chat.tick();
             menu.tick();
         }
+        if (settings_dirty_at && now - settings_dirty_at > 1500) {
+            settings_dirty_at = 0;
+            Settings::get().save();
+        }
         if (now - last_second >= 1000) {
             last_second = now;
             check_alerts();
             const bool active = recorder.active() || Agent::get().state() != AgentState::Idle;
             if (active) last_activity = now;
+            // Belt and braces: whatever happened to a request, music is never left waiting for
+            // an answer that is not coming.
+            if (!active && !Agent::get().busy() && !Agent::get().has_pending() && !SpeechQueue::get().active() && !connecting_phone)
+                audio::Music::get().hold(audio::Music::kExchange | audio::Music::kSpeech, false);
             if (!dimmed && now - last_activity > kDimAfterMs) { display::set_brightness(10); dimmed = true; }
         }
         if (now - last_model_try >= 15000) {   // covers starting up before Wi-Fi has connected
@@ -410,6 +523,24 @@ struct App {
         chat.add_user("こんにちは、元気ですか？", false);
         chat.footer_hints("TAB talk   ·   ENTER type   ·   TAB TAB settings");
         snap("alert");
+        {
+            // The double tap goes through the real key handler, so this also checks the shortcut.
+            KeyEvent del; del.key = Key::Backspace; del.state = 1;
+            handle_key(del);
+            snap("delete-once");                   // one tap alone changes nothing
+            handle_key(del);
+            snap("new-conversation");
+            KeyEvent vol; vol.key = Key::VolumeUp; vol.state = 1;
+            handle_key(vol);
+            update_footer();
+            snap("volume");
+            vol.key = Key::Mute;
+            handle_key(vol);
+            update_footer();
+            snap("muted");
+            handle_key(vol);                       // unmute again
+            level_until = 0;
+        }
 
         Store &store = Store::get();
         CalEvent e;
@@ -422,6 +553,10 @@ struct App {
         store.add_event(e);
         e.title = "Flight to Lisbon"; e.start = day_at(5, "07:15"); e.notes = "Seat 14A"; e.remind_min = 120;
         const int flight = store.add_event(e);
+        e = CalEvent();
+        e.title = "Mum's birthday"; e.all_day = true; e.repeat = "yearly"; e.remind_min = 0;
+        e.start = util::make_local(1960, util::local_fields(day_at(9, "00:00")).month, util::local_fields(day_at(9, "00:00")).day, 0, 0);
+        const int birthday = store.add_event(e);
         store.add_memory("Allergic to shellfish");
         store.add_memory("Prefers window seats");
         store.add_reminder("Call the hotel", time(nullptr) + 3600);
@@ -436,6 +571,10 @@ struct App {
             for (int i = 0; i < 4; ++i) menu.key(down);
             menu.key(enter);                       // continue (with or without a connection)
             snap("setup-service");
+            menu.problem("That did not work", "The AI service is down or unreachable (HTTP 530, code 1033). "
+                                              "This is on the service's side; try again later.");
+            snap("setup-problem");
+            menu.pop();
             for (int i = 0; i < 4; ++i) menu.key(down);
             menu.key(enter);                       // skip the live test in screenshots
             s.llm_model = "example-chat-model"; s.stt_model = "example-speech-to-text"; s.tts_model = "example-text-to-speech";
@@ -443,10 +582,10 @@ struct App {
             snap("setup-models");
             for (int i = 0; i < 4; ++i) menu.key(down);
             menu.key(enter);
-            s.user_name = "Sam"; s.home_city = "London";
+            s.user_name = "Sam"; s.home_city = "London"; s.home_country = "United Kingdom";
             menu.refresh();
             snap("setup-you");
-            for (int i = 0; i < 5; ++i) menu.key(down);
+            for (int i = 0; i < 6; ++i) menu.key(down);
             menu.key(enter);
             snap("setup-extras");
             menu.close();
@@ -459,7 +598,7 @@ struct App {
         KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
         for (int i = 0; i < 8; ++i) menu.key(down);    // first row of "Device"
         snap("settings-device");
-        for (int i = 0; i < 7; ++i) menu.key(down);    // "Calendar", first row of "Your data"
+        for (int i = 0; i < 12; ++i) menu.key(down);   // "Calendar", first row of "Your data"
         snap("settings-data");
         menu.key(enter);
         snap("calendar");
@@ -467,14 +606,18 @@ struct App {
         snap("event");
         menu.key(enter);
         snap("edit-text");
-        menu.key(esc); menu.key(esc); menu.key(esc);
+        menu.key(esc); menu.key(esc);
+        menu.key(down); menu.key(down);                // the third event: the birthday
+        menu.key(enter);
+        snap("event-birthday");
+        menu.key(esc); menu.key(esc);
         menu.key(down); menu.key(down);                // "Memory"
         menu.key(enter);
         snap("memory");
         menu.key(esc);
         for (int i = 0; i < 12; ++i) menu.key(down);
         snap("settings-service");
-        (void)flight;
+        (void)flight; (void)birthday;
         menu.close();
         return 0;
     }
