@@ -493,15 +493,17 @@ void open_home_thing(Menu &menu, const std::string &network_id, const std::strin
         const home::Thing t = *found;
         const auto meta = d.meta.find(thing_id);
         const bool room_typed = meta != d.meta.end() && meta->second.room_by_user;
+        // A room taken from the start of the name is shown as a guess for the user to correct.
+        const bool guessed = !room_typed && !t.room.empty() && t.room == home::infer_room(t.name);
         items.push_back(MenuItem::val("Called", [t] { return home::spoken(t); }, [&menu, network_id, device_id, thing_id, t] {
             menu.edit_text("What you call it", home::spoken(t), false, [network_id, device_id, thing_id, t](const std::string &text) {
                 const std::string alias = util::trim(text);
                 home::set_thing_alias(network_id, device_id, thing_id, alias == t.name ? "" : alias);
             }, "The name to say to the assistant. The maker's app calls it \"" + t.name + "\".");
         }));
-        items.push_back(MenuItem::val("Room", [t, room_typed] {
+        items.push_back(MenuItem::val("Room", [t, guessed] {
             if (t.room.empty()) return std::string("none");
-            return room_typed ? t.room : t.room + " (guessed)";
+            return guessed ? t.room + " (guessed)" : t.room;
         }, [&menu, network_id, device_id, thing_id, t] {
             menu.edit_text("Room", t.room, false, [network_id, device_id, thing_id](const std::string &text) {
                 home::set_thing_room(network_id, device_id, thing_id, util::trim(text));
