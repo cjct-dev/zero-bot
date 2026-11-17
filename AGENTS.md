@@ -237,6 +237,24 @@ in the README's settings table. Fix the screenshot key-press counts.
 **A screen.** Follow `breath_view` or `chat_view`: create objects once, update only what
 changed, drive it from `App::periodic`, route keys in `App::handle_key`, add a `--shots` frame.
 
+**Something shown over every screen** (the timer's alarm banner, `AlarmView`): make it a child
+of the screen, created after the other views, and `raise()` it again whenever another view
+brings itself forward (`BreathView::start` does). Not `lv_layer_top()`: `--shots` snapshots the
+screen only, so it would be missing from the screenshots.
+
+**The status bar** is redrawn by anything that sets one of its labels or colours, even to the
+value it already has. `ChatView`'s setters compare with what is shown and return early; keep
+that for anything added there (the timer countdown changes once a second, not every tick).
+
+**A settings value that changes by itself** (a timer's time left): set `MenuPage::live`.
+`Menu::tick` then reads the values on screen 15 times a second and redraws only those whose
+text changed, so their value functions must be cheap: no file reads, no subprocesses.
+
+**A sound that repeats** (the timer's alarm): `audio::AlarmSound` keeps one player process open
+and leaves gaps while the assistant speaks. Stop it on every way out, leaving the app included
+(`stop_and_wait`): a player process outlives the app. Whatever holds the music
+(`audio::Music::hold`) lets go on every way out too.
+
 **A smart-home device family.** Recognise its announcement in `discovery.cpp` (`kServices` or a
 vendor query), add a driver beside `tapo`, and teach `home.cpp` to read and switch it. Build
 and test the protocol against a mock of the device first.
@@ -250,7 +268,6 @@ package for anything private, then commit, push and attach the `.deb` to a GitHu
 A clean-up and optimisation pass is planned once the current features are finished: first a
 device-free safety net (unit tests for dates, repeats, parsers, the hold logic and breathing
 timing; a scripted fake model service for the loop; stable screenshots), then the changes.
-Known costs to address then: the status bar is redrawn every tick even when nothing changed;
-the main loop polls about 60 times a second; `ffmpeg` is started for every photo thumbnail;
-some settings rows run subprocesses on the UI thread; `Settings` is shared between threads
-without a lock.
+Known costs to address then: the main loop polls about 60 times a second; `ffmpeg` is started
+for every photo thumbnail; some settings rows run subprocesses on the UI thread; `Settings` is
+shared between threads without a lock.

@@ -2,8 +2,8 @@
 
 A pocket voice assistant for the [M5Stack CardputerZero](https://docs.m5stack.com/en/CardputerZero).
 Press a key, talk, and it answers out loud. It can look through the camera, keep your
-calendar, set reminders, play your music, work a TV, and look things up, which makes it a handy
-travel companion.
+calendar, run timers, set reminders, play your music, work a TV, and look things up, which makes
+it a handy travel companion.
 
 It is a native C++ app built on LVGL. It talks to any OpenAI-compatible service that offers
 chat with tool calling, speech-to-text and text-to-speech; nothing about a particular provider
@@ -24,7 +24,8 @@ is built in.
 | What the camera sees | "What am I looking at?", "Translate this menu." |
 | Calendar | "Put dinner with Marta in my calendar for Friday at eight." |
 | Birthdays and repeating events | "Mum's birthday is the 14th of March.", "Bin collection every Tuesday at seven.", "How old will Dad be this year?" |
-| Timers and reminders | "Remind me in ten minutes to check the oven." |
+| Timers | "The food needs to come out of the oven in 5 minutes.", "I want to study for an hour, set a timer.", "How long is left?", "Cancel the study timer." |
+| Reminders | "Remind me at 7 tomorrow to call the hotel." |
 | Things to remember | "Remember that I'm allergic to shellfish." |
 | Web search | "What time does the Louvre open on Sundays?" |
 | Weather | "Do I need an umbrella in Lisbon tomorrow?" |
@@ -63,6 +64,27 @@ You do not have to wait for it to finish:
 The dot in the top-left corner shows what it is doing: red while the microphone is live, amber
 while it is working, teal while it is speaking. The screen dims after 45 seconds without use
 and wakes on any key.
+
+### Timers
+
+Ask for a timer in your own words, and give it a name if you like: "the food needs to come out
+of the oven in 5 minutes", "I want to study for an hour, set a timer". Up to ten can run at
+once. The one that ends soonest counts down in the status bar, with "+1" for each other one, and
+everything else keeps working meanwhile: talking, typing, settings, music, the breathing
+exercise.
+
+- **When one ends** the screen lights up with a banner naming it, an alarm rings for up to a
+  minute, music pauses, and the name is spoken once (if spoken replies are on). If you are
+  talking to the assistant at that moment, it waits until you have finished. **Any key** stops
+  it; **TAB** stops it and starts listening, so "give it five more minutes" is one press away.
+- **Muted with fn+A**, the alarm stays silent: the banner is all you get.
+- **Ask** "how long is left?", "add ten minutes to the pasta", "cancel the study timer". With
+  several running, it asks which one you mean. *Settings → Your data → Reminders and timers*
+  lists them with their time left, to cancel one or all.
+- **Timers carry on** if you leave the app. One that ended while it was closed is shown as
+  missed when you open it again, and still rings if it ended less than two minutes before.
+
+![Two timers running](docs/screenshots/timer-two.png) ![A timer's alarm](docs/screenshots/timer-alarm.png)
 
 ## Install
 
@@ -132,7 +154,7 @@ Press **TAB** twice. Move with **fn**+**F**/**X** (or plain **F**/**X**), change
 |---|---|
 | Assistant | Language, vision, speech-to-text and text-to-speech models; voice; spoken replies on/off; fast replies; the assistant's name |
 | Device | Volume, brightness, microphone gain, time zone, start at power-on, internet via phone, microphone, flip camera image, home city and country, your name, date order, units |
-| Your data | Calendar (edit, add, delete, delete all), reminders, memory (edit, add, delete, forget everything), TV remote, music library, start a new conversation |
+| Your data | Calendar (edit, add, delete, delete all), reminders and timers (cancel one or all), memory (edit, add, delete, forget everything), TV remote, music library, start a new conversation |
 | AI service | Address, API key, web search key, compress audio |
 | About | Status and connection test, exit to launcher |
 
@@ -192,7 +214,7 @@ built-in code, or any name of your own.
   Finance.
 - Python runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox with no
   network, no access to your files, a 20-second limit and a memory cap.
-- Reminders only fire while the app is running.
+- Reminders and timers only fire while the app is running.
 
 ## Building
 
@@ -247,6 +269,9 @@ Model names come from `~/.config/zero-bot/settings.json` (`llm_model`, `stt_mode
 were called, whether the answers hold up, and how long each took. See the notes at the top of
 the file.
 
+`tests/run_timer_tests.sh` tests the timers without a device or a service: the timer tool, how
+timers are stored, the countdown and the alarm.
+
 ## Troubleshooting
 
 - **"No AI service is set up yet."** Enter an address and key under *AI service* in settings.
@@ -269,6 +294,8 @@ the file.
   Wi-Fi. A Wi-Fi hotspot from the same phone is much faster if the device can see it.
 - **The TV does not react.** Aim the top edge at the TV from within a few metres, set the brand
   in settings, or teach it the button from the real remote.
+- **A timer ended without a sound.** The device was muted with **fn**+**A** (the banner still
+  shows; press **fn**+**A** again to unmute) or the volume is turned right down.
 - **Python tool reports the sandbox is unavailable.** Install `bubblewrap`.
 
 ## Project layout
