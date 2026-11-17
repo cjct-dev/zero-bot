@@ -1,5 +1,6 @@
 // Calendar, reminders and long-term memory, each a small JSON file in ~/.local/share/zero-bot.
 #pragma once
+#include <atomic>
 #include <ctime>
 #include <mutex>
 #include <string>
@@ -33,9 +34,15 @@ int years_marked(const CalEvent &e, time_t occurrence);
 
 struct Reminder {
     int id = 0;
-    std::string text;
-    time_t due = 0;
+    std::string text;          // what is said when it fires; a timer's label
+    time_t due = 0;            // when it fires; when a timer ends
     bool fired = false;
+    // Timers (countdowns: "a timer for ten minutes") are kept with the reminders, marked by kind,
+    // and fire through the same check. Files from before timers have no kind: all reminders.
+    std::string kind;          // "" = reminder, "timer"
+    time_t started = 0;        // timer: when it was set
+    long length = 0;           // timer: its whole length in seconds, with any time added
+    bool timer() const { return kind == "timer"; }
 };
 
 struct Memory {
@@ -58,11 +65,29 @@ public:
     bool delete_event(int id);
     void clear_events();
 
-    // Reminders
+    // Reminders (never timers)
     std::vector<Reminder> reminders();
     int add_reminder(const std::string &text, time_t due);
     bool delete_reminder(int id);
     void clear_reminders();
+
+    // Timers. Several run at once, up to kMaxTimers.
+    static constexpr int kMaxTimers = 10;
+    std::vector<Reminder> timers();                       // set and not yet taken as ended, soonest end first
+    int add_timer(const std::string &label, long seconds, time_t now);   // its id, or 0 at the cap
+    bool extend_timer(int id, long seconds);
+    bool delete_timer(int id);
+    int clear_timers();                                   // how many there were
+    // Timers whose end has come by `now`, soonest first, each returned once. They are kept in
+    // memory for kRecentSeconds afterwards, so that "give it five more minutes" can restart one.
+    std::vector<Reminder> take_ended_timers(time_t now);
+    static constexpr long kRecentSeconds = 15 * 60;
+    std::vector<Reminder> recent_timers(time_t now);      // ended in the last kRecentSeconds, newest first
+    int restart_timer(int id, long seconds, time_t now);  // a recent one, running again; its id, or 0
+    // For the main loop, without taking the lock: the soonest end (0 when none is set), and a
+    // number that changes whenever the set of timers or their ends do.
+    time_t next_timer_end() const { return next_end_; }
+    int timers_revision() const { return revision_; }
 
     // Memory
     std::vector<Memory> memories();
@@ -78,9 +103,13 @@ private:
     void save_calendar();
     void save_reminders();
     void save_memory();
+    void timers_changed();      // with mtx_ held
     std::mutex mtx_;
     std::vector<CalEvent> events_;
     std::vector<Reminder> reminders_;
     std::vector<Memory> memories_;
+    std::vector<Reminder> ended_;   // timers that have ended recently (not stored)
     int next_id_ = 1;
+    std::atomic<time_t> next_end_{0};
+    std::atomic<int> revision_{0};
 };

@@ -2,6 +2,7 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -62,6 +63,31 @@ void set_mic_gain(int percent);                   // microphone amplification, 1
 void normalize(std::vector<int16_t> &pcm);        // even out the level of a finished recording
 void chime(int kind);                             // 0 = start listening, 1 = done, 2 = alert
 
+// The sound of a timer's alarm, synthesised like the chimes: one burst of four short, high beeps
+// followed by a pause, at `rate` samples a second.
+std::vector<int16_t> alarm_burst(int rate);
+
+// Plays the alarm burst over and over through one player process kept open while it rings.
+// start() and stop() return at once; the sound stops within about 50 ms of stop().
+class AlarmSound {
+public:
+    static AlarmSound &get();
+    // Rings until stop(), for at most max_ms. While `wait` returns true (the assistant is speaking)
+    // no new burst begins, so the words can be heard; the first burst always plays.
+    void start(std::function<bool()> wait, int max_ms = 65000);
+    void stop();
+    void stop_and_wait();                         // leaving the app: the player is gone on return
+    bool active() const { return active_; }
+
+private:
+    AlarmSound() = default;
+    void run(int generation, std::function<bool()> wait, int max_ms);
+    Speaker speaker_;
+    std::thread thread_;                          // started and joined on the UI thread only
+    std::atomic<int> generation_{0};
+    std::atomic<bool> active_{false};
+};
+
 // Background music player with a simple queue.
 class Music {
 public:
@@ -78,8 +104,10 @@ public:
         kMic = 2,         // the microphone is live
         kSpeech = 4,      // the assistant is speaking
         kExchange = 8,    // a request is being answered: from the end of the question to the end of the spoken reply
+        kAlarm = 16,      // a timer's alarm is ringing
     };
     void hold(int reasons, bool on);
+    bool holding(int reasons) const { return (holds_ & reasons) != 0; }
     void pause(bool on) { hold(kUser, on); }
     bool playing();
     bool paused() const { return (holds_ & kUser) != 0; }

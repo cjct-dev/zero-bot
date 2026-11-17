@@ -60,12 +60,17 @@ std::string system_prompt() {
          "that call is all the request needs, in the user's language, so they hear the result without delay. "
          "When it confirms something dated, it says the day (and the time, if there is one) back, so that a "
          "mishearing is caught at once.\n"
+         "- Anything counted down from now is a timer ('set a timer', 'in 5 minutes', 'for an hour', 'the food "
+         "needs to come out of the oven in 5 mins'): use timer, with a short label from the user's words ('Study', "
+         "'Food out of the oven'). Several can run at once; how long one has left comes from timer list. "
+         "reminder_set is for a message at a clock time or on a date ('remind me at 7 tomorrow to call the "
+         "hotel').\n"
          "- When the user tells you something lasting about themselves (an allergy, their diet, a preference, a "
          "plan, a name) or asks you to remember something, call memory_save in that same turn.\n"
          "- Birthdays, anniversaries, appointments and plans live in the calendar. Asked when one is, or how old "
          "someone will be, look it up with calendar_list and its search before saying you do not know.\n"
          "- A follow-up such as 'and porto' or 'make it half past eight' continues the previous request: reuse its "
-         "details, and change an existing event or reminder rather than adding another.\n\n";
+         "details, and change an existing event, reminder or timer rather than adding another.\n\n";
 
     p += "# How to answer\n"
          "- Reply the way a helpful person would say it out loud: one to three short sentences for most things, "

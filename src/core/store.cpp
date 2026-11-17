@@ -13,7 +13,7 @@ static std::string path_of(const char *name) { return util::data_dir() + "/" + n
 
 void Store::load() {
     std::lock_guard<std::mutex> lk(mtx_);
-    events_.clear(); reminders_.clear(); memories_.clear();
+    events_.clear(); reminders_.clear(); memories_.clear(); ended_.clear();
     int max_id = 0;
     for (auto &j : util::load_json(path_of("calendar.json"), json::array())) {
         CalEvent e;
@@ -30,6 +30,11 @@ void Store::load() {
         Reminder r;
         r.id = jget(j, "id", 0); r.text = jget(j, "text", std::string());
         r.due = jget<long long>(j, "due", 0); r.fired = jget(j, "fired", false);
+        if (jget(j, "kind", std::string()) == "timer") {   // records from before timers have no kind
+            r.kind = "timer";
+            r.started = jget<long long>(j, "started", 0);
+            r.length = jget<long long>(j, "length", 0);
+        }
         if (r.id > 0) { reminders_.push_back(r); max_id = std::max(max_id, r.id); }
     }
     for (auto &j : util::load_json(path_of("memory.json"), json::array())) {
@@ -39,6 +44,7 @@ void Store::load() {
         if (m.id > 0 && !m.text.empty()) { memories_.push_back(m); max_id = std::max(max_id, m.id); }
     }
     next_id_ = max_id + 1;
+    timers_changed();
 }
 
 void Store::save_calendar() {
@@ -54,8 +60,15 @@ void Store::save_calendar() {
 
 void Store::save_reminders() {
     json arr = json::array();
-    for (auto &r : reminders_)
-        arr.push_back({{"id", r.id}, {"text", r.text}, {"due", static_cast<long long>(r.due)}, {"fired", r.fired}});
+    for (auto &r : reminders_) {
+        json j = {{"id", r.id}, {"text", r.text}, {"due", static_cast<long long>(r.due)}, {"fired", r.fired}};
+        if (r.timer()) {   // a reminder's record keeps its old shape
+            j["kind"] = r.kind;
+            j["started"] = static_cast<long long>(r.started);
+            j["length"] = static_cast<long long>(r.length);
+        }
+        arr.push_back(j);
+    }
     util::save_json(path_of("reminders.json"), arr);
 }
 
@@ -187,7 +200,7 @@ std::vector<Reminder> Store::reminders() {
     std::lock_guard<std::mutex> lk(mtx_);
     std::vector<Reminder> out;
     for (auto &r : reminders_)
-        if (!r.fired) out.push_back(r);
+        if (!r.fired && !r.timer()) out.push_back(r);
     std::sort(out.begin(), out.end(), [](const Reminder &a, const Reminder &b) { return a.due < b.due; });
     return out;
 }
@@ -204,7 +217,7 @@ int Store::add_reminder(const std::string &text, time_t due) {
 bool Store::delete_reminder(int id) {
     std::lock_guard<std::mutex> lk(mtx_);
     const auto n = reminders_.size();
-    reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [&](const Reminder &r) { return r.id == id; }),
+    reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [&](const Reminder &r) { return r.id == id && !r.timer(); }),
                      reminders_.end());
     if (reminders_.size() == n) return false;
     save_reminders();
@@ -213,8 +226,125 @@ bool Store::delete_reminder(int id) {
 
 void Store::clear_reminders() {
     std::lock_guard<std::mutex> lk(mtx_);
-    reminders_.clear();
+    reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [](const Reminder &r) { return !r.timer(); }),
+                     reminders_.end());
     save_reminders();
+}
+
+// ---------------------------------------------------------------- timers
+void Store::timers_changed() {
+    time_t next = 0;
+    for (auto &r : reminders_)
+        if (r.timer() && (!next || r.due < next)) next = r.due;
+    next_end_ = next;
+    ++revision_;
+}
+
+std::vector<Reminder> Store::timers() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    std::vector<Reminder> out;
+    for (auto &r : reminders_)
+        if (r.timer()) out.push_back(r);
+    std::stable_sort(out.begin(), out.end(), [](const Reminder &a, const Reminder &b) { return a.due < b.due; });
+    return out;
+}
+
+int Store::add_timer(const std::string &label, long seconds, time_t now) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (std::count_if(reminders_.begin(), reminders_.end(), [](const Reminder &r) { return r.timer(); }) >= kMaxTimers)
+        return 0;
+    Reminder r;
+    r.id = next_id_++;
+    r.text = label;
+    r.kind = "timer";
+    r.started = now;
+    r.length = seconds;
+    r.due = now + seconds;
+    reminders_.push_back(r);
+    save_reminders();
+    timers_changed();
+    return r.id;
+}
+
+bool Store::extend_timer(int id, long seconds) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    for (auto &r : reminders_)
+        if (r.id == id && r.timer()) {
+            r.due += seconds;
+            r.length += seconds;
+            save_reminders();
+            timers_changed();
+            return true;
+        }
+    return false;
+}
+
+bool Store::delete_timer(int id) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    const auto n = reminders_.size();
+    reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [&](const Reminder &r) { return r.id == id && r.timer(); }),
+                     reminders_.end());
+    if (reminders_.size() == n) return false;
+    save_reminders();
+    timers_changed();
+    return true;
+}
+
+int Store::clear_timers() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    const auto n = reminders_.size();
+    reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [](const Reminder &r) { return r.timer(); }),
+                     reminders_.end());
+    const int gone = static_cast<int>(n - reminders_.size());
+    if (gone) {
+        save_reminders();
+        timers_changed();
+    }
+    return gone;
+}
+
+std::vector<Reminder> Store::take_ended_timers(time_t now) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    std::vector<Reminder> out;
+    for (auto &r : reminders_)
+        if (r.timer() && r.due <= now) out.push_back(r);
+    if (out.empty()) return out;
+    reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [now](const Reminder &r) { return r.timer() && r.due <= now; }),
+                     reminders_.end());
+    save_reminders();
+    timers_changed();
+    std::stable_sort(out.begin(), out.end(), [](const Reminder &a, const Reminder &b) { return a.due < b.due; });
+    for (auto &r : out) ended_.insert(ended_.begin(), r);   // newest first
+    ended_.erase(std::remove_if(ended_.begin(), ended_.end(), [now](const Reminder &r) { return now - r.due > kRecentSeconds; }),
+                 ended_.end());
+    if (ended_.size() > static_cast<size_t>(kMaxTimers)) ended_.resize(kMaxTimers);
+    return out;
+}
+
+std::vector<Reminder> Store::recent_timers(time_t now) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    std::vector<Reminder> out;
+    for (auto &r : ended_)
+        if (now - r.due <= kRecentSeconds) out.push_back(r);
+    return out;
+}
+
+int Store::restart_timer(int id, long seconds, time_t now) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = std::find_if(ended_.begin(), ended_.end(), [id](const Reminder &r) { return r.id == id; });
+    if (it == ended_.end() ||
+        std::count_if(reminders_.begin(), reminders_.end(), [](const Reminder &r) { return r.timer(); }) >= kMaxTimers)
+        return 0;
+    Reminder r = *it;
+    ended_.erase(it);
+    r.started = now;
+    r.length = seconds;
+    r.due = now + seconds;
+    r.fired = false;
+    reminders_.push_back(r);
+    save_reminders();
+    timers_changed();
+    return r.id;
 }
 
 // ---------------------------------------------------------------- memory
@@ -284,7 +414,7 @@ std::vector<std::string> Store::take_due_alerts(time_t now) {
         out.push_back(title + when);
     }
     for (auto &r : reminders_) {
-        if (r.fired || now < r.due) continue;
+        if (r.timer() || r.fired || now < r.due) continue;   // timers ring through timers::Alarm
         r.fired = true;
         rem_dirty = true;
         out.push_back(r.text.empty() ? "Timer finished" : r.text);

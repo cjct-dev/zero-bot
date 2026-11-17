@@ -1,6 +1,7 @@
 #include "platform/audio.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <csignal>
 #include <cstring>
@@ -233,6 +234,82 @@ void chime(int kind) {
         sp.finish();
         for (int i = 0; i < 100 && sp.playing(); ++i) usleep(20 * 1000);
     }).detach();
+}
+
+// ---------------------------------------------------------------- timer alarm
+std::vector<int16_t> alarm_burst(int rate) {
+    // Four quick beeps high in the range the small speaker plays loudest, then a pause: the
+    // pattern of an alarm clock, and nothing like the soft two-note chime of a reminder. A little
+    // third harmonic makes each beep buzz rather than whistle.
+    const double freq = 2093;                             // C7
+    const int beep = rate * 100 / 1000, gap = rate * 50 / 1000, edge = rate * 5 / 1000;
+    std::vector<int16_t> pcm;
+    for (int b = 0; b < 4; ++b) {
+        for (int i = 0; i < beep; ++i) {
+            const int from_end = beep - 1 - i;
+            const double env = i < edge ? 0.5 - 0.5 * std::cos(M_PI * i / edge)
+                             : from_end < edge ? 0.5 - 0.5 * std::cos(M_PI * from_end / edge) : 1.0;
+            const double x = 2 * M_PI * freq * i / rate;
+            pcm.push_back(static_cast<int16_t>(16000 * env * (std::sin(x) + 0.25 * std::sin(3 * x))));
+        }
+        pcm.insert(pcm.end(), static_cast<size_t>(gap), 0);
+    }
+    pcm.insert(pcm.end(), static_cast<size_t>(rate * 500 / 1000), 0);
+    return pcm;
+}
+
+AlarmSound &AlarmSound::get() {
+    static AlarmSound a;
+    return a;
+}
+
+void AlarmSound::start(std::function<bool()> wait, int max_ms) {
+    const int gen = ++generation_;     // also tells a player still running to finish
+    if (thread_.joinable()) thread_.join();
+    active_ = true;
+    thread_ = std::thread(&AlarmSound::run, this, gen, std::move(wait), max_ms);
+}
+
+void AlarmSound::stop() { ++generation_; }
+
+void AlarmSound::stop_and_wait() {
+    ++generation_;
+    // The player notices within a chunk; if it is stuck writing to a player that has hung, end
+    // the player, which frees the write.
+    for (int i = 0; i < 30 && active_; ++i) usleep(10 * 1000);
+    if (active_) speaker_.stop();
+    if (thread_.joinable()) thread_.join();
+}
+
+void AlarmSound::run(int gen, std::function<bool()> wait, int max_ms) {
+    const int rate = 24000;
+    const std::vector<int16_t> burst = alarm_burst(rate);
+    const size_t chunk = static_cast<size_t>(rate / 20);   // handed over 50 ms at a time
+    const std::vector<int16_t> quiet(chunk, 0);
+    if (speaker_.begin(rate)) {
+        using clock = std::chrono::steady_clock;
+        const auto t0 = clock::now();
+        auto elapsed_ms = [&t0] {
+            return static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - t0).count());
+        };
+        long long queued_ms = 0;
+        bool first = true;
+        while (generation_ == gen && elapsed_ms() < max_ms) {
+            // Silence while the assistant speaks (the timer's label, most likely), then ring on.
+            const std::vector<int16_t> &part = first || !wait || !wait() ? burst : quiet;
+            first = false;
+            for (size_t at = 0; at < part.size() && generation_ == gen; at += chunk) {
+                // Stay at most 200 ms ahead of real time, so that a key press silences it at once.
+                const long long ahead = queued_ms - elapsed_ms();
+                if (ahead > 200) usleep(static_cast<useconds_t>((ahead - 200) * 1000));
+                const size_t n = std::min(chunk, part.size() - at);
+                speaker_.write(part.data() + at, n * sizeof(int16_t));
+                queued_ms += static_cast<long long>(n) * 1000 / rate;
+            }
+        }
+        speaker_.stop();                                  // cut off what is still queued
+    }
+    active_ = false;
 }
 
 // ---------------------------------------------------------------- Music

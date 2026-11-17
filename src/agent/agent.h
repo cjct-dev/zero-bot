@@ -40,6 +40,10 @@ public:
     void cancel();              // abandon the current run entirely
     void reset_conversation();
     void say(const std::string &text);               // speak a notice (reminders) without involving the model
+    // Something the user has just seen or heard without the model taking part (a timer's alarm),
+    // which what they say next may well be about ("give it five more minutes"). It rides along
+    // with their next message, if that comes within ten minutes.
+    void add_context(const std::string &note);
 
     AgentState state();
     std::string detail();       // e.g. the tool currently running
@@ -75,4 +79,6 @@ private:
     AgentState state_ = AgentState::Idle;
     std::string detail_;
     std::string last_answer_;
+    std::string context_;                   // see add_context (guarded by mtx_)
+    time_t context_at_ = 0;
 };
