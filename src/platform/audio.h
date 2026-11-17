@@ -53,6 +53,11 @@ private:
 
 std::string wav_from_pcm(const std::vector<int16_t> &pcm, int rate);
 void set_volume(int percent);                     // system output volume, 0..100
+// Which microphone the recorder uses. With `builtin` (the default) it asks for the device's own
+// microphone by name, so that connecting Bluetooth headphones neither moves recording to the
+// headset nor makes the system drop the headphones into phone-call mode. Otherwise it takes
+// whatever the system's default input is.
+void set_mic_builtin(bool builtin);
 void set_mic_gain(int percent);                   // microphone amplification, 100 = default
 void normalize(std::vector<int16_t> &pcm);        // even out the level of a finished recording
 void chime(int kind);                             // 0 = start listening, 1 = done, 2 = alert

@@ -34,6 +34,7 @@ struct Settings {
     std::string home_city;
     std::string date_order = "dmy";   // "dmy" (3/4 is 3 April) or "mdy" (3/4 is March 4)
     bool month_first() const { return date_order == "mdy"; }
+    bool mic_builtin = true;          // always record from the device's own microphone
     bool camera_flip = true;          // turn photos the right way up (the sensor is mounted inverted)
     std::string home_country;   // tells same-named cities apart (London, Canada)
     std::string timezone;        // IANA name; empty = system

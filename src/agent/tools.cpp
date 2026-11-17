@@ -16,6 +16,7 @@
 #include "core/tether.h"
 #include "net/http.h"
 #include "platform/audio.h"
+#include "smarthome/home.h"
 #include "platform/camera.h"
 #include "platform/display.h"
 #include "platform/ir.h"
@@ -728,6 +729,21 @@ std::string t_music(const json &a, Context &ctx) {
 }
 
 // ---------------------------------------------------------------- TV remote
+// ---------------------------------------------------------------- smart home
+std::string t_smart_home(const json &a, Context &) {
+    const std::string action = util::lower(str_arg(a, "action")), device = str_arg(a, "device");
+    if (action == "status" || action == "list") return home::status(device);
+    if (action != "on" && action != "off") return fail("action must be on, off or status");
+    if (device.empty()) return fail("say which device");
+    if (dry_run()) {
+        // Tests check the choice of device without switching anything in the house.
+        for (const std::string &name : home::switch_names())
+            if (util::lower(name) == util::lower(device)) return json{{"device", name}, {"now", action}}.dump();
+        return fail("there is no device called '" + device + "'");
+    }
+    return home::switch_power(device, action == "on");
+}
+
 std::string t_tv_remote(const json &a, Context &) {
     const std::string key = util::lower(str_arg(a, "key"));
     if (key.empty()) return fail("key is required");
@@ -802,7 +818,7 @@ json E(const std::string &desc, std::vector<std::string> values) {
 // model supplies the confirmation up front in "say", and when the tool succeeds that is spoken
 // straight away instead of paying for a second model call just to say "done".
 const char *const kConfirmable[] = {"calendar_add", "calendar_update", "calendar_delete", "reminder_set", "reminder_cancel",
-                                    "memory_save", "memory_delete", "music", "tv_remote", "device"};
+                                    "memory_save", "memory_delete", "music", "tv_remote", "device", "smart_home"};
 
 std::vector<Tool> build() {
     std::vector<Tool> list = {
@@ -939,6 +955,13 @@ std::vector<Tool> build() {
               {"repeat", N("How many times to press (default 1)")},
               {"brand", S("Optional TV brand: samsung, lg, sony, panasonic, philips, toshiba, vizio")}}, {"key"}),
          t_tv_remote},
+        {"smart_home", "Using a home device",
+         "Switch one of the user's smart-home devices on this network on or off, or check whether it is on. "
+         "Calling this is the only way a device gets switched. The devices that exist are listed in the device "
+         "parameter; if what the user asks for is not one of them, say so instead of picking another.",
+         obj({{"action", E("What to do; status with no device reports all of them", {"on", "off", "status"})},
+              {"device", S("The device's name, exactly as listed")}}, {"action"}),
+         t_smart_home},
         {"device", "Adjusting the device",
          "Read or change this device's own settings. setting=status reports battery, Wi-Fi, volume and brightness.",
          obj({{"setting", E("Which setting", {"status", "volume", "brightness", "spoken_replies"})},
@@ -954,6 +977,7 @@ std::vector<Tool> build() {
                            "the detail that matters, e.g. \"Your timer is set for 12 minutes.\"";
         if (t.name == "music") desc += " Only for stop and next; omit for the other actions.";
         if (t.name == "device") desc += " Omit for status.";
+        if (t.name == "smart_home") desc += " Only for on and off; omit for status.";
         t.parameters["properties"]["say"] = S(desc);
     }
     return list;
@@ -970,10 +994,19 @@ json schema() {
     json arr = json::array();
     // A tool that can only fail is a wasted round trip; the prompt says search is unavailable.
     const bool no_search = Settings::get().search_key.empty();
-    for (auto &t : all())
-        if (!(no_search && t.name == "web_search"))
-            arr.push_back({{"type", "function"},
-                       {"function", {{"name", t.name}, {"description", t.description}, {"parameters", t.parameters}}}});
+    // The smart-home tool exists only on a network the user has scanned, and names exactly the
+    // devices saved for it. The names are passed as allowed values, as data, never as instructions.
+    const std::vector<std::string> home_devices = home::switch_names();
+    for (auto &t : all()) {
+        if (no_search && t.name == "web_search") continue;
+        json parameters = t.parameters;
+        if (t.name == "smart_home") {
+            if (home_devices.empty()) continue;
+            parameters["properties"]["device"]["enum"] = home_devices;
+        }
+        arr.push_back({{"type", "function"},
+                       {"function", {{"name", t.name}, {"description", t.description}, {"parameters", parameters}}}});
+    }
     return arr;
 }
 
@@ -996,6 +1029,7 @@ std::string confirmation(const std::string &name, const std::string &raw_args, c
         const std::string action = util::lower(str_arg(args, "action"));
         if (action != "stop" && action != "next") return "";
     }
+    if (name == "smart_home" && util::lower(str_arg(args, "action")) != "on" && util::lower(str_arg(args, "action")) != "off") return "";
     if (name == "device") {
         const std::string setting = util::lower(str_arg(args, "setting"));
         if (setting.empty() || setting == "status") return "";

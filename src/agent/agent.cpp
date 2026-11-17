@@ -283,7 +283,14 @@ void Agent::run_turn() {
     bool guarded = false;     // the unbacked-claim guard fires at most once per request
     std::string correction;   // one-off note for the next model call; never stored in the history
 
-    for (int round = 0; round < kMaxRounds && !cancel_; ++round) {
+    // While the microphone is open, what the user is saying will steer this request, so a reply
+    // that is ready must not be spoken over them. Returns once they have finished (or cancelled).
+    auto wait_while_listening = [&] {
+        while (listening_ && !cancel_) usleep(50 * 1000);
+    };
+
+    int round = 0;
+    for (; round < kMaxRounds && !cancel_; ++round) {
         set_state(AgentState::Thinking);
         round_cancel_ = false;
 
@@ -299,6 +306,7 @@ void Agent::run_turn() {
         correction.clear();
 
         bool began = false, speech_started = false, steered = false, unbacked = false;
+        std::vector<std::string> unsaid;   // sentences composed while the microphone was open
         SpeechQueue::Chunker chunker;
         llm::ChatOptions opt;
         opt.model = Settings::get().eff_llm_model();
@@ -328,14 +336,21 @@ void Agent::run_turn() {
                     round_cancel_ = true;
                     return;
                 }
+                // The user has started talking: keep the words back until they have finished.
+                if (listening_ || !unsaid.empty()) { unsaid.push_back(sentence); continue; }
                 speech_started = true;
                 set_state(AgentState::Speaking);
                 if (speak) speech.enqueue(sentence);
             }
         };
         llm::ChatResult res = llm::chat(messages, round == kMaxRounds - 1 ? json::array() : tool_schema, opt);
+        // The user was talking when this step was decided. Nothing has been said or done yet, so
+        // what they add is taken into account first: a correction should land before the action.
+        const bool talked_over = !speech_started && listening_;
+        if (!speech_started) wait_while_listening();
 
-        if (steered || (!speech_started && !res.cancelled && res.error.empty() && res.tool_calls.empty() && has_pending())) {
+        if (steered || (!speech_started && !res.cancelled && res.error.empty() && has_pending() &&
+                        (res.tool_calls.empty() || talked_over))) {
             if (began && ev_.answer_discard) ev_.answer_discard();
             absorb_inputs(false);
             --round;  // a withdrawn draft does not count against the budget
@@ -370,6 +385,7 @@ void Agent::run_turn() {
             check.fast = true;
             check.cancel = &cancel_;
             llm::ChatResult second = llm::chat(review, tool_schema, check);
+            wait_while_listening();
             if (cancel_) break;
             if (has_pending()) {  // the user added something while the draft was being checked
                 absorb_inputs(false);
@@ -414,6 +430,12 @@ void Agent::run_turn() {
             for (auto &sentence : chunker.feed(res.content))
                 if (speak) speech.enqueue(sentence);
         }
+        // Words held back while the user was talking, who then cancelled rather than adding anything.
+        if (!unsaid.empty() && res.tool_calls.empty()) {
+            set_state(AgentState::Speaking);
+            for (auto &sentence : unsaid)
+                if (speak) speech.enqueue(sentence);
+        }
 
         if (!res.tool_calls.empty()) {
             json calls = json::array();
@@ -425,7 +447,7 @@ void Agent::run_turn() {
             }
             if (began) {
                 const std::string rest = chunker.flush();
-                if (speak && !rest.empty()) speech.enqueue(rest);
+                if (speak && !rest.empty() && !listening_ && unsaid.empty()) speech.enqueue(rest);
                 if (ev_.answer_end) ev_.answer_end(res.content, false);
             }
             std::string confirm;
@@ -444,6 +466,7 @@ void Agent::run_turn() {
                 history_.push_back({{"role", "tool"}, {"tool_call_id", c.id}, {"content", result}});
             }
             acted = true;
+            wait_while_listening();
             // Anything said meanwhile steers the next step, so the model has to look again.
             if (absorb_inputs(false) > 0 || cancel_ || !all_confirmed) continue;
 
@@ -459,7 +482,7 @@ void Agent::run_turn() {
             set_state(AgentState::Speaking);
             if (speak) speech.enqueue(confirm);
             if (ev_.answer_end) ev_.answer_end(confirm, false);
-            if (absorb_inputs(false) > 0) { acted = guarded = false; continue; }
+            if (absorb_inputs(false) > 0) { acted = guarded = false; round = -1; continue; }   // a new request: fresh budget
             break;
         }
 
@@ -474,8 +497,22 @@ void Agent::run_turn() {
         if (began && ev_.answer_end) ev_.answer_end(res.content, false);
         if (res.content.empty() && ev_.error) ev_.error("The model returned an empty answer.");
         // Something typed while the answer was being spoken becomes the next request.
-        if (absorb_inputs(false) > 0) { acted = guarded = false; continue; }
+        if (absorb_inputs(false) > 0) { acted = guarded = false; round = -1; continue; }   // a new request: fresh budget
         break;
+    }
+    // Leaving by running out of rounds means the last one asked to go round again, so nothing has
+    // been said for this request. Say so rather than falling silent.
+    if (round >= kMaxRounds && !cancel_) {
+        const std::string sorry = "Sorry, that took more steps than I can do in one go. Please ask again.";
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            history_.push_back({{"role", "assistant"}, {"content", sorry}});
+        }
+        last_answer_ = sorry;
+        if (ev_.answer_begin) ev_.answer_begin();
+        if (ev_.answer_delta) ev_.answer_delta(sorry);
+        if (speak) speech.enqueue(sorry);
+        if (ev_.answer_end) ev_.answer_end(sorry, false);
     }
     speech.end_of_answer();
 }

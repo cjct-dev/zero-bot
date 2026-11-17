@@ -14,7 +14,7 @@ json Settings::to_json() const {
         {"api_base", api_base}, {"api_key", api_key}, {"llm_model", llm_model}, {"vision_model", vision_model},
         {"stt_model", stt_model}, {"tts_model", tts_model}, {"tts_voice", tts_voice}, {"speak_replies", speak_replies}, {"fast_mode", fast_mode}, {"compress_audio", compress_audio}, {"phone_fallback", phone_fallback}, {"setup_done", setup_done},
         {"search_key", search_key}, {"volume", volume}, {"brightness", brightness}, {"mic_gain", mic_gain},
-        {"agent_name", agent_name}, {"user_name", user_name}, {"home_city", home_city}, {"home_country", home_country}, {"date_order", date_order}, {"camera_flip", camera_flip}, {"timezone", timezone},
+        {"agent_name", agent_name}, {"user_name", user_name}, {"home_city", home_city}, {"home_country", home_country}, {"date_order", date_order}, {"camera_flip", camera_flip}, {"mic_builtin", mic_builtin}, {"timezone", timezone},
         {"units", units}, {"tv_brand", tv_brand}, {"music_dir", music_dir},
     };
 }
@@ -43,6 +43,7 @@ void Settings::from_json(const json &j) {
     home_country = jget(j, "home_country", home_country);
     date_order = jget(j, "date_order", date_order);
     camera_flip = jget(j, "camera_flip", camera_flip);
+    mic_builtin = jget(j, "mic_builtin", mic_builtin);
     timezone = jget(j, "timezone", timezone);
     units = jget(j, "units", units);
     tv_brand = jget(j, "tv_brand", tv_brand);

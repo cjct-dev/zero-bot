@@ -4,6 +4,7 @@
 
 #include "core/music_lib.h"
 #include "core/settings.h"
+#include "smarthome/home.h"
 #include "core/store.h"
 #include "core/util.h"
 
@@ -107,6 +108,10 @@ std::string system_prompt() {
          "brackets, that meaning (day, month and year) is exact: use it as it stands.\n";
     p += std::string("- Units: ") + (s.units == "imperial" ? "imperial" : "metric") + "\n";
     p += "- Music library on this device: " + std::to_string(MusicLibrary::get().size()) + " tracks\n";
+    // Present only on a network the user has scanned, so the prompt stays the same everywhere else.
+    if (home::available())
+        p += "- Home devices: this network has smart-home devices you can switch with smart_home. Requests like "
+             "'turn on the bed heater' or 'is the lamp on' mean that tool.\n";
     p += std::string("- Web search: ") +
          (s.search_key.empty() ? "not set up, so you cannot look anything up. Say so when it matters, and say that "
                                  "an answer from memory may be out of date.\n"

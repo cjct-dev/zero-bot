@@ -33,6 +33,9 @@ public:
     void submit_text(const std::string &text);
     void submit_audio(std::vector<int16_t> pcm);     // 16 kHz mono
     void interrupt_speech();    // user started talking: stop speaking and stop composing the spoken answer
+    // The microphone is open. Until it closes nothing new is spoken: an answer that becomes ready
+    // meanwhile waits, and is withdrawn if what the user said is then handed over as steering.
+    void set_listening(bool on) { listening_ = on; }
     void cancel();              // abandon the current run entirely
     void reset_conversation();
     void say(const std::string &text);               // speak a notice (reminders) without involving the model
@@ -67,6 +70,7 @@ private:
     std::atomic<bool> cancel_{false};       // whole run
     std::atomic<bool> round_cancel_{false}; // current model call
     std::atomic<bool> interrupted_{false};
+    std::atomic<bool> listening_{false};
     AgentState state_ = AgentState::Idle;
     std::string detail_;
     std::string last_answer_;

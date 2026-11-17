@@ -130,9 +130,11 @@ struct App {
         if (chat.typing()) chat.typing_end();
         Agent::get().interrupt_speech();
         audio::Music::get().hold(audio::Music::kMic, true);
+        Agent::get().set_listening(true);   // nothing new is spoken while the microphone is open
         if (!recorder.start()) {
             chat.add_note("The microphone could not be started.", theme::kListen);
             audio::Music::get().hold(audio::Music::kMic, false);
+            Agent::get().set_listening(false);
             return;
         }
         rec_start = display::now_ms();
@@ -147,11 +149,17 @@ struct App {
         // rather than coming back for the few seconds in between.
         if (sending) music.hold(audio::Music::kExchange, true);
         music.hold(audio::Music::kMic, false);
-        if (!submit) return;
-        if (!sending) { chat.add_note("That was too short to hear. Press TAB, speak, then press TAB again.", theme::kDim); return; }
+        if (!sending) {
+            Agent::get().set_listening(false);
+            if (submit) chat.add_note("That was too short to hear. Press TAB, speak, then press TAB again.", theme::kDim);
+            return;
+        }
         audio::normalize(pcm);
         auto shared = std::make_shared<std::vector<int16_t>>(std::move(pcm));
         when_online([shared] { Agent::get().submit_audio(std::move(*shared)); });
+        // Cleared only after the recording has been handed over, so a request that was waiting for
+        // the user to finish sees what they said and treats it as steering.
+        Agent::get().set_listening(false);
     }
 
     // Runs `send` straight away when there is a connection. With none, and a paired phone, it
@@ -420,6 +428,7 @@ struct App {
     }
 
     void check_alerts() {
+        if (recorder.active()) return;   // a reminder waits rather than talking over the user
         for (auto &text : Store::get().take_due_alerts(time(nullptr))) {
             chat.add_alert(text);
             audio::chime(2);
@@ -598,7 +607,7 @@ struct App {
         KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
         for (int i = 0; i < 8; ++i) menu.key(down);    // first row of "Device"
         snap("settings-device");
-        for (int i = 0; i < 12; ++i) menu.key(down);   // "Calendar", first row of "Your data"
+        for (int i = 0; i < 13; ++i) menu.key(down);   // "Calendar", first row of "Your data"
         snap("settings-data");
         menu.key(enter);
         snap("calendar");
@@ -649,6 +658,7 @@ int run_app(const std::string &shots_dir, bool keydump) {
     const Settings &s = Settings::get();
     display::set_brightness(s.brightness);
     audio::set_mic_gain(s.mic_gain);
+    audio::set_mic_builtin(s.mic_builtin);
     const int volume = s.volume;
     std::thread([volume] { audio::set_volume(volume); }).detach();
 

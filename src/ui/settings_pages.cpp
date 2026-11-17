@@ -11,6 +11,7 @@
 #include "core/autostart.h"
 #include "core/music_lib.h"
 #include "core/settings.h"
+#include "smarthome/home.h"
 #include "core/store.h"
 #include "core/tether.h"
 #include "core/ui_queue.h"
@@ -385,6 +386,179 @@ int read_int(const char *path, int fallback) {
     return f >> v ? v : fallback;
 }
 
+// ---------------------------------------------------------------- smart home
+const char *kind_label(const std::string &kind) {
+    if (kind == "tapo") return "Tapo plug";
+    if (kind == "homekit") return "HomeKit";
+    if (kind == "hue_bridge") return "Hue Bridge";
+    if (kind == "cast") return "Cast";
+    if (kind == "fire_tv") return "Fire TV";
+    if (kind == "matter") return "Matter";
+    return "Device";
+}
+
+void open_home_device(Menu &menu, const std::string &network_id, const std::string &device_id) {
+    MenuPage page;
+    page.title = "Home device";
+    page.build = [&menu, network_id, device_id]() {
+        std::vector<MenuItem> items;
+        home::Saved d;
+        bool found = false;
+        for (const auto &x : home::entry(network_id).devices)
+            if (x.id == device_id) { d = x; found = true; }
+        if (!found) { items.push_back(MenuItem::header("This device was removed")); return items; }
+        items.push_back(MenuItem::val("Name", [d] { return d.title(); }, nullptr));
+        items.push_back(MenuItem::val("Type", [d] { return std::string(kind_label(d.kind)) + (d.model.empty() ? "" : " " + d.model); }, nullptr));
+        items.push_back(MenuItem::val("Address", [d] { return d.ip; }, nullptr));
+        if (!d.controllable()) {
+            Menu::add_paragraph(items, "Found on this network, but Zero Bot cannot control this kind of device yet.");
+        } else {
+            if (!d.problem.empty()) Menu::add_paragraph(items, d.problem);
+            items.push_back(MenuItem::val("Assistant may use it", [d] { return on_off(d.enabled); }, nullptr,
+                                          [network_id, device_id, d](int) { home::set_enabled(network_id, device_id, !d.enabled); }));
+            for (const auto &sw : d.switches) {
+                const std::string name = sw.name;
+                items.push_back(MenuItem::val(d.switches.size() > 1 ? name : "Switch now", [sw] { return sw.on ? std::string("On") : std::string("Off"); }, [&menu, name, sw] {
+                    menu.toast(sw.on ? "Switching off…" : "Switching on…");
+                    background([name, sw] { return home::switch_power(name, !sw.on); },
+                               [&menu](const std::string &result) {
+                                   if (result.compare(0, 5, "ERROR") == 0) menu.problem("That did not work", result.substr(7));
+                                   else menu.refresh();
+                               });
+                }));
+            }
+        }
+        items.push_back(MenuItem::action("Remove from this list", [&menu, network_id, device_id] {
+            menu.confirm("Remove this device?", "Remove", [&menu, network_id, device_id] { home::remove_device(network_id, device_id); menu.pop(); });
+        }, true));
+        return items;
+    };
+    menu.push(std::move(page));
+}
+
+void open_tapo_account(Menu &menu, const std::string &network_id) {
+    MenuPage page;
+    page.title = "Tapo account";
+    page.build = [&menu, network_id]() {
+        std::vector<MenuItem> items;
+        Menu::add_paragraph(items, "Tapo plugs only obey the account they were set up with. The e-mail and a scrambled form of the "
+                                   "password are kept on this device and used on your own network only.");
+        items.push_back(MenuItem::val("E-mail", [] { return or_dash(home::tapo_account().email); }, [&menu] {
+            menu.edit_text("Tapo account e-mail", home::tapo_account().email, false,
+                           [](const std::string &t) { home::set_tapo_account(util::trim(t), ""); });
+        }));
+        items.push_back(MenuItem::val("Password", [] { return home::tapo_account().password_sha1.empty() ? std::string("not set") : std::string("saved"); }, [&menu] {
+            menu.edit_text("Tapo account password", "", true, [&menu](const std::string &t) {
+                if (t.empty()) return;
+                if (home::tapo_account().email.empty()) { menu.toast("Enter the e-mail first"); return; }
+                home::set_tapo_account(home::tapo_account().email, t);
+            }, "Typed text is shown while you enter it. Only a scrambled form is kept.");
+        }));
+        items.push_back(MenuItem::action("Check the plugs", [&menu, network_id] {
+            if (!home::tapo_account().set()) { menu.toast("Enter the e-mail and password first"); return; }
+            menu.toast("Asking the plugs…");
+            background([network_id] { return home::refresh(network_id); },
+                       [&menu](const std::string &summary) { menu.problem("Tapo plugs", summary); });
+        }));
+        return items;
+    };
+    menu.push(std::move(page));
+}
+
+// Starts a scan after the user has agreed to it on the warning page.
+void run_home_scan(Menu &menu) {
+    menu.toast("Looking for devices…");
+    background(
+        [] {
+            const discovery::Network net = home::network_now(true);
+            std::vector<discovery::Device> found;
+            std::string err;
+            bool heard = false;
+            discovery::Options opt;
+            if (!discovery::scan(opt, found, err, &heard)) return std::string("!") + err;
+            if (found.empty())
+                return std::string("!") + (heard ? "Nothing answered. This network may keep devices from seeing each other, as guest networks do."
+                                                 : "This device could not hear the network's announcements. A firewall may be blocking them.");
+            const int added = home::remember_scan(net, found);
+            std::string summary = std::to_string(found.size()) + (found.size() == 1 ? " device found" : " devices found");
+            if (added < static_cast<int>(found.size())) summary += ", " + std::to_string(added) + " new";
+            if (home::tapo_account().set()) summary += ". " + home::refresh(net.id());
+            return summary + ".";
+        },
+        [&menu](const std::string &result) {
+            if (!result.empty() && result[0] == '!') menu.problem("Nothing found", result.substr(1));
+            else { menu.toast(result); menu.refresh(); }
+        });
+}
+
+void open_home_warning(Menu &menu) {
+    MenuPage page;
+    page.title = "Before you scan";
+    page.build = [&menu]() {
+        std::vector<MenuItem> items;
+        Menu::add_paragraph(items, "Only do this on a network you own. On a hotel, office or shared network it would list other "
+                                   "people's devices and may break the rules there.");
+        Menu::add_paragraph(items, "The scan asks devices to identify themselves, the way a smart-home app does. It does not log in "
+                                   "to anything or change anything.");
+        Menu::add_paragraph(items, "What it finds is saved on this device for this network only. When you ask the assistant to "
+                                   "control something, the device names are sent to your AI service.");
+        items.push_back(MenuItem::action("This is my network: scan it", [&menu] { menu.pop(); run_home_scan(menu); }));
+        items.push_back(MenuItem::action("Cancel", [&menu] { menu.pop(); }));
+        return items;
+    };
+    menu.push(std::move(page));
+}
+
+void open_smart_home(Menu &menu) {
+    MenuPage page;
+    page.title = "Smart home";
+    page.build = [&menu]() {
+        std::vector<MenuItem> items;
+        const discovery::Network net = home::network_now();
+        if (!net.usable) {
+            Menu::add_paragraph(items, net.why_not.empty() ? "There is no home network to look at right now." : net.why_not);
+            return items;
+        }
+        const std::string id = net.id();
+        items.push_back(MenuItem::header("Network: " + net.label()));
+        if (!home::scanned(id)) {
+            Menu::add_paragraph(items, "Nothing has been looked for on this network. A scan finds smart plugs, lights and "
+                                       "similar devices so the assistant can switch them for you.");
+            items.push_back(MenuItem::action("Find devices on this network…", [&menu] { open_home_warning(menu); }));
+            return items;
+        }
+        const home::NetworkEntry e = home::entry(id);
+        bool any_tapo = false, shown_other = false;
+        for (const auto &d : e.devices) {
+            if (!d.controllable()) continue;
+            any_tapo = any_tapo || d.kind == "tapo";
+            const std::string did = d.id;
+            items.push_back(MenuItem::val(d.title(), [d] {
+                if (!d.problem.empty() || d.switches.empty()) return std::string("not ready");
+                if (!d.enabled) return std::string("not used");
+                if (d.switches.size() > 1) return std::to_string(d.switches.size()) + " sockets";
+                return d.switches[0].on ? std::string("on") : std::string("off");
+            }, [&menu, id, did] { open_home_device(menu, id, did); }));
+        }
+        for (const auto &d : e.devices) {
+            if (d.controllable()) continue;
+            if (!shown_other) { items.push_back(MenuItem::header("Found, not controllable yet")); shown_other = true; }
+            const std::string did = d.id;
+            items.push_back(MenuItem::val(d.title(), [d] { return std::string(kind_label(d.kind)); }, [&menu, id, did] { open_home_device(menu, id, did); }));
+        }
+        items.push_back(MenuItem::header("Manage"));
+        if (any_tapo)
+            items.push_back(MenuItem::val("Tapo account", [] { return home::tapo_account().set() ? home::tapo_account().email : std::string("needed"); },
+                                          [&menu, id] { open_tapo_account(menu, id); }));
+        items.push_back(MenuItem::action("Scan again", [&menu] { run_home_scan(menu); }));
+        items.push_back(MenuItem::action("Forget this network", [&menu, id] {
+            menu.confirm("Forget every device saved for this network?", "Forget", [id] { home::forget_network(id); });
+        }, true));
+        return items;
+    };
+    menu.push(std::move(page));
+}
+
 void open_status(Menu &menu) {
     menu.toast("Checking…");
     background(
@@ -690,6 +864,8 @@ void open_settings(Menu &menu, const SettingsHooks &hooks) {
         }));
         items.push_back(MenuItem::val("Use phone when offline", [] { return on_off(S().phone_fallback); }, nullptr,
                                       [](int) { S().phone_fallback = !S().phone_fallback; S().save(); }));
+        items.push_back(MenuItem::val("Microphone", [] { return S().mic_builtin ? std::string("Built-in") : std::string("System default"); }, nullptr,
+                                      [](int) { S().mic_builtin = !S().mic_builtin; S().save(); audio::set_mic_builtin(S().mic_builtin); }));
         items.push_back(MenuItem::val("Flip camera image", [] { return on_off(S().camera_flip); }, nullptr,
                                       [](int) { S().camera_flip = !S().camera_flip; S().save(); }));
         items.push_back(text_setting("Home city", &Settings::home_city, "Used for weather when you do not name a place."));
@@ -709,6 +885,10 @@ void open_settings(Menu &menu, const SettingsHooks &hooks) {
                                       [&menu] { open_memory(menu); }));
         items.push_back(MenuItem::val("TV remote", [] { return S().tv_brand == "auto" ? std::string("any brand") : S().tv_brand; },
                                       [&menu] { open_remote(menu); }));
+        items.push_back(MenuItem::val("Smart home", [] {
+            const size_t n = home::switch_names().size();
+            return n ? std::to_string(n) + (n == 1 ? " device" : " devices") : std::string("set up");
+        }, [&menu] { open_smart_home(menu); }));
         items.push_back(MenuItem::val("Music library", [] { return std::to_string(MusicLibrary::get().size()) + " tracks"; }, [&menu] {
             menu.toast("Scanning " + S().eff_music_dir() + "…");
             background([] { MusicLibrary::get().refresh(S().eff_music_dir(), true); return MusicLibrary::get().size(); },

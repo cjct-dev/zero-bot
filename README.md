@@ -131,7 +131,7 @@ Press **TAB** twice. Move with **fn**+**F**/**X** (or plain **F**/**X**), change
 | Section | What is there |
 |---|---|
 | Assistant | Language, vision, speech-to-text and text-to-speech models; voice; spoken replies on/off; fast replies; the assistant's name |
-| Device | Volume, brightness, microphone gain, time zone, start at power-on, internet via phone, flip camera image, home city and country, your name, date order, units |
+| Device | Volume, brightness, microphone gain, time zone, start at power-on, internet via phone, microphone, flip camera image, home city and country, your name, date order, units |
 | Your data | Calendar (edit, add, delete, delete all), reminders, memory (edit, add, delete, forget everything), TV remote, music library, start a new conversation |
 | AI service | Address, API key, web search key, compress audio |
 | About | Status and connection test, exit to launcher |
@@ -254,6 +254,12 @@ the file.
   *Assistant* in settings.
 - **Photos are upside down.** Toggle *Device → Flip camera image* in settings. It is on by
   default, which is right for the CardputerZero's built-in camera.
+- **Bluetooth headphones.** Pair them in the system Bluetooth settings and sound (replies and
+  music) goes to them. Zero Bot keeps listening through the device's own microphone
+  (*Device → Microphone: Built-in*), because a Bluetooth headset can only offer its microphone by
+  dropping into phone-call mode, which ruins the sound. If the headphones go quiet or tinny when
+  another app records, turn off the system's automatic switch to call mode:
+  `wpctl settings --save bluetooth.autoswitch-to-headset-profile false`.
 - **It mishears you.** Raise *Device → Microphone gain*, and speak towards the top of the device.
 - **The device cannot see your Wi-Fi network.** The radio is 2.4 GHz only. On some system images
   it also only scans channels 1 to 11, so a router on channel 12 or 13 is invisible; see

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstring>
+#include <sstream>
 #include <unistd.h>
 
 namespace audio {
@@ -16,6 +17,47 @@ std::atomic<float> g_mic_gain{kBaseMicGain};
 // ---------------------------------------------------------------- Recorder
 Recorder::~Recorder() { cancel(); }
 
+namespace {
+std::atomic<bool> g_mic_builtin{true};
+std::mutex g_mic_name_mtx;
+std::string g_mic_name;                 // the built-in microphone's source name, once found
+std::atomic<bool> g_mic_lookup{false};  // a lookup is running
+
+// The built-in microphone is the sound card soldered to the board ("alsa_input.platform-…");
+// failing that, any wired input rather than a Bluetooth one.
+std::string find_builtin_mic() {
+    const auto res = proc::run({"pactl", "list", "short", "sources"}, "", 3000);
+    std::string fallback;
+    std::istringstream lines(res.out);
+    for (std::string line; std::getline(lines, line);) {
+        std::istringstream cols(line);
+        std::string id, name;
+        cols >> id >> name;
+        if (name.compare(0, 11, "alsa_input.") != 0) continue;
+        if (name.compare(0, 20, "alsa_input.platform-") == 0) return name;
+        if (fallback.empty()) fallback = name;
+    }
+    return fallback;
+}
+
+std::string builtin_mic() {
+    {
+        std::lock_guard<std::mutex> lk(g_mic_name_mtx);
+        if (!g_mic_name.empty()) return g_mic_name;
+    }
+    const std::string name = find_builtin_mic();
+    std::lock_guard<std::mutex> lk(g_mic_name_mtx);
+    g_mic_name = name;
+    return name;
+}
+}  // namespace
+
+void set_mic_builtin(bool builtin) {
+    g_mic_builtin = builtin;
+    // Look the name up ahead of time, so the first press of the talk key does not wait for it.
+    if (builtin && !g_mic_lookup.exchange(true)) std::thread([] { builtin_mic(); g_mic_lookup = false; }).detach();
+}
+
 bool Recorder::start() {
     cancel();
     {
@@ -24,9 +66,14 @@ bool Recorder::start() {
     }
     samples_seen_ = 0;
     level_ = 0;
-    child_ = proc::spawn({"pw-cat", "--record", "--raw", "--format", "s16", "--rate", std::to_string(kMicRate),
-                          "--channels", "1", "--latency", "20ms", "-"},
-                         false, true);
+    std::vector<std::string> argv = {"pw-cat", "--record", "--raw", "--format", "s16", "--rate", std::to_string(kMicRate),
+                                     "--channels", "1", "--latency", "20ms"};
+    if (g_mic_builtin) {
+        const std::string mic = builtin_mic();
+        if (!mic.empty()) { argv.push_back("--target"); argv.push_back(mic); }
+    }
+    argv.push_back("-");
+    child_ = proc::spawn(argv, false, true);
     if (!child_.running()) return false;
     active_ = true;
     thread_ = std::thread(&Recorder::reader, this);

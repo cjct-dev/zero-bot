@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zero Bot agent architecture</title>
+<style>
+:root { color-scheme: light dark; --bg: #f6f6f3; --panel: #ffffff; --fg: #1b1e22; --muted: #59626d; --line: #d3d7dd; --dia: #fbfbf9; --box: #ffffff; --box-stroke: #8a93a0; --inner: #f1f3f6; --arrow: #4b5563; --accent: #0b6f6a; --code-bg: #ecedf0; --steer: #2f6fd0; --steer-bg: #e4eefc; --fast: #a86a12; --fast-bg: #fbefd5; --guard: #8b46c1; --guard-bg: #f3e6fa; --say: #2b8049; --say-bg: #e0f3e6; --exit: #6b7280; --exit-bg: #e9ebee; --dec-bg: #eef1f5; }
+@media (prefers-color-scheme: dark) { :root { --bg: #131619; --panel: #1a1e23; --fg: #e5e7ea; --muted: #9aa4b1; --line: #343b45; --dia: #171b1f; --box: #20252b; --box-stroke: #6f7a88; --inner: #2a3038; --arrow: #a3adba; --accent: #5cc8c0; --code-bg: #262b32; --steer: #6ea8ff; --steer-bg: #1b2b45; --fast: #e0b050; --fast-bg: #392d12; --guard: #c08cf0; --guard-bg: #31203d; --say: #62c98a; --say-bg: #163123; --exit: #8b95a3; --exit-bg: #2a2f36; --dec-bg: #252b33; } }
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); line-height: 1.55; font-size: 15.5px;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; overflow-wrap: break-word; }
+main { max-width: 1440px; margin: 0 auto; padding: 28px 20px 64px; }
+@media (max-width: 600px) { main { padding: 20px 16px 48px; } }
+h1 { font-size: 1.75rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+h2 { font-size: 1.25rem; line-height: 1.3; margin: 48px 0 6px; padding-top: 16px; border-top: 1px solid var(--line); }
+h3 { font-size: 1rem; margin: 28px 0 6px; }
+p { margin: 8px 0; }
+.prose, .prose-list { max-width: 78ch; }
+.lede { font-size: 1.05rem; max-width: 78ch; }
+.meta { color: var(--muted); font-size: 0.875rem; max-width: 90ch; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 0.86em;
+  background: var(--code-bg); border-radius: 4px; padding: 1px 4px; overflow-wrap: anywhere; }
+nav { margin: 18px 0 0; font-size: 0.92rem; }
+nav ol { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px 10px; }
+nav a { display: inline-block; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel);
+  color: var(--fg); text-decoration: none; }
+nav a:hover, nav a:focus-visible { border-color: var(--accent); color: var(--accent); }
+a { color: var(--accent); }
+figure { margin: 16px 0 10px; }
+.diagram { background: var(--dia); border: 1px solid var(--line); border-radius: 10px; padding: 12px; overflow-x: auto; }
+.overview-svg { min-width: 1240px; }
+.flow-svg { min-width: 900px; max-width: 1084px; margin: 0 auto; }
+figcaption { color: var(--muted); font-size: 0.875rem; margin-top: 8px; max-width: 100ch; }
+.scroll-hint { display: none; color: var(--muted); font-size: 0.8rem; margin: 6px 0 0; }
+@media (max-width: 1320px) { .scroll-hint { display: block; } }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 0 0; padding: 0; list-style: none; font-size: 0.86rem; }
+.legend li { display: flex; align-items: center; gap: 7px; }
+.sw { width: 16px; height: 16px; border-radius: 4px; border: 1.5px solid; flex: none; }
+.sw-steer { background: var(--steer-bg); border-color: var(--steer); }
+.sw-fast { background: var(--fast-bg); border-color: var(--fast); }
+.sw-guard { background: var(--guard-bg); border-color: var(--guard); }
+.sw-say { background: var(--say-bg); border-color: var(--say); }
+.sw-exit { background: var(--exit-bg); border-color: var(--exit); }
+.sw-dec { background: var(--dec-bg); border-color: var(--box-stroke); border-radius: 0;
+  clip-path: polygon(22% 0, 78% 0, 100% 50%, 78% 100%, 22% 100%, 0 50%); border: 0; }
+.table-wrap { overflow-x: auto; max-width: 1120px; margin: 12px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 0.875rem; }
+th, td { text-align: left; vertical-align: top; padding: 7px 12px; border-bottom: 1px solid var(--line); }
+tr:last-child > td { border-bottom: 0; }
+thead th { font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+tbody th { font-weight: 600; white-space: nowrap; }
+tr.group > th { background: var(--inner); font-size: 0.8rem; letter-spacing: 0.02em; white-space: normal; }
+td.say { white-space: nowrap; }
+.yes { color: var(--say); font-weight: 700; }
+.no { color: var(--muted); }
+.two { max-width: 1120px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 0 24px; align-items: start; }
+.stack { max-width: 760px; margin: 12px 0; display: grid; gap: 6px; }
+.layer { border: 1px solid var(--box-stroke); border-radius: 8px; background: var(--panel); padding: 8px 12px; font-size: 0.875rem; }
+.layer b { display: block; }
+.layer.percall { border-style: dashed; }
+.layer.fast { border-color: var(--fast); background: var(--fast-bg); }
+.stack-note { color: var(--muted); font-size: 0.8rem; margin: 2px 0 0 2px; }
+ul.review { padding-left: 0; list-style: none; max-width: 92ch; }
+ul.review > li { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin: 8px 0; }
+ul.review b.t { display: block; }
+.cite { display: block; color: var(--muted); font-size: 0.82rem; margin-top: 4px; }
+.tag { display: inline-block; font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; border: 1px solid var(--line);
+  border-radius: 999px; padding: 0 7px; margin-left: 6px; color: var(--muted); font-weight: 600; vertical-align: 1px; }
+ul.prose-list { padding-left: 20px; }
+ul.prose-list li { margin: 4px 0; }
+footer { margin-top: 48px; color: var(--muted); font-size: 0.82rem; border-top: 1px solid var(--line); padding-top: 12px; }
+
+.diagram-svg { display: block; width: 100%; height: auto; font-family: inherit; }
+.diagram-svg text { fill: var(--fg); font-size: 12px; }
+.diagram-svg .d-box { fill: var(--box); stroke: var(--box-stroke); stroke-width: 1.2; }
+.diagram-svg .d-agent { stroke: var(--accent); stroke-width: 2.2; }
+.diagram-svg .d-net { stroke-dasharray: 6 4; }
+.diagram-svg .d-inner { fill: var(--inner); stroke: var(--line); stroke-width: 1; }
+.diagram-svg .d-title { font-size: 13.5px; font-weight: 700; }
+.diagram-svg .d-sub { font-size: 11px; fill: var(--muted); }
+.diagram-svg .d-small { font-size: 11px; fill: var(--muted); }
+.diagram-svg .d-strong { font-weight: 700; }
+.diagram-svg .d-cap { font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; fill: var(--muted); }
+.diagram-svg .d-lbl { font-size: 11.5px; paint-order: stroke; stroke: var(--dia); stroke-width: 4px; stroke-linejoin: round; }
+.diagram-svg .d-faint { font-size: 11px; fill: var(--muted); }
+.diagram-svg .d-arrow { fill: none; stroke: var(--arrow); stroke-width: 1.4; }
+.diagram-svg .d-dash { stroke-dasharray: 5 4; }
+.diagram-svg .d-head { fill: var(--arrow); }
+.diagram-svg .n { stroke-width: 1.2; }
+.diagram-svg .n-step { fill: var(--box); stroke: var(--box-stroke); }
+.diagram-svg .n-dec { fill: var(--dec-bg); stroke: var(--box-stroke); }
+.diagram-svg .n-exit { fill: var(--exit-bg); stroke: var(--exit); }
+.diagram-svg .n-steer { fill: var(--steer-bg); stroke: var(--steer); }
+.diagram-svg .n-fast { fill: var(--fast-bg); stroke: var(--fast); }
+.diagram-svg .n-guard { fill: var(--guard-bg); stroke: var(--guard); }
+.diagram-svg .n-say { fill: var(--say-bg); stroke: var(--say); }
+.diagram-svg .stripe { fill: none; stroke-width: 4; stroke-linecap: round; }
+.diagram-svg .s-steer { stroke: var(--steer); }
+.diagram-svg .s-fast { stroke: var(--fast); }
+.diagram-svg .s-guard { stroke: var(--guard); }
+.diagram-svg .s-say { stroke: var(--say); }
+.diagram-svg .nt { font-size: 13px; font-weight: 700; }
+.diagram-svg .nl { font-size: 12px; }
+.diagram-svg .ns { font-size: 11px; fill: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Zero Bot: agent architecture</h1>
+  <p class="lede">How a spoken or typed request travels through the app: which parts call which, what one request does step
+  by step, which tools the model can use, and what a reviewer may want to look at more closely.</p>
+  <p class="meta">Read from the source tree at commit <code>6fcffa8</code> plus uncommitted local changes, on 17 November 2026.
+  Names written <code>like_this()</code> are identifiers in the code. Files read in full: <code>src/agent/agent.cpp</code>,
+  <code>agent.h</code>, <code>llm.cpp</code>, <code>llm.h</code>, <code>tools.cpp</code>, <code>tools.h</code>, <code>prompt.cpp</code>,
+  <code>speech.cpp</code>, <code>speech.h</code>, <code>src/ui/app.cpp</code>, <code>src/platform/audio.cpp</code>,
+  <code>src/core/store.cpp</code>, <code>src/core/settings.cpp</code>, <code>settings.h</code>, <code>src/net/http.cpp</code>. Other files appear only as
+  far as these call into them.</p>
+  <nav aria-label="Sections">
+    <ol>
+      <li><a href="#overview">1. Components</a></li>
+      <li><a href="#request">2. One request, step by step</a></li>
+      <li><a href="#tools">3. Tools</a></li>
+      <li><a href="#review">4. Things worth reviewing</a></li>
+      <li><a href="#unsure">5. Not verified</a></li>
+    </ol>
+  </nav>
+</header>
+
+<section id="overview">
+  <h2>1. Components and data flow</h2>
+  <p class="prose">Input is handled on the UI thread, the conversation runs on one worker thread, and speech is produced on a
+  third. The agent is the only part that talks to the chat model; everything it learns about the world comes back as text from
+  the service client or from a tool.</p>
+  <figure>
+    <div class="diagram"><svg viewBox="0 0 1500 672" role="img" aria-label="Components of Zero Bot and the data moving between them: keyboard and microphone feed the app controller, which queues text or audio for the agent worker thread; the agent calls the service client and the tools; sentences go to a speech queue that synthesizes them and writes audio to the speaker." class="diagram-svg overview-svg"><defs><marker id="ov-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-head"/></marker></defs><text x="20" y="36" class="d-cap">DEVICE</text><text x="250" y="36" class="d-cap">UI THREAD</text><text x="640" y="36" class="d-cap">AGENT WORKER THREAD</text><text x="1030" y="36" class="d-cap">CALLS MADE BY THE AGENT</text><text x="1260" y="36" class="d-cap">WHAT THEY REACH</text><rect x="20" y="56" width="160" height="78" rx="8" class="d-box"/><text x="32" y="77" class="d-title">Keyboard</text><text x="32" y="99" class="d-line">TAB, typing + ENTER,</text><text x="32" y="117" class="d-line">ESC, del twice</text><rect x="20" y="152" width="160" height="78" rx="8" class="d-box"/><text x="32" y="173" class="d-title">Microphone</text><text x="32" y="195" class="d-line">audio::Recorder</text><text x="32" y="213" class="d-line">pw-cat, 16 kHz mono</text><rect x="20" y="300" width="160" height="78" rx="8" class="d-box"/><text x="32" y="321" class="d-title">Screen 320 × 170</text><text x="32" y="343" class="d-line">ui::ChatView (LVGL)</text><rect x="20" y="486" width="160" height="78" rx="8" class="d-box"/><text x="32" y="507" class="d-title">Speaker</text><text x="32" y="529" class="d-line">audio::Speaker</text><text x="32" y="547" class="d-line">pw-cat, 24 kHz mono</text><rect x="250" y="56" width="190" height="360" rx="8" class="d-box"/><text x="262" y="77" class="d-title">App controller</text><text x="262" y="92" class="d-sub">ui/app.cpp</text><text x="262" y="118" class="d-line">handle_key()</text><text x="262" y="136" class="d-line">start_recording()</text><text x="262" y="154" class="d-line">finish_recording()</text><text x="262" y="172" class="d-line">when_online()</text><text x="262" y="190" class="d-line">short_escape()</text><text x="262" y="208" class="d-line">new_conversation()</text><text x="262" y="226" class="d-line">check_alerts(), every 1 s,</text><text x="262" y="244" class="d-line">from Store::take_due_alerts()</text><text x="262" y="262" class="d-line">uiq::drain() runs the</text><text x="262" y="280" class="d-line">agent's event callbacks</text><rect x="250" y="578" width="190" height="78" rx="8" class="d-box"/><text x="262" y="599" class="d-title">Music player</text><text x="262" y="621" class="d-line">audio::Music (ffplay)</text><text x="262" y="639" class="d-line">paused while a hold is set</text><rect x="640" y="56" width="230" height="360" rx="8" class="d-box d-agent"/><text x="652" y="77" class="d-title">Agent</text><text x="652" y="92" class="d-sub">agent/agent.cpp</text><rect x="654" y="100" width="202" height="40" rx="6" class="d-inner"/><text x="663" y="117" class="d-line d-strong">inputs_</text><text x="663" y="132" class="d-small">typed text or recorded PCM</text><rect x="654" y="152" width="202" height="116" rx="6" class="d-inner"/><text x="663" y="169" class="d-line d-strong">run_turn()</text><text x="663" y="184" class="d-small">absorb_inputs(): transcribe, stamp</text><text x="663" y="199" class="d-small">rounds, at most kMaxRounds (8)</text><text x="663" y="214" class="d-small">fast mode: hold and second look</text><text x="663" y="229" class="d-small">claim guards, steering</text><text x="663" y="244" class="d-small">say confirmations</text><rect x="654" y="280" width="202" height="56" rx="6" class="d-inner"/><text x="663" y="297" class="d-line d-strong">history_</text><text x="663" y="312" class="d-small">chat messages, in memory only</text><text x="663" y="327" class="d-small">trim_history(): keep the last 40</text><rect x="654" y="348" width="202" height="56" rx="6" class="d-inner"/><text x="663" y="365" class="d-line d-strong">prompt::system_prompt()</text><text x="663" y="380" class="d-small">rules, Today facts, memories;</text><text x="663" y="395" class="d-small">rebuilt for every model call</text><rect x="640" y="486" width="230" height="170" rx="8" class="d-box"/><text x="652" y="507" class="d-title">SpeechQueue</text><text x="652" y="522" class="d-sub">agent/speech.cpp, own thread</text><text x="652" y="544" class="d-line">enqueue(sentence)</text><text x="652" y="562" class="d-line">one sentence at a time:</text><text x="652" y="580" class="d-line">synthesize, then Speaker::write()</text><text x="652" y="598" class="d-line">end_of_answer() lets it drain</text><text x="652" y="616" class="d-line">stop() drops the rest at once</text><rect x="1030" y="56" width="180" height="160" rx="8" class="d-box"/><text x="1042" y="77" class="d-title">Service client</text><text x="1042" y="92" class="d-sub">agent/llm.cpp, net/http.cpp</text><text x="1042" y="118" class="d-line">llm::transcribe()</text><text x="1042" y="154" class="d-line">llm::chat(), streamed</text><text x="1042" y="198" class="d-line">llm::describe_image()</text><rect x="1030" y="246" width="180" height="170" rx="8" class="d-box"/><text x="1042" y="267" class="d-title">Tools</text><text x="1042" y="282" class="d-sub">agent/tools.cpp</text><text x="1042" y="308" class="d-line">tools::run()</text><text x="1042" y="326" class="d-line">22 tools, one at a time,</text><text x="1042" y="344" class="d-line">on the agent thread</text><text x="1042" y="362" class="d-line">tools::confirmation()</text><rect x="1030" y="486" width="180" height="78" rx="8" class="d-box"/><text x="1042" y="507" class="d-title">llm::synthesize()</text><text x="1042" y="529" class="d-line">Opus, raw PCM as fallback</text><rect x="1260" y="56" width="220" height="160" rx="8" class="d-box d-net"/><text x="1272" y="77" class="d-title">OpenAI-compatible service</text><text x="1272" y="92" class="d-sub">address and key from Settings</text><text x="1272" y="118" class="d-line">speech-to-text</text><text x="1272" y="154" class="d-line">chat model with tool calling</text><text x="1272" y="198" class="d-line">vision (image in a chat call)</text><rect x="1260" y="246" width="220" height="36" rx="8" class="d-box"/><text x="1272" y="261" class="d-line d-strong">Local data</text><text x="1272" y="275" class="d-small">calendar, reminders, memory</text><path d="M1210 264 L1260 264" class="d-arrow" marker-end="url(#ov-ah)"/><rect x="1260" y="291" width="220" height="36" rx="8" class="d-box"/><text x="1272" y="306" class="d-line d-strong">Device hardware</text><text x="1272" y="320" class="d-small">camera, IR, backlight, audio</text><path d="M1210 309 L1260 309" class="d-arrow" marker-end="url(#ov-ah)"/><rect x="1260" y="335" width="220" height="36" rx="8" class="d-box d-net"/><text x="1272" y="350" class="d-line d-strong">Public web services</text><text x="1272" y="364" class="d-small">weather, rates, prices, search</text><path d="M1210 353 L1260 353" class="d-arrow" marker-end="url(#ov-ah)"/><rect x="1260" y="380" width="220" height="36" rx="8" class="d-box"/><text x="1272" y="395" class="d-line d-strong">Python sandbox</text><text x="1272" y="409" class="d-small">bwrap, no network, 20 s limit</text><path d="M1210 398 L1260 398" class="d-arrow" marker-end="url(#ov-ah)"/><rect x="1260" y="486" width="220" height="78" rx="8" class="d-box d-net"/><text x="1272" y="507" class="d-title">Same service</text><text x="1272" y="529" class="d-line">text-to-speech</text><path d="M180 95 L250 95" class="d-arrow" marker-end="url(#ov-ah)"/><text x="215" y="89" class="d-lbl" text-anchor="middle">keys</text><path d="M180 191 L250 191" class="d-arrow" marker-end="url(#ov-ah)"/><text x="215" y="185" class="d-lbl" text-anchor="middle">PCM</text><path d="M250 339 L180 339" class="d-arrow" marker-end="url(#ov-ah)"/><text x="215" y="333" class="d-lbl" text-anchor="middle">draws</text><path d="M440 110 L640 110" class="d-arrow" marker-end="url(#ov-ah)"/><text x="540" y="104" class="d-lbl" text-anchor="middle">submit_text(text)</text><path d="M440 132 L640 132" class="d-arrow" marker-end="url(#ov-ah)"/><text x="540" y="126" class="d-lbl" text-anchor="middle">submit_audio(pcm)</text><path d="M440 178 L640 178" class="d-arrow" marker-end="url(#ov-ah)"/><text x="540" y="172" class="d-lbl" text-anchor="middle">interrupt_speech()</text><path d="M440 206 L640 206" class="d-arrow" marker-end="url(#ov-ah)"/><text x="540" y="200" class="d-lbl" text-anchor="middle">cancel(), reset_conversation()</text><path d="M640 262 L440 262" class="d-arrow d-dash" marker-end="url(#ov-ah)"/><text x="540" y="256" class="d-lbl" text-anchor="middle">AgentEvents, via uiq::post()</text><text x="540" y="277" class="d-lbl d-faint" text-anchor="middle">user_message, answer_begin,</text><text x="540" y="291" class="d-lbl d-faint" text-anchor="middle">answer_delta, answer_end,</text><text x="540" y="305" class="d-lbl d-faint" text-anchor="middle">answer_discard, tool, image, error</text><path d="M870 114 L1030 114" class="d-arrow" marker-end="url(#ov-ah)"/><text x="950" y="108" class="d-lbl" text-anchor="middle">transcribe(wav)</text><path d="M870 150 L1030 150" class="d-arrow" marker-end="url(#ov-ah)"/><text x="950" y="144" class="d-lbl" text-anchor="middle">chat(messages, tools)</text><path d="M1030 176 L870 176" class="d-arrow d-dash" marker-end="url(#ov-ah)"/><text x="950" y="170" class="d-lbl" text-anchor="middle">text deltas, tool_calls</text><path d="M870 300 L1030 300" class="d-arrow" marker-end="url(#ov-ah)"/><text x="950" y="294" class="d-lbl" text-anchor="middle">run(name, args, ctx)</text><path d="M1030 330 L870 330" class="d-arrow d-dash" marker-end="url(#ov-ah)"/><text x="950" y="324" class="d-lbl" text-anchor="middle">result, up to 6000 chars</text><path d="M1030 372 L870 372" class="d-arrow d-dash" marker-end="url(#ov-ah)"/><text x="950" y="366" class="d-lbl" text-anchor="middle">say sentence, if it worked</text><path d="M1210 114 L1260 114" class="d-arrow" marker-end="url(#ov-ah)"/><text x="1235" y="108" class="d-lbl" text-anchor="middle">MP3</text><path d="M1210 150 L1260 150" class="d-arrow" marker-end="url(#ov-ah)"/><text x="1235" y="144" class="d-lbl" text-anchor="middle">SSE</text><path d="M1210 194 L1260 194" class="d-arrow" marker-end="url(#ov-ah)"/><text x="1235" y="188" class="d-lbl" text-anchor="middle">JPEG</text><path d="M1210 525 L1260 525" class="d-arrow" marker-end="url(#ov-ah)"/><text x="1235" y="519" class="d-lbl" text-anchor="middle">Opus</text><path d="M1170 246 L1170 216" class="d-arrow" marker-end="url(#ov-ah)"/><text x="1162" y="236" class="d-lbl" text-anchor="end">look: describe_image(jpeg)</text><path d="M800 416 L800 486" class="d-arrow" marker-end="url(#ov-ah)"/><text x="810" y="446" class="d-lbl">enqueue(sentence),</text><text x="810" y="461" class="d-lbl">end_of_answer(), stop()</text><path d="M400 416 V452 H700 V486" class="d-arrow" marker-end="url(#ov-ah)"/><text x="550" y="446" class="d-lbl" text-anchor="middle">Agent::say(alert): no model call</text><path d="M870 512 L1030 512" class="d-arrow" marker-end="url(#ov-ah)"/><text x="950" y="506" class="d-lbl" text-anchor="middle">synthesize(sentence)</text><path d="M1030 542 L870 542" class="d-arrow d-dash" marker-end="url(#ov-ah)"/><text x="950" y="536" class="d-lbl" text-anchor="middle">PCM, 24 kHz</text><path d="M640 525 L180 525" class="d-arrow" marker-end="url(#ov-ah)"/><text x="540" y="519" class="d-lbl" text-anchor="middle">PCM: Speaker::write()</text><path d="M640 617 L440 617" class="d-arrow" marker-end="url(#ov-ah)"/><text x="540" y="611" class="d-lbl" text-anchor="middle">hold(kSpeech)</text><text x="540" y="632" class="d-lbl d-faint" text-anchor="middle">released when the queue drains</text><path d="M300 416 L300 578" class="d-arrow" marker-end="url(#ov-ah)"/><text x="309" y="558" class="d-lbl">hold(kMic), hold(kExchange)</text></svg></div>
+    <p class="scroll-hint">The diagram scrolls sideways on a narrow window.</p>
+    <figcaption>Figure 1. Solid arrows are calls or data handed forward; dashed arrows are results and callbacks. Boxes with a
+    dashed border are reached over the network. All four service calls go to one OpenAI-compatible service through
+    <code>net/http.cpp</code> (libcurl, shared connections).</figcaption>
+  </figure>
+
+  <h3>How the keys reach the agent</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Key</th><th>In <code>App::handle_key()</code></th><th>Effect on the agent</th></tr></thead>
+    <tbody>
+      <tr><th>TAB</th><td><code>start_recording()</code>; the next TAB calls <code>finish_recording(true)</code>. A second TAB
+        within 450&nbsp;ms (<code>kDoubleTapMs</code>) opens settings instead. Recordings under 0.4&nbsp;s are dropped; at
+        90&nbsp;s recording is submitted automatically.</td>
+        <td>At the start: <code>Agent::interrupt_speech()</code>. At the end: samples are normalized and passed to
+        <code>Agent::submit_audio()</code> through <code>when_online()</code>.</td></tr>
+      <tr><th>Typing, ENTER</th><td>A character or ENTER opens the input line; ENTER sends it.</td>
+        <td><code>Agent::submit_text()</code> through <code>when_online()</code>. Speech that is playing is left alone.</td></tr>
+      <tr><th>ESC</th><td><code>short_escape()</code> backs out of one thing, in this order: settings menu, recording, typing,
+        a busy or speaking agent, music. Held for 1.2&nbsp;s it leaves the app.</td>
+        <td><code>Agent::cancel()</code>: sets <code>cancel_</code> and <code>round_cancel_</code>, stops speech, empties
+        <code>inputs_</code>.</td></tr>
+      <tr><th>del twice</th><td>Two presses within 450&nbsp;ms, outside the input line: <code>new_conversation()</code>.</td>
+        <td><code>Agent::reset_conversation()</code>: <code>cancel()</code>, then <code>history_</code> is emptied. Calendar,
+        reminders and memories are kept.</td></tr>
+    </tbody>
+  </table></div>
+  <ul class="prose-list">
+    <li><code>when_online()</code> sends at once when there is a connection. With none, and phone fallback enabled, it first
+      tries Bluetooth tethering on another thread and then sends either way.</li>
+    <li>Alerts do not go through the model. <code>App::check_alerts()</code> runs once a second, takes due items from
+      <code>Store::take_due_alerts()</code>, shows and chimes them, and, when spoken replies are on, calls
+      <code>Agent::say("Reminder. …")</code>, which only enqueues the text in the speech queue.</li>
+    <li>A command-line front end (<code>run_cli()</code> in <code>src/main.cpp</code>) drives the same loop through
+      <code>Agent::run_blocking()</code> with audio switched off.</li>
+  </ul>
+
+  <div class="two">
+    <div>
+      <h3>Threads</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Thread</th><th>Runs</th></tr></thead>
+        <tbody>
+          <tr><th>UI</th><td>The loop in <code>ui::run_app()</code>: keys, <code>uiq::drain()</code>, <code>periodic()</code>, LVGL.</td></tr>
+          <tr><th>Agent worker</th><td><code>Agent::worker()</code> and <code>run_turn()</code>: transcription, every model call and every
+            tool, one after another.</td></tr>
+          <tr><th>Speech</th><td><code>SpeechQueue::run()</code>: one synthesis request at a time, plus a short-lived watcher thread
+            per sentence so that <code>stop()</code> cancels the request quickly.</td></tr>
+          <tr><th>Recorder</th><td><code>Recorder::reader()</code> while the microphone is open.</td></tr>
+          <tr><th>Music</th><td>The loop started by <code>Music::play()</code>: one <code>ffplay</code> child per track.</td></tr>
+        </tbody>
+      </table></div>
+      <p class="prose"><code>Agent::mtx_</code> guards <code>inputs_</code>, <code>history_</code> and the state shown in the
+      footer. Agent callbacks reach the screen only through <code>uiq::post()</code>.</p>
+    </div>
+    <div>
+      <h3>Music holds</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Hold</th><th>Set by</th><th>Cleared by</th></tr></thead>
+        <tbody>
+          <tr><th><code>kMic</code></th><td><code>start_recording()</code></td><td><code>finish_recording()</code></td></tr>
+          <tr><th><code>kExchange</code></th><td><code>finish_recording()</code> when a voice request is sent; the
+            <code>music</code> tool's play action during a request</td>
+            <td><code>SpeechQueue::run()</code> when the queue drains or is stopped; <code>release_music()</code> at the end of a
+            request if nothing is being spoken; <code>App::periodic()</code> once a second when everything is idle</td></tr>
+          <tr><th><code>kSpeech</code></th><td><code>SpeechQueue::run()</code> when the first audio of an answer is ready</td>
+            <td><code>SpeechQueue::run()</code>; the <code>periodic()</code> fallback</td></tr>
+          <tr><th><code>kUser</code></th><td>The play/pause key (<code>Music::pause()</code>)</td>
+            <td>The same key; <code>Music::play()</code>; <code>Music::stop()</code></td></tr>
+        </tbody>
+      </table></div>
+      <p class="prose">The player is stopped with <code>SIGSTOP</code> while any hold is set and continued when none is left
+      (<code>Music::hold()</code>). A track asked for during a request is queued under <code>kExchange</code> and starts after
+      the reply has been spoken.</p>
+    </div>
+  </div>
+</section>
+
+<section id="request">
+  <h2>2. One request, step by step</h2>
+  <p class="prose">Everything below is <code>Agent::run_turn()</code> in <code>src/agent/agent.cpp</code>. The checks after the
+  model call are drawn in the order the code makes them. The right-hand line returns to the start of the next round; the
+  left-hand line leaves the loop.</p>
+  <figure>
+    <div class="diagram"><svg viewBox="0 0 1084 1850" role="img" aria-label="One request through Agent::run_turn: inputs are absorbed, history is trimmed, then each round builds the messages, calls the chat model, and checks in order for steering, cancel, interruption, error, the fast-mode second look and the claim guards, before running tool calls or finishing with a final answer." class="diagram-svg flow-svg"><defs><marker id="fl-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-head"/></marker></defs><rect x="250" y="16" width="400" height="46" rx="8" class="n n-step"/><text x="264" y="36" class="nt">Agent::worker() wakes</text><text x="264" y="53" class="nl">inputs_ is not empty; busy_ = true; run_turn()</text><path d="M450 62 V88" class="d-arrow" marker-end="url(#fl-ah)"/><rect x="250" y="88" width="400" height="78" rx="8" class="n n-step"/><text x="264" y="108" class="nt">absorb_inputs(true)</text><text x="264" y="125" class="nl">voice: llm::transcribe(wav_from_pcm(pcm)), state Transcribing</text><text x="264" y="141" class="nl">ev.user_message(text, steering) puts it on the screen</text><text x="264" y="157" class="nl">history_ += user: "[timestamp] " + spell_numeric_dates(text)</text><rect x="712" y="96" width="320" height="62" rx="8" class="n n-exit"/><text x="726" y="116" class="nt">return</text><text x="726" y="133" class="nl">nothing was added: the transcript</text><text x="726" y="149" class="nl">was empty or failed, or cancelled</text><path d="M650 127 H712" class="d-arrow" marker-end="url(#fl-ah)"/><text x="681" y="121" class="d-lbl" text-anchor="middle">0 added</text><path d="M450 166 V192" class="d-arrow" marker-end="url(#fl-ah)"/><rect x="250" y="192" width="400" height="62" rx="8" class="n n-step"/><text x="264" y="212" class="nt">trim_history()</text><text x="264" y="229" class="nl">over kMaxHistory (40) messages: keep the last 40,</text><text x="264" y="245" class="nl">starting at the first user message among them</text><path d="M450 254 V280" class="d-arrow" marker-end="url(#fl-ah)"/><rect x="250" y="280" width="400" height="110" rx="8" class="n n-step"/><text x="264" y="300" class="nt">Round start: build the messages for one model call</text><text x="264" y="317" class="nl">system: prompt::system_prompt(), then a copy of history_</text><text x="264" y="333" class="nl">last round only: "Answer now with what you have", no tools</text><text x="264" y="349" class="nl">correction note from a guard, if one is waiting (used once)</text><text x="264" y="365" class="nl">hold = fast_mode &amp;&amp; deciding &amp;&amp; !acted &amp;&amp; !guarded</text><text x="264" y="381" class="nl">hold: kDecideNote is appended to the newest user message</text><rect x="40" y="304" width="180" height="62" rx="8" class="n n-exit"/><text x="54" y="324" class="nt">Loop ends</text><text x="54" y="341" class="nl">kMaxRounds (8) reached,</text><text x="54" y="357" class="nl">or cancel_ is set</text><path d="M250 335 H220" class="d-arrow" marker-end="url(#fl-ah)"/><path d="M450 390 V416" class="d-arrow" marker-end="url(#fl-ah)"/><rect x="250" y="416" width="400" height="126" rx="8" class="n n-step"/><text x="264" y="436" class="nt">llm::chat(messages, tools, opt), streamed</text><text x="264" y="453" class="nl">hold: the text is kept back; nothing is shown or spoken yet</text><text x="264" y="469" class="nl">no hold: on_text → ev.answer_delta → Chunker::feed()</text><text x="264" y="485" class="nl">before the first sentence is spoken, two checks:</text><text x="264" y="501" class="nl">  has_pending() → steered; claims_action(sentence) → unbacked</text><text x="264" y="517" class="nl">  (either one cancels this model call through round_cancel_)</text><text x="264" y="533" class="nl">otherwise SpeechQueue::enqueue(sentence), state Speaking</text><path d="M450 542 V574.5" class="d-arrow" marker-end="url(#fl-ah)"/><polygon points="264,574.5 636,574.5 650,599 636,623.5 264,623.5 250,599" class="n n-dec"/><text x="450" y="595.5" class="nt" text-anchor="middle">Draft withdrawn because new input arrived?</text><text x="450" y="611.5" class="ns" text-anchor="middle">steered, or: nothing spoken, no tool calls, no error, has_pending()</text><rect x="712" y="568" width="320" height="62" rx="8" class="n n-steer"/><path d="M716 575 V623" class="stripe s-steer"/><text x="726" y="588" class="nt">Steering: fold the new input in</text><text x="726" y="605" class="nl">ev.answer_discard, absorb_inputs(false)</text><text x="726" y="621" class="nl">--round: this attempt is not counted</text><path d="M650 599 H712" class="d-arrow" marker-end="url(#fl-ah)"/><text x="681" y="593" class="d-lbl" text-anchor="middle">yes</text><path d="M450 623.5 V659" class="d-arrow" marker-end="url(#fl-ah)"/><text x="442" y="639.5" class="d-lbl" text-anchor="end">no</text><polygon points="264,659 636,659 650,679 636,699 264,699 250,679" class="n n-dec"/><text x="450" y="683" class="nt" text-anchor="middle">cancel_ set? (ESC, new conversation, app exit)</text><rect x="40" y="656" width="180" height="46" rx="8" class="n n-exit"/><text x="54" y="676" class="nt">Leave the loop</text><text x="54" y="693" class="nl">ev.answer_end(text, true)</text><path d="M250 679 H220" class="d-arrow" marker-end="url(#fl-ah)"/><text x="235" y="673" class="d-lbl" text-anchor="middle">yes</text><path d="M450 699 V747" class="d-arrow" marker-end="url(#fl-ah)"/><text x="442" y="715" class="d-lbl" text-anchor="end">no</text><polygon points="264,747 636,747 650,767 636,787 264,787 250,767" class="n n-dec"/><text x="450" y="771" class="nt" text-anchor="middle">interrupted_ set? (TAB while it was speaking)</text><rect x="712" y="728" width="320" height="78" rx="8" class="n n-exit"/><text x="726" y="748" class="nt">return to worker()</text><text x="726" y="765" class="nl">history_ += assistant: text so far +</text><text x="726" y="781" class="nl">" [the user interrupted here]"</text><text x="726" y="797" class="nl">ev.answer_end(text, true)</text><path d="M650 767 H712" class="d-arrow" marker-end="url(#fl-ah)"/><text x="681" y="761" class="d-lbl" text-anchor="middle">yes</text><path d="M450 787 V835" class="d-arrow" marker-end="url(#fl-ah)"/><text x="442" y="803" class="d-lbl" text-anchor="end">no</text><polygon points="264,835 636,835 650,855 636,875 264,875 250,855" class="n n-dec"/><text x="450" y="859" class="nt" text-anchor="middle">res.error set? (service or network failure)</text><rect x="40" y="832" width="180" height="46" rx="8" class="n n-exit"/><text x="54" y="852" class="nt">Leave the loop</text><text x="54" y="869" class="nl">ev.error(message)</text><path d="M250 855 H220" class="d-arrow" marker-end="url(#fl-ah)"/><text x="235" y="849" class="d-lbl" text-anchor="middle">yes</text><path d="M450 875 V934.5" class="d-arrow" marker-end="url(#fl-ah)"/><text x="442" y="891" class="d-lbl" text-anchor="end">no</text><polygon points="264,934.5 636,934.5 650,959 636,983.5 264,983.5 250,959" class="n n-dec"/><text x="450" y="955.5" class="nt" text-anchor="middle">Held draft came back with no tool call?</text><text x="450" y="971.5" class="ns" text-anchor="middle">hold &amp;&amp; tool_calls.empty() &amp;&amp; !content.empty()</text><rect x="712" y="904" width="320" height="110" rx="8" class="n n-fast"/><path d="M716 911 V1007" class="stripe s-fast"/><text x="726" y="924" class="nt">Second look: one more model call</text><text x="726" y="941" class="nl">llm::chat(messages + draft + kSecondLook, tools)</text><text x="726" y="957" class="nl">new input meanwhile: absorb, --round, next round</text><text x="726" y="973" class="nl">cancel_ set meanwhile: leave the loop</text><text x="726" y="989" class="nl">it returns tool calls: run those, drop the draft</text><text x="726" y="1005" class="nl">anything else, or a failure: the draft stands</text><path d="M650 959 H712" class="d-arrow" marker-end="url(#fl-ah)"/><text x="681" y="953" class="d-lbl" text-anchor="middle">yes</text><path d="M1032 981 H1060" class="d-arrow"/><path d="M872 1014 V1036 H453" class="d-arrow" marker-end="url(#fl-ah)"/><text x="681" y="1030" class="d-lbl" text-anchor="middle">carry on with the tool calls or the draft</text><path d="M450 983.5 V1081" class="d-arrow" marker-end="url(#fl-ah)"/><text x="442" y="999.5" class="d-lbl" text-anchor="end">no</text><polygon points="264,1081 636,1081 650,1113 636,1145 264,1145 250,1113" class="n n-dec"/><text x="450" y="1102" class="nt" text-anchor="middle">Unbacked claim in the draft?</text><text x="450" y="1118" class="ns" text-anchor="middle">checked only while no tool has run and the guard has not fired:</text><text x="450" y="1133" class="ns" text-anchor="middle">unbacked || claims_action(content), else claims_not_saved(content)</text><rect x="712" y="1058" width="320" height="110" rx="8" class="n n-guard"/><path d="M716 1065 V1161" class="stripe s-guard"/><text x="726" y="1078" class="nt">Withdraw the draft and correct</text><text x="726" y="1095" class="nl">guarded = true; ev.answer_discard</text><text x="726" y="1111" class="nl">correction = note quoting 160 chars of the draft:</text><text x="726" y="1127" class="nl">action claim: call the tool, or say you cannot</text><text x="726" y="1143" class="nl">not-saved claim: call calendar_list (search) now</text><text x="726" y="1159" class="nl">continue: this uses up a round</text><path d="M650 1113 H712" class="d-arrow" marker-end="url(#fl-ah)"/><text x="681" y="1107" class="d-lbl" text-anchor="middle">yes</text><path d="M450 1145 V1194" class="d-arrow" marker-end="url(#fl-ah)"/><text x="442" y="1161" class="d-lbl" text-anchor="end">no</text><rect x="250" y="1194" width="400" height="62" rx="8" class="n n-fast"/><path d="M254 1201 V1249" class="stripe s-fast"/><text x="264" y="1214" class="nt">Held draft stands: release it</text><text x="264" y="1231" class="nl">only when hold was set and the reply has no tool calls</text><text x="264" y="1247" class="nl">ev.answer_begin, ev.answer_delta(draft), enqueue its sentences</text><path d="M450 1256 V1317" class="d-arrow" marker-end="url(#fl-ah)"/><polygon points="264,1317 636,1317 650,1337 636,1357 264,1357 250,1337" class="n n-dec"/><text x="450" y="1341" class="nt" text-anchor="middle">Does the reply contain tool calls?</text><rect x="712" y="1282" width="320" height="110" rx="8" class="n n-step"/><text x="726" y="1302" class="nt">Run the tools, state Working</text><text x="726" y="1319" class="nl">history_ += assistant {content, tool_calls}</text><text x="726" y="1335" class="nl">each call in turn: ev.tool(label), tools::run()</text><text x="726" y="1351" class="nl">result cut to kMaxToolResult (6000 chars)</text><text x="726" y="1367" class="nl">say = tools::confirmation(name, args, result)</text><text x="726" y="1383" class="nl">history_ += tool result; afterwards acted = true</text><path d="M650 1337 H712" class="d-arrow" marker-end="url(#fl-ah)"/><text x="681" y="1331" class="d-lbl" text-anchor="middle">yes</text><path d="M872 1392 V1418" class="d-arrow" marker-end="url(#fl-ah)"/><polygon points="726,1418 1018,1418 1032,1450 1018,1482 726,1482 712,1450" class="n n-dec"/><text x="872" y="1439" class="nt" text-anchor="middle">All calls confirmed, no new input?</text><text x="872" y="1455" class="ns" text-anchor="middle">all_confirmed &amp;&amp; !cancel_ &amp;&amp;</text><text x="872" y="1470" class="ns" text-anchor="middle">absorb_inputs(false) == 0</text><path d="M1032 1450 H1060" class="d-arrow"/><text x="1046" y="1444" class="d-lbl" text-anchor="middle">no</text><path d="M872 1482 V1508" class="d-arrow" marker-end="url(#fl-ah)"/><text x="864" y="1498" class="d-lbl" text-anchor="end">yes</text><rect x="712" y="1508" width="320" height="94" rx="8" class="n n-say"/><path d="M716 1515 V1595" class="stripe s-say"/><text x="726" y="1528" class="nt">Speak the say sentences directly</text><text x="726" y="1545" class="nl">history_ += assistant: confirm</text><text x="726" y="1561" class="nl">ev.answer_begin, answer_delta, answer_end</text><text x="726" y="1577" class="nl">SpeechQueue::enqueue(confirm)</text><text x="726" y="1593" class="nl">no second model call</text><path d="M450 1357 V1383" class="d-arrow" marker-end="url(#fl-ah)"/><text x="442" y="1373" class="d-lbl" text-anchor="end">no</text><rect x="250" y="1383" width="400" height="78" rx="8" class="n n-step"/><text x="264" y="1403" class="nt">Final answer</text><text x="264" y="1420" class="nl">Chunker::flush() → enqueue whatever is left</text><text x="264" y="1436" class="nl">history_ += assistant: content; ev.answer_end(content, false)</text><text x="264" y="1452" class="nl">empty content also raises ev.error("…empty answer.")</text><path d="M712 1555 H453" class="d-arrow" marker-end="url(#fl-ah)"/><path d="M450 1461 V1634.5" class="d-arrow" marker-end="url(#fl-ah)"/><polygon points="264,1634.5 636,1634.5 650,1659 636,1683.5 264,1683.5 250,1659" class="n n-dec"/><text x="450" y="1655.5" class="nt" text-anchor="middle">Did more input arrive meanwhile?</text><text x="450" y="1671.5" class="ns" text-anchor="middle">absorb_inputs(false) &gt; 0</text><rect x="712" y="1628" width="320" height="62" rx="8" class="n n-steer"/><path d="M716 1635 V1683" class="stripe s-steer"/><text x="726" y="1648" class="nt">It becomes the next request</text><text x="726" y="1665" class="nl">acted = guarded = false</text><text x="726" y="1681" class="nl">round is not reset: the budget is shared</text><path d="M650 1659 H712" class="d-arrow" marker-end="url(#fl-ah)"/><text x="681" y="1653" class="d-lbl" text-anchor="middle">yes</text><path d="M450 1683.5 V1716" class="d-arrow" marker-end="url(#fl-ah)"/><text x="442" y="1699.5" class="d-lbl" text-anchor="end">no: break</text><rect x="250" y="1716" width="400" height="46" rx="8" class="n n-step"/><text x="264" y="1736" class="nt">speech.end_of_answer()</text><text x="264" y="1753" class="nl">the queue plays out what is left, then closes the stream</text><path d="M450 1762 V1788" class="d-arrow" marker-end="url(#fl-ah)"/><rect x="250" y="1788" width="400" height="46" rx="8" class="n n-step"/><text x="264" y="1808" class="nt">Back in Agent::worker()</text><text x="264" y="1825" class="nl">set_state(Idle); release_music(); busy_ = false</text><path d="M1032 599 H1060" class="d-arrow"/><path d="M1032 1113 H1060" class="d-arrow"/><path d="M1032 1659 H1060" class="d-arrow"/><path d="M1060 1659 V335 H650" class="d-arrow" marker-end="url(#fl-ah)"/><text x="855" y="328" class="d-lbl d-strong" text-anchor="middle">next round</text><path d="M40 335 H24" class="d-arrow"/><path d="M40 679 H24" class="d-arrow"/><path d="M40 855 H24" class="d-arrow"/><path d="M24 335 V1739 H250" class="d-arrow" marker-end="url(#fl-ah)"/><text x="137" y="1732" class="d-lbl d-strong" text-anchor="middle">break</text></svg></div>
+    <p class="scroll-hint">The diagram scrolls sideways on a narrow window.</p>
+    <ul class="legend" aria-label="Legend">
+      <li><span class="sw sw-dec"></span>decision</li>
+      <li><span class="sw sw-steer"></span>steering: input that arrives mid-request</li>
+      <li><span class="sw sw-fast"></span>fast mode: held draft and second look</li>
+      <li><span class="sw sw-guard"></span>claim guard</li>
+      <li><span class="sw sw-say"></span><code>say</code> confirmation, no second model call</li>
+      <li><span class="sw sw-exit"></span>leaves the loop or returns</li>
+    </ul>
+    <figcaption>Figure 2. One request through <code>run_turn()</code>. A round is one pass from “Round start” to a line on
+    the right or left edge.</figcaption>
+  </figure>
+
+  <h3>The four flags that steer the loop</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Flag</th><th>Meaning</th><th>Changes</th></tr></thead>
+    <tbody>
+      <tr><th><code>acted</code></th><td>A tool has run for the current request.</td>
+        <td>Set after the tool calls of a round; reset when a new request is absorbed after an answer.</td></tr>
+      <tr><th><code>guarded</code></th><td>A claim guard has already fired for the current request.</td>
+        <td>Set by either guard; reset together with <code>acted</code>.</td></tr>
+      <tr><th><code>hold</code></th><td>The reply of this round is kept back until it has been checked. Per round:
+        fast mode, the last message in <code>history_</code> is not a tool result (<code>deciding</code>), and neither flag above
+        is set.</td><td>Computed at each round start.</td></tr>
+      <tr><th><code>correction</code></th><td>A one-off note for the next model call, written by a guard.</td>
+        <td>Added to that call's copy of the messages with <code>add_note()</code>, then cleared. Never stored in
+        <code>history_</code>.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>What the user can do while a request runs</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Action</th><th>When</th><th>What the code does</th></tr></thead>
+    <tbody>
+      <tr><th>Speak or type more</th><td>Before anything has been spoken, or while tools run</td>
+        <td>The input waits in <code>inputs_</code>. <code>has_pending()</code> withdraws an unspoken draft; after tool calls
+        <code>absorb_inputs(false)</code> adds it as a further user message, marked as steering on screen. The model then answers
+        the request as amended.</td></tr>
+      <tr><th>Type more</th><td>While the answer is being spoken</td>
+        <td>The speech carries on. After the answer the text is absorbed and handled as the next request in the same
+        <code>run_turn()</code> call.</td></tr>
+      <tr><th>TAB</th><td>While it is speaking and the model call is still open</td>
+        <td><code>interrupt_speech()</code> stops the speech queue, sets <code>interrupted_</code> and cancels the model call. The
+        text so far is stored with “[the user interrupted here]” and the run ends.</td></tr>
+      <tr><th>TAB</th><td>After the run has ended, with speech still playing</td>
+        <td>Only <code>SpeechQueue::stop()</code>.</td></tr>
+      <tr><th>ESC</th><td>Any time the agent is busy or speaking</td>
+        <td><code>cancel()</code>. A tool that has not started yet returns “ERROR: cancelled by the user” so that every tool call
+        in <code>history_</code> still has a result.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>What one model call contains</h3>
+  <p class="prose">The order is chosen so that the beginning of the request stays identical from call to call
+  (comments in <code>absorb_inputs()</code> and <code>prompt::system_prompt()</code>): the clock time travels with each user
+  message, not in the system prompt.</p>
+  <div class="stack">
+    <div class="layer"><b>System prompt, from <code>prompt::system_prompt()</code></b>
+      Role and device; “Being right matters more than being quick” (trust rules: nothing happens without a tool call, the camera
+      only through <code>look</code>, changeable facts from <code>web_search</code>, no date or number work in the head);
+      “Using tools” (act at once, ask only when a wrong guess would matter, date formats, the <code>say</code> argument, memory and
+      calendar habits); “How to answer” (one to three spoken sentences, plain text, the user's language); “Today” (time zone, the
+      next fourteen days with weekdays, name, home city, date order, units, size of the music library, whether web search is set
+      up); “What you remember about the user” (every memory from <code>Store::memories()</code> with its id).</div>
+    <div class="layer"><b><code>history_</code></b>
+      User, assistant and tool messages. Each user message starts with <code>[Tue 17 Nov 2026, 14:05]</code>, and numeric dates
+      in it have been followed by their meaning in words by <code>util::spell_numeric_dates()</code>, using the day-first or
+      month-first setting.</div>
+    <div class="layer percall"><b>Notes for this call only (<code>add_note()</code>)</b>
+      <code>kDecideNote</code> when the reply will be held; a guard's correction; “Answer now with what you have” in the last
+      round. A note is appended to the newest user message, or sent as a trailing system message when the last message is not a
+      user message.</div>
+    <div class="layer percall fast"><b>Second look only</b>
+      The draft as an assistant message, then <code>kSecondLook</code> as a user message: call the right tool if the draft
+      claims an action, states something a tool provides, or skipped a lookup; otherwise reply “OK”.</div>
+  </div>
+  <p class="stack-note">Solid border: stored between calls. Dashed border: added to one call and not stored.</p>
+
+  <h3>Service calls (<code>src/agent/llm.cpp</code>)</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Function</th><th>Request</th><th>Fallbacks and retries</th><th>Timeout</th></tr></thead>
+    <tbody>
+      <tr><th><code>chat()</code></th>
+        <td><code>POST /chat/completions</code>, streamed (SSE). <code>max_tokens</code> 1200, <code>temperature</code> 0.4, tools
+        with <code>tool_choice: "auto"</code>, and <code>reasoning_effort: "none"</code> in fast mode. Tool-call fragments are
+        collected by index; text between <code>&lt;think&gt;</code> markers is removed before it reaches <code>on_text</code>.</td>
+        <td>HTTP 400 with nothing received: one retry without <code>reasoning_effort</code>, and the field is left out from then
+        on. 5xx, 429 or a failed connection with nothing received: up to two more attempts after 0.4&nbsp;s and 0.8&nbsp;s.
+        A timeout after the reply has begun is not retried.</td><td>180&nbsp;s</td></tr>
+      <tr><th><code>transcribe()</code></th>
+        <td><code>POST /audio/transcriptions</code>, multipart. The 16&nbsp;kHz recording is sent as MP3 when compression is on
+        and the encoder is present.</td>
+        <td>HTTP 400, 415 or 422: sent again as WAV, and WAV is used from then on. No retry for connection failures.</td>
+        <td>60&nbsp;s</td></tr>
+      <tr><th><code>synthesize()</code></th>
+        <td><code>POST /audio/speech</code>, one queued piece of text per request. Opus is decoded at 48&nbsp;kHz and halved to 24&nbsp;kHz.</td>
+        <td>Opus refused or not decodable: raw PCM, from then on. A WAV header on a PCM reply is stripped.</td><td>60&nbsp;s</td></tr>
+      <tr><th><code>describe_image()</code></th>
+        <td>Goes through <code>chat()</code> with no tools: a fixed system message, the question, and the JPEG as a base64 data
+        URL. <code>max_tokens</code> 900, <code>temperature</code> 0.2. Uses the vision model setting, or the chat model when
+        none is set.</td><td>As <code>chat()</code>.</td><td>180&nbsp;s</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>From text to sound (<code>src/agent/speech.cpp</code>)</h3>
+  <ul class="prose-list">
+    <li><code>SpeechQueue::Chunker::feed()</code> cuts streamed text at <code>.</code>, <code>!</code> or <code>?</code> followed by
+      a space once the piece is at least 25 characters long, at a line break, or at a comma, semicolon or space after 240
+      characters. A full stop between two digits is not a cut.</li>
+    <li><code>SpeechQueue::enqueue()</code> first passes the sentence through <code>prompt::for_speech()</code>, which removes
+      markdown characters and shortens a link to its domain.</li>
+    <li><code>SpeechQueue::run()</code> synthesizes one sentence, writes it to the speaker with 120&nbsp;ms of silence after it,
+      then takes the next. <code>stop()</code> empties the queue, kills the player process and bumps <code>generation_</code>,
+      which the watcher thread turns into a cancelled request within about 20&nbsp;ms.</li>
+  </ul>
+</section>
+
+<section id="tools">
+  <h2>3. Tools</h2>
+  <p class="prose">22 tools are defined in <code>build()</code> in <code>src/agent/tools.cpp</code>. Each takes JSON arguments
+  and returns text; a failure is text starting with <code>ERROR</code>. <code>tools::run()</code> rejects unknown names and
+  arguments that are not a JSON object, and catches exceptions. Ten tools (<code>kConfirmable</code>) accept a <code>say</code>
+  argument: the sentence to speak once the call has worked. <code>tools::confirmation()</code> returns it only when the result
+  does not start with <code>ERROR</code> or <code>{"error"</code>.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Tool</th><th>What it does</th><th>Touches</th><th><code>say</code></th></tr></thead>
+    <tbody>
+      <tr class="group"><th colspan="4">Computation only: nothing stored, no network</th></tr>
+      <tr><th><code>calculator</code></th><td>Exact arithmetic through <code>calc::evaluate()</code>.</td><td>In process</td><td class="say"><span class="no">no</span></td></tr>
+      <tr><th><code>date_info</code></th><td>Weekday of a date and its distance from today in whole days, with an optional shift by
+        <code>add_days</code>.</td><td>In process</td><td class="say"><span class="no">no</span></td></tr>
+      <tr><th><code>run_python</code></th><td>Python 3 under <code>bwrap --unshare-all</code>: no network, read-only <code>/usr</code>,
+        throw-away <code>/tmp</code> and <code>/home</code>, 20&nbsp;s, 6000 bytes of output, address space capped with
+        <code>ulimit -v</code>. Refuses to run when <code>bwrap</code> is missing.</td><td>Child process</td><td class="say"><span class="no">no</span></td></tr>
+
+      <tr class="group"><th colspan="4">Local data: JSON files written by <code>Store</code> (<code>src/core/store.cpp</code>)</th></tr>
+      <tr><th><code>calendar_add</code></th><td>Adds an event: timed or all-day, repeating <code>daily</code>, <code>weekly</code>,
+        <code>monthly</code> or <code>yearly</code>, optional end, notes, alert lead time and <code>since_year</code> for
+        birthdays. A one-off event more than 12 hours in the past (all-day: before today) is refused with a
+        hint about the year.</td><td><code>calendar.json</code></td><td class="say"><span class="yes">yes</span></td></tr>
+      <tr><th><code>calendar_list</code></th><td>Events in a range (next 14 days by default), or a word search up to 366 days ahead.
+        Repeats are expanded by <code>Store::events_between()</code>.</td><td><code>calendar.json</code>, read only</td><td class="say"><span class="no">no</span></td></tr>
+      <tr><th><code>calendar_update</code></th><td>Changes the given fields of an event by id. Moving the start keeps the duration; a
+        repeating event changes as a whole.</td><td><code>calendar.json</code></td><td class="say"><span class="yes">yes</span></td></tr>
+      <tr><th><code>calendar_delete</code></th><td>Deletes an event by id.</td><td><code>calendar.json</code></td><td class="say"><span class="yes">yes</span></td></tr>
+      <tr><th><code>reminder_set</code></th><td>A timer (<code>in_minutes</code>) or a reminder at a clock time (<code>at</code>).
+        It fires through <code>App::check_alerts()</code>, so only while the app is running.</td><td><code>reminders.json</code></td><td class="say"><span class="yes">yes</span></td></tr>
+      <tr><th><code>reminder_list</code></th><td>Pending reminders with their ids.</td><td><code>reminders.json</code>, read only</td><td class="say"><span class="no">no</span></td></tr>
+      <tr><th><code>reminder_cancel</code></th><td>Cancels a reminder by id.</td><td><code>reminders.json</code></td><td class="say"><span class="yes">yes</span></td></tr>
+      <tr><th><code>memory_save</code></th><td>Saves a fact of up to 400 characters, or overwrites one with <code>replace_id</code>.
+        Memories reach the model through the system prompt; there is no tool to list them.</td><td><code>memory.json</code></td><td class="say"><span class="yes">yes</span></td></tr>
+      <tr><th><code>memory_delete</code></th><td>Deletes a memory by id.</td><td><code>memory.json</code></td><td class="say"><span class="yes">yes</span></td></tr>
+
+      <tr class="group"><th colspan="4">Device hardware and settings</th></tr>
+      <tr><th><code>look</code></th><td>Takes a photo (1280×960, or 960×720 on a phone link), shows a thumbnail through
+        <code>Context::on_image</code>, then asks <code>llm::describe_image()</code> the question.</td><td>Camera; the vision call on
+        the chat service</td><td class="say"><span class="no">no</span></td></tr>
+      <tr><th><code>music</code></th><td><code>play</code>, <code>search</code>, <code>stop</code>, <code>next</code>,
+        <code>now_playing</code>, <code>library</code> over the local library. During a request, play is queued behind the
+        <code>kExchange</code> hold.</td><td><code>MusicLibrary</code>, <code>audio::Music</code></td><td class="say"><span class="yes">stop, next</span></td></tr>
+      <tr><th><code>tv_remote</code></th><td>Sends one infrared key with <code>ir::send()</code>, optionally repeated. A brand the
+        user names is saved in settings.</td><td>IR transmitter, <code>Settings</code></td><td class="say"><span class="yes">yes</span></td></tr>
+      <tr><th><code>device</code></th><td><code>status</code> (volume, brightness, spoken replies, time zone, battery, Wi-Fi), or sets
+        volume, brightness or spoken replies.</td><td><code>Settings</code>, mixer, backlight</td><td class="say"><span class="yes">all but status</span></td></tr>
+      <tr><th><code>set_timezone</code></th><td>Stores and applies a time zone. A city name is resolved to a zone by geocoding.</td>
+        <td><code>Settings</code>; Open-Meteo geocoding</td><td class="say"><span class="no">no</span></td></tr>
+
+      <tr class="group"><th colspan="4">External services (each request times out after 20&nbsp;s and honours cancel)</th></tr>
+      <tr><th><code>web_search</code></th><td>A search returning a summary and up to four snippets of 500 characters. Left out of the
+        tool list by <code>tools::schema()</code> when no search key is set.</td><td>Tavily, with the search key from settings</td><td class="say"><span class="no">no</span></td></tr>
+      <tr><th><code>weather</code></th><td>Current conditions and a forecast of 1 to 7 days (3 by default); the home city when no
+        place is given.</td><td>Open-Meteo geocoding and forecast</td><td class="say"><span class="no">no</span></td></tr>
+      <tr><th><code>convert_currency</code></th><td>Converts an amount with the latest rate.</td><td>open.er-api.com</td><td class="say"><span class="no">no</span></td></tr>
+      <tr><th><code>stock_price</code></th><td>Latest price, day and year range. Input that does not look like a ticker is looked up
+        by name first.</td><td>Yahoo Finance</td><td class="say"><span class="no">no</span></td></tr>
+      <tr><th><code>world_time</code></th><td>The time in another place, now or for a given local time. Zone names are handled
+        locally; city names are geocoded.</td><td>System zone data; Open-Meteo geocoding</td><td class="say"><span class="no">no</span></td></tr>
+    </tbody>
+  </table></div>
+  <p class="prose">The shortcut applies to a round only when every call in it returned a <code>say</code> sentence
+  (<code>all_confirmed</code>), nothing new was said and nothing was cancelled. The sentences are joined, identical ones once,
+  and spoken. Otherwise the model gets another round and writes the answer from the results.</p>
+</section>
+
+<section id="review">
+  <h2>4. Things worth reviewing</h2>
+  <p class="prose">Each point was checked in the source named under it. Points marked <span class="tag">by reading</span>
+  follow from the code paths but were not run.</p>
+
+  <h3>Guards against unbacked claims</h3>
+  <ul class="review">
+    <li><b class="t">The claim guards match English phrasing.</b>
+      <code>claims_action()</code> is a list of English patterns (“I've added”, “is now in your calendar”, “now playing”, a reply
+      opening with “done” or “got it”) plus a few words in Spanish, German, French, Portuguese and Italian.
+      <code>claims_not_saved()</code> is English only. The system prompt tells the model to reply in the user's language, so in
+      other languages the regex guards rarely apply and the fast-mode second look is the remaining check.
+      <span class="cite"><code>src/agent/agent.cpp</code> · <code>claims_action()</code>, <code>claims_not_saved()</code>;
+      <code>src/agent/prompt.cpp</code> · <code>system_prompt()</code></span></li>
+    <li><b class="t">The same patterns can match ordinary sentences.</b>
+      “I put”, “I called”, “I started”, “I set” or “I moved” anywhere in the checked text count as an action claim. The cost is
+      bounded: one withdrawn draft and one extra round, because <code>guarded</code> lets a guard fire once per request.
+      <span class="cite"><code>src/agent/agent.cpp</code> · <code>claims_action()</code>, <code>run_turn()</code></span></li>
+    <li><b class="t">Each request is checked once, and only before its first tool call.</b>
+      The hold, the second look and both guards require <code>!acted &amp;&amp; !guarded</code>. After a correction the next
+      reply is spoken unchecked, and after any tool has run (for example <code>calendar_list</code>) a later “I've moved it”
+      with no <code>calendar_update</code> is not examined.
+      <span class="cite"><code>src/agent/agent.cpp</code> · <code>run_turn()</code></span></li>
+    <li><b class="t">With fast mode off, only the first streamed sentence is checked.</b>
+      Without the hold, <code>claims_action()</code> runs on the first sentence before it is spoken. The whole-reply checks,
+      including <code>claims_not_saved()</code>, run only if nothing was spoken during the stream, which in practice means a
+      one-sentence reply. Fast mode is on by default (<code>Settings::fast_mode</code>).
+      <span class="cite"><code>src/agent/agent.cpp</code> · <code>run_turn()</code> (<code>opt.on_text</code> and the checks after
+      <code>llm::chat()</code>)</span></li>
+    <li><b class="t">The second look only acts on tool calls.</b>
+      Its text is never read: “OK”, any other wording and a failed call all let the draft through (the failure case is
+      deliberate, per the comment). In fast mode every reply without a tool call therefore costs two model calls, and nothing is
+      shown or spoken until both have finished. The comment relies on the server's prefix cache to make the second call cheap.
+      <span class="cite"><code>src/agent/agent.cpp</code> · <code>run_turn()</code>, <code>kSecondLook</code></span></li>
+    <li><b class="t">A <code>say</code> confirmation is written before the tool runs and is not compared with the result.</b>
+      Success means the result does not start with <code>ERROR</code> or <code>{"error"</code>. What is spoken is the model's
+      sentence, not what was stored: if the day named in <code>say</code> and the <code>start</code> argument disagree, the user
+      hears the former. Anything the result adds, such as the remote's “cannot see whether the TV reacted”, is not spoken on
+      this path. Both the result and the spoken sentence are kept in <code>history_</code>.
+      <span class="cite"><code>src/agent/tools.cpp</code> · <code>confirmation()</code>, <code>kConfirmable</code>;
+      <code>src/agent/agent.cpp</code> · <code>run_turn()</code></span></li>
+  </ul>
+
+  <h3>Limits and budgets</h3>
+  <ul class="review">
+    <li><b class="t"><code>kMaxRounds</code> is not a cap on model calls per request.</b>
+      The comment says “model calls per request”. A second look is an extra call inside a round; a draft withdrawn for steering
+      gives its round back (<code>--round</code>); and input absorbed after an answer becomes the next request in the same loop
+      with <code>acted</code> and <code>guarded</code> reset but the counter kept.
+      <span class="cite"><code>src/agent/agent.cpp</code> · <code>run_turn()</code>, <code>kMaxRounds</code> = 8</span></li>
+    <li><b class="t">The loop can end without an answer or an error.</b><span class="tag">by reading</span>
+      If the eighth round ends in <code>continue</code>, the loop falls through to <code>end_of_answer()</code> silently. That
+      happens when a guard fires in that round, when its second look returns tool calls that are not all confirmed, or when a
+      follow-up is absorbed after that round's answer; the follow-up then sits in <code>history_</code> until the next input. Reaching the eighth round
+      needs a long tool chain or several follow-ups in one run, so this should be rare.
+      <span class="cite"><code>src/agent/agent.cpp</code> · <code>run_turn()</code></span></li>
+    <li><b class="t">History is limited by message count, at the start of a request only.</b>
+      <code>trim_history()</code> keeps the last 40 messages, starting at a user message. Tool results count as messages and may be
+      6000 characters each, and nothing is trimmed between rounds, so the size sent is not bounded in bytes.
+      <code>history_</code> is kept in memory only: nothing in <code>agent.cpp</code> writes it to disk.
+      <span class="cite"><code>src/agent/agent.cpp</code> · <code>trim_history()</code>, <code>kMaxHistory</code> = 40,
+      <code>kMaxToolResult</code> = 6000</span></li>
+    <li><b class="t">What keeps the prompt prefix stable, and what changes it.</b>
+      Clock time is in the user messages and the “Today” section changes once a day. The system prompt is rebuilt for every model
+      call and lists the memories, so <code>memory_save</code> changes it between two rounds of one request. Once the history is
+      over 40 messages, each new request drops messages from the front. Whether the service caches prefixes at all cannot be seen
+      from this code.
+      <span class="cite"><code>src/agent/prompt.cpp</code> · <code>system_prompt()</code>; <code>src/agent/agent.cpp</code> ·
+      <code>absorb_inputs()</code>, <code>trim_history()</code></span></li>
+  </ul>
+
+  <h3>Failure handling</h3>
+  <ul class="review">
+    <li><b class="t">One HTTP 400 switches <code>reasoning_effort</code> off until the app restarts.</b>
+      Any 400 with nothing received while the field was sent sets the static <code>effort_rejected</code>, whatever the reason
+      for the 400. Fast mode keeps its hold and second look, but the model may reason again on every call.
+      <code>mp3_rejected</code> and <code>opus_rejected</code> latch the same way for audio formats.
+      <span class="cite"><code>src/agent/llm.cpp</code> · <code>chat()</code>, <code>transcribe()</code>, <code>synthesize()</code></span></li>
+    <li><b class="t">A failed transcription loses the recording.</b>
+      <code>transcribe()</code> retries only with another format, not after a dropped connection (unlike <code>chat()</code>).
+      On an error <code>absorb_inputs()</code> reports “Could not transcribe” and moves on; the samples are gone.
+      <span class="cite"><code>src/agent/llm.cpp</code> · <code>transcribe()</code>; <code>src/agent/agent.cpp</code> ·
+      <code>absorb_inputs()</code></span></li>
+    <li><b class="t">A failed speech synthesis is silent.</b>
+      <code>SpeechQueue::run()</code> skips a sentence whose synthesis failed and discards the error text. The answer stays on
+      the screen, but nothing says why it was not spoken.
+      <span class="cite"><code>src/agent/speech.cpp</code> · <code>SpeechQueue::run()</code></span></li>
+    <li><b class="t">An empty reply is stored as an empty assistant message.</b>
+      The final-answer path appends the assistant message before it checks for empty content and raises “The model returned an
+      empty answer.”
+      <span class="cite"><code>src/agent/agent.cpp</code> · <code>run_turn()</code></span></li>
+  </ul>
+
+  <h3>Timing and threads</h3>
+  <ul class="review">
+    <li><b class="t">An answer can start playing while the microphone is open.</b><span class="tag">by reading</span>
+      <code>start_recording()</code> calls <code>interrupt_speech()</code> once. If the agent is thinking or running a tool at
+      that moment the run carries on, and until the recording is submitted <code>has_pending()</code> is false, so the reply is
+      enqueued and spoken. Music is held by <code>kMic</code>; the speech queue has no such hold.
+      <span class="cite"><code>src/ui/app.cpp</code> · <code>start_recording()</code>; <code>src/agent/agent.cpp</code> ·
+      <code>interrupt_speech()</code>, <code>run_turn()</code>; <code>src/agent/speech.cpp</code></span></li>
+    <li><b class="t">Alerts share the speech queue and are unknown to the model.</b>
+      <code>Agent::say()</code> enqueues the alert behind whatever sentences are waiting and calls
+      <code>end_of_answer()</code>, even in the middle of an answer. Nothing is added to <code>history_</code>, so “what was that
+      reminder?” has no context.
+      <span class="cite"><code>src/ui/app.cpp</code> · <code>check_alerts()</code>; <code>src/agent/agent.cpp</code> ·
+      <code>Agent::say()</code></span></li>
+    <li><b class="t">Tools block the agent thread, and two of them ignore cancel.</b>
+      Calls run one after another. HTTP requests stop on <code>Context::cancel</code>; <code>run_python</code> (up to 20&nbsp;s) and
+      the camera capture in <code>look</code> do not take it. In <code>look</code> the thumbnail callback also runs
+      <code>ffmpeg</code> on the agent thread (up to 8&nbsp;s) before the photo is sent for analysis.
+      <span class="cite"><code>src/agent/tools.cpp</code> · <code>t_python()</code>, <code>t_look()</code>;
+      <code>src/ui/app.cpp</code> · <code>wire_agent()</code> (<code>ev.image</code>)</span></li>
+    <li><b class="t"><code>Settings</code> is written from two threads without a lock.</b>
+      The <code>device</code>, <code>tv_remote</code> and <code>set_timezone</code> tools change fields and call
+      <code>save()</code> on the agent thread; the volume and brightness keys do the same on the UI thread. The struct includes
+      <code>&lt;mutex&gt;</code> but has no mutex member.
+      <span class="cite"><code>src/core/settings.h</code>; <code>src/agent/tools.cpp</code> · <code>t_device()</code>,
+      <code>t_tv_remote()</code>, <code>t_set_timezone()</code>; <code>src/ui/app.cpp</code> · <code>control_key()</code></span></li>
+    <li><b class="t">A typed request does not hold the music.</b>
+      <code>kExchange</code> is set when a voice request is sent and by the music tool, not by <code>submit_text()</code>. Music
+      keeps playing while a typed request is worked on and pauses when the first sentence is ready to speak.
+      <span class="cite"><code>src/ui/app.cpp</code> · <code>finish_recording()</code>, <code>handle_key()</code></span></li>
+  </ul>
+
+  <h3>Limits in the code</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Limit</th><th>Value</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><th>Rounds per <code>run_turn()</code></th><td>8; the last one is sent without tools</td><td><code>agent.cpp</code> · <code>kMaxRounds</code></td></tr>
+      <tr><th>Messages kept</th><td>40</td><td><code>agent.cpp</code> · <code>kMaxHistory</code></td></tr>
+      <tr><th>Tool result passed back</th><td>6000 characters, then “…[truncated]”</td><td><code>agent.cpp</code> · <code>kMaxToolResult</code></td></tr>
+      <tr><th>Draft quoted in a correction</th><td>160 characters</td><td><code>agent.cpp</code> · <code>run_turn()</code></td></tr>
+      <tr><th>Reply length</th><td>1200 tokens; 900 for a photo</td><td><code>llm.h</code> · <code>ChatOptions</code>; <code>llm.cpp</code> · <code>describe_image()</code></td></tr>
+      <tr><th>Model call timeout</th><td>180&nbsp;s; 60&nbsp;s for speech in either direction</td><td><code>llm.cpp</code></td></tr>
+      <tr><th>Tool HTTP timeout</th><td>20&nbsp;s</td><td><code>tools.cpp</code> · <code>fetch_json()</code></td></tr>
+      <tr><th>Recording length</th><td>0.4&nbsp;s to 90&nbsp;s</td><td><code>app.cpp</code> · <code>kMinSpeechSeconds</code>, <code>kMaxSpeechSeconds</code></td></tr>
+      <tr><th>Double tap; ESC hold</th><td>450&nbsp;ms; 1200&nbsp;ms</td><td><code>app.cpp</code> · <code>kDoubleTapMs</code>, <code>kEscHoldMs</code></td></tr>
+      <tr><th>One memory</th><td>400 characters</td><td><code>tools.cpp</code> · <code>t_memory_save()</code></td></tr>
+      <tr><th>Tracks queued by one play</th><td>60</td><td><code>tools.cpp</code> · <code>t_music()</code></td></tr>
+      <tr><th>Occurrences of one repeating event in a range</th><td>60</td><td><code>store.cpp</code> · <code>Store::events_between()</code></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="unsure">
+  <h2>5. Not verified</h2>
+  <ul class="prose-list">
+    <li>Whether the service honours <code>reasoning_effort: "none"</code> or caches prompt prefixes. The code only sends the
+      field and keeps the prefix stable.</li>
+    <li>The points marked “by reading” in section 4. They follow from the code paths; none was reproduced on the device or in
+      the command-line mode.</li>
+    <li>Files not read: <code>calc.cpp</code>, <code>core/music_lib.cpp</code>, <code>core/tether.cpp</code>, <code>core/util.cpp</code>
+      (apart from <code>spell_numeric_dates()</code>), <code>platform/camera.cpp</code>, <code>ir.cpp</code>, <code>codec.cpp</code>,
+      <code>proc.cpp</code>, <code>ui/chat_view.cpp</code>, the settings pages and <code>tests/agent_eval.py</code>. They are drawn
+      from their call sites and header comments.</li>
+    <li>Figure 1 groups the threads by what the files show. Short-lived helper threads (phone tethering, model selection, volume,
+      chimes) are left out.</li>
+  </ul>
+</section>
+
+<footer>Zero Bot agent architecture · drawn from the source, 17 November 2026 · a single static file with no scripts or external
+resources.</footer>
+</main>
+</body>
+</html>

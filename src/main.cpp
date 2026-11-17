@@ -14,6 +14,7 @@
 #include "core/store.h"
 #include "net/http.h"
 #include "platform/codec.h"
+#include "smarthome/discovery.h"
 #if !ZB_CLI_ONLY
 #include "ui/app.h"
 #endif
@@ -26,6 +27,11 @@ void usage() {
          "  --ask \"text\"          run one request through the agent and print what happens\n"
          "  --chat                interactive text conversation on the terminal\n"
          "  --steer \"text\"        with --ask/--chat: add this while the first tool of the first request runs\n"
+         "  --discover             look for smart-home devices on this network (discovery only) and list them\n"
+         "  --talk-over MS[:text]  with --ask: hold the microphone open for MS ms from the start of the request,\n"
+         "                         then hand over `text` as what was said (or nothing, as if cancelled)\n"
+         "  --follow-ups \"a|b|c\"   with --ask: send each of these as the previous answer begins, so that they\n"
+         "                         are all handled inside one run\n"
          "  --tool NAME 'JSON'    call one tool directly and print its result\n"
          "  --stt FILE.wav        transcribe a 16-bit mono WAV file and print the text\n"
          "  --tts \"text\" OUT.raw  synthesize speech and write raw 16-bit 24 kHz mono PCM\n"
@@ -44,7 +50,8 @@ void usage() {
 }
 
 // Terminal front end used for testing and tuning the agent without the screen.
-int run_cli(const std::string &ask, bool chat, const std::string &steer_text) {
+int run_cli(const std::string &ask, bool chat, const std::string &steer_text, const std::string &talk_over,
+            const std::string &follow_ups) {
     setenv("ZB_NO_AUDIO", "1", 0);
     AgentEvents ev;
     ev.user_message = [](const std::string &t, bool steering) { printf("%s %s\n", steering ? "[steer]" : "[user]", t.c_str()); };
@@ -58,8 +65,17 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text) {
         printf("[tool +%.1fs] %s\n", since(), label.c_str());
         if (!steer.empty()) { Agent::get().submit_text(steer); steer.clear(); }
     };
+    // Follow-ups queued while an answer is arriving are picked up by the same run.
+    static std::vector<std::string> chain;
+    chain = util::split(follow_ups, '|');
     ev.answer_delta = [since](const std::string &) {
-        if (!first_text) { first_text = true; printf("[first words +%.1fs]\n", since()); }
+        if (!first_text) {
+            first_text = true;
+            printf("[first words +%.1fs]\n", since());
+        }
+    };
+    ev.answer_begin = [] {
+        if (!chain.empty()) { Agent::get().submit_text(chain.front()); chain.erase(chain.begin()); }
     };
     ev.answer_discard = [] { first_text = false; puts("[draft withdrawn]"); };
     ev.error = [](const std::string &m) { printf("[error] %s\n", m.c_str()); };
@@ -70,7 +86,26 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text) {
         const size_t before = agent.history_size();
         t0 = std::chrono::steady_clock::now();
         first_text = false;
+        // Stands in for the user pressing the talk key while the request is being worked on.
+        std::thread talker;
+        if (!talk_over.empty()) {
+            agent.set_listening(true);
+            puts("[mic open +0.0s]");
+            talker = std::thread([&, since] {
+                const size_t colon = talk_over.find(':');
+                const int ms = atoi(talk_over.substr(0, colon).c_str());
+                bool told = false;
+                for (int waited = 0; waited < ms; waited += 20) {
+                    usleep(20 * 1000);
+                    if (!told && agent.state() == AgentState::Speaking) { told = true; printf("[SPEAKING WHILE THE MIC IS OPEN +%.1fs]\n", since()); }
+                }
+                if (colon != std::string::npos) agent.submit_text(talk_over.substr(colon + 1));
+                printf("[mic closed +%.1fs]%s\n", since(), colon != std::string::npos ? " (words handed over)" : " (cancelled)");
+                agent.set_listening(false);
+            });
+        }
         const std::string answer = agent.run_blocking(text);
+        if (talker.joinable()) talker.join();
         const double total = since();
         const json hist = agent.history_snapshot();
         for (size_t i = before; i < hist.size(); ++i) {
@@ -81,6 +116,10 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text) {
                            c["function"]["arguments"].get<std::string>().c_str());
             else if (util::jget(m, "role", std::string()) == "tool")
                 printf("  <- %s\n", util::truncate_utf8(m["content"].get<std::string>(), 300).c_str());
+            else if (util::jget(m, "role", std::string()) == "user")
+                printf("  ? %s\n", util::truncate_utf8(m["content"].get<std::string>(), 120).c_str());
+            else if (util::jget(m, "role", std::string()) == "assistant" && i + 1 < hist.size())
+                printf("  = %s\n", util::truncate_utf8(util::jget(m, "content", std::string()), 160).c_str());
         }
         printf("[answer %.1fs] %s\n", total, answer.c_str());
         fflush(stdout);
@@ -104,14 +143,17 @@ int main(int argc, char **argv) {
     // five-second timeout (measured on a CardputerZero: 5.04 s against 0.03 s with this option).
     // Asking one after the other costs a few milliseconds. Must be set before the first lookup.
     setenv("RES_OPTIONS", "single-request", 0);
-    std::string ask, shots, steer, tool_name, tool_args = "{}";
+    std::string ask, shots, steer, talk_over, follow_ups, tool_name, tool_args = "{}";
     std::string stt_file, tts_text, tts_out, bench_wav, bench_opus;
-    bool chat = false, keydump = false, boot = false;
+    bool chat = false, keydump = false, boot = false, discover = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--ask" && i + 1 < argc) ask = argv[++i];
         else if (a == "--chat") chat = true;
         else if (a == "--steer" && i + 1 < argc) steer = argv[++i];
+        else if (a == "--discover") discover = true;
+        else if (a == "--talk-over" && i + 1 < argc) talk_over = argv[++i];
+        else if (a == "--follow-ups" && i + 1 < argc) follow_ups = argv[++i];
         else if (a == "--tool" && i + 1 < argc) { tool_name = argv[++i]; if (i + 1 < argc) tool_args = argv[++i]; }
         else if (a == "--shots" && i + 1 < argc) shots = argv[++i];
         else if (a == "--codec-bench" && i + 2 < argc) { bench_wav = argv[++i]; bench_opus = argv[++i]; }
@@ -181,6 +223,27 @@ int main(int argc, char **argv) {
         }
         quit(err.empty() ? 0 : 1);
     }
+    if (discover) {
+        const discovery::Network net = discovery::current_network();
+        printf("network: %s (%s), id %s%s\n", net.label().c_str(), net.iface.c_str(), net.id().c_str(),
+               net.usable ? "" : (" -- " + net.why_not).c_str());
+        std::vector<discovery::Device> found;
+        std::string err;
+        bool heard = false;
+        discovery::Options opt;
+        opt.on_device = [](const discovery::Device &d) { printf("  + %s (%s)\n", d.name.c_str(), d.kind.c_str()); fflush(stdout); };
+        if (!discovery::scan(opt, found, err, &heard)) { printf("scan failed: %s\n", err.c_str()); quit(1); }
+        printf("heard own multicast: %s; %zu device(s)\n", heard ? "yes" : "no", found.size());
+        for (const auto &d : found) {
+            std::string how, info;
+            for (const auto &m : d.found_by) how += (how.empty() ? "" : ",") + m;
+            for (const auto &kv : d.info)
+                if (kv.first != "owner") info += " " + kv.first + "=" + util::truncate_utf8(kv.second, 50);
+            printf("%-11s %-26s %-16s %-15s port %-5d via %-10s%s\n", d.kind.c_str(), d.name.c_str(), d.model.c_str(), d.ip.c_str(),
+                   d.port, how.c_str(), info.c_str());
+        }
+        quit(0);
+    }
     if (!tool_name.empty()) {
         MusicLibrary::get().refresh(Settings::get().eff_music_dir());
         tools::Context ctx;
@@ -189,7 +252,7 @@ int main(int argc, char **argv) {
     }
     if (!ask.empty() || chat) {
         MusicLibrary::get().refresh(Settings::get().eff_music_dir());
-        quit(run_cli(ask, chat, steer));
+        quit(run_cli(ask, chat, steer, talk_over, follow_ups));
     }
 #if ZB_CLI_ONLY
     (void)keydump;
