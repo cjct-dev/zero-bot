@@ -1,0 +1,145 @@
+// The contract between the smart-home layer and the code that talks to one family of devices
+// (Tapo plugs, a Hue bridge, HomeKit accessories, a TV...). A driver turns a discovered device
+// into "things" a person names and commands, and applies changes to them.
+//
+// Rules every driver follows:
+//  - Stateless between calls apart from a small session cache keyed by device id. No background
+//    threads, no long-lived connections, no subscriptions: state is read on demand.
+//  - Deadlines: about 2.5 s to apply a change, 4 s to list a bridge's things.
+//  - Errors are short sentences a person can be told; never raw protocol text, never a secret.
+//  - Names that come from a device are untrusted: trimmed, control characters removed, capped
+//    at 40 characters.
+//  - Only device types on the driver's allow-list become things. Locks, garage doors, alarms,
+//    cameras, valves and cooking appliances are never exposed.
+//  - A driver opens a socket only when the shared layer calls it, and the shared layer never
+//    calls it unless the device is on a network the user has scanned (Wi-Fi or Ethernet, never
+//    a phone's Bluetooth tether).
+#pragma once
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "nlohmann/json.hpp"
+
+namespace home {
+
+using json = nlohmann::json;
+
+// What a thing can do. Units are fixed here so no caller deals with a maker's scale.
+enum Cap : uint32_t {
+    kPower = 1 << 0,        // on / off
+    kBrightness = 1 << 1,   // 0..100 percent
+    kColorTemp = 1 << 2,    // kelvin
+    kColor = 1 << 3,        // hue 0..360, saturation 0..100
+    kScene = 1 << 4,        // a thing of type "scene" can only be activated
+    kTargetTemp = 1 << 5,   // degrees Celsius, with a heating mode (off / heat / auto)
+    kPosition = 1 << 6,     // covers: 0 closed .. 100 open
+    kFanSpeed = 1 << 7,     // 0..100 percent
+    kTransport = 1 << 8,    // play, pause, stop, next, previous
+    kVolume = 1 << 9,       // 0..100 and mute
+    kVolumeStep = 1 << 10,  // only up / down exist
+    kSource = 1 << 11,      // input or app by name
+    kKeys = 1 << 12,        // remote-control key presses (TVs)
+    kSensor = 1 << 13,      // read-only values in state
+};
+
+// The unit a person names and commands: a plug, one socket of a strip, a light, a thermostat,
+// a TV. One device yields one or many.
+struct Thing {
+    std::string id;         // stable within its device: child id, resource id, "aid.iid", ...
+    std::string name;       // as the maker's app has it
+    std::string alias;      // set by the user in settings; overrides name when speaking
+    std::string room;       // from the bridge, or set by the user
+    std::string type;       // light, plug, switch, thermostat, cover, fan, speaker, tv, scene, sensor
+    uint32_t caps = 0;
+    bool enabled = true;    // the assistant may use it
+    bool ask_first = false; // ask aloud before switching it on (a heater, say)
+    json ref;               // driver-private addressing
+    json state;             // last read: {"on":true,"brightness":40,"temperature":19.5,...}
+};
+
+// What to do to a thing. Fields left empty are left alone.
+struct Change {
+    std::optional<bool> on;
+    std::optional<int> brightness;           // 0..100
+    std::optional<int> kelvin;
+    std::optional<std::pair<int, int>> hs;   // hue 0..360, saturation 0..100
+    std::optional<double> target_c;
+    std::optional<std::string> mode;         // off, heat, auto
+    std::optional<int> position;             // 0..100
+    std::optional<int> fan;                  // 0..100
+    std::optional<int> volume;               // 0..100
+    std::optional<int> volume_step;          // +n / -n
+    std::optional<bool> mute;
+    std::optional<std::string> transport;    // play, pause, stop, next, previous
+    std::optional<std::string> source;       // input or app name
+    std::optional<std::string> key;          // TV keys: power, volume_up, volume_down, mute, channel_up,
+                                             // channel_down, input, up, down, left, right, ok, menu, back, home, 0..9
+};
+
+// A saved device as a driver sees it.
+struct Device {
+    std::string id, kind, name, model, mac, ip;
+    int port = 0;
+    std::map<std::string, std::string> info;   // what discovery reported (TXT keys, scheme, ...)
+    json auth = json::object();                // this device's secrets and pairing data; never logged or shown
+    std::vector<Thing> things;
+};
+
+// One-time pairing, as a sequence of steps the settings page walks through.
+enum class Pairing { None, PressButton, EnterCode, AcceptPrompt, Password, Token };
+
+struct PairStep {
+    Pairing kind = Pairing::None;
+    std::string prompt;     // "Press the round button on the Hue Bridge"
+    int wait_s = 0;         // for button and prompt steps: keep trying for this long
+    std::string field;      // label of the text field for a code, password or token
+};
+
+// Secrets shared by every device of a family (an account, this controller's own key pair).
+// Kept in the same 0600 file as the devices.
+class Secrets {
+public:
+    virtual ~Secrets() = default;
+    virtual json get(const std::string &family) const = 0;            // {} when nothing is stored
+    virtual void set(const std::string &family, const json &value) = 0;
+};
+
+class Driver {
+public:
+    virtual ~Driver() = default;
+    virtual const char *kind() const = 0;     // "tapo", "hue_bridge", "shelly", "homekit", ...
+    // Whether a discovered device of this kind/model is one this driver handles.
+    virtual bool claims(const std::string &device_kind, const std::map<std::string, std::string> &) const {
+        return device_kind == kind();
+    }
+    virtual void attach(Secrets *secrets) { secrets_ = secrets; }
+
+    // Pairing. next_step is asked until it returns None; pair is called with what the user
+    // typed ("" for button and prompt steps) and stores what it learns in dev.auth.
+    // A code or password the device rejected must never be retried automatically.
+    virtual PairStep next_step(const Device &) const { return {}; }
+    virtual bool pair(Device &, const std::string & /*input*/, std::string & /*err*/) { return true; }
+    virtual void unpair(Device &) {}
+
+    // Lists the device's things with names, rooms, types, capabilities and current state.
+    virtual bool enumerate(Device &dev, std::vector<Thing> &out, std::string &err) = 0;
+    // Refreshes the state of the given things (all of the device's when empty).
+    virtual bool read(const Device &dev, std::vector<Thing> &things, std::string &err) = 0;
+    // Applies one change to one thing within deadline_ms.
+    virtual bool apply(const Device &dev, const Thing &thing, const Change &change, int deadline_ms, std::string &err) = 0;
+    // Optional: one request for several things on the same device. Returns false when not supported.
+    virtual bool apply_many(const Device &, const std::vector<const Thing *> &, const Change &, int /*deadline_ms*/,
+                            std::string & /*err*/) {
+        return false;
+    }
+
+protected:
+    Secrets *secrets_ = nullptr;
+};
+
+}  // namespace home
