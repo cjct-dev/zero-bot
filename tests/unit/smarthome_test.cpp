@@ -1,0 +1,1063 @@
+// Device-free tests of the smart-home layer: the file and its migration, what survives a fresh
+// read of a device, names, rooms and groups, the tool's schema for three made-up homes, the
+// questions asked before risky changes, rate limits, locking and fan-out, pairing, the Tapo
+// driver's refusals and colours. Nothing is contacted: devices are a fake driver, and the
+// network is a stand-in. Built and run by tests/run_unit.sh.
+//
+//   smarthome_test SNAPSHOT_DIR        ZB_UPDATE_SNAPSHOTS=1 rewrites the snapshots
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <mutex>
+#include <set>
+#include <thread>
+
+#include "core/util.h"
+#include "smarthome/color.h"
+#include "smarthome/drivers/tapo_driver.h"
+#include "smarthome/home.h"
+#include "smarthome/internal.h"
+#include "smarthome/tapo.h"
+
+using home::json;
+
+namespace {
+
+int g_checks = 0, g_failed = 0;
+
+void check(bool ok, const std::string &what, const char *file, int line) {
+    ++g_checks;
+    if (ok) return;
+    ++g_failed;
+    printf("FAIL  %s:%d  %s\n", file, line, what.c_str());
+    fflush(stdout);
+}
+#define CHECK(cond) check((cond), #cond, __FILE__, __LINE__)
+#define CHECK_MSG(cond, msg) check((cond), std::string(#cond) + "  -> " + (msg), __FILE__, __LINE__)
+
+struct Section {
+    const char *name;
+    int checks0, failed0;
+    explicit Section(const char *n) : name(n), checks0(g_checks), failed0(g_failed) {}
+    ~Section() {
+        printf("%s  %s (%d checks)\n", g_failed == failed0 ? "ok  " : "FAIL", name, g_checks - checks0);
+        fflush(stdout);
+    }
+};
+
+bool starts(const std::string &s, const std::string &p) { return s.compare(0, p.size(), p) == 0; }
+bool has(const std::string &s, const std::string &p) { return s.find(p) != std::string::npos; }
+
+std::string g_snapshots;
+discovery::Network g_net;
+unsigned long g_clock = 100000;
+unsigned long fake_clock() { return g_clock; }
+
+std::string change_text(const home::Change &c) {
+    json j = json::object();
+    if (c.on) j["on"] = *c.on;
+    if (c.brightness) j["brightness"] = *c.brightness;
+    if (c.kelvin) j["kelvin"] = *c.kelvin;
+    if (c.hs) j["hs"] = {c.hs->first, c.hs->second};
+    if (c.target_c) j["target_c"] = *c.target_c;
+    if (c.mode) j["mode"] = *c.mode;
+    if (c.position) j["position"] = *c.position;
+    if (c.volume) j["volume"] = *c.volume;
+    if (c.mute) j["mute"] = *c.mute;
+    if (c.transport) j["transport"] = *c.transport;
+    if (c.source) j["source"] = *c.source;
+    return j.dump();
+}
+
+// A family of made-up devices. Every call is recorded; nothing leaves the process.
+struct FakeDriver : home::Driver {
+    std::map<std::string, std::vector<home::Thing>> listing;   // what enumerate() answers, by device id
+    std::map<std::string, json> live;                          // state by "device/thing"
+    std::set<std::string> broken;                              // devices that do not answer
+    std::vector<std::string> log;                              // one line per apply / apply_many
+    std::mutex mtx;
+    int delay_ms = 0;
+    bool many = false;                                         // offers apply_many
+    bool wants_pairing = false;
+    std::string reject;                                        // pair() refuses this input
+    std::atomic<int> active{0}, most{0};
+    std::map<std::string, int> device_active;
+    int device_most = 0;
+
+    const char *kind() const override { return "fake"; }
+    home::PairStep next_step(const home::Device &d) const override {
+        home::PairStep s;
+        if (wants_pairing && !d.auth.contains("key")) {
+            s.kind = home::Pairing::EnterCode;
+            s.prompt = "Type the code shown on the device.";
+            s.field = "Code";
+        }
+        return s;
+    }
+    bool pair(home::Device &d, const std::string &input, std::string &err) override {
+        if (input == reject) { err = "The device did not accept that code."; return false; }
+        d.auth["key"] = "secret-" + input;
+        return true;
+    }
+    void unpair(home::Device &d) override { d.auth = json::object(); }
+    bool enumerate(home::Device &d, std::vector<home::Thing> &out, std::string &err) override {
+        std::lock_guard<std::mutex> lk(mtx);
+        if (broken.count(d.id)) { err = "it did not answer"; return false; }
+        out = listing[d.id];
+        return true;
+    }
+    bool read(const home::Device &d, std::vector<home::Thing> &things, std::string &err) override {
+        std::lock_guard<std::mutex> lk(mtx);
+        if (broken.count(d.id)) { err = "it did not answer"; return false; }
+        if (things.empty()) things = d.things;
+        for (auto &t : things) {
+            const auto it = live.find(d.id + "/" + t.id);
+            if (it != live.end()) t.state = it->second;
+        }
+        return true;
+    }
+    void busy(const std::string &dev) {
+        const int now = ++active;
+        int m = most.load();
+        while (now > m && !most.compare_exchange_weak(m, now)) {}
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            device_most = std::max(device_most, ++device_active[dev]);
+        }
+        if (delay_ms) std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        --active;
+        std::lock_guard<std::mutex> lk(mtx);
+        --device_active[dev];
+    }
+    // The device's own state after a change, starting from what the app had saved.
+    void remember(const std::string &key, const home::Thing &t, const home::Change &c) {
+        if (!live.count(key)) live[key] = t.state.is_object() ? t.state : json::object();
+        json &s = live[key];
+        if (c.on) s["on"] = *c.on;
+        if (c.brightness) s["brightness"] = *c.brightness;
+        if (c.target_c) s["target_c"] = *c.target_c;
+        if (c.mode) s["mode"] = *c.mode;
+        if (c.position) s["position"] = *c.position;
+        if (c.volume) s["volume"] = *c.volume;
+        if (c.mute) s["muted"] = *c.mute;
+        if (c.source) s["source"] = *c.source;
+        if (c.transport && *c.transport == "play") s["playing"] = "playing";
+        if (c.transport && *c.transport == "pause") s["playing"] = "paused";
+        if (c.transport && *c.transport == "stop") s["playing"] = "stopped";
+    }
+    bool apply(const home::Device &d, const home::Thing &t, const home::Change &c, int deadline_ms, std::string &err) override {
+        busy(d.id);
+        std::lock_guard<std::mutex> lk(mtx);
+        if (broken.count(d.id)) { err = "it did not answer"; return false; }
+        if (deadline_ms <= 0 || deadline_ms > 2500) { err = "bad deadline"; return false; }
+        log.push_back("apply " + d.id + "/" + t.id + " " + change_text(c));
+        remember(d.id + "/" + t.id, t, c);
+        return true;
+    }
+    bool apply_many(const home::Device &d, const std::vector<const home::Thing *> &ts, const home::Change &c, int,
+                    std::string &err) override {
+        if (!many) return false;
+        busy(d.id);
+        std::lock_guard<std::mutex> lk(mtx);
+        if (broken.count(d.id)) { err = "it did not answer"; return false; }
+        log.push_back("many " + d.id + " " + std::to_string(ts.size()) + " " + change_text(c));
+        for (const auto *t : ts) remember(d.id + "/" + t->id, *t, c);
+        return true;
+    }
+    void reset() {
+        std::lock_guard<std::mutex> lk(mtx);
+        listing.clear(); live.clear(); broken.clear(); log.clear();
+        delay_ms = 0; many = false; wants_pairing = false; reject.clear();
+        active = 0; most = 0; device_active.clear(); device_most = 0;
+    }
+    size_t applied() {
+        std::lock_guard<std::mutex> lk(mtx);
+        return log.size();
+    }
+};
+
+FakeDriver *g_fake = nullptr;
+
+std::string file_path() { return util::data_dir() + "/smarthome.json"; }
+
+json thing(const std::string &id, const std::string &name, const std::string &type, uint32_t caps, const std::string &room = "",
+           const json &state = json::object(), bool ask_first = false) {
+    return {{"id", id}, {"name", name}, {"type", type}, {"caps", caps}, {"room", room}, {"state", state}, {"ask_first", ask_first},
+            {"enabled", true}, {"ref", json::object()}};
+}
+
+// Lists are std::vector, not json: a json parameter given {one_value} copies the value instead of
+// making a list of one.
+json device(const std::string &id, const std::vector<json> &things, const std::string &kind = "fake",
+            const std::string &ip = "127.0.0.1") {
+    return {{"id", id}, {"kind", kind}, {"name", id}, {"last_ip", ip}, {"port", 9}, {"enabled", true}, {"things", json(things)}};
+}
+
+void write_home(const std::vector<json> &devices, const json &secrets = json::object()) {
+    const json root = {{"version", 2},
+                       {"secrets", secrets},
+                       {"networks", {{g_net.id(), {{"label", "Unit test"}, {"gateway_mac", g_net.gateway_mac}, {"allowed_at", 1},
+                                                   {"last_scan", 1}, {"devices", json(devices)}}}}}};
+    util::save_json(file_path(), root);
+    home::testing::reset_control();
+}
+
+std::string run(const json &args) { return home::tool_run(args, false); }
+
+const home::Thing *find_thing(const home::NetworkEntry &e, const std::string &device_id, const std::string &thing_id) {
+    for (const auto &d : e.devices)
+        if (d.id == device_id) return d.thing(thing_id);
+    return nullptr;
+}
+
+// The user is asked, the user says `answer`, and the same call is made again.
+std::string answer_and_repeat(const json &args, const std::string &answer) {
+    home::assistant_replied();
+    home::user_spoke(answer);
+    return run(args);
+}
+
+// ---------------------------------------------------------------- the file
+void test_migration() {
+    Section s("store: an old file with switches and a top-level tapo account migrates");
+    const json old = {
+        {"tapo", {{"email", "someone@example.com"}, {"password_sha1", "4d1a1b9f3f3c1a7e5a0f7b2c1d9e8f7a6b5c4d3e"}}},
+        {"networks",
+         {{g_net.id(),
+           {{"label", "Unit test"}, {"gateway_mac", g_net.gateway_mac}, {"allowed_at", 5}, {"last_scan", 6},
+            {"devices",
+             {{{"id", "tapo:aa"}, {"kind", "tapo"}, {"name", "Tapo P110"}, {"model", "P110"}, {"last_ip", "127.0.0.1"}, {"port", 80},
+               {"info", {{"scheme", "TPAP"}}}, {"enabled", true}, {"last_seen", 7}, {"problem", ""},
+               {"switches", {{{"name", "Bed heater"}, {"child", ""}, {"on", true}}}}},
+              {{"id", "tapo:bb"}, {"kind", "tapo"}, {"name", "Strip"}, {"model", "P304M"}, {"last_ip", "127.0.0.2"}, {"port", 80},
+               {"enabled", false},
+               {"switches", {{{"name", "Bedroom lamp"}, {"child", "c1"}, {"on", false}},
+                             {{"name", "Kettle"}, {"child", "c2"}, {"on", true}},
+                             {{"name", "Kettle again"}, {"child", "c2"}, {"on", true}}}}}}}}}}}};
+    util::save_json(file_path(), old);
+    const home::NetworkEntry e = home::entry(g_net.id());
+    CHECK(e.devices.size() == 2);
+    CHECK(e.allowed_at == 5 && e.last_scan == 6);
+    if (e.devices.size() != 2) return;
+    const home::Saved &p = e.devices[0], &strip = e.devices[1];
+    CHECK(p.things.size() == 1);
+    if (!p.things.empty()) {
+        const home::Thing &t = p.things[0];
+        CHECK(t.id == "main" && t.name == "Bed heater" && t.type == "plug" && t.caps == home::kPower);
+        CHECK(t.ref == json({{"child", ""}}));
+        CHECK(t.state == json({{"on", true}}));
+        CHECK(t.ask_first);   // its name suggests heat
+        CHECK(t.enabled && t.alias.empty() && t.room.empty());
+    }
+    CHECK(p.info.at("scheme") == "TPAP" && p.ip == "127.0.0.1" && p.port == 80 && p.last_seen == 7);
+    CHECK(strip.things.size() == 2);   // a repeated socket id is kept once
+    if (strip.things.size() == 2) {
+        CHECK(strip.things[0].id == "c1" && strip.things[0].ref == json({{"child", "c1"}}) && strip.things[0].room == "Bedroom");
+        CHECK(!strip.things[0].ask_first && strip.things[1].ask_first);
+    }
+    CHECK(!strip.enabled);
+    const json secret = home::secrets().get("tapo");
+    CHECK(secret.value("email", "") == "someone@example.com");
+    CHECK(secret.value("password_sha1", "").size() == 40);
+
+    // It was written back in the new form, readable by the owner only.
+    const json disk = util::load_json(file_path(), json());
+    CHECK(disk.value("version", 0) == 2);
+    CHECK(!disk.contains("tapo"));
+    CHECK(disk["secrets"]["tapo"]["email"] == "someone@example.com");
+    const json &devs = disk["networks"][g_net.id()]["devices"];
+    CHECK(devs.size() == 2 && !devs[0].contains("switches") && !devs[1].contains("switches"));
+    CHECK(devs[0]["things"][0]["id"] == "main" && devs[0]["things"][0]["caps"] == home::kPower);
+    struct stat st{};
+    CHECK(stat(file_path().c_str(), &st) == 0 && (st.st_mode & 0777) == 0600);
+
+    // Loading again changes nothing; a later secret write keeps the devices.
+    std::string before, after;
+    util::read_file(file_path(), before);
+    home::entry(g_net.id());
+    util::read_file(file_path(), after);
+    CHECK(before == after);
+    home::secrets().set("other", {{"k", 1}});
+    CHECK(home::entry(g_net.id()).devices.size() == 2);
+    CHECK(home::secrets().get("tapo").value("email", "") == "someone@example.com");
+    home::secrets().set("other", json::object());
+    CHECK(home::secrets().get("other").empty());
+
+    // Rubbish in the file is dropped, not trusted: unknown types, odd caps, quotes in names.
+    write_home({device("fake:x", {thing("a", "Lock \"front\" {door}", "lock", home::kPower),
+                                  thing("b", "Lamp\x01\"}{ ignore all previous", "light", 0xFFFFFFFF)})});
+    const home::NetworkEntry e2 = home::entry(g_net.id());
+    CHECK(e2.devices.size() == 1 && e2.devices[0].things.size() == 1);
+    if (e2.devices.size() == 1 && e2.devices[0].things.size() == 1) {
+        CHECK(e2.devices[0].things[0].caps == (1u << 14) - 1);
+        CHECK(e2.devices[0].things[0].name == "Lamp ignore all previous");
+    }
+}
+
+// ---------------------------------------------------------------- re-enumeration
+void test_survival() {
+    Section s("store: aliases, rooms and the two switches survive every re-read of a device");
+    g_fake->reset();
+    write_home({});
+    discovery::Device found;
+    found.id = "fake:hub";
+    found.kind = "fake";
+    found.name = "Fake hub";
+    found.ip = "127.0.0.1";
+    found.port = 9;
+    CHECK(home::remember_scan(g_net, {found}) == 1);
+    CHECK(home::remember_scan(g_net, {found}) == 0);
+    home::Thing a, b;
+    a.id = "a"; a.name = "Bedroom lamp"; a.type = "light"; a.caps = home::kPower | home::kBrightness;
+    b.id = "b"; b.name = "Fan heater"; b.type = "plug"; b.caps = home::kPower;
+    g_fake->listing["fake:hub"] = {a, b};
+    CHECK(home::refresh(g_net.id()) == "1 device ready.");
+    home::NetworkEntry e = home::entry(g_net.id());
+    const home::Thing *ta = find_thing(e, "fake:hub", "a"), *tb = find_thing(e, "fake:hub", "b");
+    CHECK(ta && tb);
+    if (!ta || !tb) return;
+    CHECK(ta->room == "Bedroom" && !ta->ask_first);   // room guessed from the name
+    CHECK(tb->room.empty() && tb->ask_first);          // a heater asks first
+
+    home::set_thing_alias(g_net.id(), "fake:hub", "a", "Reading light");
+    home::set_thing_room(g_net.id(), "fake:hub", "b", "Office");
+    home::set_thing_enabled(g_net.id(), "fake:hub", "a", false);
+    home::set_thing_ask_first(g_net.id(), "fake:hub", "b", false);
+
+    // The device renames one, gives it a room of its own, and adds another.
+    a.name = "Big lamp";
+    a.room = "Lounge";
+    b.room = "Garage";
+    home::Thing c;
+    c.id = "c"; c.name = "Hall light"; c.type = "light"; c.caps = home::kPower;
+    g_fake->listing["fake:hub"] = {a, b, c};
+    home::refresh(g_net.id());
+    e = home::entry(g_net.id());
+    ta = find_thing(e, "fake:hub", "a"); tb = find_thing(e, "fake:hub", "b");
+    const home::Thing *tc = find_thing(e, "fake:hub", "c");
+    CHECK(ta && tb && tc);
+    if (!ta || !tb || !tc) return;
+    CHECK(ta->alias == "Reading light" && ta->name == "Big lamp");
+    CHECK(ta->room == "Lounge");                       // not set by the user: the device's room is taken
+    CHECK(!ta->enabled);
+    CHECK(tb->room == "Office");                       // set by the user: kept
+    CHECK(!tb->ask_first);
+    CHECK(tc->room == "Hall" && tc->enabled);
+    CHECK(home::rooms(g_net.id()) == std::vector<std::string>({"Hall", "Lounge", "Office"}));
+
+    // A thing the device stops listing is kept, not offered, and comes back with its settings.
+    g_fake->listing["fake:hub"] = {a, c};
+    home::refresh(g_net.id());
+    e = home::entry(g_net.id());
+    CHECK(find_thing(e, "fake:hub", "b") != nullptr);
+    CHECK(!e.devices[0].listed(*find_thing(e, "fake:hub", "b")));
+    const auto items = home::catalog(e);
+    CHECK(std::none_of(items.begin(), items.end(), [](const home::Item &i) { return i.thing.id == "b"; }));
+    g_fake->listing["fake:hub"] = {a, b, c};
+    home::refresh(g_net.id());
+    e = home::entry(g_net.id());
+    tb = find_thing(e, "fake:hub", "b");
+    CHECK(tb && e.devices[0].listed(*tb) && tb->room == "Office" && !tb->ask_first);
+
+    // After a month away it is forgotten.
+    home::Saved d = home::entry(g_net.id()).devices[0];
+    const time_t now = time(nullptr);
+    home::merge_things(d, {a, c}, now);
+    CHECK(d.thing("b") != nullptr);
+    home::merge_things(d, {a, c}, now + 31 * 86400);
+    CHECK(d.thing("b") == nullptr && d.meta.count("b") == 0);
+
+    // A scan keeps things, settings and the name the device gave; it refreshes the address.
+    found.ip = "127.0.0.7";
+    found.name = "Something else";
+    home::remember_scan(g_net, {found});
+    e = home::entry(g_net.id());
+    CHECK(e.devices[0].ip == "127.0.0.7" && find_thing(e, "fake:hub", "a")->alias == "Reading light");
+
+    // A driver's junk is filtered: unknown types, empty ids, repeated ids.
+    home::Thing lock, blank;
+    lock.id = "l"; lock.name = "Front door"; lock.type = "lock"; lock.caps = home::kPower;
+    blank.name = "No id"; blank.type = "light";
+    g_fake->listing["fake:hub"] = {a, a, lock, blank};
+    home::refresh(g_net.id());
+    e = home::entry(g_net.id());
+    CHECK(find_thing(e, "fake:hub", "l") == nullptr);
+    CHECK(std::count_if(e.devices[0].things.begin(), e.devices[0].things.end(), [](const home::Thing &t) { return t.id == "a"; }) == 1);
+
+    // A device that does not answer keeps what it had and says why.
+    g_fake->broken.insert("fake:hub");
+    CHECK(has(home::refresh(g_net.id()), "0 ready, 1 not: it did not answer"));
+    e = home::entry(g_net.id());
+    CHECK(e.devices[0].problem == "it did not answer" && find_thing(e, "fake:hub", "a") != nullptr);
+}
+
+// ---------------------------------------------------------------- targets
+home::Item item(const std::string &dev, const std::string &id, const std::string &name, const std::string &type, uint32_t caps,
+                const std::string &room, const std::string &alias = "") {
+    home::Item i;
+    i.device_id = dev;
+    i.thing.id = id;
+    i.thing.name = name;
+    i.thing.alias = alias;
+    i.thing.type = type;
+    i.thing.caps = caps;
+    i.thing.room = room;
+    i.label = alias.empty() ? name : alias;
+    return i;
+}
+
+void test_targets() {
+    Section s("targets: exact, partial, ambiguous, rooms, groups and the 48 cap");
+    write_home({device("fake:1", {thing("1", "Bedroom lamp", "light", home::kPower, "Bedroom"),
+                                  thing("2", "Bedside lamp", "light", home::kPower, "Bedroom"),
+                                  thing("3", "Desk lamp", "light", home::kPower, "Office"),
+                                  thing("4", "Bed heater", "plug", home::kPower, "Bedroom"),
+                                  thing("5", "Kitchen", "plug", home::kPower, "Kitchen"),
+                                  thing("6", "Kitchen ceiling", "light", home::kPower, "Kitchen"),
+                                  thing("7", "Lamp", "light", home::kPower, "Lounge"),
+                                  thing("8", "Lamp", "light", home::kPower, "Hall"),
+                                  thing("9", "Kitchen speaker", "speaker", home::kVolume | home::kTransport, "Kitchen"),
+                                  thing("10", "Thermostat", "thermostat", home::kTargetTemp, "")})});
+    home::set_thing_alias(g_net.id(), "fake:1", "4", "Electric blanket");
+    const auto items = home::catalog(home::entry(g_net.id()));
+    CHECK(items.size() == 10);
+    home::Resolved r;
+    std::string err;
+    auto one = [&](const std::string &said) {
+        err.clear();
+        const bool ok = home::resolve(items, said, r, err);
+        return ok && r.scope == home::Scope::Thing && r.members.size() == 1 ? r.members[0]->label : std::string(ok ? "?" : "");
+    };
+    // Exact: the listed name, the maker's name, the user's name for it, in any case or spacing.
+    CHECK(one("Desk lamp") == "Desk lamp");
+    CHECK(one("desk-LAMP") == "Desk lamp");
+    CHECK(one("the desk lamp") == "Desk lamp");
+    CHECK(one("Electric blanket") == "Electric blanket");
+    CHECK(one("bed heater") == "Electric blanket");
+    CHECK(one("Lamp (Hall)") == "Lamp (Hall)");
+    // Partial, at the start of a word only.
+    CHECK(one("blanket") == "Electric blanket");
+    CHECK(one("ceiling") == "Kitchen ceiling");
+    CHECK(one("the desk lamp please") == "Desk lamp");
+    CHECK(one("eiling").empty() && has(err, "no device called"));
+    // Ambiguous: reported with the candidates, never guessed.
+    CHECK(one("lamp").empty());
+    CHECK_MSG(has(err, "could mean any of: Lamp (Lounge), Lamp (Hall). Ask which one"), err);
+    CHECK(one("bed").empty() && has(err, "Bedroom lamp") && has(err, "Bedside lamp") && has(err, "Bedroom (room)"));
+    // Room versus a thing of the same name.
+    CHECK(one("Kitchen") == "Kitchen");
+    CHECK(home::resolve(items, "Kitchen (room)", r, err) && r.scope == home::Scope::Room && r.members.size() == 3);
+    CHECK(home::resolve(items, "kitchen lights", r, err) && r.scope == home::Scope::Room && r.label == "Kitchen");
+    CHECK(home::resolve(items, "the bedroom", r, err) && r.scope == home::Scope::Room && r.members.size() == 3);
+    CHECK(home::resolve(items, "lights in the office", r, err) && r.scope == home::Scope::Room && r.label == "Office");
+    // Groups.
+    CHECK(home::resolve(items, "all lights", r, err) && r.scope == home::Scope::AllLights && r.members.size() == 6);
+    CHECK(home::resolve(items, "lights", r, err) && r.scope == home::Scope::AllLights);
+    CHECK(home::resolve(items, "all speakers", r, err) && r.scope == home::Scope::AllSpeakers && r.members.size() == 1);
+    CHECK(home::resolve(items, "everything", r, err) && r.scope == home::Scope::Everything && r.members.size() == 10);
+    CHECK(home::resolve(items, "all", r, err) && r.scope == home::Scope::Everything);
+    // Nothing of the name.
+    CHECK(!home::resolve(items, "garage door", r, err) && has(err, "no device called 'garage door'") && has(err, "Desk lamp"));
+    CHECK(!home::resolve(items, "", r, err));
+    CHECK(!home::resolve(items, "\"}{", r, err));
+
+    // What the model is offered: things, then rooms with lights (a room that is also a thing's
+    // name marked as a room), then groups.
+    const auto names = home::target_names(items);
+    const std::vector<std::string> want = {"Bedroom lamp", "Bedside lamp", "Desk lamp", "Electric blanket", "Kitchen",
+                                           "Kitchen ceiling", "Lamp (Lounge)", "Lamp (Hall)", "Kitchen speaker", "Thermostat",
+                                           "Bedroom", "Hall", "Kitchen (room)", "Lounge", "Office", "all lights", "all speakers", "all"};
+    CHECK_MSG(names == want, json(names).dump());
+
+    // Over 48: rooms and groups stay, then the things used most recently, in their usual order.
+    std::vector<home::Item> many;
+    for (int k = 0; k < 60; ++k) {
+        many.push_back(item("fake:m", std::to_string(k), "Plug " + std::to_string(k), "plug", home::kPower, ""));
+        many.back().used = k == 59 ? 1000 : k == 3 ? 900 : 0;
+    }
+    many.push_back(item("fake:m", "L", "Porch light", "light", home::kPower, "Porch"));
+    bool overflow = false;
+    const auto capped = home::target_names(many, &overflow);
+    CHECK(overflow && capped.size() == home::kMaxTargets);
+    CHECK(std::find(capped.begin(), capped.end(), "Porch") != capped.end());
+    CHECK(std::find(capped.begin(), capped.end(), "all lights") != capped.end());
+    CHECK(std::find(capped.begin(), capped.end(), "all") != capped.end());
+    CHECK(std::find(capped.begin(), capped.end(), "Plug 59") != capped.end());
+    CHECK(std::find(capped.begin(), capped.end(), "Plug 3") != capped.end());
+    CHECK(std::find(capped.begin(), capped.end(), "Plug 58") == capped.end());
+    // ... and what is not listed is still understood.
+    CHECK(home::resolve(many, "Plug 58", r, err) && r.members[0]->label == "Plug 58");
+    bool small_overflow = true;
+    home::target_names(items, &small_overflow);
+    CHECK(!small_overflow);
+}
+
+// ---------------------------------------------------------------- the tool's schema
+std::vector<json> plugs_only_home() {
+    return {device("fake:plug1", {thing("main", "Bed heater", "plug", home::kPower, "", {{"on", false}}, true)}),
+            device("fake:plug2", {thing("main", "Desk lamp", "plug", home::kPower | home::kSensor, "", {{"on", true}, {"power_w", 12}})}),
+            device("fake:strip", {thing("s1", "Kettle", "plug", home::kPower, "", {{"on", false}}, true),
+                                  thing("s2", "Radio", "plug", home::kPower, "", {{"on", false}})})};
+}
+
+std::vector<json> lights_home() {
+    const uint32_t dim = home::kPower | home::kBrightness, white = dim | home::kColorTemp, colour = white | home::kColor;
+    return {device("fake:bridge", {thing("1", "Bedroom lamp", "light", white, "Bedroom", {{"on", false}}),
+                                   thing("2", "Bedside light", "light", dim, "Bedroom", {{"on", true}, {"brightness", 30}}),
+                                   thing("3", "Floor lamp", "light", colour, "Lounge", {{"on", false}}),
+                                   thing("4", "Lamp", "light", home::kPower, "Lounge", {{"on", false}}),
+                                   thing("5", "Lamp", "light", home::kPower, "Hall", {{"on", true}})}),
+            device("fake:plug", {thing("main", "Bed heater", "plug", home::kPower, "Bedroom", {{"on", false}}, true)})};
+}
+
+std::vector<json> mixed_home() {
+    return {device("fake:hub", {thing("t", "Hall thermostat", "thermostat", home::kTargetTemp | home::kSensor, "Hall",
+                                      {{"mode", "heat"}, {"target_c", 19}, {"current_c", 18.5}, {"secret_id", "x"}}),
+                                thing("b1", "Lounge blind", "cover", home::kPosition, "Lounge", {{"position", 100}}),
+                                thing("b2", "Bay blind", "cover", home::kPosition, "Lounge", {{"position", 100}}),
+                                thing("sc", "Movie night", "scene", home::kScene, "Lounge"),
+                                thing("k", "Kitchen light", "light", home::kPower | home::kBrightness, "Kitchen", {{"on", false}})}),
+            device("fake:tv", {thing("tv", "Living room TV", "tv", home::kPower | home::kVolume | home::kTransport | home::kSource,
+                                     "Living room", {{"on", false}, {"volume", 20}})}),
+            device("fake:speaker", {thing("sp", "Kitchen speaker", "speaker", home::kVolume | home::kTransport, "Kitchen",
+                                          {{"playing", "playing"}, {"volume", 30}})}),
+            device("fake:plug", {thing("main", "Bed heater", "plug", home::kPower, "", {{"on", false}}, true)})};
+}
+
+void snapshot(const std::string &name, const json &spec) {
+    const std::string path = g_snapshots + "/" + name + ".json";
+    const char *update = getenv("ZB_UPDATE_SNAPSHOTS");
+    if (update && *update && std::string(update) != "0") {
+        util::write_file_atomic(path, spec.dump(2, ' ', false) + "\n", 0644);
+        return;
+    }
+    const json want = util::load_json(path, json());
+    CHECK_MSG(spec == want, "schema differs from " + path + "; it is now " + spec.dump());
+}
+
+void test_schema() {
+    Section s("tool: schema snapshots for three homes; the tool only where it may exist");
+    write_home(plugs_only_home());
+    json spec = home::tool_spec();
+    snapshot("plugs_only", spec);
+    CHECK(spec["parameters"]["properties"].size() == 3);   // action, target, say: as before things existed
+    CHECK(spec["parameters"]["properties"]["action"]["enum"] == json({"on", "off", "status"}));
+    CHECK(spec["parameters"]["properties"]["target"]["enum"] == json({"Bed heater", "Desk lamp", "Kettle", "Radio", "all"}));
+    CHECK(spec["parameters"]["required"] == json({"action"}));
+    CHECK(home::available() && home::thing_count() == 4);
+
+    write_home(lights_home());
+    spec = home::tool_spec();
+    snapshot("lights_with_rooms", spec);
+    const json &p = spec["parameters"]["properties"];
+    CHECK(p["action"]["enum"] == json({"on", "off", "set", "status"}));
+    CHECK(p.contains("brightness") && p.contains("color") && !p.contains("temperature") && !p.contains("volume"));
+    CHECK(p["color"]["enum"].size() == color::names().size());
+    const json targets = p["target"]["enum"];
+    for (const char *t : {"Lamp (Lounge)", "Lamp (Hall)", "Bedroom", "Lounge", "Hall", "all lights", "all"})
+        CHECK_MSG(std::find(targets.begin(), targets.end(), t) != targets.end(), t);
+
+    write_home(mixed_home());
+    spec = home::tool_spec();
+    snapshot("mixed_heating_tv", spec);
+    const json &m = spec["parameters"]["properties"];
+    CHECK(m["action"]["enum"] == json({"on", "off", "set", "status", "scene", "play", "pause", "stop", "next", "previous", "mute", "unmute"}));
+    for (const char *k : {"brightness", "temperature", "position", "volume", "source"}) CHECK_MSG(m.contains(k), k);
+    CHECK(!m.contains("color"));
+    // Names are values, never part of the description.
+    for (const char *name : {"Hall thermostat", "Movie night", "Kitchen", "Living room TV"})
+        CHECK_MSG(!has(spec["description"].get<std::string>(), name), name);
+
+    // Only white shades for lights that have no colours.
+    write_home({device("fake:w", {thing("w", "Desk light", "light", home::kPower | home::kColorTemp, "Office")})});
+    const json shades = home::tool_spec()["parameters"]["properties"]["color"]["enum"];
+    CHECK(std::find(shades.begin(), shades.end(), "warm white") != shades.end());
+    CHECK(std::find(shades.begin(), shades.end(), "red") == shades.end());
+
+    // Not offered: nothing the assistant may use, a device switched off in settings, a network
+    // that was never scanned, a phone's tether.
+    write_home({device("fake:off", {thing("x", "Lamp", "light", home::kPower)})});
+    home::set_thing_enabled(g_net.id(), "fake:off", "x", false);
+    CHECK(home::tool_spec().is_null() && !home::available());
+    write_home({device("fake:off", {thing("x", "Lamp", "light", home::kPower)})});
+    home::set_enabled(g_net.id(), "fake:off", false);
+    CHECK(home::tool_spec().is_null());
+    write_home({device("fake:other", {thing("x", "Lamp", "light", home::kPower)}, "unknown_family")});
+    CHECK(home::tool_spec().is_null());
+    write_home(plugs_only_home());
+    discovery::Network elsewhere = g_net;
+    elsewhere.gateway_mac = "02:00:00:00:00:77";
+    home::testing::set_network(&elsewhere);
+    CHECK(home::tool_spec().is_null());
+    CHECK(starts(run({{"action", "off"}, {"target", "Radio"}}), "ERROR"));
+    discovery::Network tether;
+    tether.iface = "bnep0";
+    tether.why_not = "The internet connection is not Wi-Fi (bnep0), so there is no home network to look at.";
+    home::testing::set_network(&tether);
+    CHECK(home::tool_spec().is_null() && !home::available());
+    const std::string refused = run({{"action", "off"}, {"target", "Radio"}});
+    CHECK_MSG(refused == "ERROR: " + tether.why_not, refused);
+    CHECK(home::refresh(g_net.id()) == tether.why_not);
+    CHECK(home::pairing_step(g_net.id(), "fake:plug1").kind == home::Pairing::None);
+    std::string err;
+    CHECK(!home::pairing_submit(g_net.id(), "fake:plug1", "x", err));
+    CHECK(starts(home::switch_thing(g_net.id(), "fake:strip", "s2", true), "ERROR"));
+    home::testing::set_network(&g_net);
+    CHECK(g_fake->applied() == 0);
+}
+
+// ---------------------------------------------------------------- commands
+void test_commands() {
+    Section s("tool: commands, groups, everything-off, results carry names and states only");
+    g_fake->reset();
+    write_home(mixed_home());
+    std::string r = run({{"action", "on"}, {"target", "Kitchen light"}});
+    CHECK_MSG(r == R"({"now":"on","target":"Kitchen light"})", r);
+    CHECK(g_fake->log.back() == R"(apply fake:hub/k {"on":true})");
+    r = run({{"action", "set"}, {"target", "Kitchen light"}, {"brightness", "30"}});
+    CHECK_MSG(r == R"({"now":{"brightness":30,"on":true},"target":"Kitchen light"})", r);
+    // "on" with a value is "set"; "device" is still accepted for "target".
+    r = run({{"action", "on"}, {"device", "Kitchen light"}, {"brightness", 55.4}});
+    CHECK_MSG(has(r, R"("brightness":55)"), r);
+    // The saved state follows, and the time it was used.
+    const home::NetworkEntry saved = home::entry(g_net.id());
+    const home::Thing *k = find_thing(saved, "fake:hub", "k");
+    CHECK(k && k->state.value("brightness", 0) == 55 && k->state.value("on", false));
+    // Heating: on and off are its mode; a target is clamped and rounded.
+    r = run({{"action", "set"}, {"target", "Hall thermostat"}, {"temperature", 20.3}});
+    CHECK_MSG(r == R"({"now":{"target_c":20.5},"target":"Hall thermostat"})", r);
+    r = run({{"action", "off"}, {"target", "Hall thermostat"}});
+    CHECK(g_fake->log.back() == R"(apply fake:hub/t {"mode":"off"})");
+    // Things that cannot do what is asked say so.
+    r = run({{"action", "set"}, {"target", "Bed heater"}, {"brightness", 20}});
+    CHECK_MSG(starts(r, "ERROR: Bed heater cannot do that: it cannot be dimmed"), r);
+    r = run({{"action", "set"}, {"target", "Kitchen light"}, {"color", "red"}});
+    CHECK(starts(r, "ERROR"));
+    r = run({{"action", "set"}, {"target", "Kitchen light"}});
+    CHECK(starts(r, "ERROR: set needs a value"));
+    r = run({{"action", "dance"}, {"target", "Kitchen light"}});
+    CHECK(starts(r, "ERROR: action must be one of"));
+    r = run({{"action", "on"}});
+    CHECK(starts(r, "ERROR: say which device"));
+    r = run({{"action", "scene"}, {"target", "Kitchen light"}});
+    CHECK(starts(r, "ERROR: Kitchen light is not a scene"));
+    r = run({{"action", "scene"}, {"target", "Movie night"}});
+    CHECK_MSG(r == R"({"now":"on","target":"Movie night"})", r);
+    r = run({{"action", "pause"}, {"target", "Kitchen speaker"}});
+    CHECK_MSG(r == R"({"now":{"playback":"pause"},"target":"Kitchen speaker"})", r);
+    r = run({{"action", "set"}, {"target", "Living room TV"}, {"source", "Netflix"}});
+    CHECK(g_fake->log.back() == R"(apply fake:tv/tv {"source":"Netflix"})");
+    // A room means its lights; things of other kinds in it are left alone.
+    r = run({{"action", "off"}, {"target", "Kitchen"}});
+    CHECK_MSG(r == R"({"changed":1,"now":"off","target":"Kitchen"})", r);
+    r = run({{"action", "on"}, {"target", "Lounge"}});
+    CHECK_MSG(starts(r, "ERROR: a room means its lights, and there are no lights in Lounge"), r);
+    r = run({{"action", "pause"}, {"target", "Kitchen"}});
+    CHECK(g_fake->log.back() == R"(apply fake:speaker/sp {"transport":"pause"})");
+    // All speakers: pause, stop and mute only.
+    CHECK(starts(run({{"action", "play"}, {"target", "all speakers"}}), "ERROR"));
+    // Everything: off only, and never the heating.
+    r = run({{"action", "on"}, {"target", "all"}});
+    CHECK_MSG(starts(r, "ERROR: everything can be switched off together"), r);
+    CHECK(starts(run({{"action", "set"}, {"target", "everything"}, {"brightness", 10}}), "ERROR"));
+    const size_t before = g_fake->applied();
+    r = run({{"action", "off"}, {"target", "everything"}});
+    CHECK_MSG(r == R"({"changed":3,"now":"off","target":"all"})", r);   // kitchen light, TV, bed heater
+    std::set<std::string> touched;
+    for (size_t i = before; i < g_fake->log.size(); ++i) touched.insert(g_fake->log[i].substr(6, g_fake->log[i].find(' ', 6) - 6));
+    CHECK(touched == std::set<std::string>({"fake:hub/k", "fake:tv/tv", "fake:plug/main"}));
+    // Results name things and states: no addresses, ids or driver-private state.
+    r = run({{"action", "status"}, {"target", "Hall thermostat"}});
+    CHECK_MSG(r == R"({"state":{"current_c":18.5,"mode":"off","target_c":20.5},"target":"Hall thermostat"})", r);
+    r = run({{"action", "status"}});
+    CHECK_MSG(has(r, R"("Kitchen":{"Kitchen light":"off","Kitchen speaker":"paused"})"), r);
+    CHECK_MSG(has(r, R"("no room":{"Bed heater":"off"})"), r);
+    for (const std::string secret : {"127.0.0", "fake:", "secret_id", "\"t\"", "sp"})
+        CHECK_MSG(!has(r, "\"" + secret) && !has(r, secret + "\""), secret);
+    // A device that does not answer: one thing is an error, a group reports what failed.
+    g_fake->broken.insert("fake:tv");
+    r = run({{"action", "on"}, {"target", "Living room TV"}});
+    CHECK_MSG(r == "ERROR: could not change Living room TV: it did not answer. Tell the user", r);
+    write_home(lights_home());
+    g_fake->broken = {"fake:bridge"};
+    r = run({{"action", "off"}, {"target", "Bedroom"}});
+    CHECK_MSG(starts(r, "ERROR: none of Bedroom could be changed"), r);
+    g_fake->broken.clear();
+    // Dry run: nothing reaches a device, the answer is the same.
+    const size_t n = g_fake->applied();
+    r = home::tool_run({{"action", "on"}, {"target", "Floor lamp"}}, true);
+    CHECK(r == R"({"now":"on","target":"Floor lamp"})" && g_fake->applied() == n);
+    r = home::tool_run({{"action", "status"}, {"target", "Floor lamp"}}, true);
+    CHECK_MSG(r == R"({"state":{"on":true},"target":"Floor lamp"})", r);
+    // Colours by name, white shades as kelvin, converted for lights that only take colours.
+    r = run({{"action", "set"}, {"target", "Floor lamp"}, {"color", "Warm White"}});
+    CHECK(g_fake->log.back() == R"(apply fake:bridge/3 {"kelvin":2700,"on":true})");
+    r = run({{"action", "set"}, {"target", "Floor lamp"}, {"colour", "red"}});
+    CHECK(g_fake->log.back() == R"(apply fake:bridge/3 {"hs":[0,100],"on":true})");
+    r = run({{"action", "set"}, {"target", "Floor lamp"}, {"color", "plaid"}});
+    CHECK(starts(r, "ERROR: 'plaid' is not a colour"));
+    r = run({{"action", "set"}, {"target", "Bedroom lamp"}, {"color", "blue"}});
+    CHECK_MSG(starts(r, "ERROR: Bedroom lamp cannot do that: it can only be set to shades of white"), r);
+    // The say sentence may be spoken for plain successes only.
+    CHECK(home::tool_say_ok({{"action", "on"}}, R"({"now":"on","target":"Floor lamp"})"));
+    CHECK(!home::tool_say_ok({{"action", "status"}}, R"({"target":"Floor lamp","state":{}})"));
+    CHECK(!home::tool_say_ok({{"action", "on"}}, "CONFIRM: ask"));
+    CHECK(!home::tool_say_ok({{"action", "on"}}, "ERROR: no"));
+    CHECK(!home::tool_say_ok({{"action", "off"}}, R"({"target":"Bedroom","changed":1,"now":"off","failed":["x: y"]})"));
+}
+
+// ---------------------------------------------------------------- questions before risky changes
+void test_confirmation() {
+    Section s("safety: ask_first and the other questions are asked in code and cannot be skipped");
+    g_fake->reset();
+    write_home(mixed_home());
+    const json on = {{"action", "on"}, {"target", "Bed heater"}};
+    std::string r = run(on);
+    CHECK_MSG(starts(r, "CONFIRM: nothing has been changed yet, because Bed heater is set to be switched on only after the user "
+                        "says yes. Ask the user: \"Turn on Bed heater?\""), r);
+    CHECK(g_fake->applied() == 0);
+    // Asking again straight away, or with any flag the model might invent, changes nothing.
+    CHECK(starts(run(on), "CONFIRM"));
+    CHECK(starts(run({{"action", "on"}, {"target", "Bed heater"}, {"confirmed", true}, {"confirm", "yes"}, {"force", true}}), "CONFIRM"));
+    home::assistant_replied();
+    home::user_spoke("yes please");
+    r = run(on);
+    CHECK_MSG(r == R"({"now":"on","target":"Bed heater"})", r);
+    CHECK(g_fake->applied() == 1);
+    // One yes, one change.
+    CHECK(starts(run(on), "CONFIRM"));
+    // "No" is not a yes.
+    CHECK(starts(answer_and_repeat(on, "no, leave it"), "CONFIRM"));
+    CHECK(starts(answer_and_repeat(on, "yes, no wait"), "CONFIRM"));
+    // The question has to have been put: a yes before any reply does not count.
+    run(on);
+    home::user_spoke("yes");
+    CHECK(starts(run(on), "CONFIRM"));
+    // The yes has to be the very next thing said.
+    run(on);
+    home::assistant_replied();
+    home::user_spoke("what's the weather");
+    home::user_spoke("yes");
+    CHECK(starts(run(on), "CONFIRM"));
+    // A yes covers the change that was asked about, not another one; that one may still follow.
+    run(on);
+    CHECK(starts(answer_and_repeat({{"action", "set"}, {"target", "Living room TV"}, {"volume", 90}}, "yes"), "CONFIRM"));
+    CHECK(starts(run({{"action", "on"}, {"target", "Bed heater"}, {"brightness", 5}}), "ERROR"));
+    CHECK(g_fake->applied() == 1);
+    CHECK(starts(run(on), "{"));
+    CHECK(g_fake->applied() == 2);
+    // Nor does it last: three minutes later it is asked again.
+    run(on);
+    home::assistant_replied();
+    g_clock += 4 * 60 * 1000;
+    home::user_spoke("yes");
+    CHECK(starts(run(on), "CONFIRM"));
+    CHECK(g_fake->applied() == 2);
+    // Switching off never needs a question.
+    CHECK(starts(run({{"action", "off"}, {"target", "Bed heater"}}), "{"));
+    // Turned off in settings, it is just switched.
+    home::set_thing_ask_first(g_net.id(), "fake:plug", "main", false);
+    CHECK(starts(run(on), "{"));
+
+    // Heating outside 10..25 degrees, or more than 5 degrees at once.
+    home::testing::reset_control();
+    const json warm = {{"action", "set"}, {"target", "Hall thermostat"}, {"temperature", 28}};
+    r = run(warm);
+    CHECK_MSG(starts(r, "CONFIRM: nothing has been changed yet, because 28 degrees is an unusual heating temperature. Ask the user: "
+                        "\"Set Hall thermostat to 28 degrees?\""), r);
+    CHECK(starts(answer_and_repeat(warm, "yes"), "{"));
+    CHECK(starts(run({{"action", "set"}, {"target", "Hall thermostat"}, {"temperature", 99}}), "CONFIRM"));   // clamped to 30, still asked
+    CHECK(starts(run({{"action", "set"}, {"target", "Hall thermostat"}, {"temperature", 22}}), "CONFIRM"));   // 28 -> 22: six degrees
+    CHECK(starts(run({{"action", "set"}, {"target", "Hall thermostat"}, {"temperature", 24}}), "{"));
+    // Volume above 70; several blinds at once.
+    CHECK(starts(run({{"action", "set"}, {"target", "Kitchen speaker"}, {"volume", 80}}), "CONFIRM"));
+    CHECK(starts(run({{"action", "set"}, {"target", "Kitchen speaker"}, {"volume", 40}}), "{"));
+    CHECK(starts(run({{"action", "set"}, {"target", "Lounge"}, {"position", 0}}), "CONFIRM"));
+    CHECK(starts(run({{"action", "set"}, {"target", "Lounge blind"}, {"position", 0}}), "{"));
+    // After text from outside (a web page, a photo), changes wait for the user's own word.
+    home::testing::reset_control();
+    home::user_spoke("search for something");
+    home::saw_untrusted_text();
+    const json light = {{"action", "on"}, {"target", "Kitchen light"}};
+    r = run(light);
+    CHECK_MSG(has(r, "text from outside"), r);
+    CHECK(starts(answer_and_repeat(light, "yes"), "{"));
+    CHECK(starts(run({{"action", "off"}, {"target", "Kitchen light"}}), "{"));   // the user has spoken since
+    // More than eight things at once, except all lights off.
+    std::vector<json> lights;
+    for (int k = 0; k < 10; ++k) lights.push_back(thing(std::to_string(k), "Light " + std::to_string(k), "light", home::kPower, "Hall"));
+    write_home({device("fake:many", lights)});
+    CHECK(starts(run({{"action", "on"}, {"target", "all lights"}}), "CONFIRM"));
+    CHECK(starts(run({{"action", "on"}, {"target", "Hall"}}), "CONFIRM"));
+    CHECK(starts(run({{"action", "off"}, {"target", "all"}}), "CONFIRM"));
+    CHECK_MSG((r = run({{"action", "off"}, {"target", "all lights"}})) == R"({"changed":10,"now":"off","target":"all lights"})", r);
+}
+
+// ---------------------------------------------------------------- rate limits
+void test_rate_limits() {
+    Section s("safety: at most 3 changes per target in 10 s and 12 a minute");
+    g_fake->reset();
+    write_home(lights_home());
+    const json off = {{"action", "off"}, {"target", "Floor lamp"}};
+    CHECK(starts(run(off), "{") && starts(run(off), "{") && starts(run(off), "{"));
+    std::string r = run(off);
+    CHECK_MSG(starts(r, "ERROR: 'Floor lamp' was changed several times"), r);
+    CHECK(starts(run({{"action", "status"}, {"target", "Floor lamp"}}), "{"));   // reading is not limited
+    g_clock += 10000;
+    CHECK(starts(run(off), "{"));
+    home::testing::reset_control();
+    int done = 0;
+    for (const char *t : {"Floor lamp", "Bedroom lamp", "Bedside light", "Lamp (Hall)"})
+        for (int k = 0; k < 3; ++k) done += starts(run({{"action", "off"}, {"target", t}}), "{");
+    CHECK(done == 12);
+    r = run({{"action", "off"}, {"target", "Lamp (Lounge)"}});
+    CHECK_MSG(starts(r, "ERROR: too many device commands in the last minute"), r);
+    g_clock += 60000;
+    CHECK(starts(run({{"action", "off"}, {"target", "Lamp (Lounge)"}}), "{"));
+    home::testing::reset_control();
+}
+
+// ---------------------------------------------------------------- locking and fan-out
+void test_fanout() {
+    Section s("locking: one conversation per device, groups fan out over at most 4 threads");
+    g_fake->reset();
+    std::vector<json> devices;
+    for (int k = 0; k < 6; ++k)
+        devices.push_back(device("fake:lamp" + std::to_string(k), {thing("main", "Hall lamp " + std::to_string(k), "light", home::kPower, "Hall")}));
+    devices.push_back(device("fake:bar", {thing("1", "Bar light 1", "light", home::kPower, "Bar"),
+                                          thing("2", "Bar light 2", "light", home::kPower, "Bar"),
+                                          thing("3", "Bar light 3", "light", home::kPower, "Bar")}));
+    write_home(devices);
+    g_fake->delay_ms = 150;
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::string r = run({{"action", "on"}, {"target", "Hall"}});
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    CHECK_MSG(r == R"({"changed":6,"now":"on","target":"Hall"})", r);
+    CHECK_MSG(g_fake->most.load() <= 4 && g_fake->most.load() >= 2, std::to_string(g_fake->most.load()));
+    CHECK_MSG(secs < 0.75, std::to_string(secs));   // six devices of 150 ms each, four at a time
+    // Three things on one device: one after another, never two at once on that device.
+    g_fake->most = 0;
+    run({{"action", "on"}, {"target", "Bar"}});
+    CHECK(g_fake->device_most == 1);
+    // A driver that can change several things in one request is asked once.
+    g_fake->many = true;
+    g_fake->delay_ms = 0;
+    g_fake->log.clear();
+    run({{"action", "off"}, {"target", "Bar"}});
+    CHECK_MSG(g_fake->log == std::vector<std::string>({R"(many fake:bar 3 {"on":false})"}), json(g_fake->log).dump());
+    // Different devices do not wait for each other's lock.
+    g_fake->many = false;
+    std::mutex &a = home::device_lock("fake:lamp0");
+    std::lock_guard<std::mutex> held(a);
+    CHECK(starts(run({{"action", "off"}, {"target", "Hall lamp 1"}}), "{"));
+    CHECK(&home::device_lock("fake:lamp0") == &a && &home::device_lock("fake:lamp1") != &a);
+    std::vector<int> seen(10, 0);
+    home::run_parallel(10, 4, [&](size_t k) { seen[k]++; });
+    CHECK(std::all_of(seen.begin(), seen.end(), [](int v) { return v == 1; }));
+}
+
+// ---------------------------------------------------------------- pairing
+void test_pairing() {
+    Section s("pairing: steps from the driver, a refusal reported and not repeated, secrets kept out of results");
+    g_fake->reset();
+    g_fake->wants_pairing = true;
+    g_fake->reject = "0000";
+    write_home({device("fake:tv", {})});
+    home::Thing tv;
+    tv.id = "tv"; tv.name = "Lounge TV"; tv.type = "tv"; tv.caps = home::kPower;
+    g_fake->listing["fake:tv"] = {tv};
+    CHECK(has(home::refresh(g_net.id()), "Type the code shown on the device."));
+    home::NetworkEntry e = home::entry(g_net.id());
+    CHECK(e.devices[0].needs_setup && home::catalog(e).empty());
+    home::PairStep step = home::pairing_step(g_net.id(), "fake:tv");
+    CHECK(step.kind == home::Pairing::EnterCode && step.field == "Code");
+    std::string err;
+    CHECK(!home::pairing_submit(g_net.id(), "fake:tv", "0000", err) && err == "The device did not accept that code.");
+    CHECK(home::pairing_step(g_net.id(), "fake:tv").kind == home::Pairing::EnterCode);
+    CHECK(home::pairing_submit(g_net.id(), "fake:tv", "1234", err));
+    CHECK(home::pairing_step(g_net.id(), "fake:tv").kind == home::Pairing::None);
+    e = home::entry(g_net.id());
+    CHECK(!e.devices[0].needs_setup && e.devices[0].auth.value("key", "") == "secret-1234");
+    CHECK(home::refresh(g_net.id(), "fake:tv") == "1 device ready.");
+    const std::string r = run({{"action", "status"}});
+    CHECK_MSG(has(r, "Lounge TV") && !has(r, "secret"), r);
+    home::unpair(g_net.id(), "fake:tv");
+    e = home::entry(g_net.id());
+    CHECK(e.devices[0].auth.empty() && e.devices[0].needs_setup && home::catalog(e).empty());
+    g_fake->wants_pairing = false;
+}
+
+// ---------------------------------------------------------------- the Tapo driver, without a plug
+void test_tapo_driver() {
+    Section s("tapo driver: account steps, owner check and a kept refusal, with nothing contacted");
+    // Nothing listens on this port: a driver that tried to log in would report a connection error.
+    write_home({{{"id", "tapo:p"}, {"kind", "tapo"}, {"name", "Tapo P110"}, {"model", "P110"}, {"last_ip", "127.0.0.1"}, {"port", 9},
+                 {"info", {{"scheme", "KLAP"}, {"device_type", "SMART.TAPOPLUG"},
+                           {"owner", "B58996C504C5638798EB6B511E6F49AF"}}},   // MD5 of "user@example.com", upper case
+                 {"things", json::array({thing("main", "Bed heater", "plug", home::kPower)})}},
+                {{"id", "tapo:cam"}, {"kind", "tapo"}, {"name", "Tapo C200"}, {"last_ip", "127.0.0.1"},
+                 {"info", {{"device_type", "SMART.IPCAMERA"}}}}});
+    home::Driver *tapo = home::driver_for("tapo");
+    CHECK(tapo != nullptr);
+    if (!tapo) return;
+    const home::NetworkEntry e = home::entry(g_net.id());
+    CHECK(e.devices[0].controllable() && !e.devices[1].controllable());   // cameras are not exposed
+    home::Saved plug = e.devices[0];
+    CHECK(tapo->next_step(plug).kind == home::Pairing::EnterCode);
+    std::string err;
+    CHECK(!tapo->pair(plug, "someone.else@example.com", err) && has(err, "different Tapo account"));
+    CHECK(home::tapo_account().email.empty());
+    CHECK(tapo->pair(plug, "user@example.com", err));
+    home::PairStep step = tapo->next_step(plug);
+    CHECK(step.kind == home::Pairing::Password && step.field == "Tapo account password");
+    CHECK(!has(step.prompt, "@"));
+    // A refused password is kept in the file: nothing is sent until it is typed again.
+    home::set_tapo_account("user@example.com", "hunter2");
+    json secret = home::secrets().get("tapo");
+    CHECK(secret.value("password_sha1", "") == tapo::sha1_hex("hunter2") && !has(secret.dump(), "hunter2\""));
+    secret["refused"] = true;
+    home::secrets().set("tapo", secret);
+    CHECK(home::tapo_account().refused);
+    std::vector<home::Thing> things;
+    CHECK(!tapo->enumerate(plug, things, err));
+    CHECK_MSG(has(err, "did not accept the saved password") && !has(err, "connect"), err);
+    home::Change on;
+    on.on = true;
+    CHECK(!tapo->apply(plug, plug.things[0], on, 2500, err) && has(err, "did not accept"));
+    CHECK(tapo->next_step(plug).kind == home::Pairing::Password && has(tapo->next_step(plug).prompt, "did not accept"));
+    home::set_tapo_account("user@example.com", "correct horse");
+    CHECK(!home::tapo_account().refused && home::tapo_account().set());
+    CHECK(tapo->next_step(plug).kind == home::Pairing::None);
+    // Only on and off.
+    home::Change dim;
+    dim.brightness = 20;
+    CHECK(!tapo->apply(plug, plug.things[0], dim, 2500, err) && has(err, "only be switched on and off"));
+    // The plug's own answer is needed for everything else, and nothing answers here.
+    CHECK(!tapo->apply(plug, plug.things[0], on, 2500, err) && !home::tapo_account().refused);
+    // Forgetting the account.
+    home::set_tapo_account("", "");
+    CHECK(home::secrets().get("tapo").empty() && tapo->next_step(plug).kind == home::Pairing::EnterCode);
+}
+
+// ---------------------------------------------------------------- the stand-in test network
+void test_stand_in() {
+    Section s("test network: ZB_TEST_NETWORK stands in, contacts 127.x only and never scans");
+    home::testing::set_network(nullptr);
+    setenv("ZB_TEST_NETWORK", "1", 1);
+    const discovery::Network net = home::network_now(true);
+    CHECK(net.usable && net.label() == "Test network");
+    CHECK(net.id() == "net-58678b031ae6e411");   // tests/agent_eval.py and tests/tapo_e2e.py rely on it
+    CHECK(home::test_network());
+    home::Device far, near;
+    far.ip = "192.0.2.10";
+    near.ip = "127.0.0.5";
+    std::string why;
+    CHECK(!home::may_contact(far, why) && has(why, "127.x"));
+    CHECK(home::may_contact(near, why));
+    std::vector<discovery::Device> found;
+    CHECK(!home::scan(found, why) && has(why, "test network"));
+    unsetenv("ZB_TEST_NETWORK");
+    home::testing::set_network(&g_net);
+}
+
+// ---------------------------------------------------------------- names and colours
+void test_names_and_colours() {
+    Section s("names and colours");
+    CHECK(home::clean_name("  Bed\theater\n\"}{<script>`  ") == "Bed heater script");
+    CHECK(home::clean_name(std::string(80, 'x')).size() == 40);
+    CHECK(home::clean_name("Caf\xc3\xa9 lamp") == "Caf\xc3\xa9 lamp");
+    CHECK(home::infer_room("Living room lamp") == "Living room" && home::infer_room("Bedside") == "" && home::infer_room("Hall") == "Hall");
+    CHECK(home::suggests_heat("Fan heater") && home::suggests_heat("Electric blanket") && home::suggests_heat("Iron"));
+    CHECK(!home::suggests_heat("Desk lamp"));
+    CHECK(!home::suggests_heat("Ironing board light"));
+    CHECK(home::suggests_heat("Fireplace"));
+    color::Named c;
+    CHECK(color::lookup("Warm White", c) && c.kelvin == 2700);
+    CHECK(color::lookup("warm", c) && c.kelvin == 2700);
+    CHECK(color::lookup("daylight", c) && c.kelvin == 6500);
+    CHECK(color::lookup("RED", c) && c.kelvin == 0 && c.hue == 0 && c.saturation == 100);
+    CHECK(color::lookup("teal", c) && std::string(c.name) == "turquoise");
+    CHECK(!color::lookup("plaid", c));
+    CHECK(color::names().size() >= 20);
+    CHECK(color::mired_from_kelvin(2700) == 370 && color::kelvin_from_mired(153) == 6536 && color::mired_from_kelvin(0) == 0);
+    int r, g, b;
+    color::hs_to_rgb(0, 100, 100, r, g, b);
+    CHECK(r == 255 && g == 0 && b == 0);
+    color::hs_to_rgb(240, 100, 100, r, g, b);
+    CHECK(r == 0 && g == 0 && b == 255);
+    color::hs_to_rgb(120, 50, 100, r, g, b);
+    CHECK(r == 128 && g == 255 && b == 128);
+    double h, sat, v;
+    color::rgb_to_hs(255, 128, 0, h, sat, v);
+    CHECK(std::fabs(h - 30.1) < 0.2 && std::fabs(sat - 100) < 0.01 && std::fabs(v - 100) < 0.01);
+    color::kelvin_to_rgb(6600, r, g, b);
+    CHECK(r == 255 && g >= 250 && b == 255);
+    color::kelvin_to_rgb(2000, r, g, b);
+    CHECK(r == 255 && g > 120 && g < 150 && b < 30);
+    double x, y;
+    color::rgb_to_xy(255, 255, 255, x, y);
+    CHECK(std::fabs(x - 0.3227) < 0.001 && std::fabs(y - 0.3290) < 0.001);
+    color::rgb_to_xy(255, 0, 0, x, y);
+    CHECK(std::fabs(x - 0.7006) < 0.001 && std::fabs(y - 0.2993) < 0.001);
+    color::xy_to_rgb(0.7006, 0.2993, r, g, b);
+    CHECK(r == 255 && g < 10 && b < 10);
+    color::kelvin_to_xy(6500, x, y);
+    CHECK(std::fabs(x - 0.3135) < 0.002 && std::fabs(y - 0.3237) < 0.002);
+    color::kelvin_to_xy(2700, x, y);
+    CHECK(std::fabs(x - 0.4599) < 0.002 && std::fabs(y - 0.4106) < 0.002);
+    CHECK(std::abs(color::xy_to_kelvin(x, y) - 2700) < 60);
+    CHECK(std::abs(color::xy_to_kelvin(0.3127, 0.3290) - 6504) < 10);
+    int hue, sat2;
+    color::kelvin_to_hs(2700, hue, sat2);
+    CHECK(hue > 20 && hue < 40 && sat2 > 40 && sat2 < 70);
+}
+
+}  // namespace
+
+int main(int argc, char **argv) {
+    g_snapshots = argc > 1 ? argv[1] : "tests/snapshots";
+    const char *tmp = getenv("TMPDIR");
+    std::string dir = std::string(tmp && *tmp ? tmp : "/tmp") + "/zb-unit-XXXXXX";
+    if (!mkdtemp(&dir[0])) { perror("mkdtemp"); return 2; }
+    setenv("XDG_DATA_HOME", (dir + "/data").c_str(), 1);
+    setenv("XDG_CONFIG_HOME", (dir + "/config").c_str(), 1);
+    setenv("XDG_CACHE_HOME", (dir + "/cache").c_str(), 1);
+    unsetenv("ZB_TEST_NETWORK");
+    unsetenv("ZB_DRY_RUN");
+
+    g_net.iface = "wlan0";
+    g_net.ssid = "Unit test";
+    g_net.address = "127.0.0.1";
+    g_net.gateway = "127.0.0.1";
+    g_net.gateway_mac = "02:00:00:00:00:09";
+    g_net.usable = true;
+    home::testing::set_network(&g_net);
+    home::testing::set_clock(fake_clock);
+    home::testing::clear_drivers();
+    g_fake = new FakeDriver;
+    home::register_driver(std::unique_ptr<home::Driver>(g_fake));
+    home::register_driver(make_tapo_driver());
+
+    test_migration();
+    test_survival();
+    test_targets();
+    test_schema();
+    test_commands();
+    test_confirmation();
+    test_rate_limits();
+    test_fanout();
+    test_pairing();
+    test_tapo_driver();
+    test_stand_in();
+    test_names_and_colours();
+
+    const std::string rm = "rm -rf '" + dir + "'";
+    if (system(rm.c_str()) != 0) fprintf(stderr, "could not remove %s\n", dir.c_str());
+    printf("%d checks, %d failed\n", g_checks, g_failed);
+    return g_failed ? 1 : 0;
+}

@@ -83,14 +83,40 @@ Response send(const Request &req) {
     Ctx ctx{&req, &res};
 
     curl_easy_setopt(curl, CURLOPT_URL, req.url.c_str());
-    if (g_share) curl_easy_setopt(curl, CURLOPT_SHARE, g_share);
+    // A device's own certificate settings are kept apart from the shared connections and TLS
+    // sessions used for the internet.
+    const bool own_tls = req.insecure || !req.pinned_pubkey.empty() || !req.client_cert_pem.empty() || req.want_peer_cert;
+    if (g_share && !own_tls) curl_easy_setopt(curl, CURLOPT_SHARE, g_share);
     curl_easy_setopt(curl, CURLOPT_DNS_CACHE_TIMEOUT, 600L);   // addresses are remembered for ten minutes, not one
     curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, req.no_redirect ? 0L : 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, req.timeout_s);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, req.connect_timeout_s);
+    if (req.timeout_ms > 0) curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, req.timeout_ms);
+    else curl_easy_setopt(curl, CURLOPT_TIMEOUT, req.timeout_s);
+    if (req.connect_timeout_ms > 0) curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, req.connect_timeout_ms);
+    else curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, req.connect_timeout_s);
+    if (req.insecure) {
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
+    if (!req.pinned_pubkey.empty()) curl_easy_setopt(curl, CURLOPT_PINNEDPUBLICKEY, req.pinned_pubkey.c_str());
+    if (req.want_peer_cert) curl_easy_setopt(curl, CURLOPT_CERTINFO, 1L);
+    if (!req.digest_user.empty()) {
+        curl_easy_setopt(curl, CURLOPT_HTTPAUTH, static_cast<long>(CURLAUTH_DIGEST));
+        curl_easy_setopt(curl, CURLOPT_USERNAME, req.digest_user.c_str());
+        curl_easy_setopt(curl, CURLOPT_PASSWORD, req.digest_pass.c_str());
+    }
+    if (!req.client_cert_pem.empty()) {
+        curl_blob cert{const_cast<char *>(req.client_cert_pem.data()), req.client_cert_pem.size(), CURL_BLOB_COPY};
+        curl_easy_setopt(curl, CURLOPT_SSLCERT_BLOB, &cert);
+        curl_easy_setopt(curl, CURLOPT_SSLCERTTYPE, "PEM");
+        if (!req.client_key_pem.empty()) {
+            curl_blob key{const_cast<char *>(req.client_key_pem.data()), req.client_key_pem.size(), CURL_BLOB_COPY};
+            curl_easy_setopt(curl, CURLOPT_SSLKEY_BLOB, &key);
+            curl_easy_setopt(curl, CURLOPT_SSLKEYTYPE, "PEM");
+        }
+    }
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "zero-bot/" ZB_VERSION);
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
@@ -130,7 +156,14 @@ Response send(const Request &req) {
     if (rc == CURLE_ABORTED_BY_CALLBACK) res.error = "cancelled";
     else if (rc == CURLE_OPERATION_TIMEDOUT) res.error = "timed out";
     else if (rc == CURLE_COULDNT_RESOLVE_HOST || rc == CURLE_COULDNT_CONNECT) res.error = "no connection";
+    else if (rc == CURLE_SSL_PINNEDPUBKEYNOTMATCH) res.error = "the device's certificate key has changed";
     else if (rc != CURLE_OK) res.error = curl_easy_strerror(rc);
+    if (req.want_peer_cert) {
+        curl_certinfo *info = nullptr;
+        if (curl_easy_getinfo(curl, CURLINFO_CERTINFO, &info) == CURLE_OK && info && info->num_of_certs > 0)
+            for (curl_slist *s = info->certinfo[0]; s; s = s->next)
+                if (strncmp(s->data, "Cert:", 5) == 0) res.peer_cert_pem = s->data + 5;
+    }
 
     if (mime) curl_mime_free(mime);
     if (headers) curl_slist_free_all(headers);

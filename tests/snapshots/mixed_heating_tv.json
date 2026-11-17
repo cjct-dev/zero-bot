@@ -1,0 +1,77 @@
+{
+  "description": "Control the user's smart-home devices on this network: switch on or off, dim, set the heating temperature, open or close blinds, set the volume, control playback, change a TV's input and start scenes, or check their state. Calling this is the only way a device changes. The targets are listed in the target parameter; a room name means the lights in that room. If what the user asks for is not listed, say so instead of picking another.",
+  "parameters": {
+    "properties": {
+      "action": {
+        "description": "What to do. set changes the values given with it; status with no target reports everything",
+        "enum": [
+          "on",
+          "off",
+          "set",
+          "status",
+          "scene",
+          "play",
+          "pause",
+          "stop",
+          "next",
+          "previous",
+          "mute",
+          "unmute"
+        ],
+        "type": "string"
+      },
+      "brightness": {
+        "description": "Light level in percent, with set",
+        "maximum": 100,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "position": {
+        "description": "Blinds and curtains: 0 closed to 100 open, with set",
+        "maximum": 100,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "say": {
+        "description": "The one short sentence to speak to the user once this has worked, in their language, with the detail that matters, e.g. \"Your timer is set for 12 minutes.\" Omit for status.",
+        "type": "string"
+      },
+      "source": {
+        "description": "A TV input or app, with set, e.g. \"Netflix\" or \"HDMI 1\"",
+        "type": "string"
+      },
+      "target": {
+        "description": "A device, room or group, exactly as listed. A room means the lights in that room. \"all\" is only for switching everything off or checking everything.",
+        "enum": [
+          "Hall thermostat",
+          "Lounge blind",
+          "Bay blind",
+          "Movie night",
+          "Kitchen light",
+          "Living room TV",
+          "Kitchen speaker",
+          "Bed heater",
+          "Kitchen",
+          "all lights",
+          "all speakers",
+          "all"
+        ],
+        "type": "string"
+      },
+      "temperature": {
+        "description": "Heating target in degrees Celsius, with set",
+        "type": "number"
+      },
+      "volume": {
+        "description": "Speaker or TV volume, 0 to 100, with set",
+        "maximum": 100,
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "type": "object"
+  }
+}

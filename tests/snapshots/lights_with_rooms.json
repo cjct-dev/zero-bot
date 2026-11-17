@@ -1,0 +1,75 @@
+{
+  "description": "Control the user's smart-home devices on this network: switch on or off, dim and change colour, or check their state. Calling this is the only way a device changes. The targets are listed in the target parameter; a room name means the lights in that room. If what the user asks for is not listed, say so instead of picking another.",
+  "parameters": {
+    "properties": {
+      "action": {
+        "description": "What to do. set changes the values given with it; status with no target reports everything",
+        "enum": [
+          "on",
+          "off",
+          "set",
+          "status"
+        ],
+        "type": "string"
+      },
+      "brightness": {
+        "description": "Light level in percent, with set",
+        "maximum": 100,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "color": {
+        "description": "A colour or shade of white, with set",
+        "enum": [
+          "candlelight",
+          "warm white",
+          "soft white",
+          "white",
+          "cool white",
+          "daylight",
+          "red",
+          "orange",
+          "amber",
+          "yellow",
+          "lime",
+          "green",
+          "turquoise",
+          "cyan",
+          "sky blue",
+          "blue",
+          "purple",
+          "violet",
+          "magenta",
+          "pink",
+          "lavender"
+        ],
+        "type": "string"
+      },
+      "say": {
+        "description": "The one short sentence to speak to the user once this has worked, in their language, with the detail that matters, e.g. \"Your timer is set for 12 minutes.\" Omit for status.",
+        "type": "string"
+      },
+      "target": {
+        "description": "A device, room or group, exactly as listed. A room means the lights in that room. \"all\" is only for switching everything off or checking everything.",
+        "enum": [
+          "Bedroom lamp",
+          "Bedside light",
+          "Floor lamp",
+          "Lamp (Lounge)",
+          "Lamp (Hall)",
+          "Bed heater",
+          "Bedroom",
+          "Hall",
+          "Lounge",
+          "all lights",
+          "all"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "type": "object"
+  }
+}

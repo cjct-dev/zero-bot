@@ -1,0 +1,35 @@
+{
+  "description": "Switch one of the user's smart-home devices on this network on or off, or check whether it is on. Calling this is the only way a device gets switched. The devices that exist are listed in the target parameter; if what the user asks for is not one of them, say so instead of picking another.",
+  "parameters": {
+    "properties": {
+      "action": {
+        "description": "What to do; status with no target reports all of them",
+        "enum": [
+          "on",
+          "off",
+          "status"
+        ],
+        "type": "string"
+      },
+      "say": {
+        "description": "The one short sentence to speak to the user once this has worked, in their language, with the detail that matters, e.g. \"Your timer is set for 12 minutes.\" Omit for status.",
+        "type": "string"
+      },
+      "target": {
+        "description": "The device's name, exactly as listed. \"all\" means every device, for switching everything off or checking everything",
+        "enum": [
+          "Bed heater",
+          "Desk lamp",
+          "Kettle",
+          "Radio",
+          "all"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "type": "object"
+  }
+}

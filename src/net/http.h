@@ -22,12 +22,23 @@ struct Request {
     std::atomic<bool> *cancel = nullptr;    // set to true from another thread to abort
     // When set, body bytes are handed over as they arrive instead of being collected.
     std::function<void(const char *, size_t)> on_data;
+
+    // For devices on the home network (smart-home drivers). A request that sets any of the TLS
+    // options gets a connection of its own, never one shared with other requests.
+    long timeout_ms = 0, connect_timeout_ms = 0;   // when set, used instead of the _s values
+    bool insecure = false;                  // accept any certificate: a device's own self-signed one
+    std::string pinned_pubkey;              // "sha256//<base64>": only a peer with this public key (checked even when insecure)
+    bool want_peer_cert = false;            // fill Response::peer_cert_pem, for pinning on first contact
+    bool no_redirect = false;               // a redirect is returned as it is, not followed
+    std::string digest_user, digest_pass;   // HTTP digest authentication
+    std::string client_cert_pem, client_key_pem;   // a client certificate and its key, as PEM text
 };
 
 struct Response {
     long status = 0;
     std::string body;
     std::string error;                       // transport-level failure, empty if none
+    std::string peer_cert_pem;               // with want_peer_cert: the peer's own certificate
     bool ok() const { return error.empty() && status >= 200 && status < 300; }
     std::string describe() const;            // short human-readable failure reason
 };
