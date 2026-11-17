@@ -291,9 +291,6 @@ key, real audio), say so plainly rather than implying it was.
   files and results on disk, not only in an agent's context. `.local-notes/PROGRESS.md` holds the
   running state; the local ticket tracker (section 10) holds the plan, and a ticket that is not
   finished links to its research, briefs and partial work so anyone can carry on.
-- Token use matters to the owner. Several agents in parallel at maximum effort used a 5-hour
-  allowance in about 90 minutes. Work directly or with one helper; keep independent reviews for
-  risky code; state the scale before starting anything large.
 - When several agents share this PC: compile through `.local-notes/tools/buildlock` (four
   compiles at a time, memory is short), build a checkout only with `.local-notes/tools/repobuild`
   (one build per checkout), and give test servers ephemeral ports.
