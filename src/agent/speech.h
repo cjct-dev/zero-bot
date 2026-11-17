@@ -15,6 +15,10 @@ public:
     void end_of_answer();        // nothing more is coming for now; let playback drain
     void stop();                 // silence immediately and drop anything queued
     bool active();               // synthesizing or audibly playing
+    // The voice is coming out of the speaker: from the first sound of an answer to its last, but
+    // not while its first sentence is still being synthesized (which can take as long as the
+    // service does).
+    bool playing() const { return playing_; }
 
     // Splits streamed text into speakable chunks.
     class Chunker {
@@ -37,6 +41,7 @@ private:
     std::atomic<bool> stop_flag_{false};
     std::atomic<int> generation_{0};
     std::atomic<bool> working_{false};
+    std::atomic<bool> playing_{false};
     bool ended_ = true;
     bool stream_open_ = false;
 };

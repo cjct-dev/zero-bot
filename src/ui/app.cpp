@@ -49,10 +49,14 @@ struct App {
     Menu menu;
     BreathView breath;
     AlarmView banner;                 // over everything else while a timer's alarm rings
-    // Rings when a timer ends. Its sound pauses while the assistant speaks, so the timer's name
-    // can be heard.
+    // Rings when a timer ends. Its sound gives way, for a few seconds at most, while the assistant's
+    // voice is coming out of the speaker, so the timer's name can be heard. The alarm ends the ring
+    // itself after a minute; the sound's own limit is only a backstop a little beyond that.
     timers::Alarm alarm{timers::Alarm::Sound{
-        [] { audio::AlarmSound::get().start([] { return SpeechQueue::get().active(); }); },
+        [] {
+            audio::AlarmSound::get().start([] { return SpeechQueue::get().playing(); },
+                                           static_cast<int>(timers::kRingMs) + 5000);
+        },
         [] { audio::AlarmSound::get().stop(); }}};
     // The status bar's countdown is worked out from these ends, read again only when timers change.
     int timer_revision = -1;
@@ -486,6 +490,7 @@ struct App {
     // Runs on every tick. Cheap unless a timer has just ended or the countdown's text has changed:
     // the store is only asked when its next end has come or its timers have changed.
     void update_timers(unsigned long now_ms) {
+        timers::follow_clock();                        // a clock set meanwhile moves the timers with it
         const time_t now = time(nullptr);
         const std::vector<timers::Ended> ended = alarm.poll(now, now_ms, recorder.active(), muted);
         if (!ended.empty()) timers_ended(ended);
@@ -603,6 +608,10 @@ struct App {
             if (!display::save_png(path)) fprintf(stderr, "could not write %s\n", path);
             else printf("%s\n", path);
         };
+        // The status bar shows the name it is given from the first call on, an empty one included.
+        chat.set_status("", theme::kFaint);
+        bool failed = !chat.status_name().empty();
+        if (failed) fprintf(stderr, "the status bar kept a name it was not given\n");
         Settings &s = Settings::get();
         s.agent_name = "Zero";
         chat.set_status(s.agent_name, theme::kFaint);
@@ -705,7 +714,6 @@ struct App {
             banner.hide();
             chat.set_timer("");
         }
-        bool failed = false;
         {
             // The same through the app's own path: a timer that has just ended rings (silently,
             // as when the user has muted the device), and a key press silences it and goes no further.
@@ -741,7 +749,7 @@ struct App {
         store.add_memory("Allergic to shellfish");
         store.add_memory("Prefers window seats");
         store.add_reminder("Call the hotel", t0 + 5400);   // fixed, like the timers: the Reminders page shows it
-        store.add_timer("Food out of the oven", 300, t0);
+        const int food = store.add_timer("Food out of the oven", 300, t0);
         store.add_timer("Study", 3600, t0 + 19);
         timers::fix_clock(t0 + 60);                    // what the Reminders page counts down from
 
@@ -798,6 +806,23 @@ struct App {
         menu.key(down);                                // "Reminders and timers"
         menu.key(enter);
         snap("reminders");
+        {
+            // A timer that ends while the page is open takes its row away: the cursor stays on the
+            // timer it was on, and the question before cancelling one says which.
+            menu.key(down);                            // "Study"
+            store.delete_timer(food);                  // as when "Food out of the oven" has just ended
+            menu.tick();
+            const bool kept = menu.selected() == "Study";
+            menu.key(enter);
+            const bool named = menu.title() == "Cancel Study?";
+            menu.key(esc);
+            store.add_timer("Food out of the oven", 300, t0);       // as it was, for the screens to come
+            menu.tick();
+            if (!kept || !named || menu.selected() != "Study") {
+                fprintf(stderr, "the cursor left its timer when the rows changed, or the question did not name it\n");
+                failed = true;
+            }
+        }
         menu.key(esc);
         menu.key(down);                                // "Memory"
         menu.key(enter);

@@ -2,16 +2,21 @@
 // store (and old data files), the countdown text and the alarm (ringing, keys, the time limit,
 // waiting while the microphone is open, holding the music). No screen, no sound, no network.
 //
-// Built and run by tests/run_timer_tests.sh, which points XDG_DATA_HOME at an empty temporary
-// folder and sets TZ=UTC.
+// Built and run by tests/run_timer_tests.sh. Whoever runs it, everything it writes goes to a
+// temporary folder of its own (main() points HOME and the XDG folders there), so the real
+// calendar, memory and reminders are never touched.
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <filesystem>
 #include <functional>
 #include <string>
+#include <sys/resource.h>
 #include <unistd.h>
 #include <vector>
 
@@ -63,7 +68,12 @@ void reset_store() {
 std::string tool(const std::string &args, time_t now) { return timers::run_tool(json::parse(args), now); }
 bool is_error(const std::string &result) { return result.compare(0, 7, "ERROR: ") == 0; }
 bool mentions(const std::string &text, const std::string &part) { return text.find(part) != std::string::npos; }
-json parsed(const std::string &result) { return json::parse(result, nullptr, false); }
+// An "ERROR: ..." result is no JSON: an empty object then, so a wrong result fails its checks
+// rather than throwing out of the test.
+json parsed(const std::string &result) {
+    json j = json::parse(result, nullptr, false);
+    return j.is_discarded() ? json::object() : j;
+}
 std::string text(const json &j) { return j.is_string() ? j.get<std::string>() : j.dump(); }
 
 int timer_id(const std::string &label) {
@@ -90,8 +100,21 @@ Reminder timer(int id, const std::string &label) {
 // Stands in for the alarm's sound and counts what the alarm asks of it.
 struct FakeSound {
     int starts = 0, stops = 0;
-    Alarm::Sound sound() { return {[this] { ++starts; }, [this] { ++stops; }}; }
+    std::function<void()> on_start;   // optional: a look at the world as the sound starts
+    Alarm::Sound sound() {
+        return {[this] { ++starts; if (on_start) on_start(); }, [this] { ++stops; }};
+    }
 };
+
+// Whether reminders.json, as it is on disk now, has a record with this text.
+bool file_lists(const std::string &text) {
+    const json file = util::load_json(util::data_dir() + "/reminders.json", json::array());
+    return std::any_of(file.begin(), file.end(), [&](const json &rec) { return rec.value("text", "") == text; });
+}
+
+long long ms_since(std::chrono::steady_clock::time_point t) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t).count();
+}
 
 // ---------------------------------------------------------------- countdown text
 void test_countdown_text() {
@@ -247,6 +270,33 @@ void test_label_matching() {
     CHECK(ids("pizza").empty());
     CHECK(ids("the timer").size() == v.size());                   // no timer in particular
     CHECK(ids("").size() == v.size());
+
+    // "One" before a unit is a number, not a filler word: "the one minute timer" is one timer.
+    const std::vector<Reminder> lengths = {timer(1, "1 minute timer"), timer(2, "2 minute timer"),
+                                           timer(3, "10 minute timer"), timer(4, "1 hour timer"), timer(5, "Oven")};
+    auto by_length = [&](const std::string &words) {
+        std::vector<int> out;
+        for (auto &r : timers::match(lengths, words)) out.push_back(r.id);
+        return out;
+    };
+    CHECK(by_length("one minute") == std::vector<int>{1});
+    CHECK(by_length("the one minute timer") == std::vector<int>{1});
+    CHECK(by_length("the one-minute one") == std::vector<int>{1});
+    CHECK(by_length("the one hour timer") == std::vector<int>{4});
+    CHECK(by_length("ten minute") == std::vector<int>{3});
+    CHECK(by_length("the oven one") == std::vector<int>{5});      // and a filler word otherwise
+
+    // A timer's whole name means that timer, even when another differs from it only in filler
+    // words (as two timers set before names were kept apart could).
+    const std::vector<Reminder> alike = {timer(1, "Pasta"), timer(2, "Pasta timer")};
+    auto by_name = [&](const std::string &words) {
+        std::vector<int> out;
+        for (auto &r : timers::match(alike, words)) out.push_back(r.id);
+        return out;
+    };
+    CHECK(by_name("pasta timer") == std::vector<int>{2});
+    CHECK(by_name("Pasta") == std::vector<int>{1});
+    CHECK(by_name("the pasta") == std::vector<int>({1, 2}));       // either: the model asks which
 }
 
 void test_ambiguity_reported() {
@@ -282,6 +332,24 @@ void test_ambiguity_reported() {
     const int id = timer_id("Pasta");
     j = parsed(tool(R"({"action":"cancel","id":)" + std::to_string(id) + "}", T0 + 5));
     CHECK_EQ(text(j["cancelled"]), R"(["Pasta"])");
+
+    // A name that differs from a running one only in filler words is numbered too, so that both
+    // can still be named: "pasta timer" beside "Pasta" would otherwise be the same words.
+    reset_store();
+    tool(R"({"action":"start","minutes":8,"label":"Pasta"})", T0);
+    j = parsed(tool(R"({"action":"start","minutes":12,"label":"pasta timer"})", T0));
+    CHECK_EQ(text(j["started"]["label"]), "Pasta timer 2");
+    j = parsed(tool(R"({"action":"add_time","minutes":1,"label":"pasta timer 2"})", T0 + 1));
+    CHECK_EQ(text(j["extended"]["label"]), "Pasta timer 2");
+    j = parsed(tool(R"({"action":"cancel","label":"the pasta"})", T0 + 2));
+    CHECK_EQ(text(j["cancelled"]), R"(["Pasta"])");
+    // Two such timers carried over from an earlier version: each is reached by its whole name.
+    reset_store();
+    Store::get().add_timer("Pasta", 480, T0);
+    Store::get().add_timer("Pasta timer", 720, T0);
+    j = parsed(tool(R"({"action":"cancel","label":"Pasta timer"})", T0 + 3));
+    CHECK_EQ(text(j["cancelled"]), R"(["Pasta timer"])");
+    CHECK(timer_id("Pasta") != 0);
 }
 
 // ---------------------------------------------------------------- storage
@@ -404,14 +472,90 @@ void test_missed_on_restart() {
     // Exactly two minutes late is missed; a second less still rings.
     reset_store();
     Store::get().add_timer("Edge", 60, T0 - 180);
+    Store::get().load();
     std::vector<timers::Ended> e = alarm.poll(T0, 3000, false, false);
     CHECK(e.size() == 1 && e[0].missed);
     CHECK(!alarm.ringing());
+    reset_store();
     Store::get().add_timer("Edge 2", 60, T0 - 179);
+    Store::get().load();
     e = alarm.poll(T0, 3000, false, false);
     CHECK(e.size() == 1 && !e[0].missed);
     CHECK(alarm.ringing());
     alarm.stop();
+}
+
+// A timer set while the app runs rings however late its end is noticed: missing it is only for
+// what ended while the app was closed.
+void test_late_in_this_run() {
+    reset_store();
+    FakeSound fs;
+    Alarm alarm(fs.sound());
+    tool(R"({"action":"start","minutes":1,"label":"Tea"})", T0);
+    // The microphone is open from just before the end until well over two minutes after it.
+    CHECK(alarm.poll(T0 + 60, 61000, true, false).empty());
+    CHECK(alarm.poll(T0 + 190, 191000, true, false).empty());
+    const std::vector<timers::Ended> ended = alarm.poll(T0 + 200, 201000, false, false);
+    CHECK(ended.size() == 1 && !ended[0].missed);
+    CHECK(alarm.ringing());
+    CHECK_EQ(fs.starts, 1);
+    alarm.stop();
+}
+
+// The wall clock is set while timers run: a device without a clock of its own is set by a time
+// sync some while after it starts. A timer still ends when its length has passed.
+void test_clock_set_while_running() {
+    Store &store = Store::get();
+    const long long boot = 7000000;                                // the steady clock: any reading will do
+    FakeSound fs;
+    Alarm alarm(fs.sound());
+
+    // An hour forward, half a minute into a five-minute timer.
+    reset_store();
+    store.follow_clock(T0 * 1000LL, boot);                         // the first reading moves nothing
+    tool(R"({"action":"start","minutes":5,"label":"Food out of the oven"})", T0);
+    store.follow_clock((T0 + 30) * 1000LL, boot + 30000);          // half a minute passes
+    CHECK_EQ(timer_end("Food out of the oven"), T0 + 300);
+    store.follow_clock((T0 + 30 + 3600) * 1000LL + 400, boot + 30000);   // the clock is set
+    CHECK_EQ(timer_end("Food out of the oven"), T0 + 300 + 3600);
+    CHECK(alarm.poll(T0 + 3630, 31000, false, false).empty());     // four and a half minutes still to go
+    CHECK_EQ(text(parsed(tool(R"({"action":"list"})", T0 + 3630))["timers"][0]["time_left"]), "4 minutes 30 seconds");
+    CHECK_EQ(timers::badge({timer_end("Food out of the oven")}, T0 + 3630), "4:30");
+    const json file = util::load_json(util::data_dir() + "/reminders.json", json::array());   // the move is kept
+    CHECK(file.size() == 1 && file[0].value("text", "") == "Food out of the oven" && file[0].value("due", 0LL) == T0 + 3900);
+    std::vector<timers::Ended> ended = alarm.poll(T0 + 3900, 301000, false, false);
+    CHECK(ended.size() == 1 && !ended[0].missed);                  // and it rings, on time
+    CHECK(alarm.ringing());
+    alarm.stop();
+
+    // An hour back: it does not ring an hour late.
+    reset_store();
+    store.follow_clock(T0 * 1000LL, boot);
+    tool(R"({"action":"start","minutes":5,"label":"Eggs"})", T0);
+    store.follow_clock((T0 + 30 - 3600) * 1000LL, boot + 30000);
+    CHECK_EQ(timer_end("Eggs"), T0 + 300 - 3600);
+    ended = alarm.poll(T0 + 300 - 3600, 301000, false, false);
+    CHECK(ended.size() == 1 && !ended[0].missed);
+    alarm.stop();
+
+    // A clock that drifts or is slewed a little at a time moves nothing.
+    reset_store();
+    store.follow_clock(T0 * 1000LL, boot);
+    tool(R"({"action":"start","minutes":5,"label":"Tea"})", T0);
+    for (int s = 1; s <= 10; ++s) store.follow_clock((T0 + s) * 1000LL + s * 150, boot + s * 1000);
+    CHECK_EQ(timer_end("Tea"), T0 + 300);
+
+    // A timer carried over from an earlier run keeps its end: it was reckoned by that run's clock,
+    // and setting this run's clock right is what makes the two agree again.
+    reset_store();
+    store.add_timer("Bread", 600, T0);
+    store.load();
+    store.follow_clock(T0 * 1000LL, boot);
+    store.follow_clock((T0 + 3610) * 1000LL, boot + 10000);
+    CHECK_EQ(timer_end("Bread"), T0 + 600);
+    ended = alarm.poll(T0 + 3610, 11000, false, false);
+    CHECK(ended.size() == 1 && ended[0].missed);                   // it ended long ago, while the app was closed
+    CHECK(!alarm.ringing());
 }
 
 void test_alarm_rings_and_any_key_silences() {
@@ -467,16 +611,86 @@ void test_alarm_stops_after_a_minute() {
     CHECK(!audio::Music::get().holding(audio::Music::kAlarm));
     CHECK(!alarm.tick(5000 + 70000));
 
-    // A timer that ends while another rings joins it, with a full minute of its own, and one sound.
+    // A timer that ends while another rings joins it, with a full minute of its own: the banner
+    // names both, and the sound starts again for it (the sound has a limit of its own, counted
+    // from its start, so carrying on with the first one's would leave the second one short).
     reset_store();
     tool(R"({"action":"start","minutes":1,"label":"A"})", T0);
     tool(R"({"action":"start","seconds":90,"label":"B"})", T0);
+    const int before = fs.starts;
     alarm.poll(T0 + 60, 1000, false, false);
+    CHECK_EQ(fs.starts, before + 1);
     alarm.poll(T0 + 90, 31000, false, false);
     CHECK(alarm.labels() == std::vector<std::string>({"A", "B"}));
-    CHECK_EQ(fs.starts, 2);                                        // one for this ring (one before)
+    CHECK_EQ(fs.starts, before + 2);
     CHECK(!alarm.tick(61000));
     CHECK(alarm.tick(91000));
+    CHECK_EQ(fs.stops, 2);
+}
+
+// The alarm is under way before reminders.json is written: on a slow card the write can take a
+// while, and the sound need not wait for it.
+void test_rings_before_the_file_is_written() {
+    reset_store();
+    FakeSound fs;
+    bool listed_when_it_started = false;
+    fs.on_start = [&] { listed_when_it_started = file_lists("Tea"); };
+    Alarm alarm(fs.sound());
+    tool(R"({"action":"start","minutes":1,"label":"Tea"})", T0);
+    alarm.poll(T0 + 60, 1000, false, false);
+    CHECK_EQ(fs.starts, 1);
+    CHECK(listed_when_it_started);
+    CHECK(!file_lists("Tea"));                                     // and then the file follows
+    Store::get().load();
+    CHECK(Store::get().timers().empty());
+    alarm.stop();
+}
+
+// Damaged records: a timer without an end is mended from its start and length, or left out, and
+// never hides the other timers from the alarm.
+void test_damaged_timer_records() {
+    reset_store();
+    util::write_file_atomic(util::data_dir() + "/reminders.json",
+                            R"([{"id":1,"text":"Pasta","due":1800000060,"fired":false,"kind":"timer","started":1800000000,"length":60},)"
+                            R"({"id":2,"text":"Broken","fired":false,"kind":"timer"},)"
+                            R"({"id":3,"text":"Mended","due":"soon","fired":false,"kind":"timer","started":1800000000,"length":120},)"
+                            R"({"id":4,"text":"Call the hotel","due":1800007200,"fired":false}])");
+    Store::get().load();
+    CHECK_EQ(Store::get().timers().size(), 2);
+    CHECK_EQ(timer_end("Mended"), T0 + 120);
+    CHECK_EQ(Store::get().next_timer_end(), T0 + 60);
+    CHECK_EQ(Store::get().reminders().size(), 1);
+    FakeSound fs;
+    Alarm alarm(fs.sound());
+    const std::vector<timers::Ended> ended = alarm.poll(T0 + 60, 1000, false, false);
+    CHECK(ended.size() == 1 && ended[0].label == "Pasta" && !ended[0].missed);
+    CHECK(alarm.ringing());
+    alarm.stop();
+}
+
+// A save that runs out of room (a full card) leaves the file as it was, rather than cut short.
+void test_full_disk() {
+    reset_store();
+    tool(R"({"action":"start","minutes":5,"label":"Pasta"})", T0);
+    const std::string path = util::data_dir() + "/reminders.json";
+    std::string before, after;
+    util::read_file(path, before);
+    signal(SIGXFSZ, SIG_IGN);                                      // a write past the limit fails, as on a full disk
+    rlimit old{};
+    getrlimit(RLIMIT_FSIZE, &old);
+    rlimit tiny = old;
+    tiny.rlim_cur = 64;
+    setrlimit(RLIMIT_FSIZE, &tiny);
+    const bool wrote = util::write_file_atomic(path, std::string(1000, 'x'));
+    Store::get().add_timer("Sauce", 600, T0);                      // its save fails too
+    setrlimit(RLIMIT_FSIZE, &old);
+    CHECK(!wrote);
+    util::read_file(path, after);
+    CHECK(after == before);
+    CHECK(access((path + ".tmp").c_str(), F_OK) != 0);            // nothing half-written is left about
+    Store::get().load();
+    CHECK_EQ(Store::get().timers().size(), 1);                     // what was saved before is all there
+    CHECK(timer_id("Pasta") != 0);
 }
 
 void test_alarm_waits_while_recording() {
@@ -595,40 +809,53 @@ void test_more_time_which_timer() {
 
 // The alarm's player, against a stand-in for pw-cat that keeps what it is sent: nothing is heard.
 void test_alarm_player() {
-    const char *cache = getenv("XDG_CACHE_HOME");
-    if (!cache || !*cache) {
-        puts("  (alarm player test skipped: run it through tests/run_timer_tests.sh)");
-        return;
-    }
-    const std::string dir = std::string(cache) + "/stand-in", out = dir + "/received.raw";
+    const std::string dir = std::string(getenv("XDG_CACHE_HOME")) + "/stand-in";   // set by main()
+    const std::string out = dir + "/received.raw", log = dir + "/started.log";
     util::make_dirs(dir);
-    util::write_file_atomic(dir + "/pw-cat", "#!/bin/sh\nexec cat > '" + out + "'\n", 0755);
-    if (access((dir + "/pw-cat").c_str(), X_OK) != 0) {   // never let the real player start
+    // Each start of the stand-in notes its process id. It keeps what it is sent or, hung, reads
+    // nothing at all. The search path holds its folder alone, so the real player can never be the
+    // one that starts, even should the stand-in fail to.
+    auto stand_in = [&](bool hung) {
+        return util::write_file_atomic(dir + "/pw-cat", "#!/bin/sh\nPATH=/usr/bin:/bin\necho $$ >> '" + log + "'\n" +
+                                                            (hung ? std::string("exec sleep 600\n") : "exec cat >> '" + out + "'\n"),
+                                       0755);
+    };
+    if (!stand_in(false) || access((dir + "/pw-cat").c_str(), X_OK) != 0) {
         check(false, "the stand-in player could be written", __LINE__);
         return;
     }
-    const char *path = getenv("PATH");
-    setenv("PATH", (dir + ":" + (path ? path : "/usr/bin:/bin")).c_str(), 1);
-    signal(SIGPIPE, SIG_IGN);                                      // as the app does
+    setenv("PATH", dir.c_str(), 1);
+    // SIGPIPE is left as it is by default (the app ignores it): cutting a ring off while its thread
+    // writes to the player must not end the process wherever that is not done.
+    signal(SIGPIPE, SIG_DFL);
     auto received = [&] {
         std::string raw;
         util::read_file(out, raw);
         return raw;
     };
+    auto started = [&] {                                           // the stand-in's process ids, oldest first
+        std::string text;
+        util::read_file(log, text);
+        std::vector<pid_t> pids;
+        for (const std::string &line : util::split(text, '\n'))
+            if (!line.empty()) pids.push_back(static_cast<pid_t>(atol(line.c_str())));
+        return pids;
+    };
+    auto gone = [](pid_t pid) { return kill(pid, 0) != 0 && errno == ESRCH; };
     auto wait_for = [](const std::function<bool()> &done, int ms) {
         for (int waited = 0; waited < ms && !done(); waited += 20) usleep(20 * 1000);
         return done();
     };
-    const size_t burst_bytes = audio::alarm_burst(24000).size() * 2;
+    const size_t burst_bytes = audio::alarm_burst(24000).size() * 2, chunk_bytes = 24000 / 20 * 2;
     auto loud = [](const std::string &raw, size_t from, size_t to) {   // any sample not silent
         for (size_t i = from; i + 1 < std::min(to, raw.size()); i += 2)
             if (raw[i] != 0 || raw[i + 1] != 0) return true;
         return false;
     };
+    audio::AlarmSound &player = audio::AlarmSound::get();
 
     // While the assistant speaks, only the first burst plays; then silence until it has finished.
     std::atomic<bool> speaking{true};
-    audio::AlarmSound &player = audio::AlarmSound::get();
     player.start([&] { return speaking.load(); });
     CHECK(player.active());
     CHECK(wait_for([&] { return received().size() >= burst_bytes + 20000; }, 5000));
@@ -645,6 +872,17 @@ void test_alarm_player() {
     usleep(300 * 1000);
     CHECK_EQ(received().size(), after);                            // and nothing more reaches the player
 
+    // Speech that goes on and on (a slow service, a long answer) holds the alarm back only so long:
+    // after give_way_ms of quiet in all, it rings on whatever is being said.
+    unlink(out.c_str());
+    player.start([] { return true; }, 65000, 600);
+    CHECK(wait_for([&] { return received().size() >= burst_bytes + 12 * chunk_bytes; }, 5000));
+    CHECK(!loud(received(), burst_bytes, burst_bytes + 12 * chunk_bytes));   // 600 ms of quiet after the first burst
+    CHECK(wait_for([&] { return loud(received(), burst_bytes + 12 * chunk_bytes, std::string::npos); }, 3000));
+    player.stop_and_wait();
+    // What the app gives way for: about a short sentence ("Time's up: Food out of the oven."), no more.
+    CHECK(audio::AlarmSound::kGiveWayMs >= 3000 && audio::AlarmSound::kGiveWayMs <= 6000);
+
     unlink(out.c_str());
     player.start({});                                              // leaving the app while it rings
     CHECK(wait_for([&] { return received().size() > 0; }, 5000));
@@ -653,6 +891,48 @@ void test_alarm_player() {
     const size_t left = received().size();
     usleep(300 * 1000);
     CHECK_EQ(received().size(), left);                             // the player is gone with it
+    for (pid_t pid : started()) CHECK(gone(pid));
+
+    // A player that has hung (it reads nothing) holds up neither the next ring nor leaving the app:
+    // start() and stop() never wait for a player.
+    CHECK(stand_in(true));
+    unlink(log.c_str());
+    player.start({});
+    usleep(1600 * 1000);                                           // its pipe is full: the ring's thread is stuck
+    auto t = std::chrono::steady_clock::now();
+    player.start({});                                              // the next timer ends
+    CHECK(ms_since(t) < 150);
+    auto first_gone = [&] {
+        const std::vector<pid_t> pids = started();
+        return !pids.empty() && gone(pids[0]);
+    };
+    CHECK(wait_for([&] { return started().size() == 2; }, 3000));
+    CHECK(wait_for(first_gone, 1000));                             // the hung one has been ended
+    t = std::chrono::steady_clock::now();
+    player.stop_and_wait();
+    CHECK(ms_since(t) < 250);
+    CHECK(!player.active());
+    for (pid_t pid : started()) CHECK(gone(pid));
+    CHECK(stand_in(false));
+
+    // As the app wires it: a timer that ends while another rings starts the sound again, with a
+    // player and a whole ring of its own, rather than living on what is left of the first one's.
+    reset_store();
+    unlink(log.c_str());
+    unlink(out.c_str());
+    Alarm alarm(Alarm::Sound{[] { audio::AlarmSound::get().start({}); }, [] { audio::AlarmSound::get().stop(); }});
+    tool(R"({"action":"start","minutes":1,"label":"A"})", T0);
+    tool(R"({"action":"start","seconds":90,"label":"B"})", T0);
+    alarm.poll(T0 + 60, 1000, false, false);
+    CHECK(wait_for([&] { return started().size() == 1 && received().size() > 0; }, 3000));
+    alarm.poll(T0 + 90, 31000, false, false);
+    CHECK(wait_for([&] { return started().size() == 2; }, 3000));
+    CHECK(wait_for(first_gone, 1000));
+    const size_t now_size = received().size();
+    CHECK(wait_for([&] { return received().size() > now_size; }, 2000));   // the new one plays
+    alarm.stop();
+    player.stop_and_wait();
+    for (pid_t pid : started()) CHECK(gone(pid));
 }
 
 void test_alarm_sound_pattern() {
@@ -672,6 +952,20 @@ void run(const char *name, void (*fn)()) {
 }  // namespace
 
 int main() {
+    // Whoever runs this, by the runner or by hand, everything it writes (the store's files, the
+    // stand-in player) goes to a folder of its own, removed at the end: the tests start by deleting
+    // the store's files, and must never reach the real calendar, memory or reminders.
+    const char *tmp = getenv("TMPDIR");
+    std::string pattern = std::string(tmp && *tmp ? tmp : "/tmp") + "/timers-test-XXXXXX";
+    if (!mkdtemp(&pattern[0])) {
+        perror("timers test: a private folder could not be made");
+        return 1;
+    }
+    const std::string root = pattern;
+    setenv("HOME", root.c_str(), 1);
+    setenv("XDG_CONFIG_HOME", (root + "/config").c_str(), 1);
+    setenv("XDG_DATA_HOME", (root + "/data").c_str(), 1);
+    setenv("XDG_CACHE_HOME", (root + "/cache").c_str(), 1);
     setenv("TZ", "UTC", 1);
     tzset();
     util::make_dirs(util::data_dir());
@@ -685,16 +979,23 @@ int main() {
     run("reminders unchanged", test_reminders_unchanged);
     run("cap of ten", test_cap);
     run("missed on restart", test_missed_on_restart);
+    run("late in this run", test_late_in_this_run);
+    run("clock set while running", test_clock_set_while_running);
     run("alarm: any key", test_alarm_rings_and_any_key_silences);
     run("alarm: TAB", test_alarm_tab_silences_and_listens);
     run("alarm: 60 s", test_alarm_stops_after_a_minute);
+    run("alarm: before the file", test_rings_before_the_file_is_written);
     run("alarm: waits while recording", test_alarm_waits_while_recording);
     run("alarm: muted", test_alarm_quiet_when_muted);
     run("music hold", test_music_hold);
     run("more time after the alarm", test_more_time_after_the_alarm);
     run("more time: which timer", test_more_time_which_timer);
+    run("damaged records", test_damaged_timer_records);
+    run("full disk", test_full_disk);
     run("alarm sound", test_alarm_sound_pattern);
     run("alarm player", test_alarm_player);
+    std::error_code gone;
+    std::filesystem::remove_all(root, gone);
     printf("timers: %d checks, %d failed\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

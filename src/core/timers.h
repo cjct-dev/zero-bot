@@ -14,7 +14,7 @@
 namespace timers {
 
 constexpr long kMaxSeconds = 24 * 3600;       // the longest timer
-constexpr long kMissedAfter = 120;             // an end noticed this many seconds late does not ring
+constexpr long kMissedAfter = 120;             // a carried-over timer whose end is noticed this many seconds late does not ring
 constexpr unsigned long kRingMs = 60000;       // the longest the alarm rings
 
 // Time left the way a clock shows it: "0:00", "4:59", "59:59", "1:00:00", "1:02:03".
@@ -39,13 +39,18 @@ std::string run_tool(const json &args, time_t now);
 // images do not depend on when they were taken; 0 returns to the real clock.
 time_t now();
 void fix_clock(time_t t);
+// Keeps the timers set in this run counting real time when the wall clock is set (a time sync
+// after start-up): reads the clocks and passes them to Store::follow_clock. Call on every tick.
+void follow_clock();
 
 // A timer the app has just noticed is over.
 struct Ended {
     int id = 0;
     std::string label;
     time_t end = 0;
-    bool missed = false;   // it ended kMissedAfter or more before it was noticed (the app was closed): shown, not rung
+    // It was carried over from an earlier run of the app and ended kMissedAfter or more before it
+    // was noticed, so while the app was closed: shown, not rung.
+    bool missed = false;
 };
 
 // The alarm that rings when timers end. It keeps the music quiet while it rings and lets go on
@@ -61,9 +66,10 @@ public:
     Alarm &operator=(const Alarm &) = delete;
 
     // Call often from the main loop. Takes the timers that have ended from the store, oldest
-    // first; those that ended less than kMissedAfter ago ring (with `quiet`, as when the user has
-    // muted the device, without sound). While the microphone is open nothing is taken: an end
-    // waits until it has closed, as reminders do.
+    // first; all but the missed ones ring (with `quiet`, as when the user has muted the device,
+    // without sound). Each that rings starts the sound again, so one that joins a ring under way
+    // gets a whole one of its own. While the microphone is open nothing is taken: an end waits
+    // until it has closed, as reminders do.
     std::vector<Ended> poll(time_t now, unsigned long now_ms, bool recording, bool quiet);
     // Ends the ring kRingMs after the last timer that joined it. True when it did so now.
     bool tick(unsigned long now_ms);

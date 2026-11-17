@@ -39,7 +39,8 @@ Scan staged changes and the built binary (`strings`) before every push. The buil
 src/main.cpp        entry point and the command-line test modes (section 6)
 src/agent/          the request loop (agent), service client (llm), system prompt (prompt),
                     tools, sentence queue for speech (speech), arithmetic (calc)
-src/core/           settings, calendar/reminder/memory store, music library, breathing timing,
+src/core/           settings, calendar/reminder/timer/memory store, timers (the timer tool, which
+                    timer words mean, the alarm's logic), music library, breathing timing,
                     start-at-power-on, phone tethering, utilities (dates, files, strings)
 src/net/            libcurl wrapper with a shared connection/DNS/TLS-session cache
 src/platform/       display, keyboard, audio (recorder, speaker, music), codecs, camera,
@@ -47,8 +48,9 @@ src/platform/       display, keyboard, audio (recorder, speaker, music), codecs,
 src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast), per-network storage and
                     control (home), Tapo transports (tapo)
 src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
-                    pages, breathing screen, theme
-tests/              scored agent test set (needs a live service)
+                    pages, breathing screen, alarm banner, theme
+tests/              scored agent test set (needs a live service); unit/ and run_timer_tests.sh:
+                    device-free tests of the timers
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
 ```
 
@@ -60,7 +62,8 @@ from another thread. Slow work started from a menu uses `background(work, done)`
 
 State on disk (all under the user's home, mode 0600 where they hold secrets):
 `~/.config/zero-bot/settings.json`, and in `~/.local/share/zero-bot/`: `calendar.json`,
-`reminders.json`, `memory.json`, `ir_learned.json`, `music_index.json`, `smarthome.json`.
+`reminders.json` (running timers too, as records with `"kind": "timer"`), `memory.json`,
+`ir_learned.json`, `music_index.json`, `smarthome.json`.
 
 ## 4. How a request flows
 
@@ -110,8 +113,14 @@ decoding are loaded at run time with `dlopen` and are optional.
 
 ## 6. Testing
 
-There is no device-free unit test suite yet (planned before the refactor; see section 9). What
-exists:
+Device-free unit tests exist for the timers only so far (a wider suite is planned before the
+refactor; see section 10). What exists:
+
+- **Timer unit tests**: `tests/run_timer_tests.sh` builds and runs `tests/unit/timers_test.cpp`
+  (the timer tool, storage, the countdown, the alarm, its player against a stand-in `pw-cat`),
+  then runs the timer tool through `build/cli/zero_bot --tool timer` if that is built. The test
+  binary keeps everything it writes in a temporary folder of its own, so running it by hand is
+  safe too.
 
 - **Command-line modes** in `src/main.cpp` (work in the `cli` build):
   `--ask "text"`, `--chat`, `--tool NAME 'JSON'`, `--steer "text"` (inject input during the
@@ -255,10 +264,18 @@ text changed, so their value functions must be cheap: no file reads, no subproce
 come and go by themselves (a timer ends) also need `MenuPage::revision`, a number that changes
 with them: the page is rebuilt when it does.
 
-**A sound that repeats** (the timer's alarm): `audio::AlarmSound` keeps one player process open
-and leaves gaps while the assistant speaks. Stop it on every way out, leaving the app included
-(`stop_and_wait`): a player process outlives the app. Whatever holds the music
-(`audio::Music::hold`) lets go on every way out too.
+**A sound that repeats** (the timer's alarm): `audio::AlarmSound` gives each ring a player
+process and a thread of its own, so `start()` and `stop()` never wait on the UI thread, not even
+for a player that has hung (`Speaker::kill` ends it without waiting; its thread reaps it). It
+holds back while the assistant's voice is audible (`SpeechQueue::playing`, not `active`, which
+also covers waiting for the service) and for a few seconds at most. Stop it on every way out,
+leaving the app included (`stop_and_wait`): a player process outlives the app. Whatever holds
+the music (`audio::Music::hold`) lets go on every way out too.
+
+**Wall-clock time in a countdown** (timers): a board without a battery-backed clock is set by a
+time sync some while after it starts, so the wall clock can jump while the app runs.
+`Store::follow_clock` moves the timers set in this run along with it (the app calls it every
+tick); anything else counted down from "now" needs the same care.
 
 **A smart-home device family.** Recognise its announcement in `discovery.cpp` (`kServices` or a
 vendor query), add a driver beside `tapo`, and teach `home.cpp` to read and switch it. Build

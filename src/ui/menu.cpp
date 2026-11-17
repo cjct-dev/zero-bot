@@ -1,6 +1,7 @@
 #include "ui/menu.h"
 
 #include <algorithm>
+#include <cstdlib>
 
 #include "ui/theme.h"
 
@@ -154,12 +155,24 @@ void Menu::close() {
 void Menu::refresh() {
     if (stack_.empty()) return;
     build_items();
+    settle();
+    render();
+}
+
+void Menu::settle() {
     Frame &f = stack_.back();
     if (f.selected >= static_cast<int>(items_.size())) f.selected = static_cast<int>(items_.size()) - 1;
     if (f.selected < 0) f.selected = 0;
     while (f.selected < static_cast<int>(items_.size()) - 1 && !items_[static_cast<size_t>(f.selected)].selectable())
         ++f.selected;
-    render();
+}
+
+std::string Menu::title() const { return stack_.empty() ? std::string() : stack_.back().page.title; }
+
+std::string Menu::selected() const {
+    if (stack_.empty()) return "";
+    const int at = stack_.back().selected;
+    return at >= 0 && at < static_cast<int>(items_.size()) ? items_[static_cast<size_t>(at)].label : std::string();
 }
 
 void Menu::render() {
@@ -325,8 +338,23 @@ void Menu::toast(const std::string &text) {
 void Menu::tick() {
     if (toast_ticks_ > 0 && --toast_ticks_ == 0) lv_obj_add_flag(toast_, LV_OBJ_FLAG_HIDDEN);
     if (stack_.empty() || editing_ || !stack_.back().page.live) return;
-    const Frame &f = stack_.back();
-    if (f.page.revision && f.page.revision() != f.revision) { refresh(); return; }
+    Frame &f = stack_.back();
+    if (f.page.revision && f.page.revision() != f.revision) {
+        // Rows have come or gone by themselves (a timer ended). The cursor stays on the row it was
+        // on, wherever that has moved to, rather than on whatever has taken its place.
+        const std::string was = selected();
+        const int at = f.selected;
+        build_items();
+        int best = -1;
+        for (int i = 0; i < static_cast<int>(items_.size()); ++i)
+            if (items_[static_cast<size_t>(i)].selectable() && items_[static_cast<size_t>(i)].label == was &&
+                (best < 0 || std::abs(i - at) < std::abs(best - at)))
+                best = i;
+        if (best >= 0) f.selected = best;
+        settle();
+        render();
+        return;
+    }
     for (LiveValue &shown : live_) {
         const MenuItem &it = items_[shown.item];
         const std::string text = it.value ? it.value() : "";

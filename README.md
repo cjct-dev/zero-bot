@@ -74,15 +74,20 @@ are running, and everything else keeps working meanwhile: talking, typing, setti
 breathing exercise.
 
 - **When one ends** the screen lights up with a banner naming it, an alarm rings for up to a
-  minute, music pauses, and the name is spoken once (if spoken replies are on). If you are
-  talking to the assistant at that moment, it waits until you have finished. **Any key** stops
-  it; **TAB** stops it and starts listening, so "give it five more minutes" is one press away.
-- **Muted** with **fn**+**A**, the alarm stays silent: the banner is all you get.
+  minute, music pauses, and the name is spoken once (if spoken replies are on): the alarm holds
+  back for a few seconds at most while the assistant speaks, then rings on. If you are talking
+  to the assistant at that moment, it waits until you have finished. A timer that ends while
+  another is ringing joins the banner and starts the alarm again. **Any key** stops it; **TAB**
+  stops it and starts listening, so "give it five more minutes" is one press away.
+- **Muted** with **fn**+**A**, the alarm stays silent: the banner is all you get. A key press
+  first dismisses the banner, so press **fn**+**A** after that to unmute.
 - **Ask** "how long is left?", "add ten minutes to the pasta", "cancel the study timer". With
   several running, it asks which one you mean. *Settings → Your data → Reminders and timers*
   lists them with their time left, to cancel one or all.
 - **Timers carry on** if you leave the app. One that ended while it was closed is shown as
   missed when you open it again, and still rings if it ended less than two minutes before.
+  While the app is open a timer counts the time that passes, even if the clock is set meanwhile
+  (as it can be when the device first goes online after starting).
 
 ![Two timers running](docs/screenshots/timer-two.png) ![A timer's alarm](docs/screenshots/timer-alarm.png)
 
@@ -295,19 +300,20 @@ timers are stored, the countdown and the alarm.
 - **The TV does not react.** Aim the top edge at the TV from within a few metres, set the brand
   in settings, or teach it the button from the real remote.
 - **A timer ended without a sound.** The device was muted with **fn**+**A** (the banner still
-  shows; press **fn**+**A** again to unmute) or the volume is turned right down.
+  shows: press any key to dismiss it, then **fn**+**A** to unmute) or the volume is turned
+  right down.
 - **Python tool reports the sandbox is unavailable.** Install `bubblewrap`.
 
 ## Project layout
 
 ```
 src/agent/      the conversation loop, prompt, tools, speech queue and service client
-src/core/       settings, calendar/reminder/memory store, music library, utilities
+src/core/       settings, calendar/reminder/timer/memory store, timers, music library, utilities
 src/platform/   display, keyboard, audio, camera, infrared, subprocess helpers
-src/ui/         chat screen, menus, settings pages, app controller
+src/ui/         chat screen, menus, settings pages, alarm banner, app controller
 src/net/        HTTP client (libcurl)
 scripts/        toolchain setup, packaging, deployment
-tests/          scored agent test set
+tests/          scored agent test set; tests/unit and run_timer_tests.sh: device-free timer tests
 packaging/      launcher entry and icon
 extras/         device-tree overlay for the Wi-Fi channel fix
 third_party/    nlohmann/json (MIT)

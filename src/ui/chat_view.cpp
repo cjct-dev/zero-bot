@@ -58,7 +58,7 @@ void ChatView::create(lv_obj_t *parent) {
     dot_ = box(status, 7, 7, kAccent);
     lv_obj_set_style_radius(dot_, LV_RADIUS_CIRCLE, 0);
     lv_obj_align(dot_, LV_ALIGN_LEFT_MID, kPadX, 0);
-    name_ = label(status, "Zero", bold(), kText);
+    name_ = label(status, status_name_.c_str(), bold(), kText);   // what set_status compares with
     lv_obj_align(name_, LV_ALIGN_LEFT_MID, kPadX + 12, 0);
     playing_ = label(status, "", small(), kDim);
     lv_label_set_long_mode(playing_, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
@@ -292,6 +292,8 @@ void ChatView::set_status(const std::string &name, uint32_t dot_color) {
         lv_obj_set_style_bg_color(dot_, color(dot_color), 0);
     }
 }
+
+std::string ChatView::status_name() const { return name_ ? lv_label_get_text(name_) : ""; }
 
 void ChatView::set_indicators(bool online, bool via_phone, int battery, bool charging, const std::string &clock) {
     const std::string now = std::to_string(online) + std::to_string(via_phone) + std::to_string(battery) +

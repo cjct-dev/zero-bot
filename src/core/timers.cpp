@@ -88,19 +88,29 @@ std::vector<std::string> words_of(const std::string &text) {
     return out;
 }
 
+template <size_t N> bool one_of(const std::string &w, const char *const (&list)[N]) {
+    return std::find_if(std::begin(list), std::end(list), [&](const char *f) { return w == f; }) != std::end(list);
+}
+
 // The words that tell timers apart: without "the", "timer" and the like, numbers as digits.
 std::vector<std::string> significant(const std::string &text) {
     static const char *const kFiller[] = {"the", "my", "a", "an", "timer", "timers", "one", "ones", "that",
                                           "this", "please", "for", "with", "left", "on"};
+    static const char *const kUnits[] = {"second", "seconds", "sec", "secs", "minute", "minutes", "min", "mins",
+                                         "hour", "hours", "hr", "hrs"};
     static const char *const kNumbers[] = {"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
                                            "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
                                            "seventeen", "eighteen", "nineteen", "twenty"};
     static const std::pair<const char *, const char *> kTens[] = {{"thirty", "30"}, {"forty", "40"}, {"fifty", "50"},
                                                                  {"sixty", "60"}, {"ninety", "90"}};
     std::vector<std::string> out;
-    for (std::string w : words_of(text)) {
-        if (std::find_if(std::begin(kFiller), std::end(kFiller), [&](const char *f) { return w == f; }) != std::end(kFiller))
-            continue;
+    const std::vector<std::string> words = words_of(text);
+    for (size_t i = 0; i < words.size(); ++i) {
+        std::string w = words[i];
+        // "One" is a number before a unit ("the one minute timer") and a filler word otherwise
+        // ("the oven one").
+        if (w == "one" && i + 1 < words.size() && one_of(words[i + 1], kUnits)) w = "1";
+        else if (one_of(w, kFiller)) continue;
         for (int n = 0; n <= 20; ++n)
             if (w == kNumbers[n]) w = std::to_string(n);
         for (const auto &t : kTens)
@@ -118,9 +128,14 @@ bool same_word(const std::string &a, const std::string &b) {
 }
 
 // A label no running timer has yet: a second "Pasta" becomes "Pasta 2", so the two can be told apart.
+// Labels that differ only in words that tell no timer apart ("Pasta", "pasta timer") count as the
+// same, since they would be one name to whoever picks a timer by its words.
 std::string unique_label(const std::string &label, const std::vector<Reminder> &running) {
     auto taken = [&](const std::string &name) {
-        return std::any_of(running.begin(), running.end(), [&](const Reminder &r) { return util::lower(r.text) == util::lower(name); });
+        const std::vector<std::string> words = significant(name);
+        return std::any_of(running.begin(), running.end(), [&](const Reminder &r) {
+            return util::lower(r.text) == util::lower(name) || significant(r.text) == words;
+        });
     };
     if (!taken(label)) return label;
     for (int n = 2;; ++n)
@@ -349,6 +364,12 @@ std::string make_label(const std::string &raw, long seconds) {
 }
 
 std::vector<Reminder> match(const std::vector<Reminder> &running, const std::string &words) {
+    // A timer's whole name, as it appears in a result ("Pasta timer"), means that timer alone.
+    const std::string whole = util::lower(util::trim(words));
+    std::vector<Reminder> named;
+    for (auto &r : running)
+        if (!whole.empty() && util::lower(r.text) == whole) named.push_back(r);
+    if (!named.empty()) return named;
     const std::vector<std::string> wanted = significant(words);
     if (wanted.empty()) return running;
     std::vector<int> scores;
@@ -392,6 +413,16 @@ time_t now() {
 
 void fix_clock(time_t t) { g_fixed_clock = t; }
 
+void follow_clock() {
+    // The steady clock is the time since boot, sleep included: real time passing, which the wall
+    // clock is not when it is set.
+    timespec wall{}, steady{};
+    clock_gettime(CLOCK_REALTIME, &wall);
+    clock_gettime(CLOCK_BOOTTIME, &steady);
+    auto ms = [](const timespec &t) { return static_cast<long long>(t.tv_sec) * 1000 + t.tv_nsec / 1000000; };
+    Store::get().follow_clock(ms(wall), ms(steady));
+}
+
 // ---------------------------------------------------------------- the alarm
 Alarm::Alarm(Sound sound) : sound_(std::move(sound)) {}
 
@@ -409,7 +440,10 @@ std::vector<Ended> Alarm::poll(time_t now, unsigned long now_ms, bool recording,
         e.id = r.id;
         e.label = r.text;
         e.end = r.due;
-        e.missed = now - r.due >= kMissedAfter;
+        // Only a timer carried over from an earlier run can have ended unseen, while the app was
+        // closed. One set in this run rings however late its end is noticed (the microphone was
+        // open for a long time): the app has been here all along.
+        e.missed = r.carried && now - r.due >= kMissedAfter;
         if (!e.missed) {
             labels_.push_back(e.label);
             rings = true;
@@ -422,11 +456,14 @@ std::vector<Ended> Alarm::poll(time_t now, unsigned long now_ms, bool recording,
             ringing_ = true;
             audio::Music::get().hold(audio::Music::kAlarm, true);
         }
-        if (!quiet && !sounding_) {
+        if (!quiet) {
+            // Each timer that rings starts the sound afresh, from its first burst: one that joins a
+            // ring under way gets a whole minute of sound too, not what is left of the first one's.
             sounding_ = true;
             if (sound_.start) sound_.start();
         }
     }
+    store.save_timers();             // the file, once the alarm is under way
     return out;
 }
 

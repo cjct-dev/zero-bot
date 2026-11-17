@@ -173,6 +173,11 @@ void Speaker::stop() {
     proc::stop(child_, SIGKILL);
 }
 
+void Speaker::kill() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    proc::signal_group(child_, SIGKILL);   // not reaped, nor its pipe closed, here: its writer does that
+}
+
 bool Speaker::playing() {
     std::lock_guard<std::mutex> lk(mtx_);
     return proc::alive(child_);
@@ -258,57 +263,90 @@ std::vector<int16_t> alarm_burst(int rate) {
     return pcm;
 }
 
+// One ring: its player, and what its thread is told. Shared by the thread and AlarmSound until
+// both are done with it, so a ring that is cut off can finish in its own time.
+struct AlarmSound::Ring {
+    Speaker speaker;
+    std::atomic<bool> stop{false};
+    std::function<bool()> wait;
+    int max_ms = 0, give_way_ms = 0;
+};
+
+namespace {
+std::atomic<int> g_alarm_rings{0};   // ring threads still running (static storage: they may outlive a ring)
+}  // namespace
+
 AlarmSound &AlarmSound::get() {
     static AlarmSound a;
     return a;
 }
 
-void AlarmSound::start(std::function<bool()> wait, int max_ms) {
-    stop_and_wait();                   // a ring still finishing ends first
-    active_ = true;
-    thread_ = std::thread(&AlarmSound::run, this, generation_.load(), std::move(wait), max_ms);
+void AlarmSound::start(std::function<bool()> wait, int max_ms, int give_way_ms) {
+    stop();                            // a ring under way is cut off; it is not waited for
+    auto ring = std::make_shared<Ring>();
+    ring->wait = std::move(wait);
+    ring->max_ms = max_ms;
+    ring->give_way_ms = give_way_ms;
+    ring_ = ring;
+    ++g_alarm_rings;
+    std::thread(&AlarmSound::run, std::move(ring)).detach();
 }
 
-void AlarmSound::stop() { ++generation_; }
+void AlarmSound::stop() {
+    if (!ring_) return;
+    ring_->stop = true;
+    // Silent there and then. This also frees the ring's thread should it be stuck writing to a
+    // player that has stopped reading; the thread reaps the player as it leaves.
+    ring_->speaker.kill();
+    ring_.reset();
+}
 
 void AlarmSound::stop_and_wait() {
-    ++generation_;
-    // The thread notices within a chunk. If it is stuck writing to a player process that has
-    // hung, ending the process frees the write.
-    for (int i = 0; i < 30 && active_; ++i) usleep(10 * 1000);
-    if (active_) speaker_.stop();
-    if (thread_.joinable()) thread_.join();
+    stop();
+    // Each player has been ended already; the threads notice within a chunk and reap them.
+    for (int i = 0; i < 100 && g_alarm_rings > 0; ++i) usleep(10 * 1000);
 }
 
-void AlarmSound::run(int gen, std::function<bool()> wait, int max_ms) {
+bool AlarmSound::active() const { return g_alarm_rings > 0; }
+
+void AlarmSound::run(std::shared_ptr<Ring> r) {
+    // stop() may end the player while this thread writes to it: the write then fails, and must not
+    // raise SIGPIPE, which would end the whole process wherever it is not ignored.
+    sigset_t pipe_signal;
+    sigemptyset(&pipe_signal);
+    sigaddset(&pipe_signal, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &pipe_signal, nullptr);
     const int rate = 24000;
     const std::vector<int16_t> burst = alarm_burst(rate);
     const size_t chunk = static_cast<size_t>(rate / 20);   // handed over 50 ms at a time
     const std::vector<int16_t> quiet(chunk, 0);
-    if (speaker_.begin(rate)) {
+    if (!r->stop && r->speaker.begin(rate)) {
         using clock = std::chrono::steady_clock;
         const auto t0 = clock::now();
         auto elapsed_ms = [&t0] {
             return static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - t0).count());
         };
-        long long queued_ms = 0;
+        long long queued_ms = 0, waited_ms = 0;
         bool first = true;
-        while (generation_ == gen && elapsed_ms() < max_ms) {
-            // Silence while the assistant speaks (the timer's label, most likely), then ring on.
-            const std::vector<int16_t> &part = first || !wait || !wait() ? burst : quiet;
+        while (!r->stop && elapsed_ms() < r->max_ms) {
+            // Quiet while the assistant's voice is coming out of the speaker (the timer's name, most
+            // likely), so the words can be heard; but after give_way_ms of that in all, it rings on.
+            const bool give_way = !first && waited_ms < r->give_way_ms && r->wait && r->wait();
+            const std::vector<int16_t> &part = give_way ? quiet : burst;
             first = false;
-            for (size_t at = 0; at < part.size() && generation_ == gen; at += chunk) {
+            for (size_t at = 0; at < part.size() && !r->stop; at += chunk) {
                 // Stay at most 200 ms ahead of real time, so that a key press silences it at once.
                 const long long ahead = queued_ms - elapsed_ms();
                 if (ahead > 200) usleep(static_cast<useconds_t>((ahead - 200) * 1000));
                 const size_t n = std::min(chunk, part.size() - at);
-                speaker_.write(part.data() + at, n * sizeof(int16_t));
+                r->speaker.write(part.data() + at, n * sizeof(int16_t));
                 queued_ms += static_cast<long long>(n) * 1000 / rate;
             }
+            if (give_way) waited_ms += static_cast<long long>(part.size()) * 1000 / rate;
         }
-        speaker_.stop();                                  // cut off what is still queued
     }
-    active_ = false;
+    r->speaker.stop();                                    // cut off what is still queued, and reap it
+    --g_alarm_rings;
 }
 
 // ---------------------------------------------------------------- Music

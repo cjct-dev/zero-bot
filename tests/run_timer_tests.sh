@@ -23,8 +23,21 @@ ${CXX:-g++} -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-f
     -o "$out/timers_test" -pthread
 
 echo "== running them"
-HOME="$state" XDG_CONFIG_HOME="$state/config" XDG_DATA_HOME="$state/data" XDG_CACHE_HOME="$state/cache" TZ=UTC \
-    "$out/timers_test"
+# As someone would run the binary by hand: no XDG folders set, and a home that holds data of its
+# own, which the tests must leave exactly as it was (they keep to a temporary folder of their own).
+home="$state/home"
+mkdir -p "$home/.local/share/zero-bot"
+for f in calendar memory reminders; do
+    printf '[{"id":1,"text":"%s kept","due":1,"created":1}]\n' "$f" > "$home/.local/share/zero-bot/$f.json"
+    cp "$home/.local/share/zero-bot/$f.json" "$state/$f.expected"
+done
+env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_CACHE_HOME HOME="$home" TMPDIR="$state" TZ=UTC "$out/timers_test"
+for f in calendar memory reminders; do
+    if ! cmp -s "$home/.local/share/zero-bot/$f.json" "$state/$f.expected"; then
+        echo "FAIL the tests changed $f.json in the home folder they were run from"
+        exit 1
+    fi
+done
 
 cli="$root/build/cli/zero_bot"
 if [ ! -x "$cli" ]; then

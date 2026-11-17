@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -55,10 +56,12 @@ bool write_file_atomic(const std::string &path, const std::string &data, int mod
     FILE *fp = fopen(tmp.c_str(), "wb");
     if (!fp) return false;
     fchmod(fileno(fp), static_cast<mode_t>(mode));
-    const bool ok = fwrite(data.data(), 1, data.size(), fp) == data.size();
-    fflush(fp);
-    fsync(fileno(fp));
-    fclose(fp);
+    // Every step has to work before the new file takes the old one's place: on a full disk a
+    // small file's data only fails to go in at the flush, and a short file would replace a whole one.
+    bool ok = fwrite(data.data(), 1, data.size(), fp) == data.size();
+    ok = fflush(fp) == 0 && ok;
+    if (ok && fsync(fileno(fp)) != 0 && errno != EINVAL) ok = false;   // EINVAL: a file system that cannot sync
+    ok = fclose(fp) == 0 && ok;
     if (!ok) { unlink(tmp.c_str()); return false; }
     return rename(tmp.c_str(), path.c_str()) == 0;
 }

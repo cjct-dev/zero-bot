@@ -188,11 +188,15 @@ def chk_time_left(t):
     return [] if any(says_int(t["answer"], n) for n in (mins, mins + 1)) else ["answer should give the time left (%s)" % left]
 
 def chk_cancelled(want, keep):
-    """A timer cancel that stopped the `want` timer and left the `keep` one running."""
+    """A timer cancel that stopped the `want` timer while the `keep` one was also running, and left that one running."""
     def check(t):
-        gone = [str(x).lower() for r in results(t, "timer") if isinstance(r, dict) for x in r.get("cancelled", [])]
+        done = [r for r in results(t, "timer") if isinstance(r, dict) and r.get("cancelled")]
+        gone = [str(x).lower() for r in done for x in r["cancelled"]]
         if not any(want in x for x in gone): return ["timer should cancel the %s timer, cancelled %s" % (want, gone)]
         if any(keep in x for x in gone): return ["the %s timer should keep running" % keep]
+        # The choice only means something with both running: the result lists what still runs.
+        left = [str(x).lower() for r in done for x in r.get("still_running", [])]
+        if not any(keep in x for x in left): return ["the %s timer should still be running after the cancel, still running: %s" % (keep, left)]
         return []
     return check
 

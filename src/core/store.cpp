@@ -14,6 +14,8 @@ static std::string path_of(const char *name) { return util::data_dir() + "/" + n
 void Store::load() {
     std::lock_guard<std::mutex> lk(mtx_);
     events_.clear(); reminders_.clear(); memories_.clear(); ended_.clear();
+    timers_unsaved_ = false;
+    clock_known_ = false;
     int max_id = 0;
     for (auto &j : util::load_json(path_of("calendar.json"), json::array())) {
         CalEvent e;
@@ -34,6 +36,13 @@ void Store::load() {
             r.kind = "timer";
             r.started = jget<long long>(j, "started", 0);
             r.length = jget<long long>(j, "length", 0);
+            r.carried = true;
+            // A record without a usable end (edited by hand, or damaged) gets it back from its start
+            // and length, or is left out: the main loop would read an end of 0 as "no timer at all".
+            if (r.due <= 0) {
+                if (r.started <= 0 || r.length <= 0) continue;
+                r.due = r.started + r.length;
+            }
         }
         if (r.id > 0) { reminders_.push_back(r); max_id = std::max(max_id, r.id); }
     }
@@ -70,6 +79,7 @@ void Store::save_reminders() {
         arr.push_back(j);
     }
     util::save_json(path_of("reminders.json"), arr);
+    timers_unsaved_ = false;
 }
 
 void Store::save_memory() {
@@ -233,11 +243,40 @@ void Store::clear_reminders() {
 
 // ---------------------------------------------------------------- timers
 void Store::timers_changed() {
+    bool any = false;
     time_t next = 0;
     for (auto &r : reminders_)
-        if (r.timer() && (!next || r.due < next)) next = r.due;
-    next_end_ = next;
+        if (r.timer() && (!any || r.due < next)) {
+            next = r.due;
+            any = true;
+        }
+    // 0 means "no timer" to the main loop, so an end at or before 0 (never written by the app)
+    // stands as the earliest moment there is: such a timer is taken at once rather than hiding the rest.
+    next_end_ = any ? std::max<time_t>(next, 1) : 0;
     ++revision_;
+}
+
+void Store::follow_clock(long long wall_ms, long long steady_ms) {
+    const long long offset = wall_ms - steady_ms;
+    const long long step = offset - clock_offset_.exchange(offset);
+    if (!clock_known_.exchange(true) || (step > -kClockStepMs && step < kClockStepMs)) return;
+    // The wall clock has been set. A timer set in this run was reckoned by the clock as it was, so
+    // it moves with it and still ends when its length has passed; so does what ended recently, so
+    // "ended at" and "give it five more minutes" stay right.
+    std::lock_guard<std::mutex> lk(mtx_);
+    const time_t shift = static_cast<time_t>((step + (step > 0 ? 500 : -500)) / 1000);
+    bool moved = false;
+    for (auto &r : reminders_)
+        if (r.timer() && !r.carried) {
+            r.due += shift;
+            r.started += shift;
+            moved = true;
+        }
+    for (auto &r : ended_)
+        if (!r.carried) r.due += shift;
+    if (!moved) return;
+    save_reminders();
+    timers_changed();
 }
 
 std::vector<Reminder> Store::timers() {
@@ -311,7 +350,7 @@ std::vector<Reminder> Store::take_ended_timers(time_t now) {
     if (out.empty()) return out;
     reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [now](const Reminder &r) { return r.timer() && r.due <= now; }),
                      reminders_.end());
-    save_reminders();
+    timers_unsaved_ = true;   // written by save_timers(), once the alarm is under way
     timers_changed();
     std::stable_sort(out.begin(), out.end(), [](const Reminder &a, const Reminder &b) { return a.due < b.due; });
     for (auto &r : out) ended_.insert(ended_.begin(), r);   // newest first
@@ -319,6 +358,11 @@ std::vector<Reminder> Store::take_ended_timers(time_t now) {
                  ended_.end());
     if (ended_.size() > static_cast<size_t>(kMaxTimers)) ended_.resize(kMaxTimers);
     return out;
+}
+
+void Store::save_timers() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (timers_unsaved_) save_reminders();
 }
 
 std::vector<Reminder> Store::recent_timers(time_t now) {
@@ -341,6 +385,7 @@ int Store::restart_timer(int id, long seconds, time_t now) {
     r.length = seconds;
     r.due = now + seconds;
     r.fired = false;
+    r.carried = false;          // reckoned by this run's clock now
     reminders_.push_back(r);
     save_reminders();
     timers_changed();

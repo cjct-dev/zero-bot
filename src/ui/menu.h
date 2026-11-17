@@ -57,6 +57,8 @@ public:
     void message(const std::string &title, const std::string &body);   // a page of plain text
     void problem(const std::string &title, const std::string &text);   // wrapped text that stays until ESC
     size_t depth() const { return stack_.size(); }
+    std::string title() const;      // the top page's title, and the label of the row the cursor
+    std::string selected() const;   // is on ("" with no page): for the checks in --shots
     // Splits a paragraph into Text rows that fit the screen width.
     static void add_paragraph(std::vector<MenuItem> &items, const std::string &paragraph);
 
@@ -65,6 +67,7 @@ private:
     void show_editor(bool on);
     struct Frame { MenuPage page; int selected = 0; int scroll = 0; int revision = 0; };
     void build_items();             // runs the top page's build, noting its revision
+    void settle();                  // after a rebuild: the cursor on a row that exists and can be selected
     std::vector<Frame> stack_;
     std::vector<MenuItem> items_;
     lv_obj_t *root_ = nullptr, *title_ = nullptr, *list_ = nullptr, *hint_ = nullptr, *toast_ = nullptr;

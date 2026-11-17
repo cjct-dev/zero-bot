@@ -42,6 +42,9 @@ struct Reminder {
     std::string kind;          // "" = reminder, "timer"
     time_t started = 0;        // timer: when it was set
     long length = 0;           // timer: its whole length in seconds, with any time added
+    // Timer: read from the file when the app started, so set (or last restarted) by an earlier run
+    // of it. Not stored.
+    bool carried = false;
     bool timer() const { return kind == "timer"; }
 };
 
@@ -80,7 +83,10 @@ public:
     int clear_timers();                                   // how many there were
     // Timers whose end has come by `now`, soonest first, each returned once. They are kept in
     // memory for kRecentSeconds afterwards, so that "give it five more minutes" can restart one.
+    // They leave the list at once, but the file only with the next save_timers(), so that an
+    // alarm can be under way before the disk is touched.
     std::vector<Reminder> take_ended_timers(time_t now);
+    void save_timers();                                   // writes what take_ended_timers left unwritten
     static constexpr long kRecentSeconds = 15 * 60;
     std::vector<Reminder> recent_timers(time_t now);      // ended in the last kRecentSeconds, newest first
     int restart_timer(int id, long seconds, time_t now);  // a recent one, running again; its id, or 0
@@ -88,6 +94,13 @@ public:
     // number that changes whenever the set of timers or their ends do.
     time_t next_timer_end() const { return next_end_; }
     int timers_revision() const { return revision_; }
+    // Timers set while the app runs count the time that passes, whatever the wall clock does:
+    // when it is set (by a time sync after start-up, on a device without a clock of its own),
+    // their ends move with it. Call often, from one thread, with the wall clock and a clock that
+    // runs at a steady pace (both in milliseconds). Timers carried over from an earlier run keep
+    // their ends: those were reckoned by that run's clock.
+    void follow_clock(long long wall_ms, long long steady_ms);
+    static constexpr long long kClockStepMs = 2000;       // the wall clock moving this much more than the steady one is a step
 
     // Memory
     std::vector<Memory> memories();
@@ -110,6 +123,9 @@ private:
     std::vector<Memory> memories_;
     std::vector<Reminder> ended_;   // timers that have ended recently (not stored)
     int next_id_ = 1;
+    bool timers_unsaved_ = false;   // take_ended_timers has changed the list since the file was written
     std::atomic<time_t> next_end_{0};
     std::atomic<int> revision_{0};
+    std::atomic<long long> clock_offset_{0};   // wall minus steady clock at the last follow_clock
+    std::atomic<bool> clock_known_{false};
 };

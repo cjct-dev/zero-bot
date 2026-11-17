@@ -278,8 +278,10 @@ void open_reminders(Menu &menu) {
             for (auto &t : running) {
                 const int id = t.id;
                 const time_t end = t.due;
-                items.push_back(MenuItem::val(t.text, [end] { return time_left(end); }, [&menu, id] {
-                    menu.confirm("Cancel this timer?", "Cancel timer", [id] { Store::get().delete_timer(id); });
+                // The question names the timer: the rows move when one ends, so it says which one goes.
+                const std::string question = "Cancel " + util::truncate_utf8(t.text, 30) + "?";
+                items.push_back(MenuItem::val(t.text, [end] { return time_left(end); }, [&menu, id, question] {
+                    menu.confirm(question, "Cancel timer", [id] { Store::get().delete_timer(id); });
                 }));
             }
             items.push_back(MenuItem::action("Cancel all timers", [&menu] {

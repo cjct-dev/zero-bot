@@ -30,6 +30,7 @@ public:
     void set_indicators(bool online, bool via_phone, int battery_percent, bool charging, const std::string &clock);
     void set_now_playing(const std::string &text);
     void set_timer(const std::string &countdown);   // "4:59 +1" beside a stopwatch; "" hides it
+    std::string status_name() const;                 // the name the status bar shows (for --shots checks)
 
     // Footer
     void footer_hints(const std::string &text);
@@ -54,7 +55,7 @@ private:
     lv_obj_t *root_ = nullptr, *list_ = nullptr, *footer_ = nullptr;
     lv_obj_t *dot_ = nullptr, *name_ = nullptr, *playing_ = nullptr, *net_ = nullptr, *right_ = nullptr;
     lv_obj_t *timer_ = nullptr, *timer_label_ = nullptr;
-    std::string status_name_, indicators_, timer_text_;
+    std::string status_name_ = "Zero", indicators_, timer_text_;   // what each part of the status bar shows
     uint32_t status_color_ = 0xFFFFFFFF;     // no colour: the first call sets it
     int timer_w_ = 0;
     lv_obj_t *foot_label_ = nullptr, *foot_dot_ = nullptr, *wave_ = nullptr, *input_ = nullptr, *prompt_ = nullptr;
