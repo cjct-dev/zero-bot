@@ -19,7 +19,8 @@ is built in.
 | Ask for | Example |
 |---|---|
 | Sums | "What's seventeen and a half percent of 2,340?" |
-| Python, in a sandbox | "How many days until Christmas?" |
+| Dates | "How many days until Christmas?", "What day is the 3rd of March?" |
+| Python, in a sandbox | "Sort these names alphabetically…", longer calculations |
 | What the camera sees | "What am I looking at?", "Translate this menu." |
 | Calendar | "Put dinner with Marta in my calendar for Friday at eight." |
 | Timers and reminders | "Remind me in ten minutes to check the oven." |
@@ -135,8 +136,10 @@ transcribed words as uncompressed audio, and on a Bluetooth-tethered phone it cu
 send five seconds of speech from about 7 seconds to under 2. If a service does not accept those
 formats the app falls back to uncompressed audio by itself.
 
-*Fast replies* asks the model to skip its private reasoning step. Answers arrive about a second
-sooner per step; turn it off if you find it making mistakes with your model.
+*Fast replies* (on by default) asks the model to skip its private reasoning step, and makes up
+for it by double-checking any reply that did not use a tool before it is spoken. On the bundled
+test set this passed 54 of 55 requests at a median of about 3 seconds each on Wi-Fi; with it off
+the model reasons on every step, which is a second or two slower.
 
 ![Calendar](docs/screenshots/calendar.png) ![Editing an event](docs/screenshots/event.png)
 

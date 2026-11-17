@@ -375,7 +375,7 @@ def main():
     ap.add_argument("--fast", default=None, help="force fast mode on (1) or off (0)")
     ap.add_argument("--jobs", type=int, default=1, help="cases to run at once (timings are only comparable at 1)")
     ap.add_argument("--json", default="", help="write full results to this file")
-    ap.add_argument("--rescore", default="", help="score a results file written by --json again (same day) instead of running")
+    ap.add_argument("--rescore", default="", help="score a results file written by --json again instead of running (same day; clock-time checks will fail)")
     args = ap.parse_args()
     saved = {}
     if args.rescore:

@@ -12,6 +12,7 @@
 #include "core/music_lib.h"
 #include "core/settings.h"
 #include "core/store.h"
+#include "core/tether.h"
 #include "net/http.h"
 #include "platform/audio.h"
 #include "platform/camera.h"
@@ -250,7 +251,10 @@ std::string t_look(const json &a, Context &ctx) {
     if (question.empty()) question = "Describe what you see.";
     const std::string path = util::cache_dir() + "/last_photo.jpg";
     util::make_dirs(util::cache_dir());
-    std::string err = camera::capture(path);
+    // On a phone's Bluetooth link the upload is the slow part, so a smaller photo is taken there:
+    // still plenty to read a sign or menu, at about a third of the bytes.
+    const bool slow_link = tether::via_phone();
+    std::string err = slow_link ? camera::capture(path, 960, 720) : camera::capture(path);
     if (!err.empty()) return fail(err);
     if (ctx.on_image) ctx.on_image(path);
     std::string jpeg;
