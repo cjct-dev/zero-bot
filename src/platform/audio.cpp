@@ -264,18 +264,17 @@ AlarmSound &AlarmSound::get() {
 }
 
 void AlarmSound::start(std::function<bool()> wait, int max_ms) {
-    const int gen = ++generation_;     // also tells a player still running to finish
-    if (thread_.joinable()) thread_.join();
+    stop_and_wait();                   // a ring still finishing ends first
     active_ = true;
-    thread_ = std::thread(&AlarmSound::run, this, gen, std::move(wait), max_ms);
+    thread_ = std::thread(&AlarmSound::run, this, generation_.load(), std::move(wait), max_ms);
 }
 
 void AlarmSound::stop() { ++generation_; }
 
 void AlarmSound::stop_and_wait() {
     ++generation_;
-    // The player notices within a chunk; if it is stuck writing to a player that has hung, end
-    // the player, which frees the write.
+    // The thread notices within a chunk. If it is stuck writing to a player process that has
+    // hung, ending the process frees the write.
     for (int i = 0; i < 30 && active_; ++i) usleep(10 * 1000);
     if (active_) speaker_.stop();
     if (thread_.joinable()) thread_.join();

@@ -563,6 +563,34 @@ void test_more_time_after_the_alarm() {
     CHECK(timer_id("Study") != 0);
 }
 
+void test_more_time_which_timer() {
+    // "Give it five more minutes" with a label that names no timer in particular.
+    reset_store();
+    Alarm alarm;
+    tool(R"({"action":"start","minutes":5,"label":"Food out of the oven"})", T0);
+    tool(R"({"action":"start","minutes":30,"label":"Study"})", T0);
+    alarm.poll(T0 + 300, 1000, false, false);
+    alarm.stop();
+    json j = parsed(tool(R"({"action":"add_time","minutes":5,"label":"the timer"})", T0 + 310));
+    CHECK_EQ(text(j["restarted"]["label"]), "Food out of the oven");
+    CHECK_EQ(timer_end("Study"), T0 + 1800);
+
+    // Two pasta timers, the first has rung: "pasta" means that one, "pasta 2" the one still running.
+    reset_store();
+    tool(R"({"action":"start","minutes":8,"label":"Pasta"})", T0);
+    j = parsed(tool(R"({"action":"start","minutes":10,"label":"Pasta"})", T0));
+    CHECK_EQ(text(j["started"]["label"]), "Pasta 2");
+    alarm.poll(T0 + 480, 2000, false, false);
+    alarm.stop();
+    j = parsed(tool(R"({"action":"add_time","minutes":5,"label":"pasta"})", T0 + 490));
+    CHECK_EQ(text(j["restarted"]["label"]), "Pasta");
+    CHECK_EQ(timer_end("Pasta"), T0 + 790);
+    CHECK_EQ(timer_end("Pasta 2"), T0 + 600);
+    j = parsed(tool(R"({"action":"add_time","minutes":1,"label":"pasta 2"})", T0 + 495));
+    CHECK_EQ(text(j["extended"]["label"]), "Pasta 2");
+    CHECK_EQ(timer_end("Pasta 2"), T0 + 660);
+}
+
 void test_alarm_sound_pattern() {
     const std::vector<int16_t> burst = audio::alarm_burst(24000);
     CHECK_EQ(burst.size(), 24000 * 110 / 100);                     // 4 x (100 + 50) ms, then 500 ms
@@ -600,6 +628,7 @@ int main() {
     run("alarm: muted", test_alarm_quiet_when_muted);
     run("music hold", test_music_hold);
     run("more time after the alarm", test_more_time_after_the_alarm);
+    run("more time: which timer", test_more_time_which_timer);
     run("alarm sound", test_alarm_sound_pattern);
     printf("timers: %d checks, %d failed\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

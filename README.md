@@ -46,7 +46,7 @@ needs a [Tavily](https://tavily.com) key.
 | **TAB** | Start talking. Press **TAB** again when you have finished. |
 | **TAB** twice quickly | Open settings. |
 | **ENTER** (or just start typing) | Type a message; **ENTER** sends it. |
-| **del** twice quickly | Start a new conversation: what was said so far is forgotten. Calendar, reminders and saved memories are kept. |
+| **del** twice quickly | Start a new conversation: what was said so far is forgotten. Calendar, timers, reminders and saved memories are kept. |
 | **ESC** | Cancel what is happening: recording, typing, a running request, music. |
 | Hold **ESC** | Leave the app and return to the launcher. |
 | **fn**+**F** / **fn**+**X** | Scroll the conversation up and down. |
@@ -69,15 +69,15 @@ and wakes on any key.
 
 Ask for a timer in your own words, and give it a name if you like: "the food needs to come out
 of the oven in 5 minutes", "I want to study for an hour, set a timer". Up to ten can run at
-once. The one that ends soonest counts down in the status bar, with "+1" for each other one, and
-everything else keeps working meanwhile: talking, typing, settings, music, the breathing
-exercise.
+once. The one that ends soonest counts down in the status bar, followed by "+2" when two more
+are running, and everything else keeps working meanwhile: talking, typing, settings, music, the
+breathing exercise.
 
 - **When one ends** the screen lights up with a banner naming it, an alarm rings for up to a
   minute, music pauses, and the name is spoken once (if spoken replies are on). If you are
   talking to the assistant at that moment, it waits until you have finished. **Any key** stops
   it; **TAB** stops it and starts listening, so "give it five more minutes" is one press away.
-- **Muted with fn+A**, the alarm stays silent: the banner is all you get.
+- **Muted** with **fn**+**A**, the alarm stays silent: the banner is all you get.
 - **Ask** "how long is left?", "add ten minutes to the pasta", "cancel the study timer". With
   several running, it asks which one you mean. *Settings → Your data → Reminders and timers*
   lists them with their time left, to cancel one or all.

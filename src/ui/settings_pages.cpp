@@ -269,6 +269,7 @@ void open_reminders(Menu &menu) {
     MenuPage page;
     page.title = "Reminders and timers";
     page.live = true;   // each timer's time left counts down
+    page.revision = [] { return Store::get().timers_revision(); };   // and one that ends leaves the list
     page.build = [&menu]() {
         std::vector<MenuItem> items;
         const auto running = Store::get().timers();

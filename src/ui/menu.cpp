@@ -119,12 +119,18 @@ void Menu::create(lv_obj_t *parent) {
     lv_obj_add_flag(toast_, LV_OBJ_FLAG_HIDDEN);
 }
 
+void Menu::build_items() {
+    Frame &f = stack_.back();
+    if (f.page.revision) f.revision = f.page.revision();
+    items_ = f.page.build();
+}
+
 void Menu::push(MenuPage page) {
     Frame f;
     f.page = std::move(page);
     stack_.push_back(std::move(f));
     lv_obj_remove_flag(root_, LV_OBJ_FLAG_HIDDEN);
-    items_ = stack_.back().page.build();
+    build_items();
     // Start on the first row that can be selected.
     for (size_t i = 0; i < items_.size(); ++i)
         if (items_[i].selectable()) { stack_.back().selected = static_cast<int>(i); break; }
@@ -147,7 +153,7 @@ void Menu::close() {
 
 void Menu::refresh() {
     if (stack_.empty()) return;
-    items_ = stack_.back().page.build();
+    build_items();
     Frame &f = stack_.back();
     if (f.selected >= static_cast<int>(items_.size())) f.selected = static_cast<int>(items_.size()) - 1;
     if (f.selected < 0) f.selected = 0;
@@ -319,6 +325,8 @@ void Menu::toast(const std::string &text) {
 void Menu::tick() {
     if (toast_ticks_ > 0 && --toast_ticks_ == 0) lv_obj_add_flag(toast_, LV_OBJ_FLAG_HIDDEN);
     if (stack_.empty() || editing_ || !stack_.back().page.live) return;
+    const Frame &f = stack_.back();
+    if (f.page.revision && f.page.revision() != f.revision) { refresh(); return; }
     for (LiveValue &shown : live_) {
         const MenuItem &it = items_[shown.item];
         const std::string text = it.value ? it.value() : "";

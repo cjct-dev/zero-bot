@@ -31,6 +31,9 @@ struct MenuPage {
     // The values change by themselves (a timer's time left): tick() reads the ones on screen
     // again and redraws those whose text has changed. Their value functions must be cheap.
     bool live = false;
+    // Optional, cheap: a number that changes when the page's rows do (a timer ended or was
+    // cancelled elsewhere). tick() rebuilds the page when it changes.
+    std::function<int()> revision;
 };
 
 class Menu {
@@ -60,7 +63,8 @@ public:
 private:
     void render();
     void show_editor(bool on);
-    struct Frame { MenuPage page; int selected = 0; int scroll = 0; };
+    struct Frame { MenuPage page; int selected = 0; int scroll = 0; int revision = 0; };
+    void build_items();             // runs the top page's build, noting its revision
     std::vector<Frame> stack_;
     std::vector<MenuItem> items_;
     lv_obj_t *root_ = nullptr, *title_ = nullptr, *list_ = nullptr, *hint_ = nullptr, *toast_ = nullptr;

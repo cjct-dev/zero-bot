@@ -21,6 +21,9 @@ std::atomic<time_t> g_fixed_clock{0};
 
 std::string fail(const std::string &msg) { return "ERROR: " + msg; }
 
+// Labels are the user's words: never let an odd byte in one make the result throw.
+std::string reply(const json &j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); }
+
 std::string str_arg(const json &a, const char *key) { return util::trim(jget(a, key, std::string())); }
 
 // Models sometimes send numbers as strings; accept both.
@@ -200,7 +203,7 @@ std::string start(const json &a, time_t now) {
     json out = {{"started", {{"id", id}, {"label", label}, {"length", length_words(seconds)},
                              {"ends_at", end_text(now + seconds, now)}}}};
     if (!running.empty()) out["other_timers_running"] = running.size();
-    return out.dump();
+    return reply(out);
 }
 
 std::string cancel(const json &a, time_t now) {
@@ -211,7 +214,7 @@ std::string cancel(const json &a, time_t now) {
         store.clear_timers();
         json names = json::array();
         for (auto &r : running) names.push_back(r.text);
-        return json{{"cancelled", names}}.dump();
+        return reply(json{{"cancelled", names}});
     }
     if (running.size() > 1 && significant(str_arg(a, "label")).empty() && !a.contains("id"))
         return fail(std::to_string(running.size()) + " timers are running: " + summary(running, now) +
@@ -225,7 +228,7 @@ std::string cancel(const json &a, time_t now) {
     for (auto &r : running)
         if (r.id != t.id) rest.push_back(r.text);
     if (!rest.empty()) out["still_running"] = rest;
-    return out.dump();
+    return reply(out);
 }
 
 std::string add_time(const json &a, time_t now) {
@@ -235,18 +238,28 @@ std::string add_time(const json &a, time_t now) {
     const std::vector<Reminder> running = store.timers();
     const std::vector<Reminder> recent = store.recent_timers(now);
     const std::string words = str_arg(a, "label");
+    const std::vector<std::string> wanted = significant(words);
     // "Give it five more minutes", said just after an alarm, means the timer that rang: it starts
-    // again for that long. So does naming one that has ended and is no longer running.
+    // again for that long. So does naming one that has ended, unless a running timer fits the
+    // name at least as well ("Pasta" has ended, "Pasta 2" runs: "pasta" means the first).
+    auto exact = [&](const std::vector<Reminder> &list) {
+        std::vector<Reminder> out;
+        for (auto &r : list)
+            if (significant(r.text) == wanted) out.push_back(r);
+        return out;
+    };
     Reminder again;
     bool restart = false;
     if (!a.contains("id")) {
-        if (words.empty() && !recent.empty() && now - recent.front().due <= kJustEnded) {
-            again = recent.front();
-            restart = true;
-        } else if (!words.empty() && match(running, words).empty()) {
-            const std::vector<Reminder> named = match(recent, words);
-            if (!named.empty()) {
-                again = named.front();   // the newest
+        if (wanted.empty()) {
+            if (!recent.empty() && now - recent.front().due <= kJustEnded) {
+                again = recent.front();
+                restart = true;
+            }
+        } else {
+            const std::vector<Reminder> ended = match(recent, words), ended_exactly = exact(recent);
+            if (!ended.empty() && (match(running, words).empty() || (exact(running).empty() && !ended_exactly.empty()))) {
+                again = ended_exactly.empty() ? ended.front() : ended_exactly.front();   // the newest
                 restart = true;
             }
         }
@@ -256,8 +269,8 @@ std::string add_time(const json &a, time_t now) {
         if (!store.restart_timer(again.id, extra, now))
             return fail(std::to_string(Store::kMaxTimers) + " timers are already running, which is the most at once");
         again.due = now + extra;
-        return json{{"restarted", describe(again, now)},
-                    {"note", "it had already ended, so it now runs again for " + length_words(extra) + " from now"}}.dump();
+        return reply(json{{"restarted", describe(again, now)},
+                         {"note", "it had already ended, so it now runs again for " + length_words(extra) + " from now"}});
     }
     Reminder t;
     std::string err;
@@ -267,7 +280,7 @@ std::string add_time(const json &a, time_t now) {
     t.due += extra;
     json out = describe(t, now);
     out["added"] = length_words(extra);
-    return json{{"extended", out}}.dump();
+    return reply(json{{"extended", out}});
 }
 
 std::string list(time_t now) {
@@ -279,7 +292,7 @@ std::string list(time_t now) {
     json ended = json::array();
     for (auto &r : store.recent_timers(now)) ended.push_back({{"label", r.text}, {"ended_at", end_text(r.due, now)}});
     if (!ended.empty()) out["ended_recently"] = ended;
-    return out.dump();
+    return reply(out);
 }
 
 }  // namespace

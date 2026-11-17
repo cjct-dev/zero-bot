@@ -87,6 +87,9 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   byte-identical between calls and the service can reuse its cached prefix.
 - **Music holds** (`audio::Music::hold`): music waits for the spoken reply to finish, and stays
   quiet from a spoken question to the end of its answer.
+- **Context notes** (`Agent::add_context`): something the user saw or heard without the model
+  taking part (a timer's alarm) rides along with their next message, within ten minutes, so
+  that "give it five more minutes" means something to the model.
 
 ## 5. Building
 
@@ -248,7 +251,9 @@ that for anything added there (the timer countdown changes once a second, not ev
 
 **A settings value that changes by itself** (a timer's time left): set `MenuPage::live`.
 `Menu::tick` then reads the values on screen 15 times a second and redraws only those whose
-text changed, so their value functions must be cheap: no file reads, no subprocesses.
+text changed, so their value functions must be cheap: no file reads, no subprocesses. Rows that
+come and go by themselves (a timer ends) also need `MenuPage::revision`, a number that changes
+with them: the page is rebuilt when it does.
 
 **A sound that repeats** (the timer's alarm): `audio::AlarmSound` keeps one player process open
 and leaves gaps while the assistant speaks. Stop it on every way out, leaving the app included
