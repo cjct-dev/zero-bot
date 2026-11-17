@@ -2,6 +2,7 @@
 // loose matching lives here, so the model only ever picks from a list and the code decides what
 // that pick covers. A name that fits several things is reported, never guessed.
 #include <algorithm>
+#include <cstring>
 #include <set>
 
 #include "smarthome/internal.h"
@@ -133,10 +134,22 @@ std::string plain(const std::string &text) {
 
 // Names come from devices and bridges, which is to say from whoever set them up. They are shown
 // on screen and handed to the model as values, so they are kept short and free of anything that
-// could be mistaken for structure.
+// could be mistaken for structure. That includes every quotation mark that reads as the end of a
+// name's double quotes, in any script: those are removed like '"' itself, and the single ones a
+// phone types for an apostrophe ("Sam’s lamp") become one.
 std::string clean_name(const std::string &raw) {
+    static const std::pair<const char *, const char *> kQuoteMarks[] = {
+        {"“", ""}, {"”", ""}, {"„", ""}, {"‟", ""}, {"«", ""}, {"»", ""}, {"″", ""}, {"ˮ", ""}, {"״", ""},
+        {"‶", ""}, {"ʺ", ""}, {"˝", ""}, {"⹂", ""}, {"❝", ""}, {"❞", ""}, {"「", ""},
+        {"」", ""}, {"『", ""}, {"』", ""}, {"〝", ""}, {"〞", ""}, {"〟", ""}, {"＂", ""},
+        {"｢", ""}, {"｣", ""}, {"\U0001F676", ""}, {"\U0001F677", ""}, {"\U0001F678", ""}, {"‹", ""},
+        {"›", ""}, {"‘", "'"}, {"’", "'"}, {"‚", "'"}, {"‛", "'"}, {"′", "'"},
+        {"‵", "'"}, {"❛", "'"}, {"❜", "'"}, {"＇", "'"}};
+    std::string text = util::sanitize_utf8(raw);
+    for (const auto &q : kQuoteMarks)
+        for (size_t at; (at = text.find(q.first)) != std::string::npos;) text.replace(at, strlen(q.first), q.second);
     std::string out;
-    for (const unsigned char c : util::sanitize_utf8(raw)) {
+    for (const unsigned char c : text) {
         if (c < 0x20 || c == 0x7f) { if (!out.empty() && out.back() != ' ') out += ' '; continue; }
         if (c == '"' || c == '\\' || c == '<' || c == '>' || c == '{' || c == '}' || c == '`') continue;
         if (c == ' ' && !out.empty() && out.back() == ' ') continue;
@@ -244,8 +257,12 @@ std::vector<std::string> target_names(const std::vector<Item> &items, bool *over
 bool resolve(const std::vector<Item> &items, const std::string &said_raw, Resolved &out, std::string &err) {
     out = Resolved();
     const std::string said = clean_name(said_raw);
-    std::string want = plain(said);
-    if (starts_with(want, "the ")) want = want.substr(4);
+    // What was said as it stands, and without a leading "the" ("the desk lamp", "the bedroom").
+    // The exact matches try the first before the second, so that a value listed with a "The" of
+    // its own ("The lights", a room called "The Snug") is what it was listed as, and never what
+    // its name means without the "The" (every light, a plug called "Snug").
+    const std::string full = plain(said);
+    const std::string want = starts_with(full, "the ") ? full.substr(4) : full;
     if (want.empty()) { err = "say which device, room or group (target)"; return false; }
 
     // The exact matches, in the order that makes every value target_names() lists mean what it
@@ -267,8 +284,6 @@ bool resolve(const std::vector<Item> &items, const std::string &said_raw, Resolv
                    : in_quotes(said) + " could mean any of: " + list_of(names) + ". Ask which one";
         return -1;
     };
-    if (const int found = exact_things([&](const Item &i) { return plain(i.label) == want; })) return found > 0;
-
     const std::vector<std::string> rooms = rooms_of(items, false);
     auto find_room = [&](const std::string &name) -> const std::string * {
         for (const auto &r : rooms)
@@ -276,29 +291,46 @@ bool resolve(const std::vector<Item> &items, const std::string &said_raw, Resolv
         return nullptr;
     };
     // "Bedroom (room)" is how a room is listed when a thing has the same name.
-    if (ends_with(want, " room") && ends_with(util::lower(said), "(room)"))
-        if (const std::string *room = find_room(plain(said.substr(0, said.size() - 6)))) { out = room_target(items, *room); return true; }
-    if (const std::string *room = find_room(want)) { out = room_target(items, *room); return true; }
+    std::string as_room;
+    if (ends_with(util::lower(said), "(room)")) as_room = plain(said.substr(0, said.size() - 6));
+    auto listed_as = [&](const std::string &name, const std::string &room_name) -> int {
+        if (const int found = exact_things([&](const Item &i) { return plain(i.label) == name; })) return found;
+        if (!room_name.empty())
+            if (const std::string *room = find_room(room_name)) { out = room_target(items, *room); return 1; }
+        if (const std::string *room = find_room(name)) { out = room_target(items, *room); return 1; }
+        // "all" always means everything (a status of everything works in any home); the other
+        // groups exist only when they have members.
+        for (const auto &g : kGroups)
+            if (g.scope == Scope::Everything || group_present(items, g.scope))
+                for (const char *phrase : g.phrases)
+                    if (name == phrase) { out = group_target(items, g); return 1; }
+        return 0;
+    };
+    if (const int found = listed_as(full, as_room)) return found > 0;
+    if (want != full)
+        if (const int found = listed_as(want, starts_with(as_room, "the ") ? as_room.substr(4) : as_room)) return found > 0;
 
-    // "all" always means everything (a status of everything works in any home); the other groups
-    // exist only when they have members.
-    for (const auto &g : kGroups)
-        if (g.scope == Scope::Everything || group_present(items, g.scope))
-            for (const char *phrase : g.phrases)
-                if (want == phrase) { out = group_target(items, g); return true; }
-
-    if (const int found = exact_things([&](const Item &i) {
-            return plain(i.thing.name) == want || (!i.thing.alias.empty() && plain(i.thing.alias) == want);
-        }))
-        return found > 0;
-    // "bedroom lights", "the lights in the bedroom".
-    for (const char *suffix : {" lights", " light", " lamps", " lamp", " room"})
-        if (ends_with(want, suffix))
-            if (const std::string *room = find_room(want.substr(0, want.size() - std::string(suffix).size()))) { out = room_target(items, *room); return true; }
+    for (const std::string &name : {full, want})
+        if (const int found = exact_things([&](const Item &i) {
+                return plain(i.thing.name) == name || (!i.thing.alias.empty() && plain(i.thing.alias) == name);
+            }))
+            return found > 0;
+    // "bedroom lights", "the lights in the bedroom"; for a room called "The Snug", "the snug
+    // lights" and "snug lights" as well.
+    auto room_called = [&](const std::string &name) -> const std::string * {
+        if (const std::string *room = find_room(name)) return room;
+        for (const auto &r : rooms)
+            if (plain(r) == "the " + name) return &r;
+        return nullptr;
+    };
+    for (const std::string &name : {full, want})
+        for (const char *suffix : {" lights", " light", " lamps", " lamp", " room"})
+            if (ends_with(name, suffix) && name.size() > strlen(suffix))
+                if (const std::string *room = room_called(name.substr(0, name.size() - strlen(suffix)))) { out = room_target(items, *room); return true; }
     for (const char *prefix : {"lights in the ", "lights in ", "all lights in the ", "all lights in ", "all the lights in the ",
-                               "the lights in the "})
-        if (starts_with(want, prefix))
-            if (const std::string *room = find_room(want.substr(std::string(prefix).size()))) { out = room_target(items, *room); return true; }
+                               "the lights in the ", "the lights in "})
+        if (starts_with(full, prefix))
+            if (const std::string *room = room_called(full.substr(strlen(prefix)))) { out = room_target(items, *room); return true; }
 
     // Partial. A name with a word that starts with what was said counts first ("lamp" for "Desk
     // lamp"); only when there is none does a name contained in what was said ("the desk lamp

@@ -12,7 +12,9 @@ reply to each request follows SCRIPT, a JSON file:
 
 The newest message decides: a user message is matched by the first "user" rule whose words it
 contains (case does not matter), a tool result by the first "after" rule it starts with. A rule's
-value may also be a list, used one entry per match in turn (the last one repeats).
+value may also be a list, used one entry per match in turn (the last one repeats). A question
+about a photo (the look tool) arrives as a user message whose content is a list of parts; its
+text parts are what the rules see.
 
 usage: mock_chat.py SCRIPT LOG
 """
@@ -30,8 +32,10 @@ CALLS = [0]
 
 
 def said(message):
-    """The user's words without the time stamp the app puts in front."""
+    """The user's words without the time stamp the app puts in front; for a photo, its question."""
     text = message.get("content") or ""
+    if isinstance(text, list):
+        text = " ".join(p.get("text", "") for p in text if isinstance(p, dict) and p.get("type") == "text")
     return text.split("] ", 1)[1] if text.startswith("[") and "] " in text else text
 
 

@@ -98,14 +98,19 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   web page or photo) makes `home::execute` answer `CONFIRM: ...` and remember the change. The loop
   reports every user message (`home::user_spoke`) and every final reply, with its text
   (`home::assistant_replied`). The same change (action, target and values) goes ahead only when
-  the question was put (a reply that asks, with a question mark, naming the thing), the very next
-  user message is a short, plain yes (every word an agreement, politeness or the thing's name; a
-  new request, "leave it off please" or "yes, and..." is not), and it is asked for again in that
-  turn. A change once put as a question keeps needing the yes in the next turn even when what made
-  it risky has passed, so "no" after a web page stops it. There is deliberately no parameter the
-  model could set to skip this. `web_search` and `look` call `home::saw_untrusted_text()`. Names in
-  `ERROR`/`CONFIRM` sentences are always in double quotes, which `home::clean_name` removes from
-  every name, so a device's name cannot end its quotes and read as an instruction.
+  the question was put (a reply that asks, with a question mark, and names the target in words
+  that pick it out: every word of its name, a word of it no other thing's name has, "the TV" for
+  the only TV, "everything" or "all the lights" for a group), the very next user message is a
+  short, plain yes (every word an agreement, politeness or a word for the target; a new request,
+  "leave it off please" or "yes, and..." is not), and it is asked for again in that turn. There is
+  deliberately no parameter the model could set to skip this. `web_search` and `look` call
+  `home::saw_untrusted_text()`: from then on every change needs a yes for as long as the model can
+  still see that text, which ends only when the conversation is cleared
+  (`home::conversation_reset`) or trimmed past it (`Agent::trim_history` reports what it keeps
+  through `home::context_kept`). So "no" after a web page or photo holds however long the model
+  waits before asking again. Names in `ERROR`/`CONFIRM` sentences are always in double quotes, and
+  `home::clean_name` removes every kind of double quotation mark (typographic and full-width ones
+  too) from every name, so a device's name cannot end its quotes and read as an instruction.
 
 ## 5. Building
 
@@ -137,9 +142,11 @@ What exists:
 - **Tapo end to end**: `tests/tapo_e2e.py` runs `build/cli/zero_bot` against two simulated plugs
   (`tests/mocks/mock_tapo.py`, a TPAP P110 and a KLAP P304M) on ports the system picks.
 - **The request loop, scripted**: `tests/home_chat_e2e.py` runs `build/cli/zero_bot --chat` against
-  `tests/mocks/mock_chat.py` (a chat-completions service that answers from a script) and a
-  simulated plug, and checks from the plug's side that a change needing a yes waits for one. Use
-  the scripted service for any change to the loop that a live model cannot be trusted to test.
+  `tests/mocks/mock_chat.py` (a chat-completions service that answers from a script, photo
+  questions included) and simulated plugs and strips, with `ZB_FAKE_CAMERA` for a photo of a sign
+  that tries to switch them, and checks from the devices' side that a change needing a yes waits
+  for one. Use the scripted service for any change to the loop that a live model cannot be
+  trusted to test.
 
 - **Command-line modes** in `src/main.cpp` (work in the `cli` build):
   `--ask "text"`, `--chat`, `--tool NAME 'JSON'`, `--steer "text"` (inject input during the
@@ -201,8 +208,11 @@ key, real audio), say so plainly rather than implying it was.
   fetched as Opus for that reason. The tether is never a "home network": the smart-home tool
   and scan do not exist on it. Nor does a phone's USB tether, which can be named like a wired
   port (an iPhone's is `eth0`): `discovery::link_kind` decides by the interface's driver, not its
-  name. `home::network_now` checks the default route on every call, so a move to a tether takes
-  effect at once rather than when a cached answer expires.
+  name. `home::network_now` checks the default route and the router's hardware address on every
+  call, so a move to a tether takes effect at once rather than when a cached answer expires; a
+  router whose hardware address the system has not learnt yet counts as a move (many home routers
+  use the same IP address). A command for several devices asks again before each driver call,
+  because it can outlast the Wi-Fi.
 - The Wi-Fi chip's firmware ignored the country code, hiding channels 12 and 13;
   `docs/wifi-channels-12-13.md` has the device-tree fix.
 
@@ -285,7 +295,8 @@ changed, drive it from `App::periodic`, route keys in `App::handle_key`, add a `
 `std::unique_ptr<home::Driver> make_<family>_driver();`. Registering it is one line,
 `X(<family>, "<Name>") \`, in the list in `src/smarthome/drivers/registry.cpp`; the name is what the
 settings pages call its devices. Discovery must report the family's devices under the kind its
-`claims()` accepts (`kServices` or a vendor query in `discovery.cpp`). Nothing else changes: the
+`claims()` accepts (`kServices` or a vendor query in `discovery.cpp`). Nothing else changes (CMake
+and `tests/run_unit.sh` both build every `.cpp` in `src/smarthome/drivers/`): the
 shared layer does names, rooms, the tool's schema (it grows with the capabilities a home has),
 the safety questions, rate limits, locking, fan-out and the generic pairing pages (after a
 pairing step, the family's other devices are asked again, so an account typed once serves them

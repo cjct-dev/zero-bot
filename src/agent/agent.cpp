@@ -139,8 +139,11 @@ void Agent::cancel() {
 
 void Agent::reset_conversation() {
     cancel();
-    std::lock_guard<std::mutex> lk(mtx_);
-    history_ = json::array();
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        history_ = json::array();
+    }
+    home::conversation_reset();   // a web page read in it no longer holds smart-home changes back
 }
 
 void Agent::say(const std::string &text) {
@@ -259,14 +262,21 @@ int Agent::absorb_inputs(bool first) {
 }
 
 void Agent::trim_history() {
-    std::lock_guard<std::mutex> lk(mtx_);
-    if (history_.size() <= kMaxHistory) return;
-    size_t start = history_.size() - kMaxHistory;
-    // Context must begin with a user message, never in the middle of a tool exchange.
-    while (start < history_.size() && util::jget(history_[start], "role", std::string()) != "user") ++start;
-    json kept = json::array();
-    for (size_t i = start; i < history_.size(); ++i) kept.push_back(history_[i]);
-    history_ = std::move(kept);
+    size_t user_messages = 0;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (history_.size() > kMaxHistory) {
+            size_t start = history_.size() - kMaxHistory;
+            // Context must begin with a user message, never in the middle of a tool exchange.
+            while (start < history_.size() && util::jget(history_[start], "role", std::string()) != "user") ++start;
+            json kept = json::array();
+            for (size_t i = start; i < history_.size(); ++i) kept.push_back(history_[i]);
+            history_ = std::move(kept);
+        }
+        for (const auto &m : history_) user_messages += util::jget(m, "role", std::string()) == "user";
+    }
+    // Text from outside holds smart-home changes back only while the model can still see it.
+    home::context_kept(user_messages);
 }
 
 void Agent::run_turn() {

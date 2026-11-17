@@ -50,6 +50,7 @@ struct Saved : Device {
     std::string title() const;   // best name for a list
     const Thing *thing(const std::string &thing_id) const;
     bool listed(const Thing &thing) const;   // still reported by the device (not gone)
+    bool any_listed() const;                 // it reported at least one thing last time it was read
 };
 
 struct NetworkEntry {
@@ -159,9 +160,16 @@ std::string switch_thing(const std::string &network_id, const std::string &devic
 // the thing) and the user's very next message answered it with a short, plain yes.
 void user_spoke(const std::string &text);
 void assistant_replied(const std::string &reply);
-// A tool has just handed the model text from outside (a web page, a photo). Changes asked for
-// before the user next speaks then need the user's yes.
+// A tool has just handed the model text from outside (a web page, a photo). From now on every
+// change needs the user's yes, for as long as the model can still see that text: until the
+// conversation is cleared, or has grown so long that the message it came with is dropped.
 void saw_untrusted_text();
+// The conversation was cleared: nothing read in it is seen by the model any more, and no
+// question asked in it is still open.
+void conversation_reset();
+// How many of the user's messages (the newest) the model is still shown, reported each time the
+// loop shortens the conversation; text from outside read before the oldest of them is gone.
+void context_kept(size_t user_messages);
 
 // ---- the assistant's tool (tool.cpp); all of it applies to the current network only
 bool available();                                // there is something to control here

@@ -55,6 +55,11 @@ void sample_home() {
     other_owner["owner"] = "00112233445566778899AABBCCDDEEFF";
     devices.push_back({{"id", "tapo:sample-3"}, {"kind", "tapo"}, {"name", "Tapo P110"}, {"model", "P110"}, {"last_ip", "127.0.0.4"},
                        {"port", 80}, {"info", other_owner}, {"needs_setup", true}, {"things", json::array()}});
+    // A strip whose last answer listed no sockets: still on the page, under "To set up".
+    json pump = plug("s1", "Pond pump", "Garden", false, false);
+    pump["gone"] = 1;
+    devices.push_back({{"id", "tapo:sample-4"}, {"kind", "tapo"}, {"name", "Garden strip"}, {"model", "P300"}, {"last_ip", "127.0.0.7"},
+                       {"port", 80}, {"info", plug_info}, {"things", json::array({pump})}});
     devices.push_back({{"id", "hue:sample"}, {"kind", "hue_bridge"}, {"name", "Hue Bridge"}, {"model", "BSB002"}, {"last_ip", "127.0.0.5"}});
     devices.push_back({{"id", "cast:sample"}, {"kind", "cast"}, {"name", "Living room TV"}, {"model", "Chromecast"}, {"last_ip", "127.0.0.6"}});
     const json root = {{"version", 2},
@@ -705,14 +710,17 @@ struct App {
         menu.key(enter);
         snap("home-device");
         menu.key(esc); menu.key(esc);
-        for (int i = 0; i < 4; ++i) menu.key(down);    // the plug still to be set up
+        for (int i = 0; i < 5; ++i) menu.key(down);    // the strip that listed nothing, under "To set up"
+        snap("home-to-set-up");
+        KeyEvent up; up.key = Key::Up; up.state = 1;
+        menu.key(up);                                  // the plug still to be set up
         menu.key(enter);
         snap("home-setup");
         for (int i = 0; i < 3; ++i) menu.key(down);    // "Set up…"
         menu.key(enter);
         snap("home-pairing");
         menu.key(esc); menu.key(esc);
-        for (int i = 0; i < 3; ++i) menu.key(down);    // "Tapo account"
+        for (int i = 0; i < 4; ++i) menu.key(down);    // "Tapo account", past the strip that listed nothing
         menu.key(enter);
         snap("tapo-account");
         menu.key(esc); menu.key(esc);

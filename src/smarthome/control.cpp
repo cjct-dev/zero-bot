@@ -46,6 +46,16 @@ std::mutex g_locks_mtx;
 std::map<std::string, std::unique_ptr<std::mutex>> g_locks;
 
 // ---------------------------------------------------------------- the conversation, as far as this layer needs it
+// How a reply or an answer may refer to what a question is about. A reply names it when, for one
+// of `ways`, it has a word from every set: {"heater"} for a "Fan heater" when no other thing's
+// name has that word, {"heating"} for the only thermostat, {all, every, ...} and {light, lights,
+// ...} for all the lights, or every word of the name as listed. An answer may use any of `words`
+// besides agreeing ("yes, the heating", "yes, turn everything off").
+struct Naming {
+    std::vector<std::vector<std::set<std::string>>> ways;
+    std::set<std::string> words;
+};
+
 // A change that needed the user's yes. It goes ahead only when the identical change is asked for
 // again in the very next user message, that message reads as a yes, and a reply that put the
 // question (a question naming the thing) went to the user in between. Nothing the model passes
@@ -55,7 +65,7 @@ struct Pending {
     std::string reason;          // why it needs a yes; kept for as long as the question is open
     std::string question;        // what the user is to be asked, e.g. "Turn on Bed heater?"
     std::string action;          // on, off, set, ...
-    std::vector<std::string> names;   // the words of the target's name: a reply that asks names it
+    Naming naming;               // how a reply that asks, and an answer, refer to the target
     unsigned long at_ms = 0;
     unsigned long turn = 0;      // the user message during which it was asked for
     bool asked = false;          // a reply that put the question went to the user after it
@@ -64,9 +74,15 @@ struct Pending {
 std::mutex g_ctl_mtx;            // guards everything in this group
 unsigned long g_turn = 0;        // user messages so far
 std::string g_last_said;         // the newest user message
-bool g_untrusted = false;        // text from outside has reached the model ...
-unsigned long g_untrusted_turn = 0;   // ... since this user message
+// Text from outside (a web page, what a photo shows) the model has read. It stays in what the
+// model sees until the conversation is cleared or grows past it, and could be steering the model
+// for all that time, so every change needs the user's yes until then: not only in the turn it was
+// read in, and not only a change already put as a question.
+bool g_untrusted = false;             // read since the conversation was last cleared ...
+unsigned long g_untrusted_turn = 0;   // ... most recently during this user message
+unsigned long g_context_from = 0;     // the oldest user message the model still sees
 std::vector<Pending> g_pending;
+constexpr size_t kMaxPending = 8;
 RateLimiter g_rate;
 
 std::vector<std::string> words_of(const std::string &text) {
@@ -76,14 +92,120 @@ std::vector<std::string> words_of(const std::string &text) {
     return out;
 }
 
+// Whether text from outside is still in what the model sees. The caller holds g_ctl_mtx.
+bool steered_by_outside() { return g_untrusted && g_untrusted_turn >= g_context_from; }
+
+// Words a question or an answer uses for a group, or for a kind of thing ("the TV", "the
+// heating"), in English and the languages the yes words below cover.
+const std::set<std::string> kAllWords = {"all", "every", "everything", "alle", "alles", "tout", "tous", "toutes", "todo",
+                                         "todos", "todas", "tutto", "tutti", "tutte", "allemaal"};
+const std::set<std::string> kLightWords = {"light", "lights", "lamp", "lamps", "licht", "lichter", "lampe", "lampen",
+                                           "lumière", "lumières", "luz", "luces", "luzes", "luce", "luci", "lampade"};
+const std::set<std::string> kSpeakerWords = {"speaker", "speakers", "lautsprecher", "enceinte", "enceintes", "altavoz",
+                                             "altavoces", "altoparlante", "altoparlanti", "luidspreker", "luidsprekers"};
+const std::set<std::string> kDeviceWords = {"device", "devices", "thing", "things", "geräte", "appareils", "dispositivos",
+                                            "dispositivi", "apparaten"};
+// Words of a name that say nothing about which thing it is.
+const std::set<std::string> kNotNaming = {"the", "a", "an", "of", "and", "in", "on", "off", "at", "to", "my", "our", "your",
+                                          "for", "with", "by", "room", "s"};
+
+std::set<std::string> kind_words(const std::string &type) {
+    if (type == "light") return kLightWords;
+    if (type == "speaker") return kSpeakerWords;
+    if (type == "plug") return {"plug", "socket"};
+    if (type == "thermostat")
+        return {"heating", "thermostat", "temperature", "heizung", "chauffage", "calefacción", "calefaccion", "riscaldamento",
+                "aquecimento", "verwarming"};
+    if (type == "cover") return {"blind", "blinds", "curtain", "curtains", "shade", "shades", "shutter", "shutters"};
+    if (type == "fan") return {"fan"};
+    if (type == "tv") return {"tv", "television", "telly", "fernseher", "télé", "tele", "televisor", "televisión", "televisione"};
+    if (type == "scene") return {"scene"};
+    return {};
+}
+
+bool is_number(const std::string &w) {
+    return !w.empty() && std::all_of(w.begin(), w.end(), [](char c) { return c >= '0' && c <= '9'; });
+}
+
+// The words of a name that say which thing or room it is ("snug" of "The Snug"); all of them when
+// none does.
+std::vector<std::string> naming_words(const std::vector<std::string> &name) {
+    std::vector<std::string> out;
+    for (const auto &w : name)
+        if (!kNotNaming.count(w)) out.push_back(w);
+    return out.empty() ? name : out;
+}
+
+// How the question about a change to `r` may name it. A thing is named by every word of its
+// name, or by one word that names nothing else listed: a word of its name no other thing's name
+// has ("the heater" for "Fan heater"), or the word for its kind when it is the only one of that
+// kind ("the TV", "the heating"). A room by every word of its name ("the snug lights" for The
+// Snug); a group by a word for all and, for the lights or speakers, a word for those.
+Naming naming_of(const std::vector<Item> &items, const Resolved &r, const std::vector<const Thing *> &changed) {
+    Naming n;
+    auto every_word = [](const std::vector<std::string> &words) {
+        std::vector<std::set<std::string>> way;
+        for (const auto &w : words) way.push_back({w});
+        return way;
+    };
+    for (const Thing *t : changed)
+        for (const auto &w : kind_words(t->type)) n.words.insert(w);
+    switch (r.scope) {
+        case Scope::Thing: {
+            const Item *me = r.members[0];
+            const std::vector<std::string> name = words_of(me->label);
+            const std::vector<std::string> naming = naming_words(name);
+            n.ways.push_back(every_word(naming));
+            std::set<std::string> elsewhere;   // every word of the other names listed
+            bool alone = true;                 // the only one of its kind
+            for (const auto &i : items) {
+                if (&i == me) continue;
+                for (const auto &w : words_of(i.label)) elsewhere.insert(w);
+                alone = alone && i.thing.type != me->thing.type;
+            }
+            std::set<std::string> own;   // never a number ("Socket 2") or a word like "the" or "on"
+            for (const auto &w : naming)
+                if (!elsewhere.count(w) && !is_number(w) && !kNotNaming.count(w)) own.insert(w);
+            if (alone)
+                for (const auto &w : kind_words(me->thing.type))
+                    if (!elsewhere.count(w)) own.insert(w);
+            if (!own.empty()) n.ways.push_back({own});
+            for (const auto &w : name) n.words.insert(w);
+            break;
+        }
+        case Scope::Room:
+            n.ways.push_back(every_word(naming_words(words_of(r.label))));
+            for (const auto &w : words_of(r.label)) n.words.insert(w);
+            break;
+        case Scope::AllLights:
+            n.ways.push_back({kAllWords, kLightWords});
+            n.words.insert(kAllWords.begin(), kAllWords.end());
+            n.words.insert(kLightWords.begin(), kLightWords.end());
+            break;
+        case Scope::AllSpeakers:
+            n.ways.push_back({kAllWords, kSpeakerWords});
+            n.words.insert(kAllWords.begin(), kAllWords.end());
+            n.words.insert(kSpeakerWords.begin(), kSpeakerWords.end());
+            break;
+        case Scope::Everything:
+            n.ways.push_back({kAllWords});
+            n.words.insert(kAllWords.begin(), kAllWords.end());
+            n.words.insert(kDeviceWords.begin(), kDeviceWords.end());
+            break;
+        default:
+            break;
+    }
+    return n;
+}
+
 // A short answer that agrees and says nothing else: "yes", "yes please", "sure, go ahead", "yes,
 // the bed heater". Every word has to belong to an agreement, to the politeness around one, or to
-// the name of the thing asked about (`names`); a message that also says anything else is a new
-// request ("please set a timer", "ok, what time is it"), and one with a word of refusal in it
-// ("leave it off please", "yes, no wait"), or of the opposite of what was asked ("off" to a
-// question about switching on), is not a yes. An answer that is not recognised only means the
-// question is asked again.
-bool sounds_like_yes(const std::string &text, const std::vector<std::string> &names, const std::string &action) {
+// what the question was about (`names`: the thing's name, the word for its kind, a group's words);
+// a message that also says anything else is a new request ("please set a timer", "ok, what time
+// is it"), and one with a word of refusal in it ("leave it off please", "yes, no wait"), or of the
+// opposite of what was asked ("off" to a question about switching on), is not a yes. An answer
+// that is not recognised only means the question is asked again.
+bool sounds_like_yes(const std::string &text, const std::set<std::string> &names, const std::string &action) {
     const std::vector<std::string> words = words_of(text);
     if (words.empty() || words.size() > 10) return false;
     static const std::set<std::string> kRefusal = {
@@ -126,21 +248,25 @@ bool sounds_like_yes(const std::string &text, const std::vector<std::string> &na
         if (w.empty()) continue;
         if (kYes.count(w)) agreed = true;
         else if (w == "please") please = true;
-        else if (kAround.count(w) || std::find(names.begin(), names.end(), w) != names.end()) other = true;
+        else if (kAround.count(w) || names.count(w)) other = true;
         else return false;   // it says something else as well
     }
     return agreed || (please && !other);
 }
 
-// Whether a reply put the question: it asks something, and it names what the question is about.
-bool puts_question(const std::string &reply, const std::vector<std::string> &names) {
+// Whether a reply put the question: it asks something, and it names what the question is about
+// (see Naming).
+bool puts_question(const std::string &reply, const Naming &naming) {
     if (reply.find_first_of("?") == std::string::npos && reply.find("？") == std::string::npos &&
         reply.find("؟") == std::string::npos)
         return false;
-    const std::vector<std::string> said = words_of(reply);
-    for (const auto &n : names)
-        if (std::find(said.begin(), said.end(), n) == said.end()) return false;
-    return !names.empty();
+    const std::vector<std::string> words = words_of(reply);
+    const std::set<std::string> said(words.begin(), words.end());
+    return std::any_of(naming.ways.begin(), naming.ways.end(), [&](const std::vector<std::set<std::string>> &way) {
+        return !way.empty() && std::all_of(way.begin(), way.end(), [&](const std::set<std::string> &choice) {
+            return std::any_of(choice.begin(), choice.end(), [&](const std::string &w) { return said.count(w) > 0; });
+        });
+    });
 }
 
 // ---------------------------------------------------------------- changes
@@ -253,6 +379,26 @@ std::string capitalised(std::string s) {
     return s;
 }
 
+// What a question calls the target, as a person would: "Bed heater", "the lights in Hall", "all
+// 10 lights", "all 12 devices" (never "all", which reads as nothing when spoken).
+std::string target_phrase(const Resolved &r, const std::vector<Step> &steps) {
+    const std::string n = std::to_string(steps.size());
+    auto all_are = [&](const char *type) {
+        return std::all_of(steps.begin(), steps.end(), [&](const Step &s) { return s.item->thing.type == type; });
+    };
+    switch (r.scope) {
+        case Scope::Everything: return steps.size() > 1 ? "all " + n + " devices" : "everything";
+        case Scope::AllLights: return steps.size() > 1 ? "all " + n + " lights" : "all the lights";
+        case Scope::AllSpeakers: return steps.size() > 1 ? "all " + n + " speakers" : "all the speakers";
+        case Scope::Room:
+            if (all_are("light")) return "the lights in " + r.label;
+            if (all_are("cover")) return "the blinds in " + r.label;
+            if (all_are("speaker")) return "the speakers in " + r.label;
+            return r.label;
+        default: return r.label;
+    }
+}
+
 // Why this plan needs the user's yes first, or "" when it does not.
 std::string needs_yes(const Resolved &r, const Change &base, const std::vector<Step> &steps) {
     for (const auto &s : steps)
@@ -274,8 +420,11 @@ std::string needs_yes(const Resolved &r, const Change &base, const std::vector<S
     for (const auto &s : steps)
         if (s.change.volume && *s.change.volume > 70) return "a volume of " + std::to_string(*s.change.volume) + " is loud";
     std::lock_guard<std::mutex> lk(g_ctl_mtx);
-    if (g_untrusted && g_untrusted_turn == g_turn)
-        return "this request involved text from outside (a web page or a photo), and devices change only at the user's own word";
+    if (steered_by_outside())
+        return g_untrusted_turn == g_turn
+                   ? "this request involved text from outside (a web page or a photo), and devices change only at the user's own word"
+                   : "this conversation includes text from outside (a web page or a photo), and devices change only at the user's "
+                     "own word";
     return "";
 }
 
@@ -295,9 +444,10 @@ std::string signature(const std::string &action, const std::string &target, cons
 // ahead: it needs no yes (`reason` is empty and it was not put to the user as a question), or it
 // was put to the user as a question in the reply to their previous message and they have just
 // said yes. Otherwise the change is remembered and the CONFIRM text for the model is returned.
-// A change once put as a question keeps needing the yes even when what made it risky has passed
-// (the web page was read in the turn before the answer), so an answer of "no" always stops it.
-std::string question_first(const std::string &sig, std::string reason, const std::string &action, const std::string &label,
+// A change once put as a question keeps needing the yes in the next turn even when what made it
+// risky has passed (ask_first was switched off in settings meanwhile), so an answer of "no"
+// stops it. (Text from outside keeps every change waiting for a yes by itself: needs_yes().)
+std::string question_first(const std::string &sig, std::string reason, const std::string &action, const Naming &naming,
                            const std::string &question) {
     std::lock_guard<std::mutex> lk(g_ctl_mtx);
     const unsigned long now = now_ms();
@@ -308,7 +458,7 @@ std::string question_first(const std::string &sig, std::string reason, const std
         // question off in settings); a question from the turn before stays open whatever they say.
         if (reason.empty() && it->turn < g_turn) reason = it->reason;
         const bool answered = it->asked && g_turn == it->turn + 1;
-        const bool ok = answered && sounds_like_yes(g_last_said, it->names, it->action) && now - it->at_ms <= kAnswerWithinMs;
+        const bool ok = answered && sounds_like_yes(g_last_said, it->naming.words, it->action) && now - it->at_ms <= kAnswerWithinMs;
         not_agreed = answered && !ok;
         g_pending.erase(it);
         if (ok) return "";
@@ -320,11 +470,11 @@ std::string question_first(const std::string &sig, std::string reason, const std
     p.reason = reason;
     p.question = question;
     p.action = action;
-    p.names = words_of(label);
+    p.naming = naming;
     p.at_ms = now;
     p.turn = g_turn;
     g_pending.push_back(p);
-    if (g_pending.size() > 4) g_pending.erase(g_pending.begin());
+    if (g_pending.size() > kMaxPending) g_pending.erase(g_pending.begin());
     if (not_agreed)
         return "CONFIRM: nothing has been changed, because the user's answer was not a clear yes. If they still want it, ask: \"" +
                question + "\" Only if they answer yes, call smart_home again with the same request.";
@@ -385,6 +535,14 @@ bool call_apply(Driver *drv, const Device &dev, const Thing &t, const Change &c,
     return false;
 }
 
+// Whether a driver may be called for a device of `network_id` at this moment, asked again before
+// every call: a command that changes or reads several devices takes seconds, and the connection
+// can move meanwhile (Wi-Fi drops and the phone's tether takes over). `why` says why not.
+bool still_on(const std::string &network_id, std::string &why) {
+    why.clear();
+    return on_network(network_id, why);
+}
+
 // Carries out the steps for one device; the caller holds no lock.
 void apply_device(const std::string &network_id, const Saved &saved, std::vector<Step *> &steps) {
     Driver *drv = driver_for(saved);
@@ -402,6 +560,10 @@ void apply_device(const std::string &network_id, const Saved &saved, std::vector
         for (auto *s : steps)
             if (!s->ok) todo.push_back(s);
         if (todo.empty()) return;
+        if (!still_on(network_id, why)) {
+            for (auto *s : todo) s->err = why;
+            return;
+        }
         bool same = todo.size() > 1;
         for (auto *s : todo) same = same && change_json(s->change) == change_json(todo[0]->change);
         bool handled = false;
@@ -422,7 +584,13 @@ void apply_device(const std::string &network_id, const Saved &saved, std::vector
             }
         }
         if (!handled)
-            for (auto *s : todo) s->ok = call_apply(drv, dev, s->item->thing, s->change, s->err);
+            for (size_t k = 0; k < todo.size(); ++k) {
+                if (k > 0 && !still_on(network_id, why)) {
+                    for (size_t j = k; j < todo.size(); ++j) todo[j]->err = why;
+                    return;
+                }
+                todo[k]->ok = call_apply(drv, dev, todo[k]->item->thing, todo[k]->change, todo[k]->err);
+            }
         // No answer at the saved address: the router may have given the device a new one. Tried
         // once, and only when the device turns up somewhere else.
         const bool none_ok = std::none_of(todo.begin(), todo.end(), [](const Step *s) { return s->ok; });
@@ -484,6 +652,7 @@ void read_now(const std::string &network_id, const NetworkEntry &e, const std::v
         else if (may_contact(dev, err)) {
             std::lock_guard<std::mutex> lk(device_lock(dev.id));
             for (int attempt = 0; attempt < 2 && !ok; ++attempt) {
+                if (!still_on(network_id, err)) break;
                 things.clear();
                 if (detail)
                     for (const auto *m : mine) things.push_back(m->thing);
@@ -689,13 +858,25 @@ void assistant_replied(const std::string &reply) {
     // Only a reply that puts a change's question counts as asking it: "Done. Anything else?" or
     // an empty answer leaves it unasked, and asking about one change does not ask about another.
     for (auto &p : g_pending)
-        if (p.turn == g_turn && puts_question(reply, p.names)) p.asked = true;
+        if (p.turn == g_turn && puts_question(reply, p.naming)) p.asked = true;
 }
 
 void saw_untrusted_text() {
     std::lock_guard<std::mutex> lk(g_ctl_mtx);
     g_untrusted = true;
     g_untrusted_turn = g_turn;
+}
+
+void conversation_reset() {
+    std::lock_guard<std::mutex> lk(g_ctl_mtx);
+    g_untrusted = false;
+    g_pending.clear();   // a yes in the new conversation answers nothing asked in the old one
+}
+
+void context_kept(size_t user_messages) {
+    std::lock_guard<std::mutex> lk(g_ctl_mtx);
+    // The messages kept are the newest ones: the oldest of them is this user message.
+    if (user_messages <= g_turn) g_context_from = std::max(g_context_from, g_turn + 1 - user_messages);
 }
 
 // ---------------------------------------------------------------- commands
@@ -822,8 +1003,11 @@ std::string execute(const Command &cmd, bool dry_run) {
     if (steps.empty()) return fail((why_not.empty() ? "nothing there can do that" : why_not) + ". Tell the user");
 
     // The questions of the design's safety rules, asked in code: the model cannot answer them itself.
-    const std::string confirm = question_first(signature(action, r.label, steps), needs_yes(r, base, steps), action, r.label,
-                                               capitalised(describe(action, r.label, base)) + "?");
+    std::vector<const Thing *> to_change;
+    for (const auto &s : steps) to_change.push_back(&s.item->thing);
+    const std::string confirm = question_first(signature(action, r.label, steps), needs_yes(r, base, steps), action,
+                                               naming_of(items, r, to_change),
+                                               capitalised(describe(action, target_phrase(r, steps), base)) + "?");
     if (!confirm.empty()) return confirm;
 
     {
@@ -914,6 +1098,7 @@ std::string refresh_where(const std::string &network_id, const std::function<boo
         const Saved *saved = nullptr;
         bool ok = false, setup = false;
         bool paired_meanwhile = false;   // set up while this ran: what pairing saved stands
+        bool not_asked = false;          // the connection moved before its turn: nothing to save
         std::string problem;
         Device dev;
         std::vector<Thing> fresh;
@@ -930,6 +1115,7 @@ std::string refresh_where(const std::string &network_id, const std::function<boo
         Driver *drv = driver_for(*o.saved);
         if (!drv) return;
         o.dev = *o.saved;
+        if (!still_on(network_id, o.problem)) { o.not_asked = true; return; }
         PairStep step;
         try {
             step = drv->next_step(o.dev);
@@ -945,6 +1131,7 @@ std::string refresh_where(const std::string &network_id, const std::function<boo
         std::string err;
         if (!may_contact(o.dev, err)) { o.problem = err; return; }
         std::lock_guard<std::mutex> lk(device_lock(o.dev.id));
+        if (!still_on(network_id, o.problem)) { o.not_asked = true; return; }
         try {
             o.ok = drv->enumerate(o.dev, o.fresh, err);
         } catch (const std::exception &) {
@@ -967,7 +1154,7 @@ std::string refresh_where(const std::string &network_id, const std::function<boo
     modify_entry(network_id, [&](NetworkEntry &en) {
         for (const auto &o : outs)
             for (auto &d : en.devices) {
-                if (d.id != o.saved->id) continue;
+                if (d.id != o.saved->id || o.not_asked) continue;
                 // The pairing is written back only if nobody paired or unpaired the device while
                 // this ran: an Unpair must not be undone by a read that started before it.
                 const bool pairing_as_read = d.auth == o.saved->auth && !o.paired_meanwhile;
@@ -1011,8 +1198,7 @@ std::string refresh_after_pairing(const std::string &network_id, const std::stri
         // Another device of the family that the pairing made ready (pairing_submit asked it again)
         // and that has not been read yet: an account typed for one serves them all. One that
         // still needs its own setup (a second bridge with a key of its own) is left alone.
-        const bool listed = std::any_of(d.things.begin(), d.things.end(), [&](const Thing &t) { return d.listed(t); });
-        return !d.needs_setup && !listed;
+        return !d.needs_setup && !d.any_listed();
     });
 }
 
@@ -1042,6 +1228,7 @@ bool pairing_submit(const std::string &network_id, const std::string &device_id,
     PairStep next;
     {
         std::lock_guard<std::mutex> lk(device_lock(dev.id));
+        if (!still_on(network_id, err)) return false;
         try {
             ok = drv->pair(dev, input, err);
             next = drv->next_step(dev);
@@ -1095,7 +1282,7 @@ void unpair(const std::string &network_id, const std::string &device_id) {
     {
         std::lock_guard<std::mutex> lk(device_lock(dev.id));
         try {
-            if (may_contact(dev, why)) drv->unpair(dev);
+            if (may_contact(dev, why) && still_on(network_id, why)) drv->unpair(dev);
             dev.auth = json::object();   // whatever the device said, nothing of the pairing is kept
             next = drv->next_step(dev);
         } catch (const std::exception &) {
@@ -1119,6 +1306,7 @@ void reset_control() {
     g_last_said.clear();
     g_untrusted = false;
     g_untrusted_turn = 0;
+    g_context_from = 0;
     g_pending.clear();
     g_rate.reset();
 }

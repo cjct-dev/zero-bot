@@ -712,9 +712,12 @@ void open_smart_home(Menu &menu) {
             const std::string did = r.device_id, tid = r.thing_id, value = r.value;
             items.push_back(MenuItem::val(r.label, [value] { return value; }, [&menu, id, did, tid] { open_home_thing(menu, id, did, tid); }));
         }
+        // Devices with nothing listed above: those waiting to be set up, never read, or whose
+        // things have all gone from their last answer (a strip or bridge that listed nothing).
+        // Their page is the only way to read them again or remove them.
         bool header = false;
         for (const auto &d : e.devices) {
-            if (!d.controllable() || (!d.needs_setup && !d.things.empty())) continue;
+            if (!d.controllable() || (!d.needs_setup && d.any_listed())) continue;
             if (!header) { items.push_back(MenuItem::header("To set up")); header = true; }
             const std::string did = d.id;
             items.push_back(MenuItem::val(d.title(), [d] { return std::string(d.needs_setup ? "set up" : "not ready"); },

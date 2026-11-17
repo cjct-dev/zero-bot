@@ -301,6 +301,10 @@ bool Saved::listed(const Thing &t) const {
     return m == meta.end() || !m->second.gone;
 }
 
+bool Saved::any_listed() const {
+    return std::any_of(things.begin(), things.end(), [this](const Thing &t) { return listed(t); });
+}
+
 std::string Saved::title() const {
     const Thing *only = nullptr;
     int count = 0;
@@ -353,8 +357,11 @@ discovery::Network network_now(bool fresh) {
         const discovery::Route route = src && src->route ? src->route() : discovery::default_route();
         moved = route.iface != cached.iface || route.gateway != cached.gateway;
         if (!moved && cached.usable) {
+            // Another router at the same address, or one not known yet: right after joining another
+            // network (many home routers use the same IP address) the system has not learnt the new
+            // router's hardware address. Either way the full look decides; it makes the system learn it.
             const std::string mac = src && src->mac_of ? src->mac_of(cached.gateway) : discovery::mac_of(cached.gateway);
-            moved = !mac.empty() && mac != cached.gateway_mac;   // another router at the same address
+            moved = mac != cached.gateway_mac;
         }
     }
     if (fresh || moved || at == 0 || now - at > 8000) {

@@ -15,9 +15,12 @@ FLAGS="-std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-
  -DZB_VERSION=\"unit\" -DZB_DESKTOP=1 -DZB_CLI_ONLY=1"
 WRAP="${ZB_BUILD_WRAPPER:-}"
 
+# Every driver in src/smarthome/drivers/ is built: registry.cpp names each family's make_<family>_driver(),
+# so a family registered there (AGENTS.md section 9) links here with nothing else to change.
+DRIVERS=$(echo src/smarthome/drivers/*.cpp)
 APP="src/smarthome/store.cpp src/smarthome/targets.cpp src/smarthome/control.cpp src/smarthome/tool.cpp
-     src/smarthome/discovery.cpp src/smarthome/tapo.cpp src/smarthome/drivers/registry.cpp
-     src/smarthome/drivers/tapo_driver.cpp src/core/util.cpp src/platform/proc.cpp src/platform/sys.cpp src/net/http.cpp"
+     src/smarthome/discovery.cpp src/smarthome/tapo.cpp $DRIVERS src/core/util.cpp src/platform/proc.cpp
+     src/platform/sys.cpp src/net/http.cpp"
 
 # Objects are rebuilt only when their source or a header in src/ is newer.
 newest_header=$(find src -name '*.h' -newer "$OUT/.stamp" 2>/dev/null | head -n 1 || true)

@@ -210,9 +210,12 @@ TVs) are added one driver at a time.
 
 A room's name means the lights in that room. Everything can be switched off at once, but not on.
 The assistant also asks first before changing more than eight things at once, before setting
-heating above 25 or below 10 °C, at a volume above 70, when several blinds would move, and
-whenever the request involved a web page or a photo; and it makes at most 12 changes a minute.
-These rules are enforced by the app, not left to the model.
+heating above 25 or below 10 °C, at a volume above 70, and when several blinds would move; and it
+makes at most 12 changes a minute. Once it has read a web page or looked at a photo, it asks
+before every change for as long as that is part of the conversation (start a new conversation,
+**del** twice, to end it), so a sign or a page cannot switch anything, and your "no" holds. The
+question can be put and answered in everyday words ("Shall I turn everything off?", "yes, the
+heater"). These rules are enforced by the app, not left to the model.
 
 Saved devices belong to the network they were found on (its name together with the router's
 hardware address). On any other network, and always while the device is online through your
