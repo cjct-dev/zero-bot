@@ -244,8 +244,8 @@ void ChatView::set_status(const std::string &name, uint32_t dot_color) {
     lv_obj_set_style_bg_color(dot_, color(dot_color), 0);
 }
 
-void ChatView::set_indicators(bool online, int battery, bool charging, const std::string &clock) {
-    lv_label_set_text(net_, online ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING);
+void ChatView::set_indicators(bool online, bool via_phone, int battery, bool charging, const std::string &clock) {
+    lv_label_set_text(net_, !online ? LV_SYMBOL_WARNING : via_phone ? LV_SYMBOL_BLUETOOTH : LV_SYMBOL_WIFI);
     lv_obj_set_style_text_color(net_, color(online ? kDim : kListen), 0);
     char buf[64];
     if (battery >= 0) snprintf(buf, sizeof(buf), "%s  %s%d%%", clock.c_str(), charging ? "+" : "", battery);

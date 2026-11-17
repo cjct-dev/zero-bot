@@ -8,7 +8,7 @@
 #include "platform/keys.h"
 
 struct MenuItem {
-    enum class Kind { Header, Action, Value };
+    enum class Kind { Header, Text, Action, Value };   // Header and Text rows cannot be selected
     Kind kind = Kind::Action;
     std::string label;
     std::function<std::string()> value;        // text shown on the right (optional)
@@ -17,6 +17,8 @@ struct MenuItem {
     bool danger = false;                       // drawn in red
 
     static MenuItem header(const std::string &text);
+    static MenuItem text(const std::string &text);       // one line of explanatory text
+    bool selectable() const { return kind == Kind::Action || kind == Kind::Value; }
     static MenuItem action(const std::string &text, std::function<void()> fn, bool danger = false);
     static MenuItem val(const std::string &text, std::function<std::string()> value, std::function<void()> fn,
                         std::function<void(int)> adjust = nullptr);
@@ -47,6 +49,9 @@ public:
     void choose(const std::string &title, std::vector<std::string> options, const std::string &current,
                 std::function<void(const std::string &)> on_pick);
     void message(const std::string &title, const std::string &body);   // a page of plain text
+    size_t depth() const { return stack_.size(); }
+    // Splits a paragraph into Text rows that fit the screen width.
+    static void add_paragraph(std::vector<MenuItem> &items, const std::string &paragraph);
 
 private:
     void render();

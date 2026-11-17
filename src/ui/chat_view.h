@@ -27,7 +27,7 @@ public:
 
     // Status bar
     void set_status(const std::string &name, uint32_t dot_color);
-    void set_indicators(bool online, int battery_percent, bool charging, const std::string &clock);
+    void set_indicators(bool online, bool via_phone, int battery_percent, bool charging, const std::string &clock);
     void set_now_playing(const std::string &text);
 
     // Footer

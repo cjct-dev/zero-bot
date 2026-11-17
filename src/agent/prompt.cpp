@@ -57,7 +57,8 @@ std::string system_prompt() {
     p += "# How to answer\n"
          "- Reply the way a helpful person would say it out loud: one to three short sentences for most things, "
          "and never more than about sixty words. Give the answer first; add detail only if it is needed or asked "
-         "for.\n"
+         "for. A broad request ('tell me about', 'history of') still gets three sentences at most, then an offer "
+         "to say more.\n"
          "- Plain text only. No markdown, lists, headings, emoji, tables or web addresses, because everything you "
          "write is spoken. Write numbers, times and units so they read naturally, rounded sensibly.\n"
          "- Reply in the language the user uses, unless they ask for a translation.\n"
@@ -66,9 +67,12 @@ std::string system_prompt() {
          "- If the user adds something while you are still working, treat it as a correction or refinement of the "
          "same request and answer the corrected request only.\n\n";
 
-    p += "# Right now\n";
-    p += "- Local time: " + util::format_time(now, "%A %d %B %Y, %H:%M") + " (" + zone + ", UTC" +
-         util::format_time(now, "%z") + ")\n";
+    // Nothing here changes within a day; the clock time arrives with each user message (see
+    // Agent::absorb_inputs) so that this prompt stays cacheable.
+    p += "# Today\n";
+    p += "- Every user message begins with the local date and time it was said, in square brackets. The newest one "
+         "is the time now. Never repeat the brackets back.\n";
+    p += "- Time zone: " + zone + ", UTC" + util::format_time(now, "%z") + "\n";
     // Spelling the coming days out removes the weekday arithmetic that goes wrong most often.
     p += "- Coming days: today " + util::format_time(now, "%a %Y-%m-%d");
     {

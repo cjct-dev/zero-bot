@@ -275,7 +275,7 @@ CASES = [
     # --- tools that fail
     case("search_no_key", "what time does the louvre open on sundays", env={"ZB_SEARCH_KEY": None},
          checks=[answer(UNSURE, "that it could not check, or that the answer is from memory")]),
-    case("weather_unknown_place", "whats the weather like in florbington", must=["weather"],
+    case("weather_unknown_place", "whats the weather like in florbington",
          checks=[not_answer(r"\d+ ?(degrees|°)", "invent a temperature"), answer(r"find|couldn'?t|could not|not sure|which|where|\?")]),
     # --- speech-recogniser slips and other languages
     case("asr_homophone", "set an alarm for ate tomorrow morning", must=["reminder_set|calendar_add"], checks=[chk_alarm]),

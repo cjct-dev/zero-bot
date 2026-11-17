@@ -72,7 +72,16 @@ sudo apt install ./zero-bot_0.1.0_arm64.deb
 "Zero Bot" then appears in the launcher within a few seconds. To build the package yourself
 instead, see [Building](#building).
 
-### 2. Connect it to an AI service
+### 2. Follow the setup guide
+
+The first time you open Zero Bot it walks you through five short steps: checking the internet
+connection, entering the AI service's address and key (with a live test), confirming the models
+it found, a few details about you, and optional extras. **ESC** steps back, and you can skip it
+and run it again later from *Settings → About → Run the setup guide again*.
+
+![Setup: welcome](docs/screenshots/setup-welcome.png) ![Setup: AI service](docs/screenshots/setup-service.png)
+
+### 3. What the AI service needs
 
 The app needs the address and key of an OpenAI-compatible service that provides:
 
@@ -82,9 +91,9 @@ The app needs the address and key of an OpenAI-compatible service that provides:
 - `POST /audio/speech` (text-to-speech, returning raw PCM or WAV),
 - `GET /models`.
 
-Press **TAB** twice, scroll to *AI service*, and fill in *Address* (ending in `/v1`) and *API
-key*. If typing a long key on the small keyboard is a chore, you can instead create
-`~/.config/zero-bot/settings.json` on the device over SSH or ADB:
+Enter the *Address* (ending in `/v1`) and *API key* in the setup guide, or later under *AI
+service* in settings. If typing a long key on the small keyboard is a chore, you can instead
+create `~/.config/zero-bot/settings.json` on the device over SSH or ADB before first launch:
 
 ```json
 { "api_base": "https://your-service/v1", "api_key": "your-key" }
@@ -93,12 +102,17 @@ key*. If typing a long key on the small keyboard is a chore, you can instead cre
 The first time it connects, the app picks a speech-to-text and a text-to-speech model from the
 service's list. You can change every model under *Assistant* in settings.
 
-### 3. Optional extras
+### 4. Optional extras
 
 - **Web search:** add a Tavily key under *AI service → Web search key*.
 - **Music:** copy your music into `~/Music` on the device, then choose *Music library* in
   settings to rescan. MP3 tags (title, artist, album, genre) are read automatically.
 - **Home city, your name, time zone:** under *Device* in settings, or just tell the assistant.
+- **Internet through your phone:** pair the phone with the device once in the system Bluetooth
+  settings and switch on *Bluetooth tethering* in the phone's hotspot settings. When there is no
+  Wi-Fi, Zero Bot then connects through the phone by itself the next time you ask something.
+  *Device → Internet via phone* connects or disconnects by hand, and *Use phone when offline*
+  turns the automatic behaviour off.
 - **Start at power-on:** turn on *Device → Start at power-on* to go straight into Zero Bot when
   the device is switched on. Holding **ESC** still returns to the launcher.
 
@@ -110,10 +124,16 @@ Press **TAB** twice. Move with **fn**+**F**/**X** (or plain **F**/**X**), change
 | Section | What is there |
 |---|---|
 | Assistant | Language, vision, speech-to-text and text-to-speech models; voice; spoken replies on/off; fast replies; the assistant's name |
-| Device | Volume, brightness, microphone gain, time zone, start at power-on, home city, your name, units |
+| Device | Volume, brightness, microphone gain, time zone, start at power-on, internet via phone, home city, your name, units |
 | Your data | Calendar (edit, add, delete, delete all), reminders, memory (edit, add, delete, forget everything), TV remote, music library, start a new conversation |
-| AI service | Address, API key, web search key |
+| AI service | Address, API key, web search key, compress audio |
 | About | Status and connection test, exit to launcher |
+
+*Compress audio* (under *AI service*, on by default) sends your speech as MP3 and fetches replies
+as Opus, roughly a tenth and a fifth of the uncompressed size. In testing it produced the same
+transcribed words as uncompressed audio, and on a Bluetooth-tethered phone it cut the time to
+send five seconds of speech from about 7 seconds to under 2. If a service does not accept those
+formats the app falls back to uncompressed audio by itself.
 
 *Fast replies* asks the model to skip its private reasoning step. Answers arrive about a second
 sooner per step; turn it off if you find it making mistakes with your model.
@@ -206,6 +226,9 @@ the file.
 - **The device cannot see your Wi-Fi network.** The radio is 2.4 GHz only. On some system images
   it also only scans channels 1 to 11, so a router on channel 12 or 13 is invisible; see
   [docs/wifi-channels-12-13.md](docs/wifi-channels-12-13.md) for a fix.
+- **Slow answers on a phone connection.** Bluetooth tethering uploads at roughly 10 KB/s, and each
+  request to the model is 15 KB or more, so expect several extra seconds per step compared with
+  Wi-Fi. A Wi-Fi hotspot from the same phone is much faster if the device can see it.
 - **The TV does not react.** Aim the top edge at the TV from within a few metres, set the brand
   in settings, or teach it the button from the real remote.
 - **Python tool reports the sandbox is unavailable.** Install `bubblewrap`.

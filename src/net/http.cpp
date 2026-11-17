@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 #include <curl/curl.h>
 
@@ -43,7 +44,25 @@ int progress_cb(void *userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t) 
 }
 }  // namespace
 
-void global_init() { curl_global_init(CURL_GLOBAL_DEFAULT); }
+// Every request used to open a fresh connection, paying for DNS, TCP and TLS set-up each time.
+// That costs a few hundred milliseconds on Wi-Fi and seconds on a Bluetooth-tethered phone, so
+// connections, DNS answers and TLS sessions are shared between all requests and threads.
+CURLSH *g_share = nullptr;
+std::mutex g_share_locks[CURL_LOCK_DATA_LAST];
+
+void share_lock(CURL *, curl_lock_data data, curl_lock_access, void *) { g_share_locks[data].lock(); }
+void share_unlock(CURL *, curl_lock_data data, void *) { g_share_locks[data].unlock(); }
+
+void global_init() {
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    g_share = curl_share_init();
+    if (!g_share) return;
+    curl_share_setopt(g_share, CURLSHOPT_LOCKFUNC, share_lock);
+    curl_share_setopt(g_share, CURLSHOPT_UNLOCKFUNC, share_unlock);
+    curl_share_setopt(g_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+    curl_share_setopt(g_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
+    curl_share_setopt(g_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
+}
 
 std::string Response::describe() const {
     if (!error.empty()) return error;
@@ -64,6 +83,8 @@ Response send(const Request &req) {
     Ctx ctx{&req, &res};
 
     curl_easy_setopt(curl, CURLOPT_URL, req.url.c_str());
+    if (g_share) curl_easy_setopt(curl, CURLOPT_SHARE, g_share);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);

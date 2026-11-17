@@ -57,7 +57,7 @@ void Recorder::reader() {
             // Map RMS to 0..1 on a log scale so quiet speech still moves the meter.
             const double rms = std::sqrt(sum / static_cast<double>(count));
             double db = rms > 1 ? 20.0 * std::log10(rms / 32768.0) : -90.0;
-            float lvl = static_cast<float>((db + 58.0) / 40.0);
+            float lvl = static_cast<float>((db + 62.0) / 40.0);
             if (lvl < 0) lvl = 0;
             if (lvl > 1) lvl = 1;
             level_ = level_ * 0.6f + lvl * 0.4f;

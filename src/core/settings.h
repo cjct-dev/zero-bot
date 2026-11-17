@@ -15,6 +15,9 @@ struct Settings {
     std::string tts_model;
     std::string tts_voice = "alloy";
     bool speak_replies = true;
+    bool setup_done = false;     // has the first-run guide been completed or skipped?
+    bool phone_fallback = true;  // try the paired phone over Bluetooth when there is no connection
+    bool compress_audio = true;  // send and receive speech in compressed form (smaller, same words)
     bool fast_mode = true;       // ask the model to skip its private reasoning step (quicker replies)
 
     // Web search (Tavily-compatible).

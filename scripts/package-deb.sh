@@ -31,7 +31,7 @@ Section: APPLaunch
 Priority: optional
 Installed-Size: $SIZE
 Depends: libc6, libcurl4t64 | libcurl4, libfreetype6, libpng16-16t64 | libpng16-16, zlib1g, pipewire-bin, wireplumber, ffmpeg
-Recommends: bubblewrap, python3, rpicam-apps-lite | rpicam-apps, fonts-dejavu-core, fonts-noto-cjk
+Recommends: libmp3lame0, libopusfile0, bubblewrap, python3, rpicam-apps-lite | rpicam-apps, fonts-dejavu-core, fonts-noto-cjk
 Description: Voice assistant with tools for the M5Stack CardputerZero
  Push-to-talk and typed conversations with any OpenAI-compatible service,
  with a calculator, sandboxed Python, camera, calendar, reminders, memory,

@@ -12,7 +12,7 @@ static std::string settings_path() { return util::config_dir() + "/settings.json
 json Settings::to_json() const {
     return {
         {"api_base", api_base}, {"api_key", api_key}, {"llm_model", llm_model}, {"vision_model", vision_model},
-        {"stt_model", stt_model}, {"tts_model", tts_model}, {"tts_voice", tts_voice}, {"speak_replies", speak_replies}, {"fast_mode", fast_mode},
+        {"stt_model", stt_model}, {"tts_model", tts_model}, {"tts_voice", tts_voice}, {"speak_replies", speak_replies}, {"fast_mode", fast_mode}, {"compress_audio", compress_audio}, {"phone_fallback", phone_fallback}, {"setup_done", setup_done},
         {"search_key", search_key}, {"volume", volume}, {"brightness", brightness}, {"mic_gain", mic_gain},
         {"agent_name", agent_name}, {"user_name", user_name}, {"home_city", home_city}, {"timezone", timezone},
         {"units", units}, {"tv_brand", tv_brand}, {"music_dir", music_dir},
@@ -30,6 +30,9 @@ void Settings::from_json(const json &j) {
     tts_voice = jget(j, "tts_voice", tts_voice);
     speak_replies = jget(j, "speak_replies", speak_replies);
     fast_mode = jget(j, "fast_mode", fast_mode);
+    compress_audio = jget(j, "compress_audio", compress_audio);
+    phone_fallback = jget(j, "phone_fallback", phone_fallback);
+    setup_done = jget(j, "setup_done", setup_done);
     search_key = jget(j, "search_key", search_key);
     volume = jget(j, "volume", volume);
     brightness = jget(j, "brightness", brightness);

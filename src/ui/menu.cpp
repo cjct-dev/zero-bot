@@ -1,5 +1,7 @@
 #include "ui/menu.h"
 
+#include <algorithm>
+
 #include "ui/theme.h"
 
 using namespace theme;
@@ -17,6 +19,28 @@ MenuItem MenuItem::header(const std::string &text) {
     i.kind = Kind::Header;
     i.label = text;
     return i;
+}
+
+MenuItem MenuItem::text(const std::string &text) {
+    MenuItem i;
+    i.kind = Kind::Text;
+    i.label = text;
+    return i;
+}
+
+void Menu::add_paragraph(std::vector<MenuItem> &items, const std::string &paragraph) {
+    const size_t width = 47;   // characters of body text that fit across the screen
+    size_t pos = 0;
+    while (pos < paragraph.size()) {
+        size_t len = std::min(width, paragraph.size() - pos);
+        if (pos + len < paragraph.size()) {
+            const size_t space = paragraph.rfind(' ', pos + len);
+            if (space != std::string::npos && space > pos) len = space - pos;
+        }
+        items.push_back(MenuItem::text(paragraph.substr(pos, len)));
+        pos += len;
+        while (pos < paragraph.size() && paragraph[pos] == ' ') ++pos;
+    }
 }
 
 MenuItem MenuItem::action(const std::string &text, std::function<void()> fn, bool danger) {
@@ -103,7 +127,7 @@ void Menu::push(MenuPage page) {
     items_ = stack_.back().page.build();
     // Start on the first row that can be selected.
     for (size_t i = 0; i < items_.size(); ++i)
-        if (items_[i].kind != MenuItem::Kind::Header) { stack_.back().selected = static_cast<int>(i); break; }
+        if (items_[i].selectable()) { stack_.back().selected = static_cast<int>(i); break; }
     render();
 }
 
@@ -127,7 +151,7 @@ void Menu::refresh() {
     Frame &f = stack_.back();
     if (f.selected >= static_cast<int>(items_.size())) f.selected = static_cast<int>(items_.size()) - 1;
     if (f.selected < 0) f.selected = 0;
-    while (f.selected < static_cast<int>(items_.size()) - 1 && items_[static_cast<size_t>(f.selected)].kind == MenuItem::Kind::Header)
+    while (f.selected < static_cast<int>(items_.size()) - 1 && !items_[static_cast<size_t>(f.selected)].selectable())
         ++f.selected;
     render();
 }
@@ -139,8 +163,9 @@ void Menu::render() {
     const int n = static_cast<int>(items_.size());
     if (f.selected < f.scroll) f.scroll = f.selected;
     if (f.selected >= f.scroll + kVisible) f.scroll = f.selected - kVisible + 1;
-    if (f.scroll > 0 && items_[static_cast<size_t>(f.scroll - 1)].kind == MenuItem::Kind::Header && f.selected == f.scroll)
+    if (f.scroll > 0 && !items_[static_cast<size_t>(f.scroll - 1)].selectable() && f.selected == f.scroll)
         --f.scroll;   // keep a section title visible above its first row
+    if (f.selected < kVisible) f.scroll = 0;   // show any introduction above the first choices
     if (f.scroll < 0) f.scroll = 0;
 
     lv_obj_clean(list_);
@@ -149,6 +174,11 @@ void Menu::render() {
         const bool selected = f.scroll + row == f.selected;
         lv_obj_t *line = box(list_, kScreenW, kRowH, selected ? kPanelHi : kBg);
         lv_obj_set_pos(line, 0, row * kRowH);
+        if (it.kind == MenuItem::Kind::Text) {
+            lv_obj_t *l = label(line, it.label.c_str(), body(), kDim);
+            lv_obj_align(l, LV_ALIGN_LEFT_MID, 8, 0);
+            continue;
+        }
         if (it.kind == MenuItem::Kind::Header) {
             lv_obj_t *l = label(line, it.label.c_str(), small(), kAccent);
             lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 6, -2);
@@ -164,11 +194,14 @@ void Menu::render() {
         std::string value = it.value ? it.value() : "";
         if (!value.empty()) {
             lv_obj_t *v = label(line, value.c_str(), body(), selected ? kText : kDim);
+            // Long values (addresses, model names) get more room and are cut with an ellipsis
+            // rather than wrapping onto a second line.
+            const int value_w = value.size() > 22 ? 190 : 150;
             lv_label_set_long_mode(v, LV_LABEL_LONG_MODE_DOTS);
             lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
-            lv_obj_set_width(v, 150);
+            lv_obj_set_size(v, value_w, lv_font_get_line_height(body()));
             lv_obj_align(v, LV_ALIGN_RIGHT_MID, -8, 0);
-            lv_obj_set_width(l, kScreenW - 174);
+            lv_obj_set_size(l, kScreenW - 24 - value_w, lv_font_get_line_height(body()));
         } else {
             lv_obj_set_width(l, kScreenW - 20);
         }
@@ -301,7 +334,7 @@ void Menu::key(const KeyEvent &ev) {
         for (int step = 0; step < n; ++step) {
             i += dir;
             if (i < 0 || i >= n) return;
-            if (items_[static_cast<size_t>(i)].kind != MenuItem::Kind::Header) { f.selected = i; break; }
+            if (items_[static_cast<size_t>(i)].selectable()) { f.selected = i; break; }
         }
         render();
     };

@@ -1,10 +1,13 @@
 #include "agent/llm.h"
 
+#include <cstring>
+
 #include <algorithm>
 #include <unistd.h>
 
 #include "core/settings.h"
 #include "net/http.h"
+#include "platform/codec.h"
 
 namespace llm {
 
@@ -31,6 +34,19 @@ std::string api_error(const http::Response &res) {
 
 std::string dump(const json &j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); }
 
+// Re-encodes a 16-bit mono WAV (as produced by the recorder) to MP3. False if that is not possible.
+bool wav_to_mp3(const std::string &wav, std::string &mp3) {
+    if (wav.size() < 46 || wav.compare(0, 4, "RIFF") != 0 || !codec::can_encode_mp3()) return false;
+    uint32_t rate = 0;
+    memcpy(&rate, wav.data() + 24, 4);
+    const size_t data = wav.find("data", 12);
+    if (data == std::string::npos || data + 8 >= wav.size() || rate < 8000) return false;
+    const size_t count = (wav.size() - data - 8) / 2;
+    std::vector<int16_t> pcm(count);
+    memcpy(pcm.data(), wav.data() + data + 8, count * 2);
+    return codec::mp3_encode(pcm, static_cast<int>(rate), 32, mp3);
+}
+
 }  // namespace
 
 ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt) {
@@ -46,9 +62,8 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
     // Reasoning models think privately before answering, which costs a second or more per
     // call. Fast mode asks them not to. Servers that reject the field get one retry without it.
     static std::atomic<bool> effort_rejected{false};
-    const std::string effort = !opt.effort.empty() ? opt.effort : opt.fast ? "none" : "";
-    const bool sent_effort = !effort.empty() && !effort_rejected;
-    if (sent_effort) body["reasoning_effort"] = effort;
+    const bool sent_effort = opt.fast && !effort_rejected;
+    if (sent_effort) body["reasoning_effort"] = "none";
 
     // With reasoning switched off, some models still leak their thinking markers into the
     // answer: a "<think>...</think>" block, or the answer, a stray "</think>", then the answer
@@ -204,12 +219,27 @@ std::string transcribe(const std::string &wav, std::string &err, std::atomic<boo
     req.method = "POST";
     req.url = endpoint("/audio/transcriptions");
     req.headers = auth_headers(false);
-    req.multipart = {{"model", "", "", s.stt_model},
-                     {"response_format", "", "", "json"},
-                     {"file", "speech.wav", "audio/wav", wav}};
+    // Speech is sent as MP3 when it can be: about a tenth of the size of WAV, which matters far
+    // more than the encoding time on a slow or tethered connection. A service that turns MP3
+    // down gets the original WAV instead, from then on.
+    static std::atomic<bool> mp3_rejected{false};
+    std::string mp3;
+    const bool use_mp3 = s.compress_audio && !mp3_rejected && wav_to_mp3(wav, mp3);
+    auto build = [&](bool compressed) {
+        req.multipart = {{"model", "", "", s.stt_model},
+                         {"response_format", "", "", "json"},
+                         compressed ? http::Part{"file", "speech.mp3", "audio/mpeg", mp3}
+                                    : http::Part{"file", "speech.wav", "audio/wav", wav}};
+    };
+    build(use_mp3);
     req.timeout_s = 60;
     req.cancel = cancel;
-    const http::Response res = http::send(req);
+    http::Response res = http::send(req);
+    if (use_mp3 && (res.status == 400 || res.status == 415 || res.status == 422)) {
+        mp3_rejected = true;
+        build(false);
+        res = http::send(req);
+    }
     if (!res.ok()) { err = api_error(res); return ""; }
     const json j = json::parse(res.body, nullptr, false);
     if (!j.is_object()) { err = "unexpected reply from the speech service"; return ""; }
@@ -220,15 +250,39 @@ bool synthesize(const std::string &text, std::string &pcm, std::string &err, std
     const Settings &s = Settings::get();
     if (!s.configured()) { err = "No AI service is configured."; return false; }
     if (s.tts_model.empty()) { err = "No text-to-speech model is selected in settings."; return false; }
-    http::Request req;
-    req.method = "POST";
-    req.url = endpoint("/audio/speech");
-    req.headers = auth_headers(true);
-    req.body = dump({{"model", s.tts_model}, {"input", text}, {"voice", s.tts_voice.empty() ? "alloy" : s.tts_voice},
-                     {"response_format", "pcm"}});
-    req.timeout_s = 60;
-    req.cancel = cancel;
-    const http::Response res = http::send(req);
+    // Opus is several times smaller than raw PCM for the same speech. It is used whenever the
+    // decoder is present and the service has not refused it.
+    static std::atomic<bool> opus_rejected{false};
+    const bool want_opus = s.compress_audio && !opus_rejected && codec::can_decode_opus();
+    auto fetch = [&](const char *format) {
+        http::Request req;
+        req.method = "POST";
+        req.url = endpoint("/audio/speech");
+        req.headers = auth_headers(true);
+        req.body = dump({{"model", s.tts_model}, {"input", text}, {"voice", s.tts_voice.empty() ? "alloy" : s.tts_voice},
+                         {"response_format", format}});
+        req.timeout_s = 60;
+        req.cancel = cancel;
+        return http::send(req);
+    };
+    if (want_opus) {
+        const http::Response res = fetch("opus");
+        if (res.error == "cancelled") { err = res.error; return false; }
+        std::vector<int16_t> decoded;
+        if (res.ok() && codec::opus_decode(res.body, decoded)) {
+            // The decoder always produces 48 kHz; halve it to the playback rate by averaging pairs.
+            pcm.clear();
+            pcm.reserve(decoded.size());
+            for (size_t i = 0; i + 1 < decoded.size(); i += 2) {
+                const int16_t v = static_cast<int16_t>((static_cast<int>(decoded[i]) + decoded[i + 1]) / 2);
+                pcm.append(reinterpret_cast<const char *>(&v), 2);
+            }
+            return true;
+        }
+        if (res.ok() || res.status == 400 || res.status == 415 || res.status == 422) opus_rejected = true;
+        else { err = api_error(res); return false; }
+    }
+    const http::Response res = fetch("pcm");
     if (!res.ok()) { err = api_error(res); return false; }
     pcm = res.body;
     // Some servers answer with a WAV container even when PCM was requested.

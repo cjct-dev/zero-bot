@@ -4,6 +4,8 @@
 #include <csignal>
 #include <cstdio>
 #include <fstream>
+#include <functional>
+#include <memory>
 #include <thread>
 #include <unistd.h>
 
@@ -12,6 +14,7 @@
 #include "core/music_lib.h"
 #include "core/settings.h"
 #include "core/store.h"
+#include "core/tether.h"
 #include "core/ui_queue.h"
 #include "core/util.h"
 #include "lvgl.h"
@@ -49,6 +52,7 @@ struct App {
     bool dimmed = false;
     unsigned long last_tick = 0, last_second = 0, last_indicators = 0, last_model_try = 0;
     std::atomic<bool> selecting_models{false};
+    std::atomic<bool> connecting_phone{false};
     bool warned_models = false;
 
     // ------------------------------------------------------------ setup
@@ -140,7 +144,41 @@ struct App {
         if (!submit) return;
         if (seconds < kMinSpeechSeconds) { chat.add_note("That was too short to hear. Press TAB, speak, then press TAB again.", theme::kDim); return; }
         audio::normalize(pcm);
-        Agent::get().submit_audio(std::move(pcm));
+        auto shared = std::make_shared<std::vector<int16_t>>(std::move(pcm));
+        when_online([shared] { Agent::get().submit_audio(std::move(*shared)); });
+    }
+
+    // Runs `send` straight away when there is a connection. With none, and a paired phone, it
+    // first tries the phone's Bluetooth tethering, then sends whether or not that worked (the
+    // request then reports the missing connection itself).
+    void when_online(std::function<void()> send) {
+        if (tether::online() || !Settings::get().phone_fallback || connecting_phone) { send(); return; }
+        connecting_phone = true;
+        std::thread([this, send] {
+            if (!tether::available()) { connecting_phone = false; uiq::post(send); return; }
+            uiq::post([this] { chat.add_note("No connection. Trying your phone over Bluetooth…", theme::kDim); });
+            const std::string err = tether::connect();
+            connecting_phone = false;
+            uiq::post([this, err, send] {
+                if (err.empty()) chat.add_note("Online through your phone.", theme::kDim);
+                last_indicators = 0;
+                send();
+            });
+        }).detach();
+    }
+
+    // The first-run guide. When it ends the chat starts fresh with a spoken hello, which also
+    // confirms that the service and the speaker both work.
+    void run_setup() {
+        open_setup(menu, [this] {
+            chat.clear();
+            welcome();
+            auto_select_models();
+            const Settings &s = Settings::get();
+            if (s.configured() && s.speak_replies && !s.tts_model.empty() && tether::online())
+                Agent::get().say("Hello" + (s.user_name.empty() ? std::string() : " " + s.user_name) +
+                                 ". I'm ready. Press tab to talk to me.");
+        });
     }
 
     // ------------------------------------------------------------ keys
@@ -152,6 +190,7 @@ struct App {
             welcome();
         };
         hooks.exit_app = [] { g_exit = true; };
+        hooks.run_setup = [this] { menu.close(); run_setup(); };
         open_settings(menu, hooks);
     }
 
@@ -195,7 +234,7 @@ struct App {
                 if (ev.state != 1) return;
                 const std::string text = util::trim(chat.typing_text());
                 chat.typing_end();
-                if (!text.empty()) Agent::get().submit_text(text);
+                if (!text.empty()) when_online([text] { Agent::get().submit_text(text); });
             } else if (ev.key == Key::Up || ev.key == Key::Down) {
                 chat.scroll(ev.key == Key::Up ? 34 : -34);
             } else {
@@ -255,19 +294,18 @@ struct App {
     }
 
     void update_indicators() {
-        bool online = true, charging = false;
+        const std::string link = tether::default_link();
+        bool online = !link.empty(), charging = false;
+        const bool phone = link.compare(0, 4, "bnep") == 0;
         int battery = -1;
 #if !ZB_DESKTOP
-        std::string state;
-        std::ifstream("/sys/class/net/wlan0/operstate") >> state;
-        online = state == "up";
         std::ifstream b("/sys/class/power_supply/bq27220-0/capacity");
         if (!(b >> battery)) battery = -1;
         std::string status;
         std::ifstream("/sys/class/power_supply/bq27220-0/status") >> status;
         charging = status == "Charging";
 #endif
-        chat.set_indicators(online, battery, charging, util::format_time(time(nullptr), "%H:%M"));
+        chat.set_indicators(online, phone, battery, charging, util::format_time(time(nullptr), "%H:%M"));
         const std::string current = audio::Music::get().current();
         if (current.empty()) chat.set_now_playing("");
         else {
@@ -327,7 +365,7 @@ struct App {
         Settings &s = Settings::get();
         s.agent_name = "Zero";
         chat.set_status(s.agent_name, theme::kFaint);
-        chat.set_indicators(true, 68, false, "18:42");
+        chat.set_indicators(true, false, 68, false, "18:42");
         chat.footer_hints("TAB talk   ·   ENTER type   ·   TAB TAB settings");
         chat.add_note("Press TAB to talk, press it again when you have finished. Or press ENTER and type.", theme::kDim);
         snap("welcome");
@@ -387,6 +425,32 @@ struct App {
         store.add_memory("Allergic to shellfish");
         store.add_memory("Prefers window seats");
         store.add_reminder("Call the hotel", time(nullptr) + 3600);
+
+        run_setup();
+        snap("setup-welcome");
+        {
+            KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
+            KeyEvent down; down.key = Key::Down; down.state = 1;
+            menu.key(enter);
+            snap("setup-internet");
+            for (int i = 0; i < 4; ++i) menu.key(down);
+            menu.key(enter);                       // continue (with or without a connection)
+            snap("setup-service");
+            for (int i = 0; i < 4; ++i) menu.key(down);
+            menu.key(enter);                       // skip the live test in screenshots
+            s.llm_model = "example-chat-model"; s.stt_model = "example-speech-to-text"; s.tts_model = "example-text-to-speech";
+            menu.refresh();
+            snap("setup-models");
+            for (int i = 0; i < 4; ++i) menu.key(down);
+            menu.key(enter);
+            s.user_name = "Sam"; s.home_city = "London";
+            menu.refresh();
+            snap("setup-you");
+            for (int i = 0; i < 5; ++i) menu.key(down);
+            menu.key(enter);
+            snap("setup-extras");
+            menu.close();
+        }
 
         open_menu();
         snap("settings");
@@ -448,6 +512,7 @@ int run_app(const std::string &shots_dir, bool keydump) {
     app.wire_agent();
     app.welcome();
     app.auto_select_models();
+    if (!s.setup_done) app.run_setup();
     input::set_dump(keydump);
     input::start();
     app.last_activity = display::now_ms();

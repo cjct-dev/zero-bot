@@ -7,11 +7,13 @@
 #include <unistd.h>
 
 #include "agent/agent.h"
+#include "agent/llm.h"
 #include "agent/tools.h"
 #include "core/music_lib.h"
 #include "core/settings.h"
 #include "core/store.h"
 #include "net/http.h"
+#include "platform/codec.h"
 #if !ZB_CLI_ONLY
 #include "ui/app.h"
 #endif
@@ -25,6 +27,8 @@ void usage() {
          "  --chat                interactive text conversation on the terminal\n"
          "  --steer \"text\"        with --ask/--chat: add this while the first tool of the first request runs\n"
          "  --tool NAME 'JSON'    call one tool directly and print its result\n"
+         "  --stt FILE.wav        transcribe a 16-bit mono WAV file and print the text\n"
+         "  --tts \"text\" OUT.raw  synthesize speech and write raw 16-bit 24 kHz mono PCM\n"
          "  --shots DIR           render the app's screens to PNG files in DIR and exit\n"
          "  --keydump             log raw key codes to stderr while the app runs\n"
          "  --boot                start-at-power-on mode: runs the app once per boot, then does nothing\n"
@@ -96,6 +100,7 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text) {
 
 int main(int argc, char **argv) {
     std::string ask, shots, steer, tool_name, tool_args = "{}";
+    std::string stt_file, tts_text, tts_out, bench_wav, bench_opus;
     bool chat = false, keydump = false, boot = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -104,6 +109,9 @@ int main(int argc, char **argv) {
         else if (a == "--steer" && i + 1 < argc) steer = argv[++i];
         else if (a == "--tool" && i + 1 < argc) { tool_name = argv[++i]; if (i + 1 < argc) tool_args = argv[++i]; }
         else if (a == "--shots" && i + 1 < argc) shots = argv[++i];
+        else if (a == "--codec-bench" && i + 2 < argc) { bench_wav = argv[++i]; bench_opus = argv[++i]; }
+        else if (a == "--stt" && i + 1 < argc) stt_file = argv[++i];
+        else if (a == "--tts" && i + 2 < argc) { tts_text = argv[++i]; tts_out = argv[++i]; }
         else if (a == "--keydump") keydump = true;
         else if (a == "--boot") boot = true;
         else if (a == "--version") { puts("zero_bot " ZB_VERSION); return 0; }
@@ -130,6 +138,44 @@ int main(int argc, char **argv) {
     Settings::get().load();
     Store::get().load();
 
+    if (!bench_wav.empty()) {
+        // Measures how long this machine takes to compress speech and decompress a reply.
+        std::string wav, ogg, mp3;
+        if (!util::read_file(bench_wav, wav) || !util::read_file(bench_opus, ogg)) { fprintf(stderr, "cannot read inputs\n"); quit(1); }
+        std::vector<int16_t> pcm((wav.size() - 44) / 2), out;
+        memcpy(pcm.data(), wav.data() + 44, pcm.size() * 2);
+        auto ms = [](std::chrono::steady_clock::time_point t) {
+            return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+        };
+        for (int run = 0; run < 3; ++run) {
+            auto t = std::chrono::steady_clock::now();
+            const bool ok = codec::mp3_encode(pcm, 16000, 32, mp3);
+            const double enc = ms(t);
+            t = std::chrono::steady_clock::now();
+            const bool ok2 = codec::opus_decode(ogg, out);
+            printf("run %d: encode %.1f s of speech -> %zu bytes MP3 in %.0f ms (%s); decode %.1f s of Opus in %.0f ms (%s)\n",
+                   run + 1, pcm.size() / 16000.0, mp3.size(), enc, ok ? "ok" : "FAILED", out.size() / 48000.0, ms(t),
+                   ok2 ? "ok" : "FAILED");
+        }
+        quit(0);
+    }
+    if (!stt_file.empty() || !tts_text.empty()) {
+        // Speech round-trip checks, with the size sent or received so compression can be seen.
+        std::string data, err;
+        const auto t0 = std::chrono::steady_clock::now();
+        auto secs = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
+        if (!stt_file.empty()) {
+            if (!util::read_file(stt_file, data)) { fprintf(stderr, "cannot read %s\n", stt_file.c_str()); quit(1); }
+            const std::string text = llm::transcribe(data, err);
+            printf("%s\n[%.1fs]%s%s\n", text.c_str(), secs(), err.empty() ? "" : " error: ", err.c_str());
+        } else {
+            const bool ok = llm::synthesize(tts_text, data, err);
+            if (ok) util::write_file_atomic(tts_out, data, 0644);
+            printf("%s %zu bytes of PCM (%.1f s of audio) [%.1fs]%s%s\n", ok ? "wrote" : "failed,", data.size(),
+                   static_cast<double>(data.size()) / 2 / llm::kTtsRate, secs(), err.empty() ? "" : " error: ", err.c_str());
+        }
+        quit(err.empty() ? 0 : 1);
+    }
     if (!tool_name.empty()) {
         MusicLibrary::get().refresh(Settings::get().eff_music_dir());
         tools::Context ctx;

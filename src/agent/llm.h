@@ -26,7 +26,6 @@ struct ChatOptions {
     int max_tokens = 1200;
     double temperature = 0.4;
     bool fast = false;                                  // skip the model's reasoning step
-    std::string effort;                                 // reasoning effort to ask for ("none", "low", ...); overrides fast
     std::atomic<bool> *cancel = nullptr;
     std::function<void(const std::string &)> on_text;   // streamed answer text
 };

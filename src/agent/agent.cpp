@@ -14,12 +14,49 @@ namespace {
 constexpr int kMaxRounds = 8;            // model calls per request, including tool round-trips
 constexpr size_t kMaxHistory = 40;       // messages kept as context
 constexpr size_t kMaxToolResult = 6000;  // characters of tool output passed back to the model
-constexpr const char *kRetryEffort = "low";  // reasoning for the retry after a withdrawn draft (fast mode)
+
+// Appended after a reply that was drafted without tools (fast mode only). The second look reuses
+// the whole prompt, so the server answers it from its prefix cache in a fraction of a normal
+// call, and asked this pointedly the model catches what it missed in passing.
+const char *const kSecondLook =
+    "(Automatic check, not from the user.) CHECK BEFORE SPEAKING. The reply above is only a draft: the user has not heard it, and it was written without "
+    "calling any tool. Call the right tool now, instead of replying, if the draft does any of these:\n"
+    "- says or implies something was done, saved, set, added, moved, cancelled, played, stopped, switched or "
+    "changed. Nothing has been; call the tool that does it.\n"
+    "- states from memory something a tool provides: weather, a share price, an exchange rate or converted amount, "
+    "the time in another place, opening hours or days, prices, news, results, anything recent or changeable.\n"
+    "- gives the result of counting days or finding the weekday of a date (date_info), or of arithmetic that is more "
+    "than one easy step (calculator).\n"
+    "- is about something the user is looking at or holding, including saying you cannot see it (look).\n"
+    "- says what is or is not in the user's calendar, reminders or music library without having checked.\n"
+    "If none of these apply, reply with the single word OK and the draft will be spoken as it is. That is the right "
+    "outcome for conversation, settled general knowledge, translations, the current local time, facts you "
+    "remember about the user, a question asking for a missing detail, or honestly saying you cannot do something "
+    "none of your tools does.";
+
+// Rides along with the newest request (fast mode only). The same rule is in the system prompt,
+// but with reasoning off the model heeds what it read last.
+const char *const kDecideNote =
+    "(Automatic note, not from the user: if this asks you to do something, or needs live, local or changeable "
+    "information, a date or a sum worked out, or the camera, call the tool now instead of replying. Reply in words "
+    "only when no tool applies.)";
+
+// Adds an instruction for this one model call. It is attached to the newest user message where
+// possible, because some chat templates reject a system message after the first.
+void add_note(json &messages, const std::string &note) {
+    json &last = messages.back();
+    if (util::jget(last, "role", std::string()) == "user" && last["content"].is_string())
+        last["content"] = last["content"].get<std::string>() + "\n\n" + note;
+    else
+        messages.push_back({{"role", "system"}, {"content", note}});
+}
 
 // True when a draft tells the user that something has been done. Said in a turn where no tool
 // ran, that is a false claim, and it is cheaper to catch here than to pay for the model's
 // reasoning on every call. Covers English and the commonest phrasings in a few other languages.
-bool claims_action(const std::string &text) {
+bool claims_action(const std::string &raw) {
+    std::string text = raw;
+    for (size_t at; (at = text.find("\xE2\x80\x99")) != std::string::npos;) text.replace(at, 3, "'");  // typographic apostrophe
     static const std::regex re(
         "\\b(i'?ve|i have|i just|i) (now |just |already )?(added|saved|set|scheduled|put|noted|cancell?ed|deleted|removed|"
         "moved|sent|booked|turned|changed|updated|switched|stopped|started|reserved|ordered|called|texted|messaged)\\b"
@@ -183,8 +220,12 @@ int Agent::absorb_inputs(bool first) {
         }
         const bool steering = !first || added > 0;
         if (ev_.user_message) ev_.user_message(text, steering);
+        // The time travels with each message rather than in the system prompt, so the prompt and
+        // the earlier conversation stay byte-for-byte the same from call to call and the server can
+        // reuse its cached prefix. A prompt that changes every minute costs a second or two per call.
+        const std::string stamp = "[" + util::format_time(time(nullptr), "%a %d %b %Y, %H:%M") + "] ";
         std::lock_guard<std::mutex> lk(mtx_);
-        history_.push_back({{"role", "user"}, {"content", text}});
+        history_.push_back({{"role", "user"}, {"content", stamp + text}});
         ++added;
     }
     return added;
@@ -227,12 +268,10 @@ void Agent::run_turn() {
             std::lock_guard<std::mutex> lk(mtx_);
             for (auto &m : history_) messages.push_back(m);
         }
-        if (round == kMaxRounds - 1)
-            messages.push_back({{"role", "system"},
-                                {"content", "You have used many tool calls. Answer now with what you have."}});
+        if (round == kMaxRounds - 1) add_note(messages, "You have used many tool calls. Answer now with what you have.");
 
         const bool corrected = !correction.empty();
-        if (corrected) messages.push_back({{"role", "system"}, {"content", correction}});
+        if (corrected) add_note(messages, correction);
         correction.clear();
 
         bool began = false, speech_started = false, steered = false, unbacked = false;
@@ -240,11 +279,19 @@ void Agent::run_turn() {
         llm::ChatOptions opt;
         opt.model = Settings::get().eff_llm_model();
         opt.fast = Settings::get().fast_mode;
-        // The one call that follows a caught mistake is allowed to think.
-        if (corrected && opt.fast) opt.effort = kRetryEffort;
+        bool deciding;
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            deciding = history_.empty() || util::jget(history_.back(), "role", std::string()) != "tool";
+        }
+        // In fast mode the model's commonest mistake is to answer in words when it should have
+        // used a tool: "done" with nothing done, or a price or opening time from memory. So a reply
+        // that arrives with no tool call is held back and checked before a word of it is spoken.
+        const bool hold = deciding && !acted && !guarded && opt.fast;
+        if (hold) add_note(messages, kDecideNote);
         opt.cancel = &round_cancel_;
         opt.on_text = [&](const std::string &piece) {
-            if (steered || unbacked) return;
+            if (steered || unbacked || hold) return;
             if (!began) { began = true; if (ev_.answer_begin) ev_.answer_begin(); }
             if (ev_.answer_delta) ev_.answer_delta(piece);
             for (auto &sentence : chunker.feed(piece)) {
@@ -262,7 +309,7 @@ void Agent::run_turn() {
                 if (speak) speech.enqueue(sentence);
             }
         };
-        const llm::ChatResult res = llm::chat(messages, round == kMaxRounds - 1 ? json::array() : tool_schema, opt);
+        llm::ChatResult res = llm::chat(messages, round == kMaxRounds - 1 ? json::array() : tool_schema, opt);
 
         if (steered || (!speech_started && !res.cancelled && res.error.empty() && res.tool_calls.empty() && has_pending())) {
             if (began && ev_.answer_discard) ev_.answer_discard();
@@ -290,17 +337,48 @@ void Agent::run_turn() {
             break;
         }
 
+        if (hold && res.tool_calls.empty() && !res.content.empty()) {
+            json review = messages;
+            review.push_back({{"role", "assistant"}, {"content", res.content}});
+            review.push_back({{"role", "user"}, {"content", kSecondLook}});
+            llm::ChatOptions check;
+            check.model = opt.model;
+            check.fast = true;
+            check.cancel = &cancel_;
+            llm::ChatResult second = llm::chat(review, tool_schema, check);
+            if (cancel_) break;
+            if (has_pending()) {  // the user added something while the draft was being checked
+                absorb_inputs(false);
+                --round;
+                continue;
+            }
+            // A failed check lets the draft through: a network hiccup must not silence the assistant.
+            if (second.error.empty() && !second.tool_calls.empty()) {
+                res.tool_calls = std::move(second.tool_calls);
+                res.content.clear();
+            }
+        }
+
         // "Done, it's in your calendar" with no tool call behind it: withdraw the draft and make
         // the model either do the thing or admit it cannot.
         if (unbacked || (!acted && !guarded && !speech_started && res.tool_calls.empty() && claims_action(res.content))) {
             guarded = true;
             if (began && ev_.answer_discard) ev_.answer_discard();
-            correction = "Your draft reply began \"" + util::truncate_utf8(res.content, 160) +
+            correction = "(Automatic note, not from the user.) Your draft reply began \"" + util::truncate_utf8(res.content, 160) +
                          "\" but no tool has been called for this request, so nothing has actually been done and the "
                          "user has not heard that reply. If they asked for something a tool does, call that tool now. "
                          "If no tool can do it, tell them plainly that you cannot. If they were only chatting or "
                          "asking a question, answer without claiming to have done anything.";
             continue;
+        }
+        if (hold && res.tool_calls.empty()) {
+            // The draft stands: release it as if it had streamed.
+            began = true;
+            if (ev_.answer_begin) ev_.answer_begin();
+            if (ev_.answer_delta) ev_.answer_delta(res.content);
+            set_state(AgentState::Speaking);
+            for (auto &sentence : chunker.feed(res.content))
+                if (speak) speech.enqueue(sentence);
         }
 
         if (!res.tool_calls.empty()) {
