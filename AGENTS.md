@@ -263,6 +263,22 @@ key, real audio), say so plainly rather than implying it was.
   network" is the SSID plus the router's hardware address, not the SSID alone.
 - Before promising a device can be controlled, check whether it has a local interface at all.
   Several popular products are cloud-only.
+- New device code is reviewed before it touches a real device: in this project the first
+  independent review of each driver and of the smart-home layer found blockers every time (a
+  login that would lock out every plug of a second account, a confirmation the model could skip,
+  a discovery port that sent pairing to the wrong service). A second review found only smaller
+  problems; two rounds and a final check was a sensible stopping point.
+
+**Power**
+- The fuel gauge (`/sys/class/power_supply/bq27220-0/`) reports `current_now` in µA: positive
+  while charging on USB, negative on battery, 0 only when full on USB. To measure the app, log it
+  every 10 s from a detached process (`setsid nohup ... &`), unplug, use the device, plug back in
+  and read the log. Plugging USB back in restarts adbd, which kills processes started from an ADB
+  shell; that only ends the log.
+- Measured: the platform (processor, Wi-Fi, audio service, launcher) draws about 260 mA with the
+  screen off; Zero Bot idling with a dimmed screen adds only about 15 mA, and answering takes it
+  to about 330 mA. Battery work inside the app has a small ceiling; device-wide settings matter
+  more, and change the whole device, so they need the owner's agreement.
 
 **Process**
 - Do not report something as fixed when only the mechanism was fixed and the symptom was not
@@ -271,6 +287,19 @@ key, real audio), say so plainly rather than implying it was.
   work using it. Prefer the narrowest recovery.
 - Temporary folders are cleared; anything worth keeping goes in the repository or in
   `.local-notes/` (git-ignored, may hold private network details, never to be published).
+- Long sessions are interrupted (usage limits, dropped links). Save as you go: briefs, status
+  files and results on disk, not only in an agent's context. `.local-notes/PROGRESS.md` holds the
+  running state; the local ticket tracker (section 10) holds the plan, and a ticket that is not
+  finished links to its research, briefs and partial work so anyone can carry on.
+- Token use matters to the owner. Several agents in parallel at maximum effort used a 5-hour
+  allowance in about 90 minutes. Work directly or with one helper; keep independent reviews for
+  risky code; state the scale before starting anything large.
+- When several agents share this PC: compile through `.local-notes/tools/buildlock` (four
+  compiles at a time, memory is short), build a checkout only with `.local-notes/tools/repobuild`
+  (one build per checkout), and give test servers ephemeral ports.
+- A multi-agent workflow resumed after an interruption reuses finished steps only when it makes
+  the same calls in the same order. To continue with a changed plan, save the finished results to
+  a file and start a new run from there.
 
 ## 9. Adding things
 
