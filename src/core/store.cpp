@@ -113,13 +113,19 @@ int years_marked(const CalEvent &e, time_t occurrence) {
     return std::max(0, util::local_fields(occurrence).year - util::local_fields(first).year);
 }
 
-time_t alert_base(const CalEvent &e, time_t occurrence) { return e.all_day ? occurrence + 9 * 3600 : occurrence; }
+time_t alert_base(const CalEvent &e, time_t occurrence) {
+    if (!e.all_day) return occurrence;
+    // 09:00 on the event's own date, built from the date rather than by adding nine hours to
+    // midnight, which would give 08:00 or 10:00 on the days the clocks change.
+    const util::LocalTime f = util::local_fields(occurrence);
+    return util::make_local(f.year, f.month, f.day, 9, 0);
+}
 
 std::vector<CalEvent> Store::events_between(time_t from, time_t to) {
     std::vector<CalEvent> out;
     for (auto &e : events()) {
         // An all-day event is still "on" until its day is over.
-        time_t at = next_occurrence(e, e.all_day ? from - 86400 + 1 : from);
+        time_t at = next_occurrence(e, e.all_day ? util::start_of_day(from) : from);
         for (int n = 0; at && at < to && n < 60; ++n) {
             CalEvent one = e;
             one.first = e.start;
@@ -258,8 +264,7 @@ std::vector<std::string> Store::take_due_alerts(time_t now) {
         if (e.remind_min < 0) continue;
         // The occurrence in play: under way or coming, but not one that ended hours ago while the
         // device was off. An all-day event stays in play for its whole day.
-        const time_t window = e.all_day ? 86400 - 1 : 6 * 3600;
-        const time_t occ = next_occurrence(e, now - window);
+        const time_t occ = next_occurrence(e, e.all_day ? util::start_of_day(now) : now - 6 * 3600);
         if (!occ || occ == e.alerted_for) continue;
         if (now < alert_base(e, occ) - static_cast<time_t>(e.remind_min) * 60) continue;
         e.alerted_for = occ;
@@ -268,7 +273,7 @@ std::vector<std::string> Store::take_due_alerts(time_t now) {
         if (e.all_day) {
             const std::string day = util::format_time(occ, "%Y-%m-%d");
             when = day == util::format_time(now, "%Y-%m-%d") ? " today"
-                 : day == util::format_time(now + 86400, "%Y-%m-%d") ? " tomorrow" : " on " + util::friendly_day(occ);
+                 : day == util::format_time(util::add_local_days(now, 1), "%Y-%m-%d") ? " tomorrow" : " on " + util::friendly_day(occ);
         } else {
             when = occ - now > 60 ? " at " + util::format_time(occ, "%H:%M")
                  : now - occ < 300 ? " now" : " was at " + util::format_time(occ, "%H:%M");

@@ -242,6 +242,16 @@ time_t make_local(int year, int month, int day, int hour, int minute) {
     return mktime(&tmv);
 }
 
+time_t start_of_day(time_t t) {
+    const LocalTime f = local_fields(t);
+    return make_local(f.year, f.month, f.day, 0, 0);
+}
+
+time_t add_local_days(time_t t, int days) {
+    const LocalTime f = local_fields(t);
+    return make_local(f.year, f.month, f.day + days, f.hour, f.minute) + t % 60;
+}
+
 int days_in_month(int year, int month) {
     static const int kDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     if (month == 2 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) return 29;
@@ -370,7 +380,7 @@ std::string friendly_day(time_t t) {
     const time_t now = time(nullptr);
     const std::string day = format_time(t, "%Y-%m-%d");
     if (day == format_time(now, "%Y-%m-%d")) return "Today";
-    if (day == format_time(now + 86400, "%Y-%m-%d")) return "Tomorrow";
+    if (day == format_time(add_local_days(now, 1), "%Y-%m-%d")) return "Tomorrow";
     return format_time(t, month_first() ? "%a %b %-d" : "%a %-d %b");
 }
 

@@ -56,6 +56,9 @@ struct LocalTime { int year = 0, month = 0, day = 0, hour = 0, minute = 0; };
 LocalTime local_fields(time_t t);
 time_t make_local(int year, int month, int day, int hour, int minute);
 int days_in_month(int year, int month);
+// Calendar days, not 24-hour steps: a day with a clock change is 23 or 25 hours long.
+time_t start_of_day(time_t t);                        // local midnight of t's day
+time_t add_local_days(time_t t, int days);            // same local clock time, `days` dates later
 int pivot_year(int two_digits);                       // 27 -> 2027, 60 -> 1960
 std::string short_day(time_t t);                      // "Sat 14 Mar 2027" or "Sat Mar 14 2027"
 std::string typed_day(time_t t);                      // "14/03/2027" or "03/14/2027"

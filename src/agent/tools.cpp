@@ -388,7 +388,7 @@ std::string t_calendar_list(const json &a, Context &) {
     if (!f.empty() && !util::parse_local(f, from)) return fail("from must look like 2026-03-14");
     if (!t.empty()) {
         if (!util::parse_local(t, to)) return fail("to must look like 2026-03-21");
-        if (t.size() <= 10) to += 86400;  // a bare date means "through the end of that day"
+        if (t.size() <= 10) to = util::add_local_days(to, 1);  // a bare date means "through the end of that day"
     } else if (!f.empty()) to = from + 14 * 86400;
     else if (!search.empty()) to = from + 366 * 86400;   // a name can be looked for a whole year ahead
     json arr = json::array();
