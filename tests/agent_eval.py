@@ -13,8 +13,9 @@ Usage:
     tests/agent_eval.py [--bin build/cli/zero_bot] [--repeat N] [--only substring[,substring]]
                         [--fast 0|1] [--jobs N] [--json out.json] [--rescore out.json]
 
-Side effects are disabled (ZB_DRY_RUN): no music plays and no infrared is sent. Every case
-starts from an empty calendar, memory and settings.
+Side effects are disabled (ZB_DRY_RUN): no music plays, no infrared is sent and no smart-home
+device is switched. Every case starts from an empty calendar, memory and settings; the smart-home
+cases start from a made-up home on the stand-in test network (ZB_TEST_NETWORK).
 """
 import argparse, concurrent.futures, datetime, json, os, re, shutil, subprocess, sys, tempfile, time
 
@@ -208,11 +209,77 @@ def chk_dad_age(t):
     year = d.year if d <= datetime.date(d.year, 6, 2) else d.year + 1
     return [] if says_int(t["answer"], year - 1955) else ["answer should give the age %d" % (year - 1955)]
 
-def case(name, request, must=(), must_not=(), checks=(), env=None, steer=None):
+def case(name, request, must=(), must_not=(), checks=(), env=None, steer=None, home=None):
     """request: one utterance or a list (a conversation; "/new" starts a fresh one, memories are kept).
-    must / must_not / checks apply to the last turn; speech-suitability rules apply to every turn."""
+    must / must_not / checks apply to the last turn; speech-suitability rules apply to every turn.
+    home: a smart-home file to start from, saved for the stand-in test network (see EVAL_HOME)."""
     return {"name": name, "turns": [request] if isinstance(request, str) else list(request), "must": list(must),
-            "must_not": list(must_not), "checks": list(checks), "env": env or {}, "steer": steer}
+            "must_not": list(must_not), "checks": list(checks), "env": env or {}, "steer": steer, "home": home}
+
+# ---------------------------------------------------------------- a made-up home for the smart-home cases
+# Saved for the network ZB_TEST_NETWORK=1 stands in for (its id is checked in tests/unit). Every
+# device has kind "tapo" only so that a driver built into the app claims it; with ZB_DRY_RUN (set
+# for every case) no device is ever contacted, and status is answered from these saved states.
+TEST_NETWORK = "net-58678b031ae6e411"
+POWER, BRIGHT, WHITE, COLOUR, TEMP, POSITION, TRANSPORT, VOLUME, SOURCE = 1, 2, 4, 8, 32, 64, 256, 512, 2048
+
+def _thing(tid, name, kind, caps, room="", state=None, ask_first=False):
+    return {"id": tid, "name": name, "type": kind, "caps": caps, "room": room, "state": state or {}, "ask_first": ask_first,
+            "enabled": True, "ref": {}}
+
+def _home(*things):
+    devices = [{"id": "tapo:eval%d" % i, "kind": "tapo", "name": t["name"], "last_ip": "127.0.0.1", "port": 9, "enabled": True,
+                "things": [t]} for i, t in enumerate(things)]
+    return {"version": 2, "secrets": {}, "networks": {TEST_NETWORK: {"label": "Test network", "gateway_mac": "02:00:00:00:00:00",
+                                                                       "allowed_at": 1, "last_scan": 1, "devices": devices}}}
+
+EVAL_HOME = _home(
+    _thing("1", "Bedroom lamp", "light", POWER | BRIGHT | WHITE | COLOUR, "Bedroom", {"on": False}),
+    _thing("2", "Bed heater", "plug", POWER, "Bedroom", {"on": False}),     # used every night: no question first
+    _thing("3", "Fan heater", "plug", POWER, "", {"on": False}, ask_first=True),
+    _thing("4", "Floor lamp", "light", POWER | BRIGHT | WHITE | COLOUR, "Lounge", {"on": True, "brightness": 60}),
+    _thing("5", "Lamp", "light", POWER | BRIGHT, "Lounge", {"on": False}),
+    _thing("6", "Lamp", "light", POWER | BRIGHT, "Hall", {"on": False}),
+    _thing("7", "Hall thermostat", "thermostat", TEMP, "Hall", {"mode": "heat", "target_c": 19, "current_c": 18.5}),
+    _thing("8", "Kitchen speaker", "speaker", TRANSPORT | VOLUME, "Kitchen", {"playing": "playing", "volume": 30}),
+    _thing("9", "Kitchen light", "light", POWER | BRIGHT, "Kitchen", {"on": True, "brightness": 100}),
+    _thing("10", "Living room TV", "tv", POWER | TRANSPORT | VOLUME | SOURCE, "Living room", {"on": False}))
+
+def _same(got, want):
+    if isinstance(want, (int, float)):
+        try: return abs(float(got) - want) < 0.01
+        except (TypeError, ValueError): return False
+    return str(got).strip().lower() == str(want).lower()
+
+def home_call(action, targets=None, **values):
+    """Problem text unless some smart_home call in the turn has this action, one of these targets, and these values."""
+    def check(t):
+        for c in calls(t, "smart_home"):
+            target = str(c.get("target", c.get("device", ""))).lower()
+            if _same(c.get("action"), action) and (not targets or target in [x.lower() for x in targets]) and \
+               all(_same(c.get(k), v) for k, v in values.items()):
+                return []
+        return ["smart_home should be called with action=%s%s%s, got %s" % (action, " and a target in %s" % targets if targets else "",
+                                                                            " and %s" % values if values else "", calls(t, "smart_home"))]
+    return check
+
+def home_never_on(t):
+    """Nothing switched on: "everything" and unknown things must never be guessed at."""
+    bad = [c for c in calls(t, "smart_home") if str(c.get("action", "")).lower() in ("on", "set")]
+    return ["switched something on without a clear target: %s" % bad] if bad else []
+
+def home_asked(t):
+    """The change waited for a yes: the tool answered CONFIRM, nothing was switched, and the user was asked."""
+    got = results(t, "smart_home")
+    problems = [] if any(isinstance(r, str) and r.startswith("CONFIRM") for r in got) else ["smart_home never answered CONFIRM"]
+    if any(isinstance(r, dict) and r.get("now") == "on" for r in got): problems.append("something was switched on without a yes")
+    return problems + ([] if "?" in t["answer"] else ["the answer should ask the user"])
+
+def home_switched(name):
+    def check(t):
+        return [] if any(isinstance(r, dict) and r.get("target") == name and r.get("now") == "on" for r in results(t, "smart_home")) \
+            else ["%s should have been switched on, got %s" % (name, results(t, "smart_home"))]
+    return check
 
 FRI_8PM = lambda: stamps(next_weekday(4), "20:00")
 CANNOT = r"can'?t|cannot|not able|unable|don'?t have|no way|not something|isn'?t something|not set up|only"
@@ -332,6 +399,29 @@ CASES = [
     case("spanish_weather", "qué tiempo hace en madrid hoy", must=["weather"], checks=[chk_spanish]),
     case("german_timer", "stell einen timer auf fünf minuten", must=["reminder_set"],
          checks=[lambda t: arg(t, "reminder_set", "in_minutes", num_is(5), "5"), answer(r"minuten|timer|läuft|gestellt", "a German reply")]),
+    # --- smart home: a made-up home on the stand-in test network (survey 6.4.2)
+    case("home_on", "turn on the bed heater", must=["smart_home"], home=EVAL_HOME, checks=[home_call("on", ["Bed heater"])]),
+    case("home_dim_room", "bedroom lights to 30 percent", must=["smart_home"], home=EVAL_HOME,
+         checks=[home_call("set", ["Bedroom", "Bedroom lamp"], brightness=30)]),
+    case("home_colour", "make the lounge warm white", must=["smart_home"], home=EVAL_HOME,
+         checks=[home_call("set", ["Lounge", "Floor lamp"], color="warm white")]),
+    case("home_heating", "set the heating to 20", must=["smart_home"], home=EVAL_HOME,
+         checks=[home_call("set", ["Hall thermostat"], temperature=20)]),
+    case("home_status", "is the heater on", must=["smart_home"], home=EVAL_HOME, checks=[home_call("status"), home_never_on]),
+    case("home_pause", "pause the kitchen speaker", must=["smart_home"], home=EVAL_HOME,
+         checks=[home_call("pause", ["Kitchen speaker", "Kitchen"])]),
+    case("home_everything", "turn everything off", home=EVAL_HOME, checks=[home_never_on]),
+    case("home_missing", "turn on the garage door", home=EVAL_HOME,
+         checks=[home_never_on, answer(CANNOT + r"|no (device|garage)|isn'?t|not (one|listed|among|set up)|don'?t see|couldn'?t find",
+                                       "that there is no such device")]),
+    case("home_same_name", "turn on the lamp in the hall", must=["smart_home"], home=EVAL_HOME,
+         checks=[home_call("on", ["Lamp (Hall)", "Hall"])]),
+    case("home_ask_first", "turn on the fan heater", must=["smart_home"], home=EVAL_HOME, checks=[home_asked]),
+    case("home_ask_first_yes", ["turn on the fan heater", "yes"], must=["smart_home"], home=EVAL_HOME,
+         checks=[home_call("on", ["Fan heater"]), home_switched("Fan heater")]),
+    case("home_neighbour_timer", "set a timer for 10 minutes", must=["reminder_set"], must_not=["smart_home"], home=EVAL_HOME),
+    case("home_neighbour_weather", "whats the weather like in lisbon tomorrow", must=["weather"], must_not=["smart_home"],
+         home=EVAL_HOME),
 ]
 
 # ---------------------------------------------------------------- running and scoring
@@ -371,6 +461,12 @@ def run_case(binary, base_env, c):
         if os.environ.get("ZB_EVAL_" + key.upper()): settings[key] = os.environ["ZB_EVAL_" + key.upper()]
     json.dump(settings, open(state + "/config/zero-bot/settings.json", "w"))
     env = dict(base_env, XDG_CONFIG_HOME=state + "/config", XDG_DATA_HOME=state + "/data", XDG_CACHE_HOME=state + "/cache")
+    if c.get("home"):
+        # The made-up home lives on the stand-in network, where only 127.x addresses could ever be
+        # contacted; with ZB_DRY_RUN none is.
+        os.makedirs(state + "/data/zero-bot")
+        json.dump(c["home"], open(state + "/data/zero-bot/smarthome.json", "w"))
+        env["ZB_TEST_NETWORK"] = "1"
     for k, v in c["env"].items():
         if v is None: env.pop(k, None)
         else: env[k] = v
