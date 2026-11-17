@@ -59,9 +59,13 @@ struct NetworkEntry {
 };
 
 // ---- drivers
-void register_driver(std::unique_ptr<Driver> driver);
+// `name` is what the settings pages call the family's devices ("Tapo", "Hue Bridge").
+void register_driver(std::unique_ptr<Driver> driver, const std::string &name = "");
 Driver *driver_for(const std::string &kind);      // the driver whose kind() this is
 Driver *driver_for(const Device &device);         // the driver that claims this device
+// The name of a device's family for a list: its driver's, else a known kind's ("Sonos" for a
+// device no driver claims yet), else "Device".
+std::string kind_label(const Device &device);
 // Defined in drivers/registry.cpp: registers every family built into the app. Called once, the
 // first time a driver is looked up.
 void register_builtin_drivers();
@@ -104,6 +108,10 @@ void unpair(const std::string &network_id, const std::string &device_id);
 // and saves them: aliases, rooms and the two switches a user sets survive. Returns a short
 // summary for the settings page.
 std::string refresh(const std::string &network_id, const std::string &only_device = "");
+// Once a device's pairing has finished: reads it, and every other device of its family that the
+// pairing made ready and that has not been read yet (one Tapo account serves every Tapo plug, so
+// typing it for one readies them all).
+std::string refresh_after_pairing(const std::string &network_id, const std::string &device_id);
 
 // ---- names
 std::string clean_name(const std::string &raw);             // untrusted text made safe to show and to pass as data
@@ -146,10 +154,11 @@ struct Command {
 std::string execute(const Command &command, bool dry_run);
 // Switching from the settings page, by hand: no question is asked and no name is matched.
 std::string switch_thing(const std::string &network_id, const std::string &device_id, const std::string &thing_id, bool on);
-// The request loop reports what the user says and when a reply has gone to them, so that a
-// change that needs a yes goes ahead only after the question was put and answered with a yes.
+// The request loop reports what the user says and every reply that goes to them, so that a
+// change that needs a yes goes ahead only after its question was put (a reply that asks, naming
+// the thing) and the user's very next message answered it with a short, plain yes.
 void user_spoke(const std::string &text);
-void assistant_replied();
+void assistant_replied(const std::string &reply);
 // A tool has just handed the model text from outside (a web page, a photo). Changes asked for
 // before the user next speaks then need the user's yes.
 void saw_untrusted_text();

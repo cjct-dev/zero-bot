@@ -1,9 +1,11 @@
 // The http::Request options smart-home drivers use, against the local peer in http_peer.py:
 // no_redirect, timeout_ms, digest credentials, insecure, a pinned public key, the peer's
-// certificate, and a client certificate. Started by http_peer.py, which passes:
-//   http_test HTTP_PORT HTTPS_PORT HTTPS_CLIENT_PORT PIN CLIENT_CERT_FILE CLIENT_KEY_FILE
+// certificate, a client certificate, and the defaults of a request to a device (no redirects to
+// elsewhere, no proxy). Started by http_peer.py, which passes:
+//   http_test HTTP_PORT HTTPS_PORT HTTPS_CLIENT_PORT PIN CLIENT_CERT_FILE CLIENT_KEY_FILE PROXY_PORT
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 #include "core/util.h"
@@ -25,9 +27,13 @@ std::string seen(const http::Response &r) { return "status " + std::to_string(r.
 }  // namespace
 
 int main(int argc, char **argv) {
-    if (argc < 7) { fprintf(stderr, "usage: http_test HTTP_PORT HTTPS_PORT HTTPS_CLIENT_PORT PIN CERT KEY\n"); return 2; }
+    if (argc < 8) { fprintf(stderr, "usage: http_test HTTP_PORT HTTPS_PORT HTTPS_CLIENT_PORT PIN CERT KEY PROXY_PORT\n"); return 2; }
     const std::string plain = std::string("http://127.0.0.1:") + argv[1], tls = std::string("https://127.0.0.1:") + argv[2],
-                      tls_client = std::string("https://127.0.0.1:") + argv[3], pin = argv[4];
+                      tls_client = std::string("https://127.0.0.1:") + argv[3], pin = argv[4],
+                      proxy = std::string("http://127.0.0.1:") + argv[7];
+    // Whatever proxy the shell running the tests names is not wanted here.
+    for (const char *v : {"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"})
+        unsetenv(v);
     std::string cert, key;
     if (!util::read_file(argv[5], cert) || !util::read_file(argv[6], key)) { fprintf(stderr, "cannot read the client certificate\n"); return 2; }
     http::global_init();
@@ -90,6 +96,55 @@ int main(int argc, char **argv) {
     r.client_key_pem = key;
     res = http::send(r);
     check(res.status == 200 && res.body == "client ok", "a client certificate given as PEM text is presented", seen(res));
+
+    // A request to a device does not follow a redirect, here to another host: a device's key in a
+    // header must never travel anywhere else. The device-only options imply it.
+    auto peer_saw = [&] {
+        http::Request q;
+        q.local = true;
+        q.url = plain + "/seen";
+        return http::send(q).body;
+    };
+    r = http::Request();
+    r.url = plain + "/redirect-away";
+    r.headers = {"hue-application-key: SECRET-DEVICE-KEY"};
+    r.local = true;
+    res = http::send(r);
+    check(res.status == 307 && peer_saw() == "away=0 proxy=0", "a device request returns a redirect instead of following it",
+          seen(res) + ", " + peer_saw());
+    r.local = false;
+    r.digest_user = "user";
+    r.digest_pass = "pass word";
+    res = http::send(r);
+    check(res.status == 307 && peer_saw() == "away=0 proxy=0", "digest credentials make it a device request", seen(res) + ", " + peer_saw());
+    r = http::Request();
+    r.url = tls + "/redirect-away";
+    r.headers = {"hue-application-key: SECRET-DEVICE-KEY"};
+    r.insecure = true;
+    r.timeout_ms = 3000;
+    res = http::send(r);
+    check(res.status == 307 && peer_saw() == "away=0 proxy=0", "so does accepting a device's own certificate", seen(res) + ", " + peer_saw());
+
+    // A proxy named in the environment is for the internet: a request to a device goes straight to it.
+    setenv("http_proxy", proxy.c_str(), 1);
+    setenv("https_proxy", proxy.c_str(), 1);
+    r = http::Request();
+    r.url = plain + "/hello";
+    r.timeout_ms = 3000;
+    res = http::send(r);
+    check(res.status == 502, "(another request does go through the pretend proxy)", seen(res));
+    r.local = true;
+    res = http::send(r);
+    check(res.status == 200 && res.body == "tls ok", "a device request does not go through a proxy", seen(res));
+    r = http::Request();
+    r.url = tls + "/hello";
+    r.insecure = true;
+    r.timeout_ms = 3000;
+    res = http::send(r);
+    check(res.status == 200 && res.body == "tls ok", "nor does one with a device's own certificate", seen(res));
+    unsetenv("http_proxy");
+    unsetenv("https_proxy");
+    check(peer_saw() == "away=0 proxy=1", "the proxy saw only the internet request, the other host nothing", peer_saw());
 
     printf("%s  http options (%d checks)\n", g_failed ? "FAIL" : "ok  ", g_checks);
     return g_failed ? 1 : 0;

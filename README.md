@@ -194,16 +194,19 @@ TVs) are added one driver at a time.
    makers' apps do; it does not log in to anything or change anything.
 2. Devices that need it are listed under *To set up*; *Set up…* walks through what the device
    asks for (press a button, accept a prompt, type a code or password). Tapo plugs obey only
-   the Tapo account they were set up with, so they ask for its e-mail address and password. Only
-   the e-mail and a scrambled form of the password are kept on the device. Because a plug locks
-   itself after a few wrong passwords, a password a plug has refused is not tried again, by any
-   later run either, until you type it again (*Smart home → Tapo account*).
+   the Tapo account they were set up with, so they ask for its e-mail address and password; once
+   typed for one plug, every plug of that account is ready. Only the e-mail and a scrambled form of
+   the password are kept on the device, and only one Tapo account: typing another account's
+   address replaces it and asks for that account's password before anything is sent. Because a
+   plug locks itself after a few wrong passwords, a password a plug has refused is not tried
+   again, by any later run either, until you type it again (*Smart home → Tapo account*).
 3. What each device controls is then listed by room. On its page you can set the name you will
    say (*Called*), a *Room* (guessed from the name where it starts with one, such as "Bedroom
    lamp"), whether the *Assistant may use it*, and *Ask before switching on*. That last one is on
    by default for anything whose name suggests heat (heater, kettle, iron, …): the assistant then
-   asks "Turn on Bed heater?" and switches it only after you say yes. Turn it off for something
-   you use every day.
+   asks "Turn on Bed heater?" and switches it only if your very next words are a plain yes ("yes",
+   "go ahead", "yes please"). Anything else, including a new request or "leave it off", counts as
+   no. Turn it off for something you use every day.
 
 A room's name means the lights in that room. Everything can be switched off at once, but not on.
 The assistant also asks first before changing more than eight things at once, before setting
@@ -213,7 +216,8 @@ These rules are enforced by the app, not left to the model.
 
 Saved devices belong to the network they were found on (its name together with the router's
 hardware address). On any other network, and always while the device is online through your
-phone's Bluetooth, the assistant has no smart-home tool at all and no saved device is contacted.
+phone (over Bluetooth or a USB cable), the assistant has no smart-home tool at all and no saved
+device is contacted; this takes effect the moment the connection changes.
 Some makers' local protocols have no password at all; anyone on your Wi-Fi can switch such
 devices, with or without this app.
 
@@ -290,7 +294,9 @@ devices at a 127.x address are ever contacted and nothing is scanned; the tests 
 `tests/agent_eval.py` runs a scored set of requests through this build and reports which tools
 were called, whether the answers hold up, and how long each took. See the notes at the top of
 the file. `tests/run_unit.sh` builds and runs the tests that need neither a device nor an AI
-service, and `tests/tapo_e2e.py` runs the command-line build against two simulated Tapo plugs.
+service, `tests/tapo_e2e.py` runs the command-line build against two simulated Tapo plugs, and
+`tests/home_chat_e2e.py` runs its conversation loop against a scripted chat service to check that a
+change needing your yes waits for one.
 
 ## Troubleshooting
 

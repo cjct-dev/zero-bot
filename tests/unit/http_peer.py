@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """A local peer for tests/unit/http_test.cpp. Standard library only, plus the openssl command
-to make two throwaway self-signed certificates. Everything binds 127.0.0.1 on ports the system
-picks, and stops when the test program has finished.
+to make two throwaway self-signed certificates. Everything binds 127.0.0.1 (and one listener
+127.0.0.2, "another host") on ports the system picks, and stops when the test program has
+finished. What the other host and the pretend proxy received is reported at /seen.
 
 usage: http_peer.py path/to/http_test
 """
@@ -19,6 +20,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 USER, PASSWORD, REALM, NONCE = "user", "pass word", "device", "dcd98b7102dd2f0e8b11d0f600bfb0c093"
+SEEN = {"away": [], "proxy": []}   # requests that reached the other host, and the pretend proxy
+AWAY = {"port": 0}
 
 
 def md5(text):
@@ -70,8 +73,31 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, b"tls ok")
         elif self.path == "/who":
             self.reply(200, b"client ok")
+        elif self.path == "/redirect-away":
+            self.reply(307, b"moved", {"Location": "http://127.0.0.2:%d/stolen" % AWAY["port"]})
+        elif self.path == "/seen":
+            body = ("away=%d proxy=%d" % (len(SEEN["away"]), len(SEEN["proxy"]))).encode()
+            self.reply(200, body)
         else:
             self.reply(404)
+
+
+class Away(Handler):
+    """Another host: whatever reaches it is counted, with the headers it carried."""
+    def do_GET(self):
+        SEEN["away"].append(dict(self.headers))
+        self.reply(200, b"stolen")
+
+
+class Proxy(Handler):
+    """A pretend proxy: counts every request and refuses it."""
+    def do_GET(self):
+        SEEN["proxy"].append(self.requestline)
+        self.reply(502, b"proxy")
+
+    def do_CONNECT(self):
+        SEEN["proxy"].append(self.requestline)
+        self.reply(502, b"proxy")
 
 
 def self_signed(folder, name):
@@ -114,11 +140,14 @@ def main():
         cctx.verify_mode = ssl.CERT_REQUIRED
         cctx.load_verify_locations(client_cert)
         tls_client.socket = cctx.wrap_socket(tls_client.socket, server_side=True)
-        servers = [plain, tls, tls_client]
+        away = ThreadingHTTPServer(("127.0.0.2", 0), Away)
+        AWAY["port"] = away.server_address[1]
+        proxy = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+        servers = [plain, tls, tls_client, away, proxy]
         for s in servers:
             serve(s)
         args = [sys.argv[1], str(plain.server_address[1]), str(tls.server_address[1]), str(tls_client.server_address[1]),
-                pin_of(cert), client_cert, client_key]
+                pin_of(cert), client_cert, client_key, str(proxy.server_address[1])]
         rc = subprocess.run(args, timeout=60).returncode
     finally:
         for s in servers:

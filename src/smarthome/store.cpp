@@ -22,10 +22,12 @@ namespace {
 std::mutex g_mtx;            // guards the file
 std::mutex g_net_mtx;        // guards the cached network and the test hooks
 const discovery::Network *g_test_network = nullptr;
+const testing::NetworkSource *g_test_source = nullptr;
 unsigned long (*g_test_clock)() = nullptr;
 
 std::mutex g_drivers_mtx;
 std::vector<std::unique_ptr<Driver>> g_drivers;
+std::map<const Driver *, std::string> g_driver_names;
 std::once_flag g_builtin_once;
 bool g_skip_builtin = false;
 
@@ -249,11 +251,29 @@ bool allowed_type(const std::string &type) {
 }
 
 // ---------------------------------------------------------------- drivers and secrets
-void register_driver(std::unique_ptr<Driver> driver) {
+void register_driver(std::unique_ptr<Driver> driver, const std::string &name) {
     if (!driver) return;
     driver->attach(&g_secrets);
     std::lock_guard<std::mutex> lk(g_drivers_mtx);
+    if (!name.empty()) g_driver_names[driver.get()] = name;
     g_drivers.push_back(std::move(driver));
+}
+
+std::string kind_label(const Device &device) {
+    if (const Driver *drv = driver_for(device)) {
+        std::lock_guard<std::mutex> lk(g_drivers_mtx);
+        const auto it = g_driver_names.find(drv);
+        if (it != g_driver_names.end()) return it->second;
+    }
+    // Kinds discovery reports that no driver built into the app may claim yet.
+    static const std::pair<const char *, const char *> kKnown[] = {
+        {"tapo", "Tapo"}, {"homekit", "HomeKit"}, {"hue_bridge", "Hue Bridge"}, {"cast", "Cast"}, {"fire_tv", "Fire TV"},
+        {"matter", "Matter"}, {"shelly", "Shelly"}, {"wled", "WLED"}, {"esphome", "ESPHome"}, {"elgato", "Elgato"},
+        {"nanoleaf", "Nanoleaf"}, {"sonos", "Sonos"}, {"android_tv", "Android TV"}, {"roku", "Roku"}, {"wemo", "WeMo"},
+        {"tplink", "TP-Link"}, {"airplay", "AirPlay"}, {"wiz", "WiZ"}, {"kasa", "Kasa"}};
+    for (const auto &k : kKnown)
+        if (device.kind == k.first) return k.second;
+    return "Device";
 }
 
 Driver *driver_for(const std::string &kind) {
@@ -315,14 +335,32 @@ bool test_network() {
     return env_test_network();
 }
 
+// The full look (the Wi-Fi name, the router's hardware address) costs a subprocess and is kept for
+// a few seconds; whether it still describes the network is checked on every call, from the
+// default route and the router's address in the neighbour table, which cost a file read each. So
+// the moment the connection moves (to a phone's tether, to another network) the old answer is
+// dropped, and nothing saved for the old network is offered or contacted.
 discovery::Network network_now(bool fresh) {
     static discovery::Network cached;
     static unsigned long at = 0;
     std::lock_guard<std::mutex> lk(g_net_mtx);
     if (g_test_network) return *g_test_network;
     if (env_test_network()) return stand_in();
+    const testing::NetworkSource *src = g_test_source;
     const unsigned long now = now_ms();
-    if (fresh || at == 0 || now - at > 8000) { cached = discovery::current_network(); at = now ? now : 1; }
+    bool moved = false;
+    if (at != 0 && !fresh) {
+        const discovery::Route route = src && src->route ? src->route() : discovery::default_route();
+        moved = route.iface != cached.iface || route.gateway != cached.gateway;
+        if (!moved && cached.usable) {
+            const std::string mac = src && src->mac_of ? src->mac_of(cached.gateway) : discovery::mac_of(cached.gateway);
+            moved = !mac.empty() && mac != cached.gateway_mac;   // another router at the same address
+        }
+    }
+    if (fresh || moved || at == 0 || now - at > 8000) {
+        cached = src && src->current ? src->current() : discovery::current_network();
+        at = now ? now : 1;
+    }
     return cached;
 }
 
@@ -506,12 +544,18 @@ void set_network(const discovery::Network *network) {
     g_test_network = network;
 }
 
+void set_network_source(const NetworkSource *source) {
+    std::lock_guard<std::mutex> lk(g_net_mtx);
+    g_test_source = source;
+}
+
 void set_clock(unsigned long (*clock_ms)()) { g_test_clock = clock_ms; }
 
 void clear_drivers() {
     g_skip_builtin = true;
     ensure_builtin();
     std::lock_guard<std::mutex> lk(g_drivers_mtx);
+    g_driver_names.clear();
     g_drivers.clear();
 }
 

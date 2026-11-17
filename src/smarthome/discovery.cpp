@@ -360,8 +360,8 @@ std::string Network::id() const {
 
 std::string Network::label() const { return ssid.empty() ? "Wired network" : ssid; }
 
-Network current_network() {
-    Network net;
+Route default_route() {
+    Route r;
     std::ifstream route("/proc/net/route");
     std::string line;
     std::getline(route, line);
@@ -371,19 +371,59 @@ Network current_network() {
         unsigned flags = 0;
         cols >> iface >> dest >> gw >> std::hex >> flags;
         if (dest != "00000000" || !(flags & 0x2)) continue;
-        net.iface = iface;
+        r.iface = iface;
         in_addr a;
         a.s_addr = static_cast<in_addr_t>(strtoul(gw.c_str(), nullptr, 16));   // already in network order
         char ip[INET_ADDRSTRLEN];
-        if (inet_ntop(AF_INET, &a, ip, sizeof(ip))) net.gateway = ip;
+        if (inet_ntop(AF_INET, &a, ip, sizeof(ip))) r.gateway = ip;
         break;
     }
+    return r;
+}
+
+Link link_kind(const std::string &iface, std::string &why_not, const std::string &sys) {
+    const std::string dir = sys + "/" + iface;
+    auto exists = [](const std::string &path) { return access(path.c_str(), F_OK) == 0; };
+    // Wi-Fi: a wireless device, whatever it is called.
+    if (exists(dir + "/phy80211") || exists(dir + "/wireless") || iface.compare(0, 2, "wl") == 0) return Link::WiFi;
+    std::string type;
+    if (util::read_file(dir + "/type", type) && util::trim(type) != "1") {   // not Ethernet framing: a VPN, PPP, ...
+        why_not = "The internet connection is not Wi-Fi (" + iface + "), so there is no home network to look at.";
+        return Link::Other;
+    }
+    // The drivers of USB network links that phones and mobile modems use; a USB Ethernet adapter
+    // has a driver of its own (r8152, ax88179_178a, lan78xx, ...).
+    char target[512];
+    const ssize_t n = readlink((dir + "/device/driver").c_str(), target, sizeof(target) - 1);
+    if (n > 0) {
+        target[n] = 0;
+        const char *slash = strrchr(target, '/');
+        const std::string driver = slash ? slash + 1 : target;
+        for (const char *tether : {"ipheth", "rndis_host", "cdc_ether", "cdc_ncm", "cdc_eem", "cdc_mbim", "cdc_subset",
+                                   "huawei_cdc_ncm", "qmi_wwan"})
+            if (driver == tether) {
+                why_not = "The internet connection is a USB link (" + iface + "), such as a phone's, so there is no home network "
+                          "to look at.";
+                return Link::Other;
+            }
+    }
+    if (iface.compare(0, 2, "en") == 0 || iface.compare(0, 3, "eth") == 0) return Link::Wired;
+    // A phone's Bluetooth tether, a VPN or a USB link is somebody else's network or no network at all.
+    why_not = "The internet connection is not Wi-Fi (" + iface + "), so there is no home network to look at.";
+    return Link::Other;
+}
+
+Network current_network() {
+    Network net;
+    const Route route = default_route();
+    net.iface = route.iface;
+    net.gateway = route.gateway;
     if (net.iface.empty()) { net.why_not = "There is no network connection."; return net; }
     // A phone's Bluetooth tether, a VPN or a USB link is somebody else's network or no network at
     // all: only Wi-Fi and Ethernet count as "the network this device is on".
-    const bool wifi = net.iface.compare(0, 2, "wl") == 0;
-    const bool wired = net.iface.compare(0, 2, "en") == 0 || net.iface.compare(0, 3, "eth") == 0;
-    if (!wifi && !wired) { net.why_not = "The internet connection is not Wi-Fi (" + net.iface + "), so there is no home network to look at."; return net; }
+    const Link link = link_kind(net.iface, net.why_not);
+    if (link == Link::Other) return net;
+    const bool wifi = link == Link::WiFi;
 
     ifaddrs *list = nullptr;
     if (getifaddrs(&list) == 0) {

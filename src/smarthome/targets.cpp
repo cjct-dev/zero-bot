@@ -41,11 +41,25 @@ std::vector<std::string> rooms_of(const std::vector<Item> &items, bool with_a_li
     return out;
 }
 
+// A room is listed under its own name unless a thing is listed under that name too.
 std::string room_label(const std::vector<Item> &items, const std::string &room) {
     for (const auto &i : items)
         if (plain(i.label) == plain(room)) return room + " (room)";
     return room;
 }
+
+// The fixed groups: the name each is listed under, a second name for when a thing or room is
+// already listed under the first, and every phrase that means it.
+struct Group {
+    Scope scope;
+    const char *label, *other_label;
+    std::vector<const char *> phrases;
+};
+const Group kGroups[] = {   // in the order they are listed
+    {Scope::AllLights, "all lights", "every light", {"all lights", "all the lights", "lights", "every light", "all lamps", "all the lamps"}},
+    {Scope::AllSpeakers, "all speakers", "every speaker", {"all speakers", "all the speakers", "speakers", "every speaker"}},
+    {Scope::Everything, "all", "everything", {"all", "everything", "all devices", "every device", "all of them", "all the devices"}},
+};
 
 bool any_light(const std::vector<Item> &items) {
     return std::any_of(items.begin(), items.end(), [](const Item &i) { return is_light(i.thing); });
@@ -79,13 +93,35 @@ Resolved thing_target(const Item &item) {
     return r;
 }
 
+// Whether a group has anything to act on, and so is offered at all.
+bool group_present(const std::vector<Item> &items, Scope scope) {
+    if (scope == Scope::AllLights) return any_light(items);
+    if (scope == Scope::AllSpeakers) return any_speaker(items);
+    return any_switchable(items);
+}
+
+Resolved group_target(const std::vector<Item> &items, const Group &g) {
+    Resolved r;
+    r.scope = g.scope;
+    r.label = g.label;
+    for (const auto &i : items)
+        if (g.scope == Scope::Everything || (g.scope == Scope::AllLights && is_light(i.thing)) ||
+            (g.scope == Scope::AllSpeakers && i.thing.type == "speaker"))
+            r.members.push_back(&i);
+    return r;
+}
+
+// Names in the sentences handed to the model are always in double quotes, which clean_name()
+// removes from every name: a name cannot close its quotes and read as part of the sentence.
 std::string list_of(const std::vector<std::string> &names) {
     std::string out;
-    for (const auto &n : names) out += (out.empty() ? "" : ", ") + n;
+    for (const auto &n : names) out += (out.empty() ? "" : ", ") + in_quotes(n);
     return out;
 }
 
 }  // namespace
+
+std::string in_quotes(const std::string &name) { return "\"" + name + "\""; }
 
 std::string plain(const std::string &text) {
     std::string out;
@@ -157,13 +193,26 @@ std::vector<Item> catalog(const NetworkEntry &entry) {
 
 std::vector<std::string> target_names(const std::vector<Item> &items, bool *overflow) {
     if (overflow) *overflow = false;
+    // Every value listed means one thing to resolve(): no two are the same said aloud, and none
+    // is shadowed by a thing, room or group that resolve() looks at first. Things come first,
+    // under their labels; a room shares a thing's name only as "<Room> (room)"; a group whose
+    // name a thing or room already has is listed under its other name ("every light"), or not
+    // at all.
+    std::set<std::string> taken;
+    for (const auto &i : items) taken.insert(plain(i.label));
     // Rooms (only those with a light: a room target means its lights) and groups stay listed
     // whatever happens; things fill the rest.
     std::vector<std::string> fixed;
-    for (const auto &room : rooms_of(items, true)) fixed.push_back(room_label(items, room));
-    if (any_light(items)) fixed.push_back("all lights");
-    if (any_speaker(items)) fixed.push_back("all speakers");
-    if (any_switchable(items)) fixed.push_back("all");
+    for (const auto &room : rooms_of(items, true)) {
+        const std::string label = room_label(items, room);
+        if (taken.insert(plain(label)).second) fixed.push_back(label);
+    }
+    for (const auto &room : rooms_of(items, false)) taken.insert(plain(room));   // rooms resolve before groups
+    for (const auto &g : kGroups) {
+        if (!group_present(items, g.scope)) continue;
+        for (const char *label : {g.label, g.other_label})
+            if (taken.insert(plain(label)).second) { fixed.push_back(label); break; }
+    }
     if (fixed.size() > kMaxTargets) {
         fixed.erase(fixed.begin(), fixed.begin() + static_cast<long>(fixed.size() - kMaxTargets));
         if (overflow) *overflow = true;
@@ -199,30 +248,26 @@ bool resolve(const std::vector<Item> &items, const std::string &said_raw, Resolv
     if (starts_with(want, "the ")) want = want.substr(4);
     if (want.empty()) { err = "say which device, room or group (target)"; return false; }
 
-    // Fixed groups.
-    for (const char *phrase : {"all", "everything", "all devices", "every device", "all of them", "all the devices"})
-        if (want == phrase) {
-            out.scope = Scope::Everything;
-            out.label = "all";
-            for (const auto &i : items) out.members.push_back(&i);
-            return true;
-        }
-    for (const char *phrase : {"all lights", "all the lights", "lights", "every light", "all lamps", "all the lamps"})
-        if (want == phrase && any_light(items)) {
-            out.scope = Scope::AllLights;
-            out.label = "all lights";
-            for (const auto &i : items)
-                if (is_light(i.thing)) out.members.push_back(&i);
-            return true;
-        }
-    for (const char *phrase : {"all speakers", "all the speakers", "speakers", "every speaker"})
-        if (want == phrase && any_speaker(items)) {
-            out.scope = Scope::AllSpeakers;
-            out.label = "all speakers";
-            for (const auto &i : items)
-                if (i.thing.type == "speaker") out.members.push_back(&i);
-            return true;
-        }
+    // The exact matches, in the order that makes every value target_names() lists mean what it
+    // was listed as: a thing's listed name, then "<Room> (room)", then a room's name, then a
+    // group, and only then a thing's other name (the maker's, or the user's own). So a plug the
+    // maker's app calls "Bedroom", renamed "Bed heater", never answers to the room, and a plug
+    // called "Lights" is that plug, not every light.
+    auto exact_things = [&](const std::function<bool(const Item &)> &match) -> int {
+        std::vector<const Item *> hits;
+        for (const auto &i : items)
+            if (match(i)) hits.push_back(&i);
+        if (hits.empty()) return 0;
+        if (hits.size() == 1) { out = thing_target(*hits[0]); return 1; }
+        std::vector<std::string> names;
+        bool same = true;
+        for (const auto *h : hits) { names.push_back(h->label); same = same && plain(h->label) == plain(hits[0]->label); }
+        err = same ? "more than one device is called " + in_quotes(said) + ". Tell the user to give one of them another name in "
+                     "Settings, Smart home"
+                   : in_quotes(said) + " could mean any of: " + list_of(names) + ". Ask which one";
+        return -1;
+    };
+    if (const int found = exact_things([&](const Item &i) { return plain(i.label) == want; })) return found > 0;
 
     const std::vector<std::string> rooms = rooms_of(items, false);
     auto find_room = [&](const std::string &name) -> const std::string * {
@@ -233,22 +278,19 @@ bool resolve(const std::vector<Item> &items, const std::string &said_raw, Resolv
     // "Bedroom (room)" is how a room is listed when a thing has the same name.
     if (ends_with(want, " room") && ends_with(util::lower(said), "(room)"))
         if (const std::string *room = find_room(plain(said.substr(0, said.size() - 6)))) { out = room_target(items, *room); return true; }
-
-    // Exact: the listed name, the maker's name or the user's own name for it.
-    std::vector<const Item *> hits;
-    for (const auto &i : items)
-        if (plain(i.label) == want || plain(i.thing.name) == want || (!i.thing.alias.empty() && plain(i.thing.alias) == want))
-            hits.push_back(&i);
-    if (hits.size() == 1) { out = thing_target(*hits[0]); return true; }
-    if (hits.size() > 1) {
-        std::vector<std::string> names;
-        bool same = true;
-        for (const auto *h : hits) { names.push_back(h->label); same = same && plain(h->label) == plain(hits[0]->label); }
-        err = same ? "more than one device is called '" + said + "'. Tell the user to give one of them another name in Settings, Smart home"
-                   : "'" + said + "' could mean any of: " + list_of(names) + ". Ask which one";
-        return false;
-    }
     if (const std::string *room = find_room(want)) { out = room_target(items, *room); return true; }
+
+    // "all" always means everything (a status of everything works in any home); the other groups
+    // exist only when they have members.
+    for (const auto &g : kGroups)
+        if (g.scope == Scope::Everything || group_present(items, g.scope))
+            for (const char *phrase : g.phrases)
+                if (want == phrase) { out = group_target(items, g); return true; }
+
+    if (const int found = exact_things([&](const Item &i) {
+            return plain(i.thing.name) == want || (!i.thing.alias.empty() && plain(i.thing.alias) == want);
+        }))
+        return found > 0;
     // "bedroom lights", "the lights in the bedroom".
     for (const char *suffix : {" lights", " light", " lamps", " lamp", " room"})
         if (ends_with(want, suffix))
@@ -284,14 +326,15 @@ bool resolve(const std::vector<Item> &items, const std::string &said_raw, Resolv
     if (found.empty()) {
         std::vector<std::string> names;
         for (const auto &c : all) {
-            if (names.size() == 30) { names.push_back("and others"); break; }
+            if (names.size() == 30) break;
             names.push_back(c.shown);
         }
-        err = "there is no device called '" + said + "'. Tell the user so; the devices are: " + list_of(names);
+        err = "there is no device called " + in_quotes(said) + ". Tell the user so; the devices are: " + list_of(names) +
+              (all.size() > names.size() ? " and others" : "");
     } else {
         std::vector<std::string> names;
         for (const auto &c : found) names.push_back(c.shown);
-        err = "'" + said + "' could mean any of: " + list_of(names) + ". Ask which one";
+        err = in_quotes(said) + " could mean any of: " + list_of(names) + ". Ask which one";
     }
     return false;
 }

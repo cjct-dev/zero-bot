@@ -53,7 +53,8 @@ src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast); driver.h, the con
 src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
                     pages, breathing screen, theme
 tests/              scored agent test set (needs a live service), device-free unit tests
-                    (run_unit.sh), Tapo end to end (tapo_e2e.py), simulated devices (mocks/)
+                    (run_unit.sh), Tapo end to end (tapo_e2e.py), the loop against a scripted
+                    chat service (home_chat_e2e.py), simulated devices and service (mocks/)
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
 ```
 
@@ -95,10 +96,16 @@ Things in that loop that exist for a reason; do not remove them without re-runni
 - **Smart-home questions**: a change that needs the user's yes (a thing with *Ask before
   switching on*, heating outside 10 to 25 degrees, more than eight things, loud volume, after a
   web page or photo) makes `home::execute` answer `CONFIRM: ...` and remember the change. The loop
-  reports every user message (`home::user_spoke`) and every final reply (`home::assistant_replied`);
-  the same change goes ahead only when it is asked for again in the very next message, that
-  message reads as a yes, and the question was actually put. There is deliberately no parameter
-  the model could set to skip this. `web_search` and `look` call `home::saw_untrusted_text()`.
+  reports every user message (`home::user_spoke`) and every final reply, with its text
+  (`home::assistant_replied`). The same change (action, target and values) goes ahead only when
+  the question was put (a reply that asks, with a question mark, naming the thing), the very next
+  user message is a short, plain yes (every word an agreement, politeness or the thing's name; a
+  new request, "leave it off please" or "yes, and..." is not), and it is asked for again in that
+  turn. A change once put as a question keeps needing the yes in the next turn even when what made
+  it risky has passed, so "no" after a web page stops it. There is deliberately no parameter the
+  model could set to skip this. `web_search` and `look` call `home::saw_untrusted_text()`. Names in
+  `ERROR`/`CONFIRM` sentences are always in double quotes, which `home::clean_name` removes from
+  every name, so a device's name cannot end its quotes and read as an instruction.
 
 ## 5. Building
 
@@ -129,6 +136,10 @@ What exists:
   read the diff before committing it. `ZB_BUILD_WRAPPER=cmd` runs each compile through `cmd`.
 - **Tapo end to end**: `tests/tapo_e2e.py` runs `build/cli/zero_bot` against two simulated plugs
   (`tests/mocks/mock_tapo.py`, a TPAP P110 and a KLAP P304M) on ports the system picks.
+- **The request loop, scripted**: `tests/home_chat_e2e.py` runs `build/cli/zero_bot --chat` against
+  `tests/mocks/mock_chat.py` (a chat-completions service that answers from a script) and a
+  simulated plug, and checks from the plug's side that a change needing a yes waits for one. Use
+  the scripted service for any change to the loop that a live model cannot be trusted to test.
 
 - **Command-line modes** in `src/main.cpp` (work in the `cli` build):
   `--ask "text"`, `--chat`, `--tool NAME 'JSON'`, `--steer "text"` (inject input during the
@@ -188,7 +199,10 @@ key, real audio), say so plainly rather than implying it was.
   not a toast.
 - On a phone's Bluetooth tether uploads run at about 10 kB/s. Speech is sent as MP3 and replies
   fetched as Opus for that reason. The tether is never a "home network": the smart-home tool
-  and scan do not exist on it.
+  and scan do not exist on it. Nor does a phone's USB tether, which can be named like a wired
+  port (an iPhone's is `eth0`): `discovery::link_kind` decides by the interface's driver, not its
+  name. `home::network_now` checks the default route on every call, so a move to a tether takes
+  effect at once rather than when a cached answer expires.
 - The Wi-Fi chip's firmware ignored the country code, hiding channels 12 and 13;
   `docs/wifi-channels-12-13.md` has the device-tree fix.
 
@@ -268,20 +282,25 @@ changed, drive it from `App::periodic`, route keys in `App::handle_key`, add a `
 
 **A smart-home device family.** It is a driver: a class implementing `home::Driver`
 (`src/smarthome/driver.h`) in `src/smarthome/drivers/<family>.{h,cpp}`, which defines
-`std::unique_ptr<home::Driver> make_<family>_driver();`. Registering it is one line, `X(<family>) \`,
-in the list in `src/smarthome/drivers/registry.cpp`. Discovery must report the family's devices
-under the kind its `claims()` accepts (`kServices` or a vendor query in `discovery.cpp`), and
-`kind_label` in `settings_pages.cpp` gives the type a name on screen. Nothing else changes: the
+`std::unique_ptr<home::Driver> make_<family>_driver();`. Registering it is one line,
+`X(<family>, "<Name>") \`, in the list in `src/smarthome/drivers/registry.cpp`; the name is what the
+settings pages call its devices. Discovery must report the family's devices under the kind its
+`claims()` accepts (`kServices` or a vendor query in `discovery.cpp`). Nothing else changes: the
 shared layer does names, rooms, the tool's schema (it grows with the capabilities a home has),
-the safety questions, rate limits, locking, fan-out and the generic pairing pages. The rules a
+the safety questions, rate limits, locking, fan-out and the generic pairing pages (after a
+pairing step, the family's other devices are asked again, so an account typed once serves them
+all). The rules a
 driver keeps: map only allow-listed types (lights, plugs, switches, thermostats, covers, fans,
 speakers, TVs, scenes, read-only sensors; never locks, garage doors, alarms, cameras, valves or
 cooking appliances); state in the units and keys documented in `home.h`; secrets only in
 `Device::auth` or `secrets()`, never in errors; never retry a rejected code or password, even in
 a later run; honour `Device::port`; deadlines of about 2.5 s for a change and 4 s for listing;
 no threads, sockets or connections of its own between calls; errors are short sentences. Use
-the `http::Request` options (`timeout_ms`, `insecure`, `pinned_pubkey`, `want_peer_cert`,
-`no_redirect`, digest, client certificate) and `color.h` rather than private copies. Build and
+the `http::Request` options (`local`, `timeout_ms`, `insecure`, `pinned_pubkey`, `want_peer_cert`,
+digest, client certificate) and `color.h` rather than private copies. Set `local` on every
+request to a device (the TLS and digest options imply it): it never uses a proxy from the
+environment, returns a redirect instead of following it (a key in a header must not travel to
+another host), and speaks only http and https. Build and
 test the protocol against a simulated device in `tests/mocks/` first, with an end-to-end test
 like `tests/tapo_e2e.py` on `ZB_TEST_NETWORK`, and add the family to the README.
 

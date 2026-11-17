@@ -498,7 +498,7 @@ void Agent::run_turn() {
             std::lock_guard<std::mutex> lk(mtx_);
             history_.push_back({{"role", "assistant"}, {"content", res.content}});
         }
-        home::assistant_replied();   // a question a smart-home change waits on has now been put
+        home::assistant_replied(res.content);   // it may put the question a smart-home change waits on
         last_answer_ = res.content;
         if (began && ev_.answer_end) ev_.answer_end(res.content, false);
         if (res.content.empty() && ev_.error) ev_.error("The model returned an empty answer.");

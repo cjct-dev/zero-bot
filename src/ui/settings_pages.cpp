@@ -2,7 +2,9 @@
 #include "ui/settings_pages.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <memory>
 #include <thread>
@@ -47,12 +49,19 @@ std::string short_address(const std::string &v) {
 
 int clampi(int v, int lo, int hi) { return std::max(lo, std::min(hi, v)); }
 
-// Runs slow work off the UI thread, then delivers the result back on it.
+// Runs slow work off the UI thread, then delivers the result back on it. Work that throws (it
+// should not) is dropped rather than taking the app down with its thread.
 template <typename Work, typename Done>
 void background(Work work, Done done) {
     std::thread([work, done]() {
-        auto result = work();
-        uiq::post([done, result]() { done(result); });
+        try {
+            auto result = work();
+            uiq::post([done, result]() { done(result); });
+        } catch (const std::exception &e) {
+            fprintf(stderr, "settings: background work failed: %s\n", e.what());
+        } catch (...) {
+            fprintf(stderr, "settings: background work failed\n");
+        }
     }).detach();
 }
 
@@ -388,17 +397,6 @@ int read_int(const char *path, int fallback) {
 }
 
 // ---------------------------------------------------------------- smart home
-const char *kind_label(const std::string &kind) {
-    static const std::pair<const char *, const char *> kLabels[] = {
-        {"tapo", "Tapo"}, {"homekit", "HomeKit"}, {"hue_bridge", "Hue Bridge"}, {"cast", "Cast"}, {"fire_tv", "Fire TV"},
-        {"matter", "Matter"}, {"shelly", "Shelly"}, {"wled", "WLED"}, {"esphome", "ESPHome"}, {"elgato", "Elgato"},
-        {"nanoleaf", "Nanoleaf"}, {"sonos", "Sonos"}, {"android_tv", "Android TV"}, {"roku", "Roku"}, {"wemo", "WeMo"},
-        {"tplink", "TP-Link"}, {"airplay", "AirPlay"}};
-    for (const auto &l : kLabels)
-        if (kind == l.first) return l.second;
-    return "Device";
-}
-
 bool find_home_device(const std::string &network_id, const std::string &device_id, home::Saved &out) {
     for (const auto &d : home::entry(network_id).devices)
         if (d.id == device_id) { out = d; return true; }
@@ -445,8 +443,10 @@ void run_pairing(Menu &menu, const std::string &network_id, const std::string &d
     const home::PairStep step = home::pairing_step(network_id, device_id);
     switch (step.kind) {
         case home::Pairing::None:
+            // Read the device, and the others of its family still waiting: an account typed for
+            // one Tapo plug serves every one of them.
             menu.toast("Asking the device…");
-            background([network_id, device_id] { return home::refresh(network_id, device_id); },
+            background([network_id, device_id] { return home::refresh_after_pairing(network_id, device_id); },
                        [&menu](const std::string &summary) {
                            if (!menu.open()) return;
                            menu.toast(summary);
@@ -540,7 +540,7 @@ void open_home_device(Menu &menu, const std::string &network_id, const std::stri
         home::Saved d;
         if (!find_home_device(network_id, device_id, d)) { items.push_back(MenuItem::header("This device was removed")); return items; }
         items.push_back(MenuItem::val("Name", [d] { return d.title(); }, nullptr));
-        items.push_back(MenuItem::val("Type", [d] { return std::string(kind_label(d.kind)) + (d.model.empty() ? "" : " " + d.model); }, nullptr));
+        items.push_back(MenuItem::val("Type", [d] { return home::kind_label(d) + (d.model.empty() ? "" : " " + d.model); }, nullptr));
         items.push_back(MenuItem::val("Address", [d] { return d.ip; }, nullptr));
         if (!d.controllable()) {
             Menu::add_paragraph(items, "Found on this network, but Zero Bot cannot control this kind of device yet.");
@@ -725,7 +725,7 @@ void open_smart_home(Menu &menu) {
             if (d.controllable()) continue;
             if (!header) { items.push_back(MenuItem::header("Found, not controllable yet")); header = true; }
             const std::string did = d.id;
-            items.push_back(MenuItem::val(d.title(), [d] { return std::string(kind_label(d.kind)); }, [&menu, id, did] { open_home_device(menu, id, did); }));
+            items.push_back(MenuItem::val(d.title(), [d] { return home::kind_label(d); }, [&menu, id, did] { open_home_device(menu, id, did); }));
         }
         items.push_back(MenuItem::header("Manage"));
         if (any_tapo)

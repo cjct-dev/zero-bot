@@ -25,6 +25,20 @@ struct Network {
 };
 Network current_network();
 
+// The interface and gateway of the default route: one read of /proc/net/route, cheap enough to
+// check before every use of a remembered Network.
+struct Route {
+    std::string iface, gateway;
+};
+Route default_route();
+
+// What kind of link an interface is, from what the kernel reports about it under `sys`
+// (/sys/class/net) and not from its name alone: a phone's USB tether is named like a wired port
+// (an iPhone's is eth0, others enx... or usb0), and only its driver tells it apart. `why_not`
+// says why a link that is neither Wi-Fi nor Ethernet is not a home network.
+enum class Link { WiFi, Wired, Other };
+Link link_kind(const std::string &iface, std::string &why_not, const std::string &sys = "/sys/class/net");
+
 // One device, merged from everything that answered from its address.
 struct Device {
     std::string id;            // strongest identifier the protocols gave, prefixed by its kind

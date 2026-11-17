@@ -50,9 +50,21 @@ private:
 // Letters and digits only, lower case: "Bed-heater" and "bed heater" are the same thing said aloud.
 std::string plain(const std::string &text);
 
+// A name as it appears inside a sentence for the model: in double quotes, which clean_name()
+// removes from every name, so that no name can end its quotes and read as part of the sentence.
+std::string in_quotes(const std::string &name);
+
 // For the device-free tests only.
 namespace testing {
 void set_network(const discovery::Network *network);      // stands in for the real network; nullptr restores it
+// Stands in for what network_now() reads of the system (the default route, the neighbour table,
+// the full look at the network), so that its caching can be tested; nullptr restores the real ones.
+struct NetworkSource {
+    discovery::Route (*route)() = nullptr;
+    std::string (*mac_of)(const std::string &ip) = nullptr;
+    discovery::Network (*current)() = nullptr;
+};
+void set_network_source(const NetworkSource *source);
 void set_clock(unsigned long (*clock_ms)());               // nullptr restores the real clock
 void reset_control();                                      // forgets pending questions, rate counts, turn counters
 void clear_drivers();                                      // empties the driver table (and stops the built-in list loading)

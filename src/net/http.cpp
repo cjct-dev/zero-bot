@@ -86,11 +86,24 @@ Response send(const Request &req) {
     // A device's own certificate settings are kept apart from the shared connections and TLS
     // sessions used for the internet.
     const bool own_tls = req.insecure || !req.pinned_pubkey.empty() || !req.client_cert_pem.empty() || req.want_peer_cert;
+    const bool local = req.local || own_tls || !req.digest_user.empty();
     if (g_share && !own_tls) curl_easy_setopt(curl, CURLOPT_SHARE, g_share);
     curl_easy_setopt(curl, CURLOPT_DNS_CACHE_TIMEOUT, 600L);   // addresses are remembered for ten minutes, not one
     curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, req.no_redirect ? 0L : 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, req.no_redirect || local ? 0L : 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+    if (local) {
+        // A device on the home network: straight to it, whatever proxy the environment names,
+        // and in plain or TLS HTTP only.
+        curl_easy_setopt(curl, CURLOPT_PROXY, "");
+#if LIBCURL_VERSION_NUM >= 0x075500
+        curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+        curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+#else
+        curl_easy_setopt(curl, CURLOPT_PROTOCOLS, static_cast<long>(CURLPROTO_HTTP | CURLPROTO_HTTPS));
+        curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, static_cast<long>(CURLPROTO_HTTP | CURLPROTO_HTTPS));
+#endif
+    }
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     if (req.timeout_ms > 0) curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, req.timeout_ms);
     else curl_easy_setopt(curl, CURLOPT_TIMEOUT, req.timeout_s);

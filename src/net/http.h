@@ -25,6 +25,13 @@ struct Request {
 
     // For devices on the home network (smart-home drivers). A request that sets any of the TLS
     // options gets a connection of its own, never one shared with other requests.
+    //
+    // `local` marks a request to a device: it never goes through a proxy (even one set in the
+    // environment), a redirect is returned as it is rather than followed (a device's key in a
+    // header must not travel to another host), and only http and https are spoken. Setting any
+    // of the device-only options below (insecure, pinned_pubkey, want_peer_cert, digest or a
+    // client certificate) implies it.
+    bool local = false;
     long timeout_ms = 0, connect_timeout_ms = 0;   // when set, used instead of the _s values
     bool insecure = false;                  // accept any certificate: a device's own self-signed one
     std::string pinned_pubkey;              // "sha256//<base64>": only a peer with this public key (checked even when insecure)

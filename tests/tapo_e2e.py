@@ -150,11 +150,11 @@ def main():
         check("off with the old parameter name and loose spelling", r == {"now": "off", "target": "Socket 2"} and
               strip.stats()["children_on"] == [True, False, False, False], (r, strip.stats()["children_on"]))
         r = app.tool({"action": "on", "target": "Socket"})
-        check("an ambiguous name is reported, nothing is switched", isinstance(r, str) and r.startswith("ERROR: 'Socket' could mean any of") and
+        check("an ambiguous name is reported, nothing is switched", isinstance(r, str) and r.startswith('ERROR: "Socket" could mean any of') and
               strip.stats()["children_on"] == [True, False, False, False], r)
         r = app.tool({"action": "on", "target": "Kettle"})
-        check("an unknown name is an error with the names there are", isinstance(r, str) and "no device called 'Kettle'" in r and
-              "Socket 3" in r, r)
+        check("an unknown name is an error with the names there are", isinstance(r, str) and 'no device called "Kettle"' in r and
+              '"Socket 3"' in r, r)
 
         # Status, with the energy readings for one plug asked about.
         r = app.tool({"action": "status", "target": PLUG})
@@ -180,7 +180,7 @@ def main():
         root["secrets"]["tapo"]["password_sha1"] = WRONG
         app.save(root)
         r = app.tool({"action": "on", "target": PLUG})
-        check("a wrong password fails", isinstance(r, str) and r.startswith("ERROR: could not change %s" % PLUG), r)
+        check("a wrong password fails", isinstance(r, str) and r.startswith('ERROR: could not change "%s"' % PLUG), r)
         after = plug.stats()
         check("the plug saw exactly one login attempt", after["pake_share"] == before[0] + 1 and after["login_rejected"] == 1, after)
         check("the refusal is kept in the file", app.load()["secrets"]["tapo"].get("refused") is True, app.load()["secrets"]["tapo"])
@@ -209,7 +209,7 @@ def main():
         app.save(root)
         before, proofs = strip.stats()["handshake1"], strip.stats()["handshake2"]
         r = app.tool({"action": "off", "target": "Socket 4"})
-        check("KLAP: a wrong password fails", isinstance(r, str) and r.startswith("ERROR: could not change Socket 4"), r)
+        check("KLAP: a wrong password fails", isinstance(r, str) and r.startswith('ERROR: could not change "Socket 4"'), r)
         r = app.tool({"action": "off", "target": "Socket 4"})
         app.run("--home-refresh")
         check("KLAP: the strip saw one login attempt, and no proof of the wrong password",

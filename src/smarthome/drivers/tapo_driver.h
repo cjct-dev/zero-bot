@@ -21,8 +21,9 @@ struct TapoAccount {
     bool set() const { return !email.empty() && password_saved; }
 };
 TapoAccount tapo_account();
-// An empty password keeps the saved one; an empty e-mail forgets the account. Either change
-// lets the plugs be tried afresh.
+// An empty password keeps the saved one, unless the e-mail changes: a different address is a
+// different account, whose password has to be typed. An empty e-mail forgets the account. Either
+// change lets the plugs be tried afresh.
 void set_tapo_account(const std::string &email, const std::string &password);
 
 }  // namespace home

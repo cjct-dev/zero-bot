@@ -107,8 +107,8 @@ public:
             s.field = "Tapo account e-mail";
         } else if (!tapo::owned_by(transport(dev), a.email)) {
             s.kind = home::Pairing::EnterCode;
-            s.prompt = "This plug was set up with a different Tapo account from the one saved. Type the e-mail address of "
-                       "the account it belongs to.";
+            s.prompt = "This plug was set up with a different Tapo account from the one saved. Only one account is kept: "
+                       "typing this plug's account replaces the saved one, and its password is asked for next.";
             s.field = "Tapo account e-mail";
         } else if (a.sha1.empty() || a.refused) {
             s.kind = home::Pairing::Password;
@@ -135,10 +135,9 @@ public:
                 err = "This plug was set up with a different Tapo account. Check the address; capitals count.";
                 return false;
             }
-            if (util::jget(j, "email", std::string()) != email) {
-                j["email"] = email;
-                j.erase("refused");
-            }
+            // Another account starts afresh: the saved password belongs to the old one and is
+            // never tried with the new address, so that account's password is asked for next.
+            if (util::jget(j, "email", std::string()) != email) j = {{"email", email}};
             secrets_->set(kFamily, j);
             tapo::forget_sessions();
             return true;
@@ -313,10 +312,8 @@ void set_tapo_account(const std::string &email, const std::string &password) {
         secrets().set(kFamily, json::object());
     } else {
         json j = secrets().get(kFamily);
-        if (util::jget(j, "email", std::string()) != e) {
-            j["email"] = e;
-            j.erase("refused");
-        }
+        // A different address is a different account: the old password is not kept for it.
+        if (util::jget(j, "email", std::string()) != e) j = {{"email", e}};
         if (!password.empty()) {
             j["password_sha1"] = tapo::sha1_hex(password);
             j.erase("refused");
