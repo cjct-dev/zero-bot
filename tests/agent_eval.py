@@ -505,6 +505,35 @@ CASES = [
          checks=[chk_timer(600)]),
     case("home_neighbour_weather", "whats the weather like in lisbon tomorrow", must=["weather"], must_not=["smart_home"],
          home=EVAL_HOME),
+
+    # Routing between the tools that overlap: the smart home against the infrared remote, the
+    # device's own volume and music, timers against reminders, and the breathing exercise.
+    case("route_tv_home", "turn on the tv", must=["smart_home"], must_not=["tv_remote"], home=EVAL_HOME,
+         checks=[home_call("on", ["Living room TV"])]),
+    case("route_own_volume_home", "turn your volume down to 40 percent", must=["device"], must_not=["smart_home", "tv_remote"],
+         home=EVAL_HOME, checks=[lambda t: arg(t, "device", "value", num_is(40), "40")]),
+    case("route_speaker_volume", "set the kitchen speaker volume to 20", must=["smart_home"], must_not=["device", "music"],
+         home=EVAL_HOME, checks=[home_call("set", ["Kitchen speaker"], volume=20)]),
+    case("route_music_home", "play a song by abba", must=["music"], must_not=["smart_home"], home=EVAL_HOME,
+         checks=[lambda t: arg(t, "music", "action", has("play"), "play")]),
+    case("route_room_off", "turn off the bedroom lights", must=["smart_home"], home=EVAL_HOME,
+         checks=[home_call("off", ["Bedroom", "Bedroom lamp"]), home_never_on]),
+    case("route_room_status", "is anything on in the kitchen", must=["smart_home"], home=EVAL_HOME,
+         checks=[home_call("status"), home_never_on]),
+    case("route_heater_and_timer", "turn on the bed heater and set a timer for 30 minutes", must=["smart_home", "timer"],
+         must_not=["reminder_set"], home=EVAL_HOME, checks=[home_call("on", ["Bed heater"]), chk_timer(1800)]),
+    case("route_reminder_home", "remind me at 7 tomorrow morning to call the hotel", must=["reminder_set|calendar_add"],
+         must_not=["smart_home", "timer"], home=EVAL_HOME,
+         checks=[lambda t: [] if any(str(c.get("at", c.get("start")))[:16] in stamps([tomorrow()], "07:00")
+                                     for c in calls(t, "reminder_set|calendar_add")) else ["the reminder should be for tomorrow 07:00"]]),
+    case("route_eggs_home", "the eggs need six minutes", must=["timer"], must_not=["smart_home", "reminder_set"],
+         home=EVAL_HOME, checks=[chk_timer(360)]),
+    case("route_cancel_timer_home", ["set a timer for 10 minutes", "cancel the timer"], must=["timer"],
+         must_not=["smart_home", "reminder_cancel"], home=EVAL_HOME, checks=[chk_timer_action("cancel")]),
+    case("route_breathe_home", "im feeling really stressed right now", must=["breathe"], must_not=["smart_home", "timer"],
+         home=EVAL_HOME),
+    case("route_lamp_no_home", "turn on the bedroom lamp", must_not=["tv_remote", "device"],
+         checks=[answer(CANNOT + r"|smart.home|set up|settings", "that no lamps are set up")]),
 ]
 
 # ---------------------------------------------------------------- running and scoring
