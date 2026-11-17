@@ -977,7 +977,10 @@ std::vector<Tool> build() {
         {"tv_remote", "Using the remote",
          "Press a button on a TV using the device's infrared transmitter (the user points the top edge of the "
          "device at the TV). Send one key per call; use repeat for several presses, e.g. volume_up with repeat 5. "
-         "Works without knowing the brand; pass brand if the user says it.",
+         "Works without knowing the brand; pass brand if the user says it. A TV that the smart_home tool lists is "
+         "controlled with smart_home instead (its keys, volume and power, no pointing needed); use this one for "
+         "other TVs. It sends the codes of the one brand in settings, so if a listed TV does not answer over the "
+         "network, say so rather than trying this.",
          obj({{"key", E("Button to press", {"power", "volume_up", "volume_down", "mute", "channel_up", "channel_down",
                                             "input", "up", "down", "left", "right", "ok", "menu", "back", "home",
                                             "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"})},

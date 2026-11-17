@@ -27,7 +27,8 @@ constexpr size_t kStatusMax = 30;           // things listed by a status of ever
 constexpr unsigned long kAnswerWithinMs = 3 * 60 * 1000;   // a yes must come within this
 constexpr double kMinC = 5, kMaxC = 30;     // heating targets are clamped to this range
 
-const char *const kActions[] = {"on", "off", "set", "status", "scene", "play", "pause", "stop", "next", "previous", "mute", "unmute"};
+const char *const kActions[] = {"on",   "off",      "set",  "status", "scene",  "play",
+                                "pause", "stop", "next", "previous", "mute", "unmute", "press"};
 
 std::string fail(const std::string &why) { return "ERROR: " + why; }
 
@@ -316,7 +317,7 @@ bool fit(const Change &c, const Thing &t, Change &out, std::string &why) {
     const uint32_t caps = t.caps;
     if (t.type == "scene") {
         const bool only_on = c.on && *c.on && !c.brightness && !c.kelvin && !c.hs && !c.target_c && !c.position &&
-                             !c.volume && !c.mute && !c.transport && !c.source;
+                             !c.volume && !c.volume_step && !c.mute && !c.transport && !c.source && !c.key;
         if (!only_on) { why = "it is a scene, which can only be started"; return false; }
         return true;
     }
@@ -343,7 +344,15 @@ bool fit(const Change &c, const Thing &t, Change &out, std::string &why) {
     if (c.hs && !(caps & kColor)) { why = "it can only be set to shades of white"; return false; }
     if (c.target_c && !(caps & kTargetTemp)) { why = "it has no temperature setting"; return false; }
     if (out.position && !(caps & kPosition)) { why = "it cannot be opened or closed"; return false; }
-    if (c.volume && !(caps & kVolume)) { why = "its volume cannot be set to a level"; return false; }
+    if (c.volume && !(caps & kVolume)) {
+        why = caps & kVolumeStep ? "its volume can only be turned up or down (use volume_step)" : "its volume cannot be set to a level";
+        return false;
+    }
+    if (c.volume_step && !(caps & kVolumeStep)) {
+        why = caps & kVolume ? "its volume is set as a level, 0 to 100 (use volume)" : "its volume cannot be changed";
+        return false;
+    }
+    if (c.key && !(caps & kKeys)) { why = "it has no remote-control keys"; return false; }
     if (c.mute && !(caps & kVolume)) { why = "it cannot be muted"; return false; }
     if (c.transport && !(caps & kTransport)) { why = "it has no playback controls"; return false; }
     if (c.source && !(caps & kSource)) { why = "its input cannot be changed"; return false; }
@@ -363,6 +372,7 @@ std::string describe(const std::string &action, const std::string &label, const 
     if (action == "scene") return "start the scene " + label;
     if (action == "mute" || action == "unmute" || action == "play" || action == "pause" || action == "stop") return action + " " + label;
     if (action == "next" || action == "previous") return "skip to the " + action + " track on " + label;
+    if (action == "press" && c.key) return "press " + *c.key + " on " + label;
     std::vector<std::string> parts;
     if (c.brightness) parts.push_back("brightness " + std::to_string(*c.brightness) + "%");
     if (c.kelvin || c.hs) parts.push_back("the colour asked for");
@@ -370,6 +380,9 @@ std::string describe(const std::string &action, const std::string &label, const 
     if (c.position) parts.push_back("position " + std::to_string(*c.position) + "%");
     if (c.volume) parts.push_back("volume " + std::to_string(*c.volume));
     if (c.source) parts.push_back(*c.source);
+    if (c.volume_step && parts.empty())
+        return "turn " + label + (*c.volume_step > 0 ? " up " : " down ") + std::to_string(std::abs(*c.volume_step)) +
+               (std::abs(*c.volume_step) == 1 ? " step" : " steps");
     if (parts.empty()) return std::string(c.on && !*c.on ? "turn off " : "change ") + label;
     std::string what;
     for (const auto &p : parts) what += (what.empty() ? "" : ", ") + p;
@@ -894,10 +907,10 @@ std::string execute(const Command &cmd, bool dry_run) {
     std::string action = util::lower(util::trim(cmd.action));
     if (action == "list" || action == "check") action = "status";
     const bool has_value = cmd.brightness || !util::trim(cmd.color).empty() || cmd.temperature || cmd.position || cmd.volume ||
-                           !util::trim(cmd.source).empty();
+                           cmd.volume_step || !util::trim(cmd.source).empty();
     if (action == "on" && has_value) action = "set";   // "on at 30 percent"
     if (std::find_if(std::begin(kActions), std::end(kActions), [&](const char *a) { return action == a; }) == std::end(kActions))
-        return fail("action must be one of on, off, set, status, scene, play, pause, stop, next, previous, mute, unmute");
+        return fail("action must be one of on, off, set, status, scene, play, pause, stop, next, previous, mute, unmute, press");
     if (action == "status") return status(net.id(), e, items, cmd.target, dry_run);
     if (util::trim(cmd.target).empty()) return fail("say which device, room or group to " + action + " (target)");
 
@@ -911,7 +924,15 @@ std::string execute(const Command &cmd, bool dry_run) {
     else if (action == "off") base.on = false;
     else if (action == "play" || action == "pause" || action == "stop" || action == "next" || action == "previous") base.transport = action;
     else if (action == "mute" || action == "unmute") base.mute = action == "mute";
-    else if (action == "set") {
+    else if (action == "press") {
+        std::string k = util::lower(util::trim(cmd.key));
+        std::replace(k.begin(), k.end(), ' ', '_');
+        if (k == "select" || k == "enter") k = "ok";
+        if (std::find_if(std::begin(kTvKeys), std::end(kTvKeys), [&](const char *n) { return k == n; }) == std::end(kTvKeys))
+            return fail(k.empty() ? "press needs the key to press (key)" : "there is no remote key called " + in_quotes(clean_name(cmd.key)) +
+                                                                                   "; use one of the listed keys");
+        base.key = k;
+    } else if (action == "set") {
         if (!has_value) return fail("set needs a value to set, such as brightness, color, temperature, position, volume or source");
         if (cmd.brightness) {
             const int v = std::max(0, std::min(100, *cmd.brightness));
@@ -932,6 +953,10 @@ std::string execute(const Command &cmd, bool dry_run) {
         }
         if (cmd.position) base.position = std::max(0, std::min(100, *cmd.position));
         if (cmd.volume) base.volume = std::max(0, std::min(100, *cmd.volume));
+        if (cmd.volume_step) {
+            if (*cmd.volume_step == 0) return fail("volume_step must be a number of presses, such as 2 or -2");
+            base.volume_step = std::max(-10, std::min(10, *cmd.volume_step));
+        }
         if (!util::trim(cmd.source).empty()) {
             const std::string source = clean_name(cmd.source);
             if (source.empty()) return fail("source must be the name of an input or an app");
@@ -965,6 +990,8 @@ std::string execute(const Command &cmd, bool dry_run) {
                 bool wanted;
                 if (base.transport) wanted = has(m, kTransport);
                 else if (base.mute || base.volume) wanted = has(m, kVolume);
+                else if (base.volume_step) wanted = has(m, kVolumeStep);
+                else if (base.key) wanted = has(m, kKeys);
                 else if (base.source) wanted = has(m, kSource);
                 else if (base.target_c) wanted = has(m, kTargetTemp);
                 else if (base.position) wanted = has(m, kPosition);

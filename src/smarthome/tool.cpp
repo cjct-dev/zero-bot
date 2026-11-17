@@ -66,8 +66,9 @@ json spec_for(const std::vector<Item> &items) {
         lights = lights || is_light(i.thing);
     }
     const bool brightness = caps & kBrightness, colour = caps & (kColor | kColorTemp), heat = caps & kTargetTemp,
-               position = caps & kPosition, volume = caps & kVolume, source = caps & kSource, transport = caps & kTransport;
-    const bool values = brightness || colour || heat || position || volume || source;
+               position = caps & kPosition, volume = caps & kVolume, source = caps & kSource, transport = caps & kTransport,
+               volume_keys = caps & kVolumeStep, keys = caps & kKeys;
+    const bool values = brightness || colour || heat || position || volume || volume_keys || source;
     const bool plugs_only = !values && !scenes && !transport && !lights;
 
     std::vector<std::string> actions = {"on", "off"};
@@ -77,6 +78,7 @@ json spec_for(const std::vector<Item> &items) {
     if (transport)
         for (const char *a : {"play", "pause", "stop", "next", "previous"}) actions.push_back(a);
     if (volume) { actions.push_back("mute"); actions.push_back("unmute"); }
+    if (keys) actions.push_back("press");
 
     bool overflow = false;
     const std::vector<std::string> targets = target_names(items, &overflow);
@@ -103,7 +105,14 @@ json spec_for(const std::vector<Item> &items) {
     if (heat) props["temperature"] = {{"type", "number"}, {"description", "Heating target in degrees Celsius, with set"}};
     if (position) props["position"] = percent("Blinds and curtains: 0 closed to 100 open, with set");
     if (volume) props["volume"] = percent("Speaker or TV volume, 0 to 100, with set");
+    if (volume_keys)
+        props["volume_step"] = {{"type", "integer"}, {"minimum", -10}, {"maximum", 10},
+                                {"description", "Volume key presses, with set, for a device that only has volume up and down: "
+                                                "positive louder, negative quieter, e.g. 3 or -3"}};
     if (source) props["source"] = {{"type", "string"}, {"description", "A TV input or app, with set, e.g. \"Netflix\" or \"HDMI 1\""}};
+    if (keys)
+        props["key"] = enum_of("With press: the remote-control key to press once (moving around a TV's menus)",
+                               std::vector<std::string>(std::begin(kTvKeys), std::end(kTvKeys)));
     props["say"] = {{"type", "string"},
                     {"description", "The one short sentence to speak to the user once this has worked, in their language, with "
                                     "the detail that matters, e.g. \"Your timer is set for 12 minutes.\" Omit for status."}};
@@ -121,8 +130,10 @@ json spec_for(const std::vector<Item> &items) {
         if (heat) verbs.push_back("set the heating temperature");
         if (position) verbs.push_back("open or close blinds");
         if (volume) verbs.push_back("set the volume");
+        if (volume_keys) verbs.push_back("turn a TV's volume up or down");
         if (transport) verbs.push_back("control playback");
-        if (source) verbs.push_back("change a TV's input");
+        if (source) verbs.push_back("change a TV's input or open an app");
+        if (keys) verbs.push_back("press a TV's remote keys (use this, not tv_remote, for the TVs listed here)");
         if (scenes) verbs.push_back("start scenes");
         description = "Control the user's smart-home devices on this network: " + joined(verbs) +
                       ", or check their state. Calling this is the only way a device changes. The targets are listed in the "
@@ -153,6 +164,8 @@ std::string tool_run(const json &args, bool dry_run) {
     c.brightness = int_arg(args, "brightness");
     c.position = int_arg(args, "position");
     c.volume = int_arg(args, "volume");
+    c.volume_step = int_arg(args, "volume_step");
+    c.key = text_arg(args, "key");
     double t;
     if (number_arg(args, "temperature", t)) c.temperature = t;
     c.color = text_arg(args, "color");

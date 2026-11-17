@@ -202,7 +202,10 @@ day* and *Repeats* are rows on the event page).
 
 The remote has built-in codes for Samsung, LG, Sony, Panasonic, Philips, Toshiba and Vizio. Left
 on *Any*, it sends each button for every brand in turn, which is usually what you want with a
-hotel TV. Point the top edge of the device at the TV.
+hotel TV. Point the top edge of the device at the TV. The remote sends the codes of the one brand
+in settings, whichever TV it points at; naming another brand ("turn up the Sony") changes that
+setting. A TV set up under *Smart home* (a Fire TV) is controlled over the network instead, with
+no pointing: its volume, menu keys, apps and power.
 
 For anything else, *Your data → TV remote → Learn a button* records a button from the real
 remote. Give it a standard name (`power`, `volume_up`, `mute`, `input`, …) to replace the

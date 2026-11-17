@@ -145,12 +145,18 @@ bool resolve(const std::vector<Item> &items, const std::string &said, Resolved &
 
 // ---- control (control.cpp)
 struct Command {
-    std::string action;          // on, off, set, status, scene, play, pause, stop, next, previous, mute, unmute
+    std::string action;          // on, off, set, status, scene, play, pause, stop, next, previous, mute, unmute, press
     std::string target;          // "" only for status: everything
     std::optional<int> brightness, position, volume;
+    std::optional<int> volume_step;   // volume key presses: +n louder, -n quieter (a TV with only volume keys)
+    std::string key;                  // press: a remote-control key (kTvKeys)
     std::optional<double> temperature;
     std::string color, source;
 };
+// The remote-control keys the press action offers (driver.h Change::key lists every name a driver
+// may take; power, volume and mute have actions or values of their own).
+inline const char *const kTvKeys[] = {"up",   "down",   "left",          "right",      "ok",           "back", "home",
+                                      "menu", "rewind", "fast_forward", "channel_up", "channel_down", "input"};
 // Carries a command out on the current network and returns text for the model: compact JSON,
 // "ERROR: ..." or "CONFIRM: ...". With dry_run nothing is sent to any device.
 std::string execute(const Command &command, bool dry_run);

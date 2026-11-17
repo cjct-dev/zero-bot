@@ -74,6 +74,8 @@ std::string change_text(const home::Change &c) {
     if (c.mute) j["mute"] = *c.mute;
     if (c.transport) j["transport"] = *c.transport;
     if (c.source) j["source"] = *c.source;
+    if (c.volume_step) j["volume_step"] = *c.volume_step;
+    if (c.key) j["key"] = *c.key;
     return j.dump();
 }
 
@@ -1811,6 +1813,61 @@ void test_link_kinds() {
         CHECK_MSG(kind(other) == discovery::Link::Other && has(why, other), std::string(other) + ": " + why);
 }
 
+// ---------------------------------------------------------------- a TV with only volume keys and remote keys
+void test_tv_keys() {
+    Section s("tool: a TV's volume keys and remote keys reach the driver; a TV without them says so");
+    g_fake->reset();
+    const uint32_t fire = home::kPower | home::kTransport | home::kVolumeStep | home::kSource | home::kKeys;
+    write_home({device("fake:firetv", {thing("tv", "Bedroom TV", "tv", fire, "Bedroom", {{"on", true}})}),
+                device("fake:speaker", {thing("sp", "Kitchen speaker", "speaker", home::kVolume | home::kTransport, "Kitchen",
+                                              {{"playing", "playing"}, {"volume", 30}})})});
+    const json spec = home::tool_spec();
+    const json &p = spec["parameters"]["properties"];
+    const json actions = p["action"]["enum"];
+    CHECK_MSG(std::find(actions.begin(), actions.end(), "press") != actions.end(), actions.dump());
+    CHECK(p.contains("volume_step") && p.contains("key") && p.contains("volume"));
+    CHECK(std::find(p["key"]["enum"].begin(), p["key"]["enum"].end(), "ok") != p["key"]["enum"].end());
+    CHECK_MSG(has(spec["description"].get<std::string>(), "volume up or down") &&
+                  has(spec["description"].get<std::string>(), "remote keys"), spec["description"].dump());
+
+    std::string r = run({{"action", "set"}, {"target", "Bedroom TV"}, {"volume_step", 3}});
+    CHECK_MSG(!starts(r, "ERROR"), r);
+    CHECK_MSG(g_fake->log.back() == R"(apply fake:firetv/tv {"volume_step":3})", g_fake->log.back());
+    r = run({{"action", "set"}, {"target", "Bedroom TV"}, {"volume_step", -40}});
+    CHECK_MSG(g_fake->log.back() == R"(apply fake:firetv/tv {"volume_step":-10})", g_fake->log.back());   // at most 10 presses
+    r = run({{"action", "press"}, {"target", "Bedroom TV"}, {"key", "Down"}});
+    CHECK_MSG(!starts(r, "ERROR") && g_fake->log.back() == R"(apply fake:firetv/tv {"key":"down"})", r + " / " + g_fake->log.back());
+    g_clock += 60000;
+    r = run({{"action", "press"}, {"target", "Bedroom TV"}, {"key", "select"}});
+    CHECK_MSG(g_fake->log.back() == R"(apply fake:firetv/tv {"key":"ok"})", g_fake->log.back());
+    // The saved state gains neither a key nor a step.
+    {
+        const home::Thing *tv = find_thing(home::entry(g_net.id()), "fake:firetv", "tv");
+        CHECK(tv && !tv->state.contains("key") && !tv->state.contains("volume_step"));
+    }
+    // What a thing cannot take is refused before anything is sent, with what to use instead.
+    const size_t sent = g_fake->log.size();
+    r = run({{"action", "set"}, {"target", "Bedroom TV"}, {"volume", 20}});
+    CHECK_MSG(starts(r, "ERROR") && has(r, "volume_step"), r);
+    r = run({{"action", "set"}, {"target", "Kitchen speaker"}, {"volume_step", 2}});
+    CHECK_MSG(starts(r, "ERROR") && has(r, "use volume"), r);
+    r = run({{"action", "press"}, {"target", "Kitchen speaker"}, {"key", "up"}});
+    CHECK_MSG(starts(r, "ERROR") && has(r, "no remote-control keys"), r);
+    r = run({{"action", "press"}, {"target", "Bedroom TV"}, {"key", "self destruct"}});
+    CHECK_MSG(starts(r, "ERROR: there is no remote key called"), r);
+    r = run({{"action", "press"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(starts(r, "ERROR: press needs the key"), r);
+    r = run({{"action", "set"}, {"target", "Bedroom TV"}, {"volume_step", 0}});
+    CHECK_MSG(starts(r, "ERROR"), r);
+    CHECK(g_fake->log.size() == sent);
+    // A room's TV takes them too.
+    g_clock += 60000;
+    r = run({{"action", "set"}, {"target", "Bedroom"}, {"volume_step", 2}});
+    CHECK_MSG(g_fake->log.back() == R"(apply fake:firetv/tv {"volume_step":2})", r + " / " + g_fake->log.back());
+    g_clock += 60000;
+    g_fake->reset();
+}
+
 // ---------------------------------------------------------------- discovery
 std::string dns_name(const std::string &name) {
     std::string out;
@@ -2043,6 +2100,7 @@ int main(int argc, char **argv) {
     test_stand_in();
     test_network_gate();
     test_link_kinds();
+    test_tv_keys();
     test_discovery();
     test_names_and_colours();
 

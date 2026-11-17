@@ -266,6 +266,7 @@ def case(name, request, must=(), must_not=(), checks=(), env=None, steer=None, h
 # for every case) no device is ever contacted, and status is answered from these saved states.
 TEST_NETWORK = "net-58678b031ae6e411"
 POWER, BRIGHT, WHITE, COLOUR, TEMP, POSITION, TRANSPORT, VOLUME, SOURCE = 1, 2, 4, 8, 32, 64, 256, 512, 2048
+VOLUME_STEP, KEYS = 1024, 4096
 
 def _thing(tid, name, kind, caps, room="", state=None, ask_first=False):
     return {"id": tid, "name": name, "type": kind, "caps": caps, "room": room, "state": state or {}, "ask_first": ask_first,
@@ -336,6 +337,20 @@ def home_all_off(t):
     """Everything was switched off in this turn: the question the model put in its own words, and the yes, counted."""
     return [] if any(isinstance(r, dict) and r.get("target") == "all" and r.get("now") == "off" for r in results(t, "smart_home")) \
         else ["everything should have been switched off after the yes, got %s" % results(t, "smart_home")]
+
+# A Fire TV as it reports itself: power, playback, volume keys only, apps, remote keys.
+TV_HOME = _home(
+    _thing("1", "Living room TV", "tv", POWER | TRANSPORT | VOLUME_STEP | SOURCE | KEYS, "Living room", {"on": True}),
+    _thing("2", "Floor lamp", "light", POWER | BRIGHT, "Living room", {"on": True, "brightness": 60}))
+
+def home_step(sign):
+    """A volume_step change on the TV, louder (+1) or quieter (-1)."""
+    def check(t):
+        steps = [c for c in calls(t, "smart_home") if str(c.get("action", "")).lower() == "set" and c.get("volume_step") is not None]
+        try: ok = any(int(c["volume_step"]) * sign > 0 for c in steps)
+        except (TypeError, ValueError): ok = False
+        return [] if ok else ["smart_home should set volume_step %s 0, got %s" % (">" if sign > 0 else "<", calls(t, "smart_home"))]
+    return check
 
 # Twelve sockets: more than eight things, so switching everything off asks first.
 SOCKETS_HOME = _home(*[_thing("s%d" % i, "Socket %d" % i, "plug", POWER, "", {"on": True}) for i in range(1, 13)])
@@ -532,6 +547,19 @@ CASES = [
          must_not=["smart_home", "reminder_cancel"], home=EVAL_HOME, checks=[chk_timer_action("cancel")]),
     case("route_breathe_home", "im feeling really stressed right now", must=["breathe"], must_not=["smart_home", "timer"],
          home=EVAL_HOME),
+    # A TV with volume keys and remote keys over the network: those go to smart_home, not infrared.
+    case("route_tv_volume_steps", "turn the tv up a bit", must=["smart_home"], must_not=["tv_remote", "device"],
+         home=TV_HOME, checks=[home_step(+1)]),
+    case("route_tv_volume_down", "turn the tv volume down three", must=["smart_home"], must_not=["tv_remote", "device"],
+         home=TV_HOME, checks=[home_call("set", ["Living room TV"], volume_step=-3)]),
+    case("route_tv_key", "press down on the tv", must=["smart_home"], must_not=["tv_remote"], home=TV_HOME,
+         checks=[home_call("press", ["Living room TV"], key="down")]),
+    case("route_tv_ok", "press ok on the tv", must=["smart_home"], must_not=["tv_remote"], home=TV_HOME,
+         checks=[home_call("press", ["Living room TV"], key="ok")]),
+    case("route_tv_app", "put netflix on the tv", must=["smart_home"], must_not=["tv_remote"], home=TV_HOME,
+         checks=[home_call("set", ["Living room TV"], source="netflix")]),
+    case("route_own_volume_tv_home", "turn your volume up", must=["device"], must_not=["smart_home", "tv_remote"],
+         home=TV_HOME),
     case("route_lamp_no_home", "turn on the bedroom lamp", must_not=["tv_remote", "device"],
          checks=[answer(CANNOT + r"|smart.home|set up|settings", "that no lamps are set up")]),
 ]
