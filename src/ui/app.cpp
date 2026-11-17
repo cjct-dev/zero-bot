@@ -11,12 +11,14 @@
 
 #include "agent/agent.h"
 #include "agent/speech.h"
+#include "ui/alarm_view.h"
 #include "ui/breath_view.h"
 #include "agent/llm.h"
 #include "core/music_lib.h"
 #include "core/settings.h"
 #include "core/store.h"
 #include "core/tether.h"
+#include "core/timers.h"
 #include "core/ui_queue.h"
 #include "core/util.h"
 #include "lvgl.h"
@@ -82,6 +84,22 @@ struct App {
     ChatView chat;
     Menu menu;
     BreathView breath;
+    AlarmView banner;                 // over everything else while a timer's alarm rings
+    // Rings when a timer ends. Its sound gives way, for a few seconds at most, while the assistant's
+    // voice is coming out of the speaker, so the timer's name can be heard. The alarm ends the ring
+    // itself after a minute; the sound's own limit is only a backstop a little beyond that.
+    timers::Alarm alarm{timers::Alarm::Sound{
+        [] {
+            audio::AlarmSound::get().start([] { return SpeechQueue::get().playing(); },
+                                           static_cast<int>(timers::kRingMs) + 5000);
+        },
+        [] { audio::AlarmSound::get().stop(); }}};
+    // The status bar's countdown is worked out from these ends, read again only when timers change.
+    int timer_revision = -1;
+    std::vector<time_t> timer_ends;
+    // The key press that silenced an alarm: its repeats and its release do nothing more.
+    Key spent_key = Key::None;
+    std::string spent_text;
     // A breathing exercise the assistant has asked for, started once its spoken reply has finished.
     std::string breath_pattern;
     int breath_minutes = 0;
@@ -171,6 +189,7 @@ struct App {
 
     // ------------------------------------------------------------ recording
     void start_recording() {
+        if (alarm.ringing()) { alarm.stop(); sync_banner(); }   // an alarm never rings into the microphone
         if (chat.typing()) chat.typing_end();
         Agent::get().interrupt_speech();
         audio::Music::get().hold(audio::Music::kMic, true);
@@ -343,6 +362,28 @@ struct App {
             if (dimmed) { display::set_brightness(Settings::get().brightness); dimmed = false; }
         }
 
+        // A ringing alarm takes the next key press, whatever the key and whatever is on screen (the
+        // chat, a menu, the breathing exercise), and the press goes no further. TAB also starts
+        // listening, so that "give it five more minutes" is one press away.
+        if (ev.state == 1) spent_key = Key::None;
+        else if (spent_key != Key::None && ev.key == spent_key && ev.text == spent_text) {
+            if (ev.state == 0) spent_key = Key::None;
+            return;   // the repeats and the release of the press that silenced it
+        }
+        if (ev.state == 1 && alarm.ringing()) {
+            const bool tab = ev.key == Key::Tab;
+            alarm.key(tab);
+            sync_banner();
+            spent_key = ev.key;
+            spent_text = ev.text;
+            if (tab) {
+                if (breath.active()) breath.stop();
+                if (menu.open()) menu.close();
+                if (!recorder.active()) start_recording();
+            }
+            return;
+        }
+
         if (control_key(ev)) return;
 
         // A breathing exercise takes the whole screen. ESC ends it; TAB ends it and starts listening,
@@ -481,6 +522,55 @@ struct App {
         }
     }
 
+    // ------------------------------------------------------------ timers
+    // Runs on every tick. Cheap unless a timer has just ended or the countdown's text has changed:
+    // the store is only asked when its next end has come or its timers have changed.
+    void update_timers(unsigned long now_ms) {
+        const time_t now = timers::follow_clock();     // a clock set meanwhile moves the timers with it
+        const std::vector<timers::Ended> ended = alarm.poll(now, now_ms, recorder.active(), muted);
+        if (!ended.empty()) timers_ended(ended);
+        alarm.tick(now_ms);
+        sync_banner();
+        if (alarm.ringing()) last_activity = now_ms;   // the screen stays lit while it rings
+        // Under a menu or the breathing exercise the status bar cannot be seen; changing it would
+        // only make the screen redraw what is hidden. It catches up when they close.
+        if (menu.open() || breath.active()) return;
+        const int revision = Store::get().timers_revision();
+        if (revision != timer_revision) {
+            timer_revision = revision;
+            timer_ends.clear();
+            for (const Reminder &t : Store::get().timers()) timer_ends.push_back(t.due);
+        }
+        chat.set_timer(timers::badge(timer_ends, now));
+    }
+
+    void timers_ended(const std::vector<timers::Ended> &ended) {
+        std::string names;
+        for (const timers::Ended &e : ended) {
+            const bool today = util::format_time(e.end, "%Y-%m-%d") == util::format_time(time(nullptr), "%Y-%m-%d");
+            const std::string at = today ? util::format_time(e.end, "%H:%M") : util::short_date(e.end);
+            if (e.missed) {   // it ended while the app was closed
+                chat.add_alert("Missed timer: " + e.label + " (ended " + at + ")");
+                continue;
+            }
+            chat.add_alert("Time's up: " + e.label);
+            names += (names.empty() ? "" : ", ") + e.label;
+            // What the user says next may be about it: "give it five more minutes".
+            Agent::get().add_context("The timer \"" + e.label + "\" ended at " + at + " and its alarm rang.");
+        }
+        last_activity = display::now_ms();
+        if (dimmed) { display::set_brightness(Settings::get().brightness); dimmed = false; }
+        if (!names.empty() && Settings::get().speak_replies && !muted) Agent::get().say("Time's up: " + names + ".");
+    }
+
+    void sync_banner() {
+        if (!alarm.ringing()) { banner.hide(); return; }
+        const std::vector<std::string> &labels = alarm.labels();
+        std::string names;
+        for (const std::string &l : labels) names += (names.empty() ? "" : ", ") + l;
+        banner.show(labels.size() == 1 ? "Time's up" : std::to_string(labels.size()) + " timers are up", names);
+    }
+
     void check_alerts() {
         if (recorder.active()) return;   // a reminder waits rather than talking over the user
         for (auto &text : Store::get().take_due_alerts(time(nullptr))) {
@@ -504,6 +594,7 @@ struct App {
                 last_activity = now;                       // the screen stays lit for the whole exercise
                 if (breath.tick(now)) audio::chime(1);     // a soft note when the last breath is done
             }
+            update_timers(now);
         }
         // Wait for the assistant to finish its sentence before the orb takes over the screen.
         if (breath_minutes > 0 && !recorder.active() && Agent::get().state() == AgentState::Idle && !Agent::get().busy() &&
@@ -513,6 +604,7 @@ struct App {
             if (dimmed) { display::set_brightness(Settings::get().brightness); dimmed = false; }
             breath.start(breath_pattern, breath_minutes);
             breath_minutes = 0;
+            if (banner.visible()) banner.raise();         // the exercise came forward; an alarm stays in front
         }
         if (settings_dirty_at && now - settings_dirty_at > 1500) {
             settings_dirty_at = 0;
@@ -551,6 +643,10 @@ struct App {
             if (!display::save_png(path)) fprintf(stderr, "could not write %s\n", path);
             else printf("%s\n", path);
         };
+        // The status bar shows the name it is given from the first call on, an empty one included.
+        chat.set_status("", theme::kFaint);
+        bool failed = !chat.status_name().empty();
+        if (failed) fprintf(stderr, "the status bar kept a name it was not given\n");
         Settings &s = Settings::get();
         s.agent_name = "Zero";
         chat.set_status(s.agent_name, theme::kFaint);
@@ -624,6 +720,73 @@ struct App {
             breath.stop();
         }
 
+        // Timers, at fixed times so that the images come out the same on every run.
+        const time_t t0 = 1800000000;
+        {
+            chat.clear();
+            chat.add_user("The food needs to come out of the oven in 5 mins", false);
+            chat.add_tool("Timers");
+            chat.begin_answer();
+            chat.append_answer("Your 5 minute timer for the food is running.");
+            chat.end_answer("", false);
+            chat.footer_hints("TAB talk   ·   ENTER type   ·   TAB TAB settings");
+            chat.set_status(s.agent_name, theme::kFaint);
+            chat.set_now_playing("So What");                       // short enough not to scroll
+            chat.set_timer(timers::badge({t0 + 300}, t0 + 1));
+            snap("timer-one");
+            {
+                // A title that fits its whole room stays still when a countdown takes part of it: it
+                // is cut short, not scrolled (a moving title redraws the status bar many times a
+                // second for as long as the timer runs). Too long for its whole room, a title scrolls
+                // again once the countdown has gone.
+                chat.set_timer("");
+                chat.set_now_playing("Round Midnight");
+                lv_refr_now(nullptr);
+                const bool fits = !chat.now_playing_moves();
+                chat.set_timer(timers::badge({t0 + 300}, t0 + 1));
+                lv_refr_now(nullptr);
+                const bool still = !chat.now_playing_moves();
+                chat.set_timer("");
+                chat.set_now_playing("Dancing Queen · ABBA");
+                lv_refr_now(nullptr);
+                const bool moves = chat.now_playing_moves();
+                if (!fits || !still || !moves) {
+                    fprintf(stderr, "the now-playing text scrolled beside a countdown, or not when it needs to\n");
+                    failed = true;
+                }
+            }
+            chat.add_user("I want to study for an hour, can you set a timer", false);
+            chat.add_tool("Timers");
+            chat.begin_answer();
+            chat.append_answer("Your study timer is set for an hour. The food has 4 minutes 41 seconds left.");
+            chat.end_answer("", false);
+            chat.set_now_playing("");
+            chat.set_timer(timers::badge({t0 + 300, t0 + 19 + 3600}, t0 + 19));
+            snap("timer-two");
+            chat.add_alert("Time's up: Food out of the oven");
+            chat.set_timer(timers::badge({t0 + 19 + 3600}, t0 + 300));
+            banner.show("Time's up", "Food out of the oven");
+            snap("timer-alarm");
+            banner.hide();
+            chat.set_timer("");
+        }
+        {
+            // The same through the app's own path: a timer that has just ended rings (silently,
+            // as when the user has muted the device), and a key press silences it and goes no further.
+            muted = true;
+            Store::get().add_timer("Eggs", 1, time(nullptr) - 5);
+            update_timers(display::now_ms());
+            const bool rang = alarm.ringing() && banner.visible() && audio::Music::get().holding(audio::Music::kAlarm);
+            KeyEvent key; key.key = Key::Char; key.text = "a"; key.state = 1;
+            handle_key(key);
+            snap("timer-silenced");
+            if (!rang || alarm.ringing() || banner.visible() || chat.typing() || audio::Music::get().holding(audio::Music::kAlarm)) {
+                fprintf(stderr, "the timer alarm did not ring and stop as it should\n");
+                failed = true;
+            }
+            muted = false;
+        }
+
         Store &store = Store::get();
         CalEvent e;
         auto day_at = [](int days_ahead, const char *clock) {
@@ -641,7 +804,10 @@ struct App {
         const int birthday = store.add_event(e);
         store.add_memory("Allergic to shellfish");
         store.add_memory("Prefers window seats");
-        store.add_reminder("Call the hotel", time(nullptr) + 3600);
+        store.add_reminder("Call the hotel", t0 + 5400);   // fixed, like the timers: the Reminders page shows it
+        const int food = store.add_timer("Food out of the oven", 300, t0);
+        store.add_timer("Study", 3600, t0 + 19);
+        timers::fix_clock(t0 + 60);                    // what the Reminders page counts down from
         sample_home();
 
         run_setup();
@@ -694,7 +860,28 @@ struct App {
         menu.key(enter);
         snap("event-birthday");
         menu.key(esc); menu.key(esc);
-        menu.key(down); menu.key(down);                // "Memory"
+        menu.key(down);                                // "Reminders and timers"
+        menu.key(enter);
+        snap("reminders");
+        {
+            // A timer that ends while the page is open takes its row away: the cursor stays on the
+            // timer it was on, and the question before cancelling one says which.
+            menu.key(down);                            // "Study"
+            store.delete_timer(food);                  // as when "Food out of the oven" has just ended
+            menu.tick();
+            const bool kept = menu.selected() == "Study";
+            menu.key(enter);
+            const bool named = menu.title() == "Cancel Study?";
+            menu.key(esc);
+            store.add_timer("Food out of the oven", 300, t0);       // as it was, for the screens to come
+            menu.tick();
+            if (!kept || !named || menu.selected() != "Study") {
+                fprintf(stderr, "the cursor left its timer when the rows changed, or the question did not name it\n");
+                failed = true;
+            }
+        }
+        menu.key(esc);
+        menu.key(down);                                // "Memory"
         menu.key(enter);
         snap("memory");
         menu.key(esc);
@@ -728,7 +915,8 @@ struct App {
         snap("settings-service");
         (void)flight; (void)birthday;
         menu.close();
-        return 0;
+        timers::fix_clock(0);
+        return failed ? 1 : 0;
     }
 };
 
@@ -750,6 +938,7 @@ int run_app(const std::string &shots_dir, bool keydump) {
     app.chat.create(screen);
     app.menu.create(screen);
     app.breath.create(screen);
+    app.banner.create(screen);
     if (shots) return app.render_shots(shots_dir);
 
     signal(SIGINT, on_signal);
@@ -780,6 +969,8 @@ int run_app(const std::string &shots_dir, bool keydump) {
         usleep((wait > 16 ? 16 : (wait < 2 ? 2 : wait)) * 1000);
     }
 
+    app.alarm.stop();                              // lets go of the music
+    audio::AlarmSound::get().stop_and_wait();      // a player left running would ring on after the app
     app.recorder.cancel();
     Agent::get().cancel();
     audio::Music::get().stop();

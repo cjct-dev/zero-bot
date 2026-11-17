@@ -29,7 +29,8 @@ const char *const kSecondLook =
     "- gives the result of counting days or finding the weekday of a date (date_info), or of arithmetic that is more "
     "than one easy step (calculator).\n"
     "- is about something the user is looking at or holding, including saying you cannot see it (look).\n"
-    "- says what is or is not in the user's calendar, reminders or music library without having checked.\n"
+    "- says what is or is not in the user's calendar, reminders, timers or music library, or how long a timer has "
+    "left, without having checked.\n"
     "If none of these apply, reply with the single word OK and the draft will be spoken as it is. That is the right "
     "outcome for conversation, settled general knowledge, translations, the current local time, facts you "
     "remember about the user, a question asking for a missing detail, or honestly saying you cannot do something "
@@ -151,6 +152,14 @@ void Agent::say(const std::string &text) {
     SpeechQueue::get().end_of_answer();
 }
 
+void Agent::add_context(const std::string &note) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    const time_t now = time(nullptr);
+    if (now - context_at_ >= 600) context_.clear();
+    context_ += (context_.empty() ? "" : " ") + note;
+    context_at_ = now;
+}
+
 void Agent::set_state(AgentState s, const std::string &detail) {
     std::lock_guard<std::mutex> lk(mtx_);
     state_ = s;
@@ -255,7 +264,12 @@ int Agent::absorb_inputs(bool first) {
         std::lock_guard<std::mutex> lk(mtx_);
         // Numeric dates are spelt out here, by rule, so that the day/month order and the year are
         // never left to the model's reading.
-        history_.push_back({{"role", "user"}, {"content", stamp + util::spell_numeric_dates(text)}});
+        std::string content = stamp + util::spell_numeric_dates(text);
+        if (!context_.empty()) {
+            if (time(nullptr) - context_at_ < 600) content += "\n\n(Automatic note, not from the user: " + context_ + ")";
+            context_.clear();
+        }
+        history_.push_back({{"role", "user"}, {"content", content}});
         ++added;
     }
     return added;

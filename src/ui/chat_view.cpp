@@ -12,6 +12,41 @@ constexpr int kInnerW = kScreenW - 2 * kPadX;
 constexpr int kBars = 30;
 constexpr int kListenH = 46;
 constexpr int kMaxRows = 80;
+// The status bar's right-hand side: the now-playing text, then a running timer, the network
+// icon, and the clock and battery. A timer takes its room from the now-playing text.
+constexpr int kPlayingW = 118, kPlayingRight = kPadX + 86;
+constexpr int kTimerRight = kPadX + 88;
+constexpr int kIconW = 9, kIconH = 11;
+
+// A stopwatch, drawn pixel by pixel: none of the fonts on the device has one (DejaVu Sans lacks
+// U+23F1), and a glyph it lacks would show as an empty box.
+const lv_image_dsc_t *stopwatch_icon(uint32_t rgb) {
+    static const char *const kRows[kIconH] = {
+        "...###...",
+        "....#....",
+        "..#####..",
+        ".#.....#.",
+        "#...#...#",
+        "#...#...#",
+        "#...#...#",
+        "#.......#",
+        "#.......#",
+        ".#.....#.",
+        "..#####..",
+    };
+    static uint32_t pixels[kIconH][kIconW];
+    static lv_image_dsc_t dsc;
+    for (int y = 0; y < kIconH; ++y)
+        for (int x = 0; x < kIconW; ++x) pixels[y][x] = kRows[y][x] == '#' ? 0xFF000000u | rgb : 0u;
+    dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;
+    dsc.header.w = kIconW;
+    dsc.header.h = kIconH;
+    dsc.header.stride = kIconW * 4;
+    dsc.data_size = sizeof(pixels);
+    dsc.data = reinterpret_cast<const uint8_t *>(pixels);
+    return &dsc;
+}
 }  // namespace
 
 void ChatView::create(lv_obj_t *parent) {
@@ -23,17 +58,24 @@ void ChatView::create(lv_obj_t *parent) {
     dot_ = box(status, 7, 7, kAccent);
     lv_obj_set_style_radius(dot_, LV_RADIUS_CIRCLE, 0);
     lv_obj_align(dot_, LV_ALIGN_LEFT_MID, kPadX, 0);
-    name_ = label(status, "Zero", bold(), kText);
+    name_ = label(status, status_name_.c_str(), bold(), kText);   // what set_status compares with
     lv_obj_align(name_, LV_ALIGN_LEFT_MID, kPadX + 12, 0);
     playing_ = label(status, "", small(), kDim);
     lv_label_set_long_mode(playing_, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-    lv_obj_set_width(playing_, 118);
     lv_obj_set_style_text_align(playing_, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_align(playing_, LV_ALIGN_RIGHT_MID, -kPadX - 86, 0);
+    lv_obj_set_height(playing_, lv_font_get_line_height(small()));   // one line, also when cut short with dots
+    place_playing(0);
     right_ = label(status, "", small(), kDim);
     lv_obj_align(right_, LV_ALIGN_RIGHT_MID, -kPadX, 0);
     net_ = label(status, LV_SYMBOL_WIFI, icons(), kFaint);
     lv_obj_align(net_, LV_ALIGN_RIGHT_MID, -kPadX - 66, 0);
+    timer_ = box(status, kIconW, kStatusH, kPanel, true);
+    lv_obj_t *icon = lv_image_create(timer_);
+    lv_image_set_src(icon, stopwatch_icon(kThink));
+    lv_obj_align(icon, LV_ALIGN_LEFT_MID, 0, 0);
+    timer_label_ = label(timer_, "", small(), kThink);
+    lv_obj_align(timer_label_, LV_ALIGN_LEFT_MID, kIconW + 3, 0);
+    lv_obj_add_flag(timer_, LV_OBJ_FLAG_HIDDEN);
 
     // ---- conversation
     list_ = box(root_, kScreenW, 10, kBg);
@@ -239,12 +281,26 @@ void ChatView::scroll(int dy) {
 }
 
 // ---------------------------------------------------------------- status bar
+// These run on every tick. Setting a label's text or a colour redraws it, and with it the status
+// bar, even when the value is the same, so each touches only what has changed.
 void ChatView::set_status(const std::string &name, uint32_t dot_color) {
-    lv_label_set_text(name_, name.c_str());
-    lv_obj_set_style_bg_color(dot_, color(dot_color), 0);
+    if (name != status_name_) {
+        status_name_ = name;
+        lv_label_set_text(name_, name.c_str());
+    }
+    if (dot_color != status_color_) {
+        status_color_ = dot_color;
+        lv_obj_set_style_bg_color(dot_, color(dot_color), 0);
+    }
 }
 
+std::string ChatView::status_name() const { return name_ ? lv_label_get_text(name_) : ""; }
+
 void ChatView::set_indicators(bool online, bool via_phone, int battery, bool charging, const std::string &clock) {
+    const std::string now = std::to_string(online) + std::to_string(via_phone) + std::to_string(battery) +
+                            std::to_string(charging) + clock;
+    if (now == indicators_) return;
+    indicators_ = now;
     lv_label_set_text(net_, !online ? LV_SYMBOL_WARNING : via_phone ? LV_SYMBOL_BLUETOOTH : LV_SYMBOL_WIFI);
     lv_obj_set_style_text_color(net_, color(online ? kDim : kListen), 0);
     char buf[64];
@@ -259,6 +315,41 @@ void ChatView::set_now_playing(const std::string &text) {
     last_playing_ = text;
     const std::string line = text.empty() ? "" : "\xE2\x99\xAA " + text;   // musical note
     lv_label_set_text(playing_, line.c_str());
+}
+
+// The now-playing text keeps its left edge and gives up `give_way` pixels on its right. In its
+// whole room a title too long for it scrolls; beside a countdown it is cut short with dots instead.
+// A scrolling label redraws the status bar at the screen's full frame rate, and in the smaller room
+// most titles would scroll, for as long as the timer runs.
+void ChatView::place_playing(int give_way) {
+    lv_obj_set_width(playing_, kPlayingW - give_way);
+    lv_obj_align(playing_, LV_ALIGN_RIGHT_MID, -kPlayingRight - give_way, 0);
+    const lv_label_long_mode_t mode = give_way ? LV_LABEL_LONG_MODE_DOTS : LV_LABEL_LONG_MODE_SCROLL_CIRCULAR;
+    if (lv_label_get_long_mode(playing_) != mode) lv_label_set_long_mode(playing_, mode);
+}
+
+bool ChatView::now_playing_moves() const { return playing_ && lv_anim_get(playing_, nullptr) != nullptr; }
+
+void ChatView::set_timer(const std::string &countdown) {
+    if (countdown == timer_text_) return;   // it changes once a second at most
+    timer_text_ = countdown;
+    if (countdown.empty()) {
+        lv_obj_add_flag(timer_, LV_OBJ_FLAG_HIDDEN);
+        timer_w_ = 0;
+        place_playing(0);
+        return;
+    }
+    lv_label_set_text(timer_label_, countdown.c_str());
+    lv_point_t size;
+    lv_text_get_size(&size, countdown.c_str(), small(), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    const int w = kIconW + 3 + size.x;
+    if (w != timer_w_) {   // the digits are all one width: this happens when the shape of the text changes
+        timer_w_ = w;
+        lv_obj_set_width(timer_, w);
+        lv_obj_align(timer_, LV_ALIGN_RIGHT_MID, -kTimerRight, 0);
+        lv_obj_remove_flag(timer_, LV_OBJ_FLAG_HIDDEN);
+        place_playing(w + kTimerRight - kPlayingRight + 6);
+    }
 }
 
 // ---------------------------------------------------------------- footer

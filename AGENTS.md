@@ -39,7 +39,8 @@ Scan staged changes and the built binary (`strings`) before every push. The buil
 src/main.cpp        entry point and the command-line test modes (section 6)
 src/agent/          the request loop (agent), service client (llm), system prompt (prompt),
                     tools, sentence queue for speech (speech), arithmetic (calc)
-src/core/           settings, calendar/reminder/memory store, music library, breathing timing,
+src/core/           settings, calendar/reminder/timer/memory store, timers (the timer tool, which
+                    timer words mean, the alarm's logic), music library, breathing timing,
                     start-at-power-on, phone tethering, utilities (dates, files, strings)
 src/net/            libcurl wrapper with a shared connection/DNS/TLS-session cache
 src/platform/       display, keyboard, audio (recorder, speaker, music), codecs, camera,
@@ -51,10 +52,11 @@ src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast); driver.h, the con
                     tool.cpp (the smart_home tool); color.h (colour names and conversions);
                     drivers/ (one per family; registry.cpp lists them); Tapo transport (tapo)
 src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
-                    pages, breathing screen, theme
+                    pages, breathing screen, alarm banner, theme
 tests/              scored agent test set (needs a live service), device-free unit tests
-                    (run_unit.sh), Tapo end to end (tapo_e2e.py), the loop against a scripted
-                    chat service (home_chat_e2e.py), simulated devices and service (mocks/)
+                    (run_unit.sh: smart home, HTTP options, timers), Tapo end to end (tapo_e2e.py),
+                    the loop against a scripted chat service (home_chat_e2e.py), simulated devices
+                    and service (mocks/)
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
 ```
 
@@ -66,7 +68,8 @@ from another thread. Slow work started from a menu uses `background(work, done)`
 
 State on disk (all under the user's home, mode 0600 where they hold secrets):
 `~/.config/zero-bot/settings.json`, and in `~/.local/share/zero-bot/`: `calendar.json`,
-`reminders.json`, `memory.json`, `ir_learned.json`, `music_index.json`, `smarthome.json`.
+`reminders.json` (running timers too, as records with `"kind": "timer"`), `memory.json`,
+`ir_learned.json`, `music_index.json`, `smarthome.json`.
 
 ## 4. How a request flows
 
@@ -111,6 +114,9 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   waits before asking again. Names in `ERROR`/`CONFIRM` sentences are always in double quotes, and
   `home::clean_name` removes every kind of double quotation mark (typographic and full-width ones
   too) from every name, so a device's name cannot end its quotes and read as an instruction.
+- **Context notes** (`Agent::add_context`): something the user saw or heard without the model
+  taking part (a timer's alarm) rides along with their next message, within ten minutes, so
+  that "give it five more minutes" means something to the model.
 
 ## 5. Building
 
@@ -136,9 +142,13 @@ What exists:
 - **Device-free tests**: `tests/run_unit.sh` (g++, nothing else) builds and runs
   `tests/unit/smarthome_test.cpp` (store and migration, names and rooms, schema snapshots in
   `tests/snapshots/`, the safety questions, rate limits, locking, pairing, the Tapo driver's
-  refusals, colours; devices are a fake driver) and `tests/unit/http_test.cpp` (the request
-  options for devices, against a local peer). `ZB_UPDATE_SNAPSHOTS=1` rewrites the snapshots:
-  read the diff before committing it. `ZB_BUILD_WRAPPER=cmd` runs each compile through `cmd`.
+  refusals, colours; devices are a fake driver), `tests/unit/http_test.cpp` (the request
+  options for devices, against a local peer) and `tests/unit/timers_test.cpp` (the timer tool,
+  storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it keeps everything
+  it writes in a temporary folder of its own, so running it by hand is safe too), then runs the
+  timer tool through `build/cli/zero_bot --tool timer` if that is built. `ZB_UPDATE_SNAPSHOTS=1`
+  rewrites the snapshots: read the diff before committing it. `ZB_BUILD_WRAPPER=cmd` runs each
+  compile through `cmd`.
 - **Tapo end to end**: `tests/tapo_e2e.py` runs `build/cli/zero_bot` against two simulated plugs
   (`tests/mocks/mock_tapo.py`, a TPAP P110 and a KLAP P304M) on ports the system picks.
 - **The request loop, scripted**: `tests/home_chat_e2e.py` runs `build/cli/zero_bot --chat` against
@@ -315,6 +325,41 @@ in the README's settings table. Fix the screenshot key-press counts.
 
 **A screen.** Follow `breath_view` or `chat_view`: create objects once, update only what
 changed, drive it from `App::periodic`, route keys in `App::handle_key`, add a `--shots` frame.
+
+**Something shown over every screen** (the timer's alarm banner, `AlarmView`): make it a child
+of the screen, created after the other views, and `raise()` it again whenever another view
+brings itself forward (`BreathView::start` does). Not `lv_layer_top()`: `--shots` snapshots the
+screen only, so it would be missing from the screenshots.
+
+**The status bar** is redrawn by anything that sets one of its labels or colours, even to the
+value it already has. `ChatView`'s setters compare with what is shown and return early; keep
+that for anything added there (the timer countdown changes once a second, not every tick). A
+label that scrolls redraws the bar on every screen refresh (about 40 times a second, measured in
+the simulator), so nothing there should scroll for long: the now-playing text scrolls only when
+it has all of its room, and beside the countdown it is cut short with dots instead.
+
+**A settings value that changes by itself** (a timer's time left): set `MenuPage::live`.
+`Menu::tick` then reads the values on screen 15 times a second and redraws only those whose
+text changed, so their value functions must be cheap: no file reads, no subprocesses. Rows that
+come and go by themselves (a timer ends) also need `MenuPage::revision`, a number that changes
+with them: the page is rebuilt when it does.
+
+**A sound that repeats** (the timer's alarm): `audio::AlarmSound` gives each ring a player
+process and a thread of its own, so `start()` and `stop()` never wait on the UI thread, not even
+for a player that has hung (`Speaker::kill` ends it without waiting; its thread reaps it). It
+holds back while the assistant's voice is audible (`SpeechQueue::playing`, not `active`, which
+also covers waiting for the service) and for a few seconds at most. Stop it on every way out,
+leaving the app included (`stop_and_wait`): a player process outlives the app. Whatever holds
+the music (`audio::Music::hold`) lets go on every way out too.
+
+**Wall-clock time in a countdown** (timers): a board without a battery-backed clock is set by a
+time sync some while after it starts, so the wall clock can jump while the app runs.
+`Store::follow_clock` moves the timers set in this run along with it (the app calls it every
+tick, and uses the time it read for the rest of the tick); anything else counted down from "now"
+needs the same care. A time read on another thread may be from the other side of a step the main
+loop has yet to see, or has just seen: the timer tool reads both clocks and passes how far apart
+they were (`Store::reckon`, `add_timer`), so a timer started just then is moved across the step
+once, not twice and not never.
 
 **A smart-home device family.** It is a driver: a class implementing `home::Driver`
 (`src/smarthome/driver.h`) in `src/smarthome/drivers/<family>.{h,cpp}`, which defines

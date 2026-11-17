@@ -2,8 +2,8 @@
 
 A pocket voice assistant for the [M5Stack CardputerZero](https://docs.m5stack.com/en/CardputerZero).
 Press a key, talk, and it answers out loud. It can look through the camera, keep your
-calendar, set reminders, play your music, work a TV, and look things up, which makes it a handy
-travel companion.
+calendar, run timers, set reminders, play your music, work a TV, and look things up, which makes
+it a handy travel companion.
 
 It is a native C++ app built on LVGL. It talks to any OpenAI-compatible service that offers
 chat with tool calling, speech-to-text and text-to-speech; nothing about a particular provider
@@ -24,7 +24,8 @@ is built in.
 | What the camera sees | "What am I looking at?", "Translate this menu." |
 | Calendar | "Put dinner with Marta in my calendar for Friday at eight." |
 | Birthdays and repeating events | "Mum's birthday is the 14th of March.", "Bin collection every Tuesday at seven.", "How old will Dad be this year?" |
-| Timers and reminders | "Remind me in ten minutes to check the oven." |
+| Timers | "The food needs to come out of the oven in 5 minutes.", "I want to study for an hour, set a timer.", "How long is left?", "Cancel the study timer." |
+| Reminders | "Remind me at 7 tomorrow to call the hotel." |
 | Things to remember | "Remember that I'm allergic to shellfish." |
 | Web search | "What time does the Louvre open on Sundays?" |
 | Weather | "Do I need an umbrella in Lisbon tomorrow?" |
@@ -46,7 +47,7 @@ needs a [Tavily](https://tavily.com) key.
 | **TAB** | Start talking. Press **TAB** again when you have finished. |
 | **TAB** twice quickly | Open settings. |
 | **ENTER** (or just start typing) | Type a message; **ENTER** sends it. |
-| **del** twice quickly | Start a new conversation: what was said so far is forgotten. Calendar, reminders and saved memories are kept. |
+| **del** twice quickly | Start a new conversation: what was said so far is forgotten. Calendar, timers, reminders and saved memories are kept. |
 | **ESC** | Cancel what is happening: recording, typing, a running request, music. |
 | Hold **ESC** | Leave the app and return to the launcher. |
 | **fn**+**F** / **fn**+**X** | Scroll the conversation up and down. |
@@ -64,6 +65,32 @@ You do not have to wait for it to finish:
 The dot in the top-left corner shows what it is doing: red while the microphone is live, amber
 while it is working, teal while it is speaking. The screen dims after 45 seconds without use
 and wakes on any key.
+
+### Timers
+
+Ask for a timer in your own words, and give it a name if you like: "the food needs to come out
+of the oven in 5 minutes", "I want to study for an hour, set a timer". Up to ten can run at
+once. The one that ends soonest counts down in the status bar, followed by "+2" when two more
+are running (the title of any music playing is shortened to make room), and everything else
+keeps working meanwhile: talking, typing, settings, music, the breathing exercise.
+
+- **When one ends** the screen lights up with a banner naming it, an alarm rings for up to a
+  minute, music pauses, and the name is spoken once (if spoken replies are on): the alarm holds
+  back for a few seconds at most while the assistant speaks, then rings on. If you are talking
+  to the assistant at that moment, it waits until you have finished. A timer that ends while
+  another is ringing joins the banner and starts the alarm again. **Any key** stops it; **TAB**
+  stops it and starts listening, so "give it five more minutes" is one press away.
+- **Muted** with **fn**+**A**, the alarm stays silent: the banner is all you get. A key press
+  first dismisses the banner, so press **fn**+**A** after that to unmute.
+- **Ask** "how long is left?", "add ten minutes to the pasta", "cancel the study timer". With
+  several running, it asks which one you mean. *Settings → Your data → Reminders and timers*
+  lists them with their time left, to cancel one or all.
+- **Timers carry on** if you leave the app. One that ended while it was closed is shown as
+  missed when you open it again, and still rings if it ended less than two minutes before.
+  While the app is open a timer counts the time that passes, even if the clock is set meanwhile
+  (as it can be when the device first goes online after starting).
+
+![Two timers running](docs/screenshots/timer-two.png) ![A timer's alarm](docs/screenshots/timer-alarm.png)
 
 ## Install
 
@@ -133,7 +160,7 @@ Press **TAB** twice. Move with **fn**+**F**/**X** (or plain **F**/**X**), change
 |---|---|
 | Assistant | Language, vision, speech-to-text and text-to-speech models; voice; spoken replies on/off; fast replies; the assistant's name |
 | Device | Volume, brightness, microphone gain, time zone, start at power-on, internet via phone, microphone, flip camera image, home city and country, your name, date order, units |
-| Your data | Calendar (edit, add, delete, delete all), reminders, memory (edit, add, delete, forget everything), TV remote, smart home (devices by room, setting up, the Tapo account), music library, start a new conversation |
+| Your data | Calendar (edit, add, delete, delete all), reminders and timers (cancel one or all), memory (edit, add, delete, forget everything), TV remote, smart home (devices by room, setting up, the Tapo account), music library, start a new conversation |
 | AI service | Address, API key, web search key, compress audio |
 | About | Status and connection test, exit to launcher |
 
@@ -240,7 +267,7 @@ devices, with or without this app.
   Finance.
 - Python runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox with no
   network, no access to your files, a 20-second limit and a memory cap.
-- Reminders only fire while the app is running.
+- Reminders and timers only fire while the app is running.
 
 ## Building
 
@@ -297,9 +324,10 @@ devices at a 127.x address are ever contacted and nothing is scanned; the tests 
 `tests/agent_eval.py` runs a scored set of requests through this build and reports which tools
 were called, whether the answers hold up, and how long each took. See the notes at the top of
 the file. `tests/run_unit.sh` builds and runs the tests that need neither a device nor an AI
-service, `tests/tapo_e2e.py` runs the command-line build against two simulated Tapo plugs, and
-`tests/home_chat_e2e.py` runs its conversation loop against a scripted chat service to check that a
-change needing your yes waits for one.
+service (the smart-home layer, and the timers: the timer tool, how timers are stored, the
+countdown and the alarm), `tests/tapo_e2e.py` runs the command-line build against two simulated
+Tapo plugs, and `tests/home_chat_e2e.py` runs its conversation loop against a scripted chat
+service to check that a change needing your yes waits for one.
 
 ## Troubleshooting
 
@@ -323,19 +351,22 @@ change needing your yes waits for one.
   Wi-Fi. A Wi-Fi hotspot from the same phone is much faster if the device can see it.
 - **The TV does not react.** Aim the top edge at the TV from within a few metres, set the brand
   in settings, or teach it the button from the real remote.
+- **A timer ended without a sound.** The device was muted with **fn**+**A** (the banner still
+  shows: press any key to dismiss it, then **fn**+**A** to unmute) or the volume is turned
+  right down.
 - **Python tool reports the sandbox is unavailable.** Install `bubblewrap`.
 
 ## Project layout
 
 ```
 src/agent/      the conversation loop, prompt, tools, speech queue and service client
-src/core/       settings, calendar/reminder/memory store, music library, utilities
+src/core/       settings, calendar/reminder/timer/memory store, timers, music library, utilities
 src/platform/   display, keyboard, audio, camera, infrared, subprocess helpers
-src/ui/         chat screen, menus, settings pages, app controller
+src/ui/         chat screen, menus, settings pages, alarm banner, app controller
 src/net/        HTTP client (libcurl)
 src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers
 scripts/        toolchain setup, packaging, deployment
-tests/          scored agent test set, unit tests, Tapo end-to-end test with a simulated plug
+tests/          scored agent test set, unit tests (smart home, timers), Tapo end-to-end test with a simulated plug
 packaging/      launcher entry and icon
 extras/         device-tree overlay for the Wi-Fi channel fix
 third_party/    nlohmann/json (MIT)

@@ -13,7 +13,9 @@ static std::string path_of(const char *name) { return util::data_dir() + "/" + n
 
 void Store::load() {
     std::lock_guard<std::mutex> lk(mtx_);
-    events_.clear(); reminders_.clear(); memories_.clear();
+    events_.clear(); reminders_.clear(); memories_.clear(); ended_.clear();
+    timers_unsaved_ = false;
+    clock_known_ = false;
     int max_id = 0;
     for (auto &j : util::load_json(path_of("calendar.json"), json::array())) {
         CalEvent e;
@@ -30,6 +32,18 @@ void Store::load() {
         Reminder r;
         r.id = jget(j, "id", 0); r.text = jget(j, "text", std::string());
         r.due = jget<long long>(j, "due", 0); r.fired = jget(j, "fired", false);
+        if (jget(j, "kind", std::string()) == "timer") {   // records from before timers have no kind
+            r.kind = "timer";
+            r.started = jget<long long>(j, "started", 0);
+            r.length = jget<long long>(j, "length", 0);
+            r.carried = true;
+            // A record without a usable end (edited by hand, or damaged) gets it back from its start
+            // and length, or is left out: the main loop would read an end of 0 as "no timer at all".
+            if (r.due <= 0) {
+                if (r.started <= 0 || r.length <= 0) continue;
+                r.due = r.started + r.length;
+            }
+        }
         if (r.id > 0) { reminders_.push_back(r); max_id = std::max(max_id, r.id); }
     }
     for (auto &j : util::load_json(path_of("memory.json"), json::array())) {
@@ -39,6 +53,7 @@ void Store::load() {
         if (m.id > 0 && !m.text.empty()) { memories_.push_back(m); max_id = std::max(max_id, m.id); }
     }
     next_id_ = max_id + 1;
+    timers_changed();
 }
 
 void Store::save_calendar() {
@@ -54,9 +69,17 @@ void Store::save_calendar() {
 
 void Store::save_reminders() {
     json arr = json::array();
-    for (auto &r : reminders_)
-        arr.push_back({{"id", r.id}, {"text", r.text}, {"due", static_cast<long long>(r.due)}, {"fired", r.fired}});
+    for (auto &r : reminders_) {
+        json j = {{"id", r.id}, {"text", r.text}, {"due", static_cast<long long>(r.due)}, {"fired", r.fired}};
+        if (r.timer()) {   // a reminder's record keeps its old shape
+            j["kind"] = r.kind;
+            j["started"] = static_cast<long long>(r.started);
+            j["length"] = static_cast<long long>(r.length);
+        }
+        arr.push_back(j);
+    }
     util::save_json(path_of("reminders.json"), arr);
+    timers_unsaved_ = false;
 }
 
 void Store::save_memory() {
@@ -187,7 +210,7 @@ std::vector<Reminder> Store::reminders() {
     std::lock_guard<std::mutex> lk(mtx_);
     std::vector<Reminder> out;
     for (auto &r : reminders_)
-        if (!r.fired) out.push_back(r);
+        if (!r.fired && !r.timer()) out.push_back(r);
     std::sort(out.begin(), out.end(), [](const Reminder &a, const Reminder &b) { return a.due < b.due; });
     return out;
 }
@@ -204,7 +227,7 @@ int Store::add_reminder(const std::string &text, time_t due) {
 bool Store::delete_reminder(int id) {
     std::lock_guard<std::mutex> lk(mtx_);
     const auto n = reminders_.size();
-    reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [&](const Reminder &r) { return r.id == id; }),
+    reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [&](const Reminder &r) { return r.id == id && !r.timer(); }),
                      reminders_.end());
     if (reminders_.size() == n) return false;
     save_reminders();
@@ -213,8 +236,193 @@ bool Store::delete_reminder(int id) {
 
 void Store::clear_reminders() {
     std::lock_guard<std::mutex> lk(mtx_);
-    reminders_.clear();
+    reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [](const Reminder &r) { return !r.timer(); }),
+                     reminders_.end());
     save_reminders();
+}
+
+// ---------------------------------------------------------------- timers
+void Store::timers_changed() {
+    bool any = false;
+    time_t next = 0;
+    for (auto &r : reminders_)
+        if (r.timer() && (!any || r.due < next)) {
+            next = r.due;
+            any = true;
+        }
+    // 0 means "no timer" to the main loop, so an end at or before 0 (never written by the app)
+    // stands as the earliest moment there is: such a timer is taken at once rather than hiding the rest.
+    next_end_ = any ? std::max<time_t>(next, 1) : 0;
+    ++revision_;
+}
+
+// Milliseconds as whole seconds, to the nearest, alike either way round (a step and its undoing).
+static time_t whole_seconds(long long ms) { return static_cast<time_t>((ms + (ms > 0 ? 500 : -500)) / 1000); }
+
+void Store::follow_clock(long long wall_ms, long long steady_ms) {
+    const long long offset = wall_ms - steady_ms;
+    // The usual case, on every tick: no step, and no lock (only this thread changes the offset).
+    const long long drift = offset - clock_offset_;
+    if (clock_known_ && drift > -kClockStepMs && drift < kClockStepMs) {
+        clock_offset_ = offset;
+        return;
+    }
+    // The wall clock has been set, or this is the first reading. The offset changes together with
+    // the timers, under the lock: a timer being started on another thread meanwhile (see reckon) is
+    // reckoned either by the old clock and moved with the rest, or by the new one and left alone.
+    std::lock_guard<std::mutex> lk(mtx_);
+    const long long step = offset - clock_offset_.exchange(offset);
+    if (!clock_known_.exchange(true) || (step > -kClockStepMs && step < kClockStepMs)) return;
+    // A timer set in this run was reckoned by the clock as it was, so it moves with it and still
+    // ends when its length has passed; so does what ended recently, so "ended at" and "give it five
+    // more minutes" stay right.
+    const time_t shift = whole_seconds(step);
+    bool moved = false;
+    for (auto &r : reminders_)
+        if (r.timer() && !r.carried) {
+            r.due += shift;
+            r.started += shift;
+            moved = true;
+        }
+    for (auto &r : ended_)
+        if (!r.carried) r.due += shift;
+    if (!moved) return;
+    save_reminders();
+    timers_changed();
+}
+
+time_t Store::reckon(time_t now, long long &offset_ms) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    return reckon_locked(now, offset_ms);
+}
+
+bool Store::clock_stepped(long long offset_ms) const {
+    if (offset_ms == kNoClock || !clock_known_) return false;
+    const long long step = offset_ms - clock_offset_;
+    return step <= -kClockStepMs || step >= kClockStepMs;
+}
+
+time_t Store::reckon_locked(time_t now, long long &offset_ms) const {
+    if (offset_ms == kNoClock || !clock_known_) return now;
+    const long long step = clock_offset_ - offset_ms;
+    offset_ms = clock_offset_;
+    if (step > -kClockStepMs && step < kClockStepMs) return now;
+    return now + whole_seconds(step);
+}
+
+std::vector<Reminder> Store::timers() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    std::vector<Reminder> out;
+    for (auto &r : reminders_)
+        if (r.timer()) out.push_back(r);
+    std::stable_sort(out.begin(), out.end(), [](const Reminder &a, const Reminder &b) { return a.due < b.due; });
+    return out;
+}
+
+int Store::add_timer(const std::string &label, long seconds, time_t now, long long offset_ms) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (std::count_if(reminders_.begin(), reminders_.end(), [](const Reminder &r) { return r.timer(); }) >= kMaxTimers)
+        return 0;
+    now = reckon_locked(now, offset_ms);   // by the clock the other timers go by, should it have been set meanwhile
+    Reminder r;
+    r.id = next_id_++;
+    r.text = label;
+    r.kind = "timer";
+    r.started = now;
+    r.length = seconds;
+    r.due = now + seconds;
+    reminders_.push_back(r);
+    save_reminders();
+    timers_changed();
+    return r.id;
+}
+
+bool Store::extend_timer(int id, long seconds) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    for (auto &r : reminders_)
+        if (r.id == id && r.timer()) {
+            r.due += seconds;
+            r.length += seconds;
+            save_reminders();
+            timers_changed();
+            return true;
+        }
+    return false;
+}
+
+bool Store::delete_timer(int id) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    const auto n = reminders_.size();
+    reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [&](const Reminder &r) { return r.id == id && r.timer(); }),
+                     reminders_.end());
+    if (reminders_.size() == n) return false;
+    save_reminders();
+    timers_changed();
+    return true;
+}
+
+int Store::clear_timers() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    const auto n = reminders_.size();
+    reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [](const Reminder &r) { return r.timer(); }),
+                     reminders_.end());
+    const int gone = static_cast<int>(n - reminders_.size());
+    if (gone) {
+        save_reminders();
+        timers_changed();
+    }
+    return gone;
+}
+
+std::vector<Reminder> Store::take_ended_timers(time_t now) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    std::vector<Reminder> out;
+    for (auto &r : reminders_)
+        if (r.timer() && r.due <= now) out.push_back(r);
+    if (out.empty()) return out;
+    reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [now](const Reminder &r) { return r.timer() && r.due <= now; }),
+                     reminders_.end());
+    timers_unsaved_ = true;   // written by save_timers(), once the alarm is under way
+    timers_changed();
+    std::stable_sort(out.begin(), out.end(), [](const Reminder &a, const Reminder &b) { return a.due < b.due; });
+    for (auto &r : out) ended_.insert(ended_.begin(), r);   // newest first
+    ended_.erase(std::remove_if(ended_.begin(), ended_.end(), [now](const Reminder &r) { return now - r.due > kRecentSeconds; }),
+                 ended_.end());
+    if (ended_.size() > static_cast<size_t>(kMaxTimers)) ended_.resize(kMaxTimers);
+    return out;
+}
+
+void Store::save_timers() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (timers_unsaved_) save_reminders();
+}
+
+std::vector<Reminder> Store::recent_timers(time_t now) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    std::vector<Reminder> out;
+    for (auto &r : ended_)
+        if (now - r.due <= kRecentSeconds) out.push_back(r);
+    return out;
+}
+
+int Store::restart_timer(int id, long seconds, time_t now, long long offset_ms) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = std::find_if(ended_.begin(), ended_.end(), [id](const Reminder &r) { return r.id == id; });
+    if (it == ended_.end() ||
+        std::count_if(reminders_.begin(), reminders_.end(), [](const Reminder &r) { return r.timer(); }) >= kMaxTimers)
+        return 0;
+    now = reckon_locked(now, offset_ms);
+    Reminder r = *it;
+    ended_.erase(it);
+    r.started = now;
+    r.length = seconds;
+    r.due = now + seconds;
+    r.fired = false;
+    r.carried = false;          // reckoned by this run's clock now
+    reminders_.push_back(r);
+    save_reminders();
+    timers_changed();
+    return r.id;
 }
 
 // ---------------------------------------------------------------- memory
@@ -284,7 +492,7 @@ std::vector<std::string> Store::take_due_alerts(time_t now) {
         out.push_back(title + when);
     }
     for (auto &r : reminders_) {
-        if (r.fired || now < r.due) continue;
+        if (r.timer() || r.fired || now < r.due) continue;   // timers ring through timers::Alarm
         r.fired = true;
         rem_dirty = true;
         out.push_back(r.text.empty() ? "Timer finished" : r.text);

@@ -28,6 +28,12 @@ struct MenuPage {
     std::string title;
     std::function<std::vector<MenuItem>()> build;   // re-run whenever the page is shown or refreshed
     std::string hint;                               // overrides the default footer hint
+    // The values change by themselves (a timer's time left): tick() reads the ones on screen
+    // again and redraws those whose text has changed. Their value functions must be cheap.
+    bool live = false;
+    // Optional, cheap: a number that changes when the page's rows do (a timer ended or was
+    // cancelled elsewhere). tick() rebuilds the page when it changes.
+    std::function<int()> revision;
 };
 
 class Menu {
@@ -51,13 +57,17 @@ public:
     void message(const std::string &title, const std::string &body);   // a page of plain text
     void problem(const std::string &title, const std::string &text);   // wrapped text that stays until ESC
     size_t depth() const { return stack_.size(); }
+    std::string title() const;      // the top page's title, and the label of the row the cursor
+    std::string selected() const;   // is on ("" with no page): for the checks in --shots
     // Splits a paragraph into Text rows that fit the screen width.
     static void add_paragraph(std::vector<MenuItem> &items, const std::string &paragraph);
 
 private:
     void render();
     void show_editor(bool on);
-    struct Frame { MenuPage page; int selected = 0; int scroll = 0; };
+    struct Frame { MenuPage page; int selected = 0; int scroll = 0; int revision = 0; };
+    void build_items();             // runs the top page's build, noting its revision
+    void settle();                  // after a rebuild: the cursor on a row that exists and can be selected
     std::vector<Frame> stack_;
     std::vector<MenuItem> items_;
     lv_obj_t *root_ = nullptr, *title_ = nullptr, *list_ = nullptr, *hint_ = nullptr, *toast_ = nullptr;
@@ -65,4 +75,7 @@ private:
     bool editing_ = false;
     std::function<void(const std::string &)> edit_done_;
     int toast_ticks_ = 0;
+    // On a live page: the rows on screen with a value, and the text each shows.
+    struct LiveValue { size_t item; lv_obj_t *label; std::string text; };
+    std::vector<LiveValue> live_;
 };

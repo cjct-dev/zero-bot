@@ -46,6 +46,7 @@ void SpeechQueue::stop() {
         stop_flag_ = true;
     }
     speaker().stop();
+    playing_ = false;
     cv_.notify_one();
 }
 
@@ -62,6 +63,7 @@ void SpeechQueue::run() {
             if (stop_flag_) {
                 stop_flag_ = false;
                 stream_open_ = false;
+                playing_ = false;
                 if (queue_.empty()) {
                     working_ = false;
                     audio::Music::get().hold(audio::Music::kSpeech | audio::Music::kExchange, false);
@@ -75,6 +77,7 @@ void SpeechQueue::run() {
                     lk.unlock();
                     speaker().finish();
                     while (speaker().playing() && generation_ == gen) usleep(30 * 1000);
+                    playing_ = false;
                     lk.lock();
                 }
                 if (queue_.empty()) {
@@ -103,6 +106,7 @@ void SpeechQueue::run() {
             if (!speaker().begin(llm::kTtsRate)) continue;
             std::lock_guard<std::mutex> lk(mtx_);
             stream_open_ = true;
+            playing_ = true;
         }
         speaker().write(pcm.data(), pcm.size());
         // A short pause between sentences sounds more natural than back-to-back audio.

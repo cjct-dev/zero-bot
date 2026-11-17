@@ -26,6 +26,7 @@ void init();                       // load fonts; call once after lv_init
 const lv_font_t *body();           // 12 px text
 const lv_font_t *small();          // 10 px captions and hints
 const lv_font_t *bold();           // 12 px emphasis
+const lv_font_t *large();          // 16 px bold, for what must be read at a glance (a timer's alarm)
 const lv_font_t *icons();          // LVGL symbol font
 
 lv_color_t color(uint32_t hex);

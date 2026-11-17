@@ -1,6 +1,7 @@
 #include "ui/menu.h"
 
 #include <algorithm>
+#include <cstdlib>
 
 #include "ui/theme.h"
 
@@ -119,12 +120,18 @@ void Menu::create(lv_obj_t *parent) {
     lv_obj_add_flag(toast_, LV_OBJ_FLAG_HIDDEN);
 }
 
+void Menu::build_items() {
+    Frame &f = stack_.back();
+    if (f.page.revision) f.revision = f.page.revision();
+    items_ = f.page.build();
+}
+
 void Menu::push(MenuPage page) {
     Frame f;
     f.page = std::move(page);
     stack_.push_back(std::move(f));
     lv_obj_remove_flag(root_, LV_OBJ_FLAG_HIDDEN);
-    items_ = stack_.back().page.build();
+    build_items();
     // Start on the first row that can be selected.
     for (size_t i = 0; i < items_.size(); ++i)
         if (items_[i].selectable()) { stack_.back().selected = static_cast<int>(i); break; }
@@ -147,13 +154,25 @@ void Menu::close() {
 
 void Menu::refresh() {
     if (stack_.empty()) return;
-    items_ = stack_.back().page.build();
+    build_items();
+    settle();
+    render();
+}
+
+void Menu::settle() {
     Frame &f = stack_.back();
     if (f.selected >= static_cast<int>(items_.size())) f.selected = static_cast<int>(items_.size()) - 1;
     if (f.selected < 0) f.selected = 0;
     while (f.selected < static_cast<int>(items_.size()) - 1 && !items_[static_cast<size_t>(f.selected)].selectable())
         ++f.selected;
-    render();
+}
+
+std::string Menu::title() const { return stack_.empty() ? std::string() : stack_.back().page.title; }
+
+std::string Menu::selected() const {
+    if (stack_.empty()) return "";
+    const int at = stack_.back().selected;
+    return at >= 0 && at < static_cast<int>(items_.size()) ? items_[static_cast<size_t>(at)].label : std::string();
 }
 
 void Menu::render() {
@@ -169,6 +188,7 @@ void Menu::render() {
     if (f.scroll < 0) f.scroll = 0;
 
     lv_obj_clean(list_);
+    live_.clear();
     for (int row = 0; row < kVisible && f.scroll + row < n; ++row) {
         const MenuItem &it = items_[static_cast<size_t>(f.scroll + row)];
         const bool selected = f.scroll + row == f.selected;
@@ -202,6 +222,7 @@ void Menu::render() {
             lv_obj_set_size(v, value_w, lv_font_get_line_height(body()));
             lv_obj_align(v, LV_ALIGN_RIGHT_MID, -8, 0);
             lv_obj_set_size(l, kScreenW - 24 - value_w, lv_font_get_line_height(body()));
+            if (f.page.live) live_.push_back({static_cast<size_t>(f.scroll + row), v, value});
         } else {
             lv_obj_set_width(l, kScreenW - 20);
         }
@@ -316,6 +337,31 @@ void Menu::toast(const std::string &text) {
 
 void Menu::tick() {
     if (toast_ticks_ > 0 && --toast_ticks_ == 0) lv_obj_add_flag(toast_, LV_OBJ_FLAG_HIDDEN);
+    if (stack_.empty() || editing_ || !stack_.back().page.live) return;
+    Frame &f = stack_.back();
+    if (f.page.revision && f.page.revision() != f.revision) {
+        // Rows have come or gone by themselves (a timer ended). The cursor stays on the row it was
+        // on, wherever that has moved to, rather than on whatever has taken its place.
+        const std::string was = selected();
+        const int at = f.selected;
+        build_items();
+        int best = -1;
+        for (int i = 0; i < static_cast<int>(items_.size()); ++i)
+            if (items_[static_cast<size_t>(i)].selectable() && items_[static_cast<size_t>(i)].label == was &&
+                (best < 0 || std::abs(i - at) < std::abs(best - at)))
+                best = i;
+        if (best >= 0) f.selected = best;
+        settle();
+        render();
+        return;
+    }
+    for (LiveValue &shown : live_) {
+        const MenuItem &it = items_[shown.item];
+        const std::string text = it.value ? it.value() : "";
+        if (text == shown.text) continue;
+        shown.text = text;
+        lv_label_set_text(shown.label, text.c_str());
+    }
 }
 
 void Menu::key(const KeyEvent &ev) {

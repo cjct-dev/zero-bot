@@ -1,5 +1,7 @@
 // Calendar, reminders and long-term memory, each a small JSON file in ~/.local/share/zero-bot.
 #pragma once
+#include <atomic>
+#include <climits>
 #include <ctime>
 #include <mutex>
 #include <string>
@@ -33,9 +35,18 @@ int years_marked(const CalEvent &e, time_t occurrence);
 
 struct Reminder {
     int id = 0;
-    std::string text;
-    time_t due = 0;
+    std::string text;          // what is said when it fires; a timer's label
+    time_t due = 0;            // when it fires; when a timer ends
     bool fired = false;
+    // Timers (countdowns: "a timer for ten minutes") are kept with the reminders, marked by kind,
+    // and fire through the same check. Files from before timers have no kind: all reminders.
+    std::string kind;          // "" = reminder, "timer"
+    time_t started = 0;        // timer: when it was set
+    long length = 0;           // timer: its whole length in seconds, with any time added
+    // Timer: read from the file when the app started, so set (or last restarted) by an earlier run
+    // of it. Not stored.
+    bool carried = false;
+    bool timer() const { return kind == "timer"; }
 };
 
 struct Memory {
@@ -58,11 +69,51 @@ public:
     bool delete_event(int id);
     void clear_events();
 
-    // Reminders
+    // Reminders (never timers)
     std::vector<Reminder> reminders();
     int add_reminder(const std::string &text, time_t due);
     bool delete_reminder(int id);
     void clear_reminders();
+
+    // Timers. Several run at once, up to kMaxTimers. `offset_ms`, given with `now`, is how far the
+    // wall clock stood from the steady one when `now` was read (see reckon).
+    static constexpr int kMaxTimers = 10;
+    static constexpr long long kNoClock = LLONG_MIN;      // no reading of the clocks: `now` is taken as it is
+    std::vector<Reminder> timers();                       // set and not yet taken as ended, soonest end first
+    int add_timer(const std::string &label, long seconds, time_t now, long long offset_ms = kNoClock);   // its id, or 0 at the cap
+    bool extend_timer(int id, long seconds);
+    bool delete_timer(int id);
+    int clear_timers();                                   // how many there were
+    // Timers whose end has come by `now`, soonest first, each returned once. They are kept in
+    // memory for kRecentSeconds afterwards, so that "give it five more minutes" can restart one.
+    // They leave the list at once, but the file only with the next save_timers(), so that an
+    // alarm can be under way before the disk is touched.
+    std::vector<Reminder> take_ended_timers(time_t now);
+    void save_timers();                                   // writes what take_ended_timers left unwritten
+    static constexpr long kRecentSeconds = 15 * 60;
+    std::vector<Reminder> recent_timers(time_t now);      // ended in the last kRecentSeconds, newest first
+    int restart_timer(int id, long seconds, time_t now, long long offset_ms = kNoClock);  // a recent one, running again; its id, or 0
+    // For the main loop, without taking the lock: the soonest end (0 when none is set), and a
+    // number that changes whenever the set of timers or their ends do.
+    time_t next_timer_end() const { return next_end_; }
+    int timers_revision() const { return revision_; }
+    // Timers set while the app runs count the time that passes, whatever the wall clock does:
+    // when it is set (by a time sync after start-up, on a device without a clock of its own),
+    // their ends move with it. Call often, from one thread, with the wall clock and a clock that
+    // runs at a steady pace (both in milliseconds). Timers carried over from an earlier run keep
+    // their ends: those were reckoned by that run's clock.
+    void follow_clock(long long wall_ms, long long steady_ms);
+    static constexpr long long kClockStepMs = 2000;       // the wall clock moving this much more than the steady one is a step
+    // A time read on another thread (the timer tool's "now"), as the timers here reckon time.
+    // `offset_ms` is how far the wall clock stood from the steady one when it was read (wall minus
+    // steady, as follow_clock is given them). Read on the other side of a step from the timers
+    // (follow_clock has seen the step since, or has yet to see it), the time is moved across it, as
+    // the timers were or will be. `offset_ms` then holds the offset the result is reckoned by, to
+    // pass on with it to add_timer or restart_timer.
+    time_t reckon(time_t now, long long &offset_ms);
+    // Whether a time read with this offset is on the other side of a step from the timers, as when
+    // the wall clock has just been set and follow_clock has yet to see it. Without the lock.
+    bool clock_stepped(long long offset_ms) const;
 
     // Memory
     std::vector<Memory> memories();
@@ -78,9 +129,20 @@ private:
     void save_calendar();
     void save_reminders();
     void save_memory();
+    void timers_changed();      // with mtx_ held
+    time_t reckon_locked(time_t now, long long &offset_ms) const;
     std::mutex mtx_;
     std::vector<CalEvent> events_;
     std::vector<Reminder> reminders_;
     std::vector<Memory> memories_;
+    std::vector<Reminder> ended_;   // timers that have ended recently (not stored)
     int next_id_ = 1;
+    bool timers_unsaved_ = false;   // take_ended_timers has changed the list since the file was written
+    std::atomic<time_t> next_end_{0};
+    std::atomic<int> revision_{0};
+    // Wall minus steady clock as of the last follow_clock: what the timers set in this run are
+    // reckoned by. Only follow_clock changes it, and by a step only with mtx_ held, together with
+    // the timers.
+    std::atomic<long long> clock_offset_{0};
+    std::atomic<bool> clock_known_{false};
 };

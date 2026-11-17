@@ -2,6 +2,8 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -44,6 +46,9 @@ public:
     void write(const void *data, size_t bytes);   // blocking
     void finish();                                // no more audio; let it drain
     void stop();                                  // cut off immediately
+    // Ends the player at once without waiting for it, from any thread; a write() stuck on a player
+    // that has stopped reading returns. The thread that writes to it reaps it with stop().
+    void kill();
     bool playing();                               // still producing sound?
 
 private:
@@ -62,6 +67,34 @@ void set_mic_gain(int percent);                   // microphone amplification, 1
 void normalize(std::vector<int16_t> &pcm);        // even out the level of a finished recording
 void chime(int kind);                             // 0 = start listening, 1 = done, 2 = alert
 
+// The sound of a timer's alarm, synthesised like the chimes: one burst of four short, high beeps
+// followed by a pause, at `rate` samples a second.
+std::vector<int16_t> alarm_burst(int rate);
+
+// Plays the alarm burst over and over. Each ring has a player process and a thread of its own, so
+// start() and stop() return at once and never wait for a player, not even one that has hung: a
+// ring under way is cut off (its player is ended there and then) and the new one begins afresh.
+// Call start() and stop() from one thread (the UI thread).
+class AlarmSound {
+public:
+    static AlarmSound &get();
+    static constexpr int kGiveWayMs = 5000;
+    // Rings until stop(), for at most max_ms. While `wait` returns true (the assistant's voice is
+    // coming out of the speaker) no new burst begins, so the words can be heard, but for no more
+    // than give_way_ms in all: the first burst always plays, and an alarm is never kept quiet for
+    // long by whatever is being said.
+    void start(std::function<bool()> wait, int max_ms = 65000, int give_way_ms = kGiveWayMs);
+    void stop();
+    void stop_and_wait();                         // leaving the app: no player is left on return
+    bool active() const;                          // a ring's thread is still running
+
+private:
+    struct Ring;
+    AlarmSound() = default;
+    static void run(std::shared_ptr<Ring> ring);
+    std::shared_ptr<Ring> ring_;                  // the ring under way, if any
+};
+
 // Background music player with a simple queue.
 class Music {
 public:
@@ -78,8 +111,10 @@ public:
         kMic = 2,         // the microphone is live
         kSpeech = 4,      // the assistant is speaking
         kExchange = 8,    // a request is being answered: from the end of the question to the end of the spoken reply
+        kAlarm = 16,      // a timer's alarm is ringing
     };
     void hold(int reasons, bool on);
+    bool holding(int reasons) const { return (holds_ & reasons) != 0; }
     void pause(bool on) { hold(kUser, on); }
     bool playing();
     bool paused() const { return (holds_ & kUser) != 0; }

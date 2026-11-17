@@ -17,6 +17,7 @@
 #include "smarthome/home.h"
 #include "core/store.h"
 #include "core/tether.h"
+#include "core/timers.h"
 #include "core/ui_queue.h"
 #include "core/util.h"
 #include "platform/audio.h"
@@ -267,12 +268,37 @@ void open_calendar(Menu &menu) {
     menu.push(std::move(page));
 }
 
-// ---------------------------------------------------------------- reminders
+// ---------------------------------------------------------------- reminders and timers
+// "4:59 left", counting down while the page is open.
+std::string time_left(time_t end) {
+    const long left = static_cast<long>(end - timers::now());
+    return left > 0 ? timers::clock_text(left) + " left" : std::string("ended");
+}
+
 void open_reminders(Menu &menu) {
     MenuPage page;
     page.title = "Reminders and timers";
+    page.live = true;   // each timer's time left counts down
+    page.revision = [] { return Store::get().timers_revision(); };   // and one that ends leaves the list
     page.build = [&menu]() {
         std::vector<MenuItem> items;
+        const auto running = Store::get().timers();
+        if (!running.empty()) {
+            items.push_back(MenuItem::header("Timers"));
+            for (auto &t : running) {
+                const int id = t.id;
+                const time_t end = t.due;
+                // The question names the timer: the rows move when one ends, so it says which one goes.
+                const std::string question = "Cancel " + util::truncate_utf8(t.text, 30) + "?";
+                items.push_back(MenuItem::val(t.text, [end] { return time_left(end); }, [&menu, id, question] {
+                    menu.confirm(question, "Cancel timer", [id] { Store::get().delete_timer(id); });
+                }));
+            }
+            items.push_back(MenuItem::action("Cancel all timers", [&menu] {
+                menu.confirm("Cancel every timer?", "Cancel all timers", [] { Store::get().clear_timers(); });
+            }, true));
+            items.push_back(MenuItem::header("Reminders"));
+        }
         const auto list = Store::get().reminders();
         for (auto &r : list) {
             const int id = r.id;
@@ -280,9 +306,10 @@ void open_reminders(Menu &menu) {
                 menu.confirm("Cancel this reminder?", "Cancel reminder", [id] { Store::get().delete_reminder(id); });
             }));
         }
-        if (list.empty()) items.push_back(MenuItem::header("Nothing pending. Say \"remind me in ten minutes…\""));
+        if (list.empty())
+            items.push_back(MenuItem::header(running.empty() ? "Nothing pending. Say \"set a timer for ten minutes\"" : "None pending"));
         else
-            items.push_back(MenuItem::action("Cancel all", [&menu] {
+            items.push_back(MenuItem::action(running.empty() ? "Cancel all" : "Cancel all reminders", [&menu] {
                 menu.confirm("Cancel every reminder?", "Cancel all", [] { Store::get().clear_reminders(); });
             }, true));
         return items;
@@ -1065,8 +1092,11 @@ void open_settings(Menu &menu, const SettingsHooks &hooks) {
         items.push_back(MenuItem::header("Your data"));
         items.push_back(MenuItem::val("Calendar", [] { return std::to_string(Store::get().events().size()) + " events"; },
                                       [&menu] { open_calendar(menu); }));
-        items.push_back(MenuItem::val("Reminders", [] { return std::to_string(Store::get().reminders().size()) + " pending"; },
-                                      [&menu] { open_reminders(menu); }));
+        items.push_back(MenuItem::val("Reminders and timers", [] {
+            const size_t running = Store::get().timers().size();
+            return (running ? std::to_string(running) + (running == 1 ? " timer, " : " timers, ") : std::string()) +
+                   std::to_string(Store::get().reminders().size()) + " pending";
+        }, [&menu] { open_reminders(menu); }));
         items.push_back(MenuItem::val("Memory", [] { return std::to_string(Store::get().memories().size()) + " saved"; },
                                       [&menu] { open_memory(menu); }));
         items.push_back(MenuItem::val("TV remote", [] { return S().tv_brand == "auto" ? std::string("any brand") : S().tv_brand; },

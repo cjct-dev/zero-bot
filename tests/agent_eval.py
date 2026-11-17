@@ -159,7 +159,51 @@ def chk_alarm(t):
     if any(str(c.get("at", c.get("start")))[:16] in ok for c in calls(t, "reminder_set|calendar_add")): return []
     return ["the alarm should be for tomorrow 08:00"]
 
+def timer_seconds(c):
+    """The length a timer call asks for, in seconds (minutes and seconds may both be given)."""
+    try: return float(c.get("hours") or 0) * 3600 + float(c.get("minutes") or 0) * 60 + float(c.get("seconds") or 0)
+    except (TypeError, ValueError): return -1
+
+def timer_calls(t, action):
+    return [c for c in calls(t, "timer") if str(c.get("action", "")).lower() == action]
+
+def chk_timer(seconds, label=None):
+    """A timer started for this long, with a label mentioning `label` when one is given."""
+    def check(t):
+        starts = timer_calls(t, "start")
+        if any(abs(timer_seconds(c) - seconds) < 1 and (label is None or label in str(c.get("label", "")).lower())
+               for c in starts): return []
+        return ["timer should start for %d seconds%s, got %s" % (seconds, " with a label about " + label if label else "", starts)]
+    return check
+
+def chk_timer_action(action):
+    return lambda t: [] if timer_calls(t, action) else ["timer should be called with action %s, got %s" % (action, calls(t, "timer"))]
+
+def chk_time_left(t):
+    """The answer gives the time left that timer list returned (in whole minutes, either way)."""
+    lists = [r for r in results(t, "timer") if isinstance(r, dict) and r.get("timers")]
+    if not lists: return ["no timer list result with a running timer"]
+    left = str(lists[0]["timers"][0].get("time_left", ""))
+    m = re.match(r"(\d+) minutes?", left)
+    mins = int(m.group(1)) if m else 0
+    return [] if any(says_int(t["answer"], n) for n in (mins, mins + 1)) else ["answer should give the time left (%s)" % left]
+
+def chk_cancelled(want, keep):
+    """A timer cancel that stopped the `want` timer while the `keep` one was also running, and left that one running."""
+    def check(t):
+        done = [r for r in results(t, "timer") if isinstance(r, dict) and r.get("cancelled")]
+        gone = [str(x).lower() for r in done for x in r["cancelled"]]
+        if not any(want in x for x in gone): return ["timer should cancel the %s timer, cancelled %s" % (want, gone)]
+        if any(keep in x for x in gone): return ["the %s timer should keep running" % keep]
+        # The choice only means something with both running: the result lists what still runs.
+        left = [str(x).lower() for r in done for x in r.get("still_running", [])]
+        if not any(keep in x for x in left): return ["the %s timer should still be running after the cancel, still running: %s" % (keep, left)]
+        return []
+    return check
+
 def chk_ninety(t):
+    # "In an hour and a half" counts down from now, so a timer is as right as a reminder.
+    if any(abs(timer_seconds(c) - 5400) < 1 for c in timer_calls(t, "start")): return []
     for c in calls(t, "reminder_set"):
         if "in_minutes" in c and abs(float(c["in_minutes"]) - 90) < 0.01: return []
         if c.get("at"):
@@ -329,14 +373,24 @@ CASES = [
     case("currency_split", "how much is 85 euros in pounds and split that between three people", must=["convert_currency"],
          checks=[chk_currency_split]),
     # --- actions: timers, calendar, memory
-    case("timer", "set a timer for 12 minutes", must=["reminder_set"], must_not=["calendar_add"],
-         checks=[answer(r"12|twelve"), lambda t: arg(t, "reminder_set", "in_minutes", num_is(12), "12")]),
-    case("timer_seconds", "set a timer for 90 seconds", must=["reminder_set"],
-         checks=[lambda t: arg(t, "reminder_set", "in_minutes", num_is(1.5), "1.5")]),
+    case("timer", "set a timer for 12 minutes", must=["timer"], must_not=["calendar_add", "reminder_set"],
+         checks=[answer(r"12|twelve"), chk_timer(720)]),
+    case("timer_seconds", "set a timer for 90 seconds", must=["timer"], must_not=["reminder_set"], checks=[chk_timer(90)]),
+    case("timer_study", "i want to study for an hour can you set a timer", must=["timer"], must_not=["reminder_set"],
+         checks=[chk_timer(3600, "stud")]),
+    case("timer_oven", "the food needs to come out of the oven in 5 mins", must=["timer"], must_not=["reminder_set"],
+         checks=[chk_timer(300)]),
+    case("timer_left", ["set a timer for 10 minutes", "how long is left on my timer"], must=["timer"],
+         checks=[chk_timer_action("list"), chk_time_left]),
+    case("timer_cancel_named", ["i want to study for 45 minutes set a timer", "and set a 10 minute timer for the pasta",
+                                "cancel the study timer"], must=["timer"], checks=[chk_cancelled("stud", "pasta")]),
+    case("timer_no_length", "set a timer", must_not=["timer", "reminder_set", "calendar_add"],
+         checks=[answer(r"\?", "a question"), answer(r"how long|minutes|length", "a question about the length")]),
     case("reminder_clock", "remind me at 7 tomorrow morning to call the hotel", must=["reminder_set|calendar_add"],
+         must_not=["timer"],
          checks=[answer(r"7|seven"), lambda t: [] if any(str(c.get("at", c.get("start")))[:16] in stamps([tomorrow()], "07:00")
                                                          for c in calls(t, "reminder_set|calendar_add")) else ["should be set for tomorrow 07:00"]]),
-    case("reminder_relative", "remind me in an hour and a half to take my tablets", must=["reminder_set"], checks=[chk_ninety]),
+    case("reminder_relative", "remind me in an hour and a half to take my tablets", must=["reminder_set|timer"], checks=[chk_ninety]),
     case("calendar_add", "put dinner with marta in my calendar for friday at 8pm", must=["calendar_add"],
          checks=[answer(r"friday|8"), lambda t: arg(t, "calendar_add", "start", one_of(FRI_8PM()), "Friday 20:00")]),
     case("calendar_date", "add my flight to lisbon on the 3rd of december at 6 40 am", must=["calendar_add"], checks=[chk_flight]),
@@ -391,14 +445,15 @@ CASES = [
          checks=[lambda t: arg(t, "weather", "location", has("porto"), "Porto")]),
     case("followup_move", ["put dinner with marta in my calendar for friday at 8pm", "actually make it half past eight"],
          must=["calendar_update|calendar_add"], checks=[chk_moved]),
-    case("followup_cancel", ["set a timer for 10 minutes", "cancel that"], must=["reminder_cancel"]),
+    case("followup_cancel", ["set a timer for 10 minutes", "cancel that"], must=["timer"], must_not=["reminder_cancel"],
+         checks=[chk_timer_action("cancel")]),
     case("followup_convert", ["how much is 40 euros in pounds", "and in dollars"], must=["convert_currency"],
          checks=[lambda t: arg(t, "convert_currency", "to", has("usd"), "USD"), lambda t: arg(t, "convert_currency", "amount", num_is(40), "40")]),
     # --- input added while the request is running
     case("steer", "whats the weather in lisbon tomorrow", steer="sorry i meant porto", must=["weather"],
          checks=[lambda t: arg(t, "weather", "location", has("porto"), "Porto"), answer(r"porto")]),
     # --- requests that should get a question or an honest "no", not a guess
-    case("clarify_reminder", "set a reminder", must_not=["reminder_set", "calendar_add"], checks=[answer(r"\?", "a clarifying question")]),
+    case("clarify_reminder", "set a reminder", must_not=["reminder_set", "calendar_add", "timer"], checks=[answer(r"\?", "a clarifying question")]),
     case("clarify_calendar", "add a meeting with tom to my calendar", must_not=["calendar_add"], checks=[answer(r"\?", "a clarifying question")]),
     case("unsupported", "send a text to marta saying im running late", must_not=["memory_save", "reminder_set", "calendar_add"],
          checks=[answer(CANNOT, "that it cannot send messages"), not_answer(r"\b(i'?ve |message |text )?sent\b(?! (it|that) yourself)", "claim the text was sent")]),
@@ -412,8 +467,8 @@ CASES = [
     case("asr_slang", "how much is fifty bucks in euros", must=["convert_currency"],
          checks=[lambda t: arg(t, "convert_currency", "amount", num_is(50), "50"), lambda t: arg(t, "convert_currency", "from", has("usd"), "USD")]),
     case("spanish_weather", "qué tiempo hace en madrid hoy", must=["weather"], checks=[chk_spanish]),
-    case("german_timer", "stell einen timer auf fünf minuten", must=["reminder_set"],
-         checks=[lambda t: arg(t, "reminder_set", "in_minutes", num_is(5), "5"), answer(r"minuten|timer|läuft|gestellt", "a German reply")]),
+    case("german_timer", "stell einen timer auf fünf minuten", must=["timer"], must_not=["reminder_set"],
+         checks=[chk_timer(300), answer(r"minuten|timer|läuft|gestellt", "a German reply")]),
     # --- smart home: a made-up home on the stand-in test network (survey 6.4.2)
     case("home_on", "turn on the bed heater", must=["smart_home"], home=EVAL_HOME, checks=[home_call("on", ["Bed heater"])]),
     case("home_dim_room", "bedroom lights to 30 percent", must=["smart_home"], home=EVAL_HOME,
@@ -446,7 +501,8 @@ CASES = [
          home=EVAL_HOME, checks=[home_asked]),
     # More than eight things: the model asks in its own words, and a plain yes switches everything off.
     case("home_everything_yes", ["turn everything off", "yes"], must=["smart_home"], home=SOCKETS_HOME, checks=[home_all_off]),
-    case("home_neighbour_timer", "set a timer for 10 minutes", must=["reminder_set"], must_not=["smart_home"], home=EVAL_HOME),
+    case("home_neighbour_timer", "set a timer for 10 minutes", must=["timer"], must_not=["smart_home", "reminder_set"], home=EVAL_HOME,
+         checks=[chk_timer(600)]),
     case("home_neighbour_weather", "whats the weather like in lisbon tomorrow", must=["weather"], must_not=["smart_home"],
          home=EVAL_HOME),
 ]

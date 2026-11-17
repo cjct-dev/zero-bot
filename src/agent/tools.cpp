@@ -14,6 +14,7 @@
 #include "core/settings.h"
 #include "core/store.h"
 #include "core/tether.h"
+#include "core/timers.h"
 #include "net/http.h"
 #include "platform/audio.h"
 #include "core/breath.h"
@@ -444,6 +445,10 @@ std::string t_calendar_delete(const json &a, Context &) {
     return Store::get().delete_event(static_cast<int>(idv)) ? "deleted" : fail("no event with that id");
 }
 
+// ---------------------------------------------------------------- timers
+// The actions live in core/timers.cpp, where the unit tests reach them.
+std::string t_timer(const json &a, Context &) { return timers::run_tool(a); }
+
 // ---------------------------------------------------------------- reminders
 std::string t_reminder_set(const json &a, Context &) {
     const std::string text = str_arg(a, "text");
@@ -824,7 +829,7 @@ json E(const std::string &desc, std::vector<std::string> values) {
 // Tools whose effect is fully known from the request (a timer set, a button pressed). The
 // model supplies the confirmation up front in "say", and when the tool succeeds that is spoken
 // straight away instead of paying for a second model call just to say "done".
-const char *const kConfirmable[] = {"calendar_add", "calendar_update", "calendar_delete", "reminder_set", "reminder_cancel",
+const char *const kConfirmable[] = {"calendar_add", "calendar_update", "calendar_delete", "timer", "reminder_set", "reminder_cancel",
                                     "memory_save", "memory_delete", "music", "tv_remote", "device", "smart_home", "breathe"};
 
 std::vector<Tool> build() {
@@ -891,18 +896,34 @@ std::vector<Tool> build() {
          t_calendar_update},
         {"calendar_delete", "Updating calendar", "Delete a calendar event by id (from calendar_list). A repeating event goes as a whole.",
          obj({{"id", N("Event id")}}, {"id"}), t_calendar_delete},
+        {"timer", "Timers",
+         "Countdown timers: the time left shows on the screen and an alarm rings when one ends. Use it for "
+         "anything counted down from now: 'set a timer for 10 minutes', 'the eggs need six minutes', 'give me "
+         "half an hour to read'. Several can run at once, each with a short label. start needs the length; if the "
+         "user gave none, ask how long. cancel and add_time pick a timer by words from its label, or with only one "
+         "running need none. list gives each timer's time left. Calling this is the only way a timer is started, "
+         "changed or cancelled.",
+         obj({{"action", E("What to do", {"start", "cancel", "list", "add_time"})},
+              {"minutes", N("For start and add_time: minutes (fractions allowed; an hour is 60)")},
+              {"seconds", N("For start and add_time: seconds, alone or on top of minutes")},
+              {"label", S("For start: a short name taken from the user's words, e.g. \"Study\" or \"Food out of the "
+                          "oven\"; leave out if they gave none. For cancel and add_time: words from the label of the "
+                          "timer meant")},
+              {"all", B("For cancel: true to cancel every timer")}},
+             {"action"}), t_timer},
         {"reminder_set", "Setting a reminder",
-         "Set a timer, alarm or reminder that makes the device chime and speak. Calling this is the only way one "
-         "gets set. Give in_minutes for a timer ('in 10 minutes', 90 seconds = 1.5) or at for a clock time. If the "
-         "user gave no time at all, ask when. It fires only while this app is running. For an appointment that "
-         "belongs in the calendar, use calendar_add with remind_minutes_before instead.",
+         "Set a reminder: a message the device chimes and speaks at a clock time or on a date ('remind me at 6 "
+         "on Friday to call the bank', 'wake me at half six'). Calling this is the only way one gets set. Give at "
+         "for the clock time. A countdown from now ('set a timer', 'in 5 minutes', 'for an hour') is a timer: use "
+         "timer instead. If the user gave no time at all, ask when. It fires only while this app is running. For "
+         "an appointment that belongs in the calendar, use calendar_add with remind_minutes_before instead.",
          obj({{"text", S("What to say when it fires, e.g. \"Check the laundry\"")},
               {"in_minutes", N("Fire this many minutes from now (fractions allowed)")},
               {"at", S("Or fire at this local time, YYYY-MM-DD HH:MM")}}, {"text"}), t_reminder_set},
-        {"reminder_list", "Checking reminders", "List pending timers and reminders with their ids.", obj({}),
-         t_reminder_list},
-        {"reminder_cancel", "Cancelling a reminder", "Cancel a pending timer or reminder by id (from reminder_list).",
-         obj({{"id", N("Reminder id")}}, {"id"}), t_reminder_cancel},
+        {"reminder_list", "Checking reminders", "List pending reminders with their ids (timers: timer with action list).",
+         obj({}), t_reminder_list},
+        {"reminder_cancel", "Cancelling a reminder", "Cancel a pending reminder by id (from reminder_list). Timers are "
+         "cancelled with timer.", obj({{"id", N("Reminder id")}}, {"id"}), t_reminder_cancel},
         {"memory_save", "Remembering",
          "Save a lasting fact about the user so it is available in every future conversation: preferences, "
          "diet, allergies, names, travel plans, anything they ask you to remember. Calling this is the only way "
@@ -988,6 +1009,7 @@ std::vector<Tool> build() {
         std::string desc = "The one short sentence to speak to the user once this has worked, in their language, with "
                            "the detail that matters, e.g. \"Your timer is set for 12 minutes.\"";
         if (t.name == "music") desc += " Only for stop and next; omit for the other actions.";
+        if (t.name == "timer") desc += " Only for start, cancel and add_time; omit for list.";
         if (t.name == "device") desc += " Omit for status.";
         if (t.name == "smart_home") continue;   // its "say" comes with home::tool_spec()
         t.parameters["properties"]["say"] = S(desc);
@@ -1044,6 +1066,10 @@ std::string confirmation(const std::string &name, const std::string &raw_args, c
     }
     // A question to put to the user first, a status, or a group where something failed.
     if (name == "smart_home" && !home::tool_say_ok(args, result)) return "";
+    if (name == "timer") {   // list: the time left is in the result, not known up front
+        const std::string action = util::lower(str_arg(args, "action"));
+        if (action != "start" && action != "cancel" && action != "add_time") return "";
+    }
     if (name == "device") {
         const std::string setting = util::lower(str_arg(args, "setting"));
         if (setting.empty() || setting == "status") return "";
