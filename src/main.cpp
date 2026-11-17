@@ -29,6 +29,7 @@ void usage() {
          "  --chat                interactive text conversation on the terminal\n"
          "  --steer \"text\"        with --ask/--chat: add this while the first tool of the first request runs\n"
          "  --home-refresh         read names and states from the saved smart-home devices on this network\n"
+         "                         (ZB_TEST_NETWORK=1: a stand-in network where only 127.x devices are contacted)\n"
          "  --discover             look for smart-home devices on this network (discovery only) and list them\n"
          "  --talk-over MS[:text]  with --ask: hold the microphone open for MS ms from the start of the request,\n"
          "                         then hand over `text` as what was said (or nothing, as if cancelled)\n"
@@ -229,14 +230,22 @@ int main(int argc, char **argv) {
     if (home_refresh) {
         const discovery::Network net = home::network_now(true);
         if (!net.usable) { printf("no usable network: %s\n", net.why_not.c_str()); quit(1); }
+        printf("network: %s, id %s\n", net.label().c_str(), net.id().c_str());
         printf("%s\n", home::refresh(net.id()).c_str());
         for (const auto &d : home::entry(net.id()).devices) {
             printf("%-10s %-24s %s\n", d.kind.c_str(), d.title().c_str(), d.problem.empty() ? "" : ("-- " + d.problem).c_str());
-            for (const auto &sw : d.switches) printf("             %-24s %s\n", sw.name.c_str(), sw.on ? "on" : "off");
+            for (const auto &t : d.things) {
+                if (!d.listed(t)) continue;
+                const auto on = t.state.find("on");
+                const std::string state = on != t.state.end() && on->is_boolean() ? (on->get<bool>() ? "on" : "off") : "-";
+                printf("             %-24s %-8s %-4s%s\n", home::spoken(t).c_str(), t.type.c_str(), state.c_str(),
+                       t.room.empty() ? "" : ("  room: " + t.room).c_str());
+            }
         }
         quit(0);
     }
     if (discover) {
+        if (home::test_network()) { puts("the test network is in use (ZB_TEST_NETWORK), so nothing is scanned"); quit(1); }
         const discovery::Network net = discovery::current_network();
         printf("network: %s (%s), id %s%s\n", net.label().c_str(), net.iface.c_str(), net.id().c_str(),
                net.usable ? "" : (" -- " + net.why_not).c_str());

@@ -110,8 +110,9 @@ std::string system_prompt() {
     p += "- Music library on this device: " + std::to_string(MusicLibrary::get().size()) + " tracks\n";
     // Present only on a network the user has scanned, so the prompt stays the same everywhere else.
     if (home::available())
-        p += "- Home devices: this network has smart-home devices you can switch with smart_home. Requests like "
-             "'turn on the bed heater' or 'is the lamp on' mean that tool.\n";
+        p += "- Home devices: this network has smart-home devices you can control with smart_home. Requests like "
+             "'turn on the bed heater' or 'is the lamp on' mean that tool. When it answers CONFIRM, nothing has "
+             "happened yet: ask the user its question and wait for their answer.\n";
     p += std::string("- Web search: ") +
          (s.search_key.empty() ? "not set up, so you cannot look anything up. Say so when it matters, and say that "
                                  "an answer from memory may be out of date.\n"

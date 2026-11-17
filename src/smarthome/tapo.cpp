@@ -881,6 +881,11 @@ std::string lower(std::string s) {
     return s;
 }
 
+// What the plug would check: KLAP hashes e-mail and password, TPAP the password alone.
+std::string fingerprint(bool tpap, const std::string &email, const std::string &pw_hex) {
+    return detail::hex(detail::sha256((tpap ? std::string("TPAP") : "KLAP" + email) + '\0' + pw_hex));
+}
+
 // request(), also reporting the plug's error code (0 when the failure was not the plug saying no).
 bool exchange(const Device &dev, const Credentials &cred, const json &req, json &reply, std::string &err, int &code) {
     code = 0;
@@ -907,8 +912,7 @@ bool exchange(const Device &dev, const Credentials &cred, const json &req, json 
         return false;
     }
     const std::string pw_hex = detail::hex(pw_sha1);
-    // What the plug would check: KLAP hashes e-mail and password, TPAP the password alone.
-    const std::string fp = detail::hex(detail::sha256((tpap ? std::string("TPAP") : "KLAP" + cred.email) + '\0' + pw_hex));
+    const std::string fp = fingerprint(tpap, cred.email, pw_hex);
 
     std::shared_ptr<State> st;
     {
@@ -1031,6 +1035,21 @@ bool owned_by(const Device &dev, const std::string &email) {
 bool request(const Device &dev, const Credentials &cred, const json &req, json &reply, std::string &err) {
     int code = 0;
     return exchange_safe(dev, cred, req, reply, err, code);
+}
+
+bool login_refused(const Device &dev, const Credentials &cred) {
+    Bytes pw_sha1;
+    if (cred.password_sha1_hex.size() != 40 || !detail::unhex(cred.password_sha1_hex, pw_sha1)) return false;
+    const std::string fp = fingerprint(dev.scheme == "TPAP", cred.email, detail::hex(pw_sha1));
+    std::shared_ptr<State> st;
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        const auto it = g_states.find(dev.ip + ":" + std::to_string(dev.port));
+        if (it == g_states.end()) return false;
+        st = it->second;
+    }
+    std::lock_guard<std::mutex> lock(st->mu);
+    return st->rejected.count(fp) > 0 || std::chrono::steady_clock::now() < st->locked_until;
 }
 
 bool get_info(const Device &dev, const Credentials &cred, json &info, std::string &err) {

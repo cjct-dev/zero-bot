@@ -1,35 +1,55 @@
 // Smart-home devices the user has let the app find, remembered per network, and the commands the
 // assistant can give them. Nothing here ever looks at a network the user has not scanned on
-// purpose from the settings page.
+// purpose from the settings page, and every call that reaches a device goes through
+// network_now(): on a phone's Bluetooth tether, a VPN or with no network there is no home.
+//
+// The parts:
+//   driver.h              what one family of devices implements (things, changes, pairing)
+//   drivers/registry.cpp  the one list of families built into the app
+//   store.cpp             the 0600 file: networks, devices, things, secrets; migration; the network
+//   targets.cpp           what a spoken name means: a thing, a room, a group
+//   control.cpp           carrying things out: safety rules, locking, fan-out, status, refresh, pairing
+//   tool.cpp              the assistant's smart_home tool: schema and arguments
 #pragma once
 #include <ctime>
 #include <map>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "core/util.h"
 #include "smarthome/discovery.h"
+#include "smarthome/driver.h"
 
 namespace home {
 
-// Something that can be switched: a plug, or one socket of a power strip.
-struct Switch {
-    std::string name;          // what the user calls it ("Bed heater"), as set in the maker's app
-    std::string child;         // socket id on a strip, "" for a plain plug
-    bool on = false;           // as last read
+// State keys this layer understands; drivers fill in what applies. Only these ever reach the
+// model, so a driver can keep anything else it likes in Thing::state without it leaking.
+//   on (bool), brightness (0..100), kelvin, hue (0..360), saturation (0..100),
+//   mode ("off", "heat", "auto"), target_c, current_c, humidity (percent),
+//   position (0..100), fan (0..100), volume (0..100), muted (bool),
+//   playing ("playing", "paused", "stopped", "idle"), source, title (what is playing),
+//   power_w, energy_today_wh, motion (bool), contact ("open", "closed")
+
+// What the app keeps about a thing beside what its driver reports.
+struct ThingMeta {
+    bool room_by_user = false;   // the room was typed in settings, so a bridge's room does not replace it
+    time_t used = 0;             // when the assistant last changed it
+    time_t gone = 0;             // when its device stopped listing it; kept a while for its settings
 };
 
-struct Saved {
-    std::string id, kind, name, model, mac, ip;
-    int port = 0;
-    std::map<std::string, std::string> info;
+struct Saved : Device {
     std::vector<std::string> found_by;
-    bool enabled = true;       // the assistant may use it
+    bool enabled = true;         // the assistant may use it
+    bool needs_setup = false;    // its driver wants pairing before anything else
     time_t last_seen = 0;
-    std::vector<Switch> switches;   // filled once the device has been read (needs the account for Tapo)
-    std::string problem;       // why it could not be read last time, shown in settings
-    bool controllable() const;      // a kind this app knows how to drive
-    std::string title() const;      // best name for a list
+    std::string problem;         // why it could not be read last time, shown in settings
+    std::map<std::string, ThingMeta> meta;   // by Thing::id
+    bool controllable() const;   // a driver built into the app claims it
+    std::string title() const;   // best name for a list
+    const Thing *thing(const std::string &thing_id) const;
+    bool listed(const Thing &thing) const;   // still reported by the device (not gone)
 };
 
 struct NetworkEntry {
@@ -38,38 +58,110 @@ struct NetworkEntry {
     std::vector<Saved> devices;
 };
 
-struct TapoAccount {
-    std::string email;
-    std::string password_sha1;   // the password itself is never kept
-    bool set() const { return !email.empty() && !password_sha1.empty(); }
-};
+// ---- drivers
+void register_driver(std::unique_ptr<Driver> driver);
+Driver *driver_for(const std::string &kind);      // the driver whose kind() this is
+Driver *driver_for(const Device &device);         // the driver that claims this device
+// Defined in drivers/registry.cpp: registers every family built into the app. Called once, the
+// first time a driver is looked up.
+void register_builtin_drivers();
+// Secrets shared by a family (an account, this controller's own key pair), kept in the same file.
+Secrets &secrets();
 
-// The network the device is on, looked up at most every few seconds.
+// ---- the network the device is on, looked up at most every few seconds
 discovery::Network network_now(bool fresh = false);
+// ZB_TEST_NETWORK is set: network_now() is a stand-in ("Test network") instead of the real one.
+// On it only devices at a 127.x address are ever contacted, and nothing is scanned.
+bool test_network();
+// Runs a discovery scan of the current network, unless the stand-in network is in use.
+bool scan(std::vector<discovery::Device> &found, std::string &err, bool *heard_self = nullptr);
 
+// ---- what is saved
 bool scanned(const std::string &network_id);
 NetworkEntry entry(const std::string &network_id);
 // Folds one scan into what is saved for the network: new devices are added, known ones keep
-// their settings and get their current address. Returns how many were new.
+// their settings and things and get their current address. Returns how many were new.
 int remember_scan(const discovery::Network &net, const std::vector<discovery::Device> &found);
 void set_enabled(const std::string &network_id, const std::string &device_id, bool on);
 void remove_device(const std::string &network_id, const std::string &device_id);
 void forget_network(const std::string &network_id);
+// What the user decides about one thing. These survive every later read of the device.
+void set_thing_alias(const std::string &network_id, const std::string &device_id, const std::string &thing_id, const std::string &alias);
+void set_thing_room(const std::string &network_id, const std::string &device_id, const std::string &thing_id, const std::string &room);
+void set_thing_enabled(const std::string &network_id, const std::string &device_id, const std::string &thing_id, bool on);
+void set_thing_ask_first(const std::string &network_id, const std::string &device_id, const std::string &thing_id, bool on);
+std::vector<std::string> rooms(const std::string &network_id);   // every room in use, for the settings page
 
-TapoAccount tapo_account();
-void set_tapo_account(const std::string &email, const std::string &password);   // "" password keeps the saved one
+// ---- pairing, driven from the settings page. All of it applies to the current network only.
+// What the device's driver wants next; kind None when it is ready (or cannot be asked).
+PairStep pairing_step(const std::string &network_id, const std::string &device_id);
+// Hands the driver what the user typed ("" for a button or prompt step). A refusal is reported
+// and never tried again by itself.
+bool pairing_submit(const std::string &network_id, const std::string &device_id, const std::string &input, std::string &err);
+void unpair(const std::string &network_id, const std::string &device_id);
 
-// Reads names and states from every controllable device on the network (logging in where the
-// maker requires it) and saves them. Returns a short summary for the settings page.
-std::string refresh(const std::string &network_id);
+// Asks every controllable device on the network (or just one) for its things, names and states,
+// and saves them: aliases, rooms and the two switches a user sets survive. Returns a short
+// summary for the settings page.
+std::string refresh(const std::string &network_id, const std::string &only_device = "");
 
-// ---- what the assistant's tool uses; all of it applies to the current network only
-std::vector<std::string> switch_names();                 // names of enabled switches, "" when none
-bool available();                                        // there is something to control here
-// `name` is matched loosely against the saved names. Returns text for the model.
-std::string switch_power(const std::string &name, bool on);
-std::string switch_all_off();                            // everything the assistant may use, off
-std::string status(const std::string &name);             // "" lists everything
-std::string other_devices();                             // found but not controllable, for the model's information
+// ---- names
+std::string clean_name(const std::string &raw);             // untrusted text made safe to show and to pass as data
+std::string spoken(const Thing &thing);                     // alias when set, else the maker's name
+std::string infer_room(const std::string &name);            // "Bedroom lamp" gives "Bedroom"; "" when unknown
+bool suggests_heat(const std::string &name);                // a plug that should ask before it is switched on
+
+// ---- targets: what a spoken name refers to (targets.cpp)
+struct Item {                    // one enabled thing of an enabled, ready device
+    std::string device_id;
+    Thing thing;
+    std::string label;           // how it is listed for the model; unique within the network
+    time_t used = 0;
+};
+enum class Scope { None, Thing, Room, AllLights, AllSpeakers, Everything };
+struct Resolved {
+    Scope scope = Scope::None;
+    std::string label;                    // the thing's label, the room's name, "all lights", ...
+    std::vector<const Item *> members;    // every thing the name covers, before an action narrows it
+};
+constexpr size_t kMaxTargets = 48;
+std::vector<Item> catalog(const NetworkEntry &entry);
+bool is_light(const Thing &thing);
+// The values offered to the model: things, then rooms that have lights, then groups. `overflow`
+// is set when not everything fitted, in which case other names are still understood by resolve().
+std::vector<std::string> target_names(const std::vector<Item> &items, bool *overflow = nullptr);
+// Exact name first, then a partial one; several candidates are reported, never guessed between.
+bool resolve(const std::vector<Item> &items, const std::string &said, Resolved &out, std::string &err);
+
+// ---- control (control.cpp)
+struct Command {
+    std::string action;          // on, off, set, status, scene, play, pause, stop, next, previous, mute, unmute
+    std::string target;          // "" only for status: everything
+    std::optional<int> brightness, position, volume;
+    std::optional<double> temperature;
+    std::string color, source;
+};
+// Carries a command out on the current network and returns text for the model: compact JSON,
+// "ERROR: ..." or "CONFIRM: ...". With dry_run nothing is sent to any device.
+std::string execute(const Command &command, bool dry_run);
+// Switching from the settings page, by hand: no question is asked and no name is matched.
+std::string switch_thing(const std::string &network_id, const std::string &device_id, const std::string &thing_id, bool on);
+// The request loop reports what the user says and when a reply has gone to them, so that a
+// change that needs a yes goes ahead only after the question was put and answered with a yes.
+void user_spoke(const std::string &text);
+void assistant_replied();
+// A tool has just handed the model text from outside (a web page, a photo). Changes asked for
+// before the user next speaks then need the user's yes.
+void saw_untrusted_text();
+
+// ---- the assistant's tool (tool.cpp); all of it applies to the current network only
+bool available();                                // there is something to control here
+size_t thing_count();
+// {"description": ..., "parameters": {...}} sized to what this home has, or null when the tool
+// should not be offered at all.
+json tool_spec();
+std::string tool_run(const json &args, bool dry_run);
+// Whether the sentence the model supplied in "say" may be spoken straight after this result.
+bool tool_say_ok(const json &args, const std::string &result);
 
 }  // namespace home

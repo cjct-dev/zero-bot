@@ -24,6 +24,7 @@
 #include "platform/display.h"
 #include "platform/keys.h"
 #include "platform/proc.h"
+#include "smarthome/home.h"
 #include "ui/chat_view.h"
 #include "ui/menu.h"
 #include "ui/settings_pages.h"
@@ -32,6 +33,36 @@
 namespace ui {
 
 namespace {
+
+// A made-up home for the screenshots, saved on the stand-in test network: none of its addresses
+// is ever contacted, and nothing is scanned.
+void sample_home() {
+    setenv("ZB_TEST_NETWORK", "1", 1);
+    const discovery::Network net = home::network_now(true);
+    auto plug = [](const char *id, const char *name, const char *room, bool on, bool ask) {
+        return json{{"id", id}, {"name", name}, {"room", room}, {"type", "plug"}, {"caps", home::kPower}, {"ask_first", ask},
+                    {"ref", {{"child", std::string(id) == "main" ? "" : id}}}, {"state", {{"on", on}}}};
+    };
+    const json plug_info = {{"scheme", "KLAP"}, {"device_type", "SMART.TAPOPLUG"}};
+    json devices = json::array();
+    devices.push_back({{"id", "tapo:sample-1"}, {"kind", "tapo"}, {"name", "Bed heater"}, {"model", "P110"}, {"last_ip", "127.0.0.2"},
+                       {"port", 80}, {"info", plug_info}, {"things", {plug("main", "Bed heater", "Bedroom", false, true)}}});
+    devices.push_back({{"id", "tapo:sample-2"}, {"kind", "tapo"}, {"name", "Office strip"}, {"model", "P304M"},
+                       {"last_ip", "127.0.0.3"}, {"port", 80}, {"info", plug_info},
+                       {"things", {plug("s1", "Desk lamp", "Office", true, false), plug("s2", "Monitor", "Office", false, false),
+                                   plug("s3", "Fan", "", false, false), plug("s4", "Kettle", "", false, true)}}});
+    json other_owner = plug_info;
+    other_owner["owner"] = "00112233445566778899AABBCCDDEEFF";
+    devices.push_back({{"id", "tapo:sample-3"}, {"kind", "tapo"}, {"name", "Tapo P110"}, {"model", "P110"}, {"last_ip", "127.0.0.4"},
+                       {"port", 80}, {"info", other_owner}, {"needs_setup", true}, {"things", json::array()}});
+    devices.push_back({{"id", "hue:sample"}, {"kind", "hue_bridge"}, {"name", "Hue Bridge"}, {"model", "BSB002"}, {"last_ip", "127.0.0.5"}});
+    devices.push_back({{"id", "cast:sample"}, {"kind", "cast"}, {"name", "Living room TV"}, {"model", "Chromecast"}, {"last_ip", "127.0.0.6"}});
+    const json root = {{"version", 2},
+                       {"secrets", {{"tapo", {{"email", "sam@example.com"}, {"password_sha1", std::string(40, '0')}}}}},
+                       {"networks", {{net.id(), {{"label", net.label()}, {"gateway_mac", net.gateway_mac}, {"allowed_at", 1},
+                                                 {"last_scan", 1}, {"devices", devices}}}}}};
+    util::save_json(util::data_dir() + "/smarthome.json", root);
+}
 
 constexpr unsigned long kDoubleTapMs = 450;     // two presses this close together count as a double tap
 constexpr unsigned long kEscHoldMs = 1200;      // hold ESC this long to leave the app
@@ -606,6 +637,7 @@ struct App {
         store.add_memory("Allergic to shellfish");
         store.add_memory("Prefers window seats");
         store.add_reminder("Call the hotel", time(nullptr) + 3600);
+        sample_home();
 
         run_setup();
         snap("setup-welcome");
@@ -661,7 +693,30 @@ struct App {
         menu.key(enter);
         snap("memory");
         menu.key(esc);
-        for (int i = 0; i < 12; ++i) menu.key(down);
+        menu.key(down); menu.key(down);                // "Smart home"
+        menu.key(enter);
+        snap("smart-home");
+        menu.key(enter);                               // the first thing: Bed heater
+        snap("home-thing");
+        menu.key(esc);
+        menu.key(down);                                // Desk lamp, one socket of a strip
+        menu.key(enter);
+        for (int i = 0; i < 5; ++i) menu.key(down);    // "Part of"
+        menu.key(enter);
+        snap("home-device");
+        menu.key(esc); menu.key(esc);
+        for (int i = 0; i < 4; ++i) menu.key(down);    // the plug still to be set up
+        menu.key(enter);
+        snap("home-setup");
+        for (int i = 0; i < 3; ++i) menu.key(down);    // "Set up…"
+        menu.key(enter);
+        snap("home-pairing");
+        menu.key(esc); menu.key(esc);
+        for (int i = 0; i < 3; ++i) menu.key(down);    // "Tapo account"
+        menu.key(enter);
+        snap("tapo-account");
+        menu.key(esc); menu.key(esc);
+        for (int i = 0; i < 10; ++i) menu.key(down);
         snap("settings-service");
         (void)flight; (void)birthday;
         menu.close();

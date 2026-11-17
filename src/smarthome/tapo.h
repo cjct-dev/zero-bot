@@ -51,6 +51,10 @@ bool owned_by(const Device &dev, const std::string &email);
 // connection is tried once more, 300 ms after a discovery query to the plug's UDP port 20002.
 bool request(const Device &dev, const Credentials &cred, const json &req, json &reply, std::string &err);
 
+// Whether this plug has rejected these credentials, or locked itself, since forget_sessions().
+// The caller can keep that beyond the life of the program, so that it is never tried again.
+bool login_refused(const Device &dev, const Credentials &cred);
+
 // Convenience wrappers built on request().
 
 // Fills {"name": the plug's name, "on": true/false, "model", "fw", "sockets": number of child

@@ -9,6 +9,7 @@
 #include "agent/tools.h"
 #include "core/settings.h"
 #include "platform/audio.h"
+#include "smarthome/home.h"
 
 namespace {
 constexpr int kMaxRounds = 8;            // model calls per request, including tool round-trips
@@ -241,6 +242,9 @@ int Agent::absorb_inputs(bool first) {
         }
         const bool steering = !first || added > 0;
         if (ev_.user_message) ev_.user_message(text, steering);
+        // A smart-home change that waits for the user's yes may go ahead only on the very next
+        // thing they say (see home::execute); it is told what that was.
+        home::user_spoke(text);
         // The time travels with each message rather than in the system prompt, so the prompt and
         // the earlier conversation stay byte-for-byte the same from call to call and the server can
         // reuse its cached prefix. A prompt that changes every minute costs a second or two per call.
@@ -494,6 +498,7 @@ void Agent::run_turn() {
             std::lock_guard<std::mutex> lk(mtx_);
             history_.push_back({{"role", "assistant"}, {"content", res.content}});
         }
+        home::assistant_replied();   // a question a smart-home change waits on has now been put
         last_answer_ = res.content;
         if (began && ev_.answer_end) ev_.answer_end(res.content, false);
         if (res.content.empty() && ev_.error) ev_.error("The model returned an empty answer.");

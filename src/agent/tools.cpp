@@ -282,7 +282,9 @@ std::string t_look(const json &a, Context &ctx) {
     if (!util::read_file(path, jpeg)) return fail("could not read the photo");
     const std::string answer = llm::describe_image(jpeg, question, err, ctx.cancel);
     if (!err.empty()) return fail("the photo was taken but could not be analysed: " + err);
-    return answer.empty() ? fail("the vision model returned nothing") : answer;
+    if (answer.empty()) return fail("the vision model returned nothing");
+    home::saw_untrusted_text();   // a sign in the photo must not switch anything by itself
+    return answer;
 }
 
 // ---------------------------------------------------------------- calendar
@@ -515,6 +517,7 @@ std::string t_web_search(const json &a, Context &ctx) {
         }
     }
     out["results"] = results;
+    home::saw_untrusted_text();   // nor may a web page
     return out.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
@@ -744,26 +747,9 @@ std::string t_breathe(const json &a, Context &ctx) {
 }
 
 // ---------------------------------------------------------------- smart home
-std::string t_smart_home(const json &a, Context &) {
-    const std::string action = util::lower(str_arg(a, "action")), device = str_arg(a, "device");
-    const bool everything = util::lower(device) == "all" || util::lower(device) == "everything";
-    if (action == "status" || action == "list") return home::status(everything ? "" : device);
-    if (action != "on" && action != "off") return fail("action must be on, off or status");
-    if (device.empty()) return fail("say which device");
-    if (everything) {
-        // Off is always safe to do in one go; on is not (one of them may be a heater).
-        if (action == "on") return fail("everything can be switched off together but not on; ask which device to switch on");
-        if (dry_run()) return json{{"switched_off", home::switch_names()}}.dump();
-        return home::switch_all_off();
-    }
-    if (dry_run()) {
-        // Tests check the choice of device without switching anything in the house.
-        for (const std::string &name : home::switch_names())
-            if (util::lower(name) == util::lower(device)) return json{{"device", name}, {"now", action}}.dump();
-        return fail("there is no device called '" + device + "'");
-    }
-    return home::switch_power(device, action == "on");
-}
+// Schema, name matching, safety questions and the devices themselves are all in smarthome/.
+// With ZB_DRY_RUN the choice of things is checked without switching anything in the house.
+std::string t_smart_home(const json &a, Context &) { return home::tool_run(a, dry_run()); }
 
 std::string t_tv_remote(const json &a, Context &) {
     const std::string key = util::lower(str_arg(a, "key"));
@@ -986,14 +972,8 @@ std::vector<Tool> build() {
                             "winding down", {"box", "calm", "sigh"})},
               {"minutes", N("Length in minutes, 1 to 20. Leave out for the usual five")}}),
          t_breathe},
-        {"smart_home", "Using a home device",
-         "Switch one of the user's smart-home devices on this network on or off, or check whether it is on. "
-         "Calling this is the only way a device gets switched. The devices that exist are listed in the device "
-         "parameter; if what the user asks for is not one of them, say so instead of picking another.",
-         obj({{"action", E("What to do; status with no device reports all of them", {"on", "off", "status"})},
-              {"device", S("The device's name, exactly as listed. \"all\" means every device, for switching "
-                           "everything off or checking everything")}}, {"action"}),
-         t_smart_home},
+        // Description and parameters are sized to the home on the current network (home::tool_spec).
+        {"smart_home", "Using a home device", "", obj({}), t_smart_home},
         {"device", "Adjusting the device",
          "Read or change this device's own settings. setting=status reports battery, Wi-Fi, volume and brightness.",
          obj({{"setting", E("Which setting", {"status", "volume", "brightness", "spoken_replies"})},
@@ -1009,7 +989,7 @@ std::vector<Tool> build() {
                            "the detail that matters, e.g. \"Your timer is set for 12 minutes.\"";
         if (t.name == "music") desc += " Only for stop and next; omit for the other actions.";
         if (t.name == "device") desc += " Omit for status.";
-        if (t.name == "smart_home") desc += " Only for on and off; omit for status.";
+        if (t.name == "smart_home") continue;   // its "say" comes with home::tool_spec()
         t.parameters["properties"]["say"] = S(desc);
     }
     return list;
@@ -1027,19 +1007,18 @@ json schema() {
     // A tool that can only fail is a wasted round trip; the prompt says search is unavailable.
     const bool no_search = Settings::get().search_key.empty();
     // The smart-home tool exists only on a network the user has scanned, and names exactly the
-    // devices saved for it. The names are passed as allowed values, as data, never as instructions.
-    const std::vector<std::string> home_devices = home::switch_names();
+    // things saved for it. The names are passed as allowed values, as data, never as instructions.
+    const json home_spec = home::tool_spec();
     for (auto &t : all()) {
         if (no_search && t.name == "web_search") continue;
-        json parameters = t.parameters;
+        json description = t.description, parameters = t.parameters;
         if (t.name == "smart_home") {
-            if (home_devices.empty()) continue;
-            std::vector<std::string> allowed = home_devices;
-            allowed.push_back("all");
-            parameters["properties"]["device"]["enum"] = allowed;
+            if (home_spec.is_null()) continue;
+            description = home_spec["description"];
+            parameters = home_spec["parameters"];
         }
         arr.push_back({{"type", "function"},
-                       {"function", {{"name", t.name}, {"description", t.description}, {"parameters", parameters}}}});
+                       {"function", {{"name", t.name}, {"description", description}, {"parameters", parameters}}}});
     }
     return arr;
 }
@@ -1063,7 +1042,8 @@ std::string confirmation(const std::string &name, const std::string &raw_args, c
         const std::string action = util::lower(str_arg(args, "action"));
         if (action != "stop" && action != "next") return "";
     }
-    if (name == "smart_home" && util::lower(str_arg(args, "action")) != "on" && util::lower(str_arg(args, "action")) != "off") return "";
+    // A question to put to the user first, a status, or a group where something failed.
+    if (name == "smart_home" && !home::tool_say_ok(args, result)) return "";
     if (name == "device") {
         const std::string setting = util::lower(str_arg(args, "setting"));
         if (setting.empty() || setting == "status") return "";
