@@ -68,6 +68,7 @@ std::vector<std::string> switch_names();                 // names of enabled swi
 bool available();                                        // there is something to control here
 // `name` is matched loosely against the saved names. Returns text for the model.
 std::string switch_power(const std::string &name, bool on);
+std::string switch_all_off();                            // everything the assistant may use, off
 std::string status(const std::string &name);             // "" lists everything
 std::string other_devices();                             // found but not controllable, for the model's information
 

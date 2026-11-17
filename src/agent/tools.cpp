@@ -746,9 +746,16 @@ std::string t_breathe(const json &a, Context &ctx) {
 // ---------------------------------------------------------------- smart home
 std::string t_smart_home(const json &a, Context &) {
     const std::string action = util::lower(str_arg(a, "action")), device = str_arg(a, "device");
-    if (action == "status" || action == "list") return home::status(device);
+    const bool everything = util::lower(device) == "all" || util::lower(device) == "everything";
+    if (action == "status" || action == "list") return home::status(everything ? "" : device);
     if (action != "on" && action != "off") return fail("action must be on, off or status");
     if (device.empty()) return fail("say which device");
+    if (everything) {
+        // Off is always safe to do in one go; on is not (one of them may be a heater).
+        if (action == "on") return fail("everything can be switched off together but not on; ask which device to switch on");
+        if (dry_run()) return json{{"switched_off", home::switch_names()}}.dump();
+        return home::switch_all_off();
+    }
     if (dry_run()) {
         // Tests check the choice of device without switching anything in the house.
         for (const std::string &name : home::switch_names())
@@ -984,7 +991,8 @@ std::vector<Tool> build() {
          "Calling this is the only way a device gets switched. The devices that exist are listed in the device "
          "parameter; if what the user asks for is not one of them, say so instead of picking another.",
          obj({{"action", E("What to do; status with no device reports all of them", {"on", "off", "status"})},
-              {"device", S("The device's name, exactly as listed")}}, {"action"}),
+              {"device", S("The device's name, exactly as listed. \"all\" means every device, for switching "
+                           "everything off or checking everything")}}, {"action"}),
          t_smart_home},
         {"device", "Adjusting the device",
          "Read or change this device's own settings. setting=status reports battery, Wi-Fi, volume and brightness.",
@@ -1026,7 +1034,9 @@ json schema() {
         json parameters = t.parameters;
         if (t.name == "smart_home") {
             if (home_devices.empty()) continue;
-            parameters["properties"]["device"]["enum"] = home_devices;
+            std::vector<std::string> allowed = home_devices;
+            allowed.push_back("all");
+            parameters["properties"]["device"]["enum"] = allowed;
         }
         arr.push_back({{"type", "function"},
                        {"function", {{"name", t.name}, {"description", t.description}, {"parameters", parameters}}}});

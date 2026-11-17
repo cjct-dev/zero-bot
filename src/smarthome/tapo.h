@@ -44,9 +44,11 @@ bool owned_by(const Device &dev, const std::string &email);
 // "result" object ({} when it sent none). Logs in when there is no session, and logs in again
 // once if the plug no longer knows the session; at most one login is made per call. Returns
 // false with a human-readable `err` otherwise. No login is attempted when owned_by() is false,
-// or after the plug rejected these credentials or reported itself locked.
-// Thread-safe; requests to one plug are serialised. Each HTTP exchange is limited to 3 s to
-// connect and 6 s in total, so a call that has to log in first can take up to three of those.
+// or after the plug rejected these credentials, or while it reports itself locked.
+// Thread-safe; requests to one plug (one ip and port) are serialised and share one session.
+// Each HTTP exchange is limited to 3 s to connect and 6 s in total; a call that has to log in
+// first makes three of them (four when it must also ask a TPAP plug how to log in). A refused
+// connection is tried once more, 300 ms after a discovery query to the plug's UDP port 20002.
 bool request(const Device &dev, const Credentials &cred, const json &req, json &reply, std::string &err);
 
 // Convenience wrappers built on request().

@@ -15,6 +15,7 @@
 #include "net/http.h"
 #include "platform/codec.h"
 #include "smarthome/discovery.h"
+#include "smarthome/home.h"
 #if !ZB_CLI_ONLY
 #include "ui/app.h"
 #endif
@@ -27,6 +28,7 @@ void usage() {
          "  --ask \"text\"          run one request through the agent and print what happens\n"
          "  --chat                interactive text conversation on the terminal\n"
          "  --steer \"text\"        with --ask/--chat: add this while the first tool of the first request runs\n"
+         "  --home-refresh         read names and states from the saved smart-home devices on this network\n"
          "  --discover             look for smart-home devices on this network (discovery only) and list them\n"
          "  --talk-over MS[:text]  with --ask: hold the microphone open for MS ms from the start of the request,\n"
          "                         then hand over `text` as what was said (or nothing, as if cancelled)\n"
@@ -145,13 +147,14 @@ int main(int argc, char **argv) {
     setenv("RES_OPTIONS", "single-request", 0);
     std::string ask, shots, steer, talk_over, follow_ups, tool_name, tool_args = "{}";
     std::string stt_file, tts_text, tts_out, bench_wav, bench_opus;
-    bool chat = false, keydump = false, boot = false, discover = false;
+    bool chat = false, keydump = false, boot = false, discover = false, home_refresh = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--ask" && i + 1 < argc) ask = argv[++i];
         else if (a == "--chat") chat = true;
         else if (a == "--steer" && i + 1 < argc) steer = argv[++i];
         else if (a == "--discover") discover = true;
+        else if (a == "--home-refresh") home_refresh = true;
         else if (a == "--talk-over" && i + 1 < argc) talk_over = argv[++i];
         else if (a == "--follow-ups" && i + 1 < argc) follow_ups = argv[++i];
         else if (a == "--tool" && i + 1 < argc) { tool_name = argv[++i]; if (i + 1 < argc) tool_args = argv[++i]; }
@@ -222,6 +225,16 @@ int main(int argc, char **argv) {
                    static_cast<double>(data.size()) / 2 / llm::kTtsRate, secs(), err.empty() ? "" : " error: ", err.c_str());
         }
         quit(err.empty() ? 0 : 1);
+    }
+    if (home_refresh) {
+        const discovery::Network net = home::network_now(true);
+        if (!net.usable) { printf("no usable network: %s\n", net.why_not.c_str()); quit(1); }
+        printf("%s\n", home::refresh(net.id()).c_str());
+        for (const auto &d : home::entry(net.id()).devices) {
+            printf("%-10s %-24s %s\n", d.kind.c_str(), d.title().c_str(), d.problem.empty() ? "" : ("-- " + d.problem).c_str());
+            for (const auto &sw : d.switches) printf("             %-24s %s\n", sw.name.c_str(), sw.on ? "on" : "off");
+        }
+        quit(0);
     }
     if (discover) {
         const discovery::Network net = discovery::current_network();

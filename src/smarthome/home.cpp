@@ -367,6 +367,26 @@ std::string switch_power(const std::string &name, bool on) {
     return json{{"device", target.sw.name}, {"now", on ? "on" : "off"}}.dump();
 }
 
+std::string switch_all_off() {
+    const discovery::Network net = network_now();
+    if (!net.usable) return "ERROR: " + net.why_not;
+    const tapo::Credentials cred = credentials(tapo_account());
+    json done = json::array(), failed = json::array();
+    {
+        std::lock_guard<std::mutex> device_lock(g_device_mtx);
+        for (const auto &t : targets(net.id())) {
+            const tapo::Device dev = tapo_device(t.device);
+            std::string err;
+            const bool ok = t.sw.child.empty() ? tapo::set_power(dev, cred, false, err) : tapo::set_socket_power(dev, cred, t.sw.child, false, err);
+            if (ok) { done.push_back(t.sw.name); save_switch_state(net.id(), t.device.id, t.sw.child, false); }
+            else failed.push_back({{"device", t.sw.name}, {"error", err}});
+        }
+    }
+    json out = {{"switched_off", done}};
+    if (!failed.empty()) out["could_not_reach"] = failed;
+    return (done.empty() && !failed.empty() ? "ERROR: " : "") + out.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
 std::string status(const std::string &name) {
     const discovery::Network net = network_now();
     if (!net.usable) return "ERROR: " + net.why_not;
