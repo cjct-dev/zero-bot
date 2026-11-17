@@ -5,6 +5,8 @@
 // Built and run by tests/run_timer_tests.sh, which points XDG_DATA_HOME at an empty temporary
 // folder and sets TZ=UTC.
 #include <algorithm>
+#include <atomic>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -591,6 +593,68 @@ void test_more_time_which_timer() {
     CHECK_EQ(timer_end("Pasta 2"), T0 + 660);
 }
 
+// The alarm's player, against a stand-in for pw-cat that keeps what it is sent: nothing is heard.
+void test_alarm_player() {
+    const char *cache = getenv("XDG_CACHE_HOME");
+    if (!cache || !*cache) {
+        puts("  (alarm player test skipped: run it through tests/run_timer_tests.sh)");
+        return;
+    }
+    const std::string dir = std::string(cache) + "/stand-in", out = dir + "/received.raw";
+    util::make_dirs(dir);
+    util::write_file_atomic(dir + "/pw-cat", "#!/bin/sh\nexec cat > '" + out + "'\n", 0755);
+    if (access((dir + "/pw-cat").c_str(), X_OK) != 0) {   // never let the real player start
+        check(false, "the stand-in player could be written", __LINE__);
+        return;
+    }
+    const char *path = getenv("PATH");
+    setenv("PATH", (dir + ":" + (path ? path : "/usr/bin:/bin")).c_str(), 1);
+    signal(SIGPIPE, SIG_IGN);                                      // as the app does
+    auto received = [&] {
+        std::string raw;
+        util::read_file(out, raw);
+        return raw;
+    };
+    auto wait_for = [](const std::function<bool()> &done, int ms) {
+        for (int waited = 0; waited < ms && !done(); waited += 20) usleep(20 * 1000);
+        return done();
+    };
+    const size_t burst_bytes = audio::alarm_burst(24000).size() * 2;
+    auto loud = [](const std::string &raw, size_t from, size_t to) {   // any sample not silent
+        for (size_t i = from; i + 1 < std::min(to, raw.size()); i += 2)
+            if (raw[i] != 0 || raw[i + 1] != 0) return true;
+        return false;
+    };
+
+    // While the assistant speaks, only the first burst plays; then silence until it has finished.
+    std::atomic<bool> speaking{true};
+    audio::AlarmSound &player = audio::AlarmSound::get();
+    player.start([&] { return speaking.load(); });
+    CHECK(player.active());
+    CHECK(wait_for([&] { return received().size() >= burst_bytes + 20000; }, 5000));
+    std::string raw = received();
+    CHECK(loud(raw, 0, burst_bytes));
+    CHECK(!loud(raw, burst_bytes, raw.size()));
+    speaking = false;                                              // the words are over: it rings again
+    CHECK(wait_for([&] { return loud(received(), burst_bytes, std::string::npos); }, 5000));
+    CHECK(player.active());
+
+    player.stop();                                                 // a key: it stops at once
+    CHECK(wait_for([&] { return !player.active(); }, 2000));
+    const size_t after = received().size();
+    usleep(300 * 1000);
+    CHECK_EQ(received().size(), after);                            // and nothing more reaches the player
+
+    unlink(out.c_str());
+    player.start({});                                              // leaving the app while it rings
+    CHECK(wait_for([&] { return received().size() > 0; }, 5000));
+    player.stop_and_wait();
+    CHECK(!player.active());
+    const size_t left = received().size();
+    usleep(300 * 1000);
+    CHECK_EQ(received().size(), left);                             // the player is gone with it
+}
+
 void test_alarm_sound_pattern() {
     const std::vector<int16_t> burst = audio::alarm_burst(24000);
     CHECK_EQ(burst.size(), 24000 * 110 / 100);                     // 4 x (100 + 50) ms, then 500 ms
@@ -630,6 +694,7 @@ int main() {
     run("more time after the alarm", test_more_time_after_the_alarm);
     run("more time: which timer", test_more_time_which_timer);
     run("alarm sound", test_alarm_sound_pattern);
+    run("alarm player", test_alarm_player);
     printf("timers: %d checks, %d failed\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
