@@ -46,11 +46,11 @@ needs a [Tavily](https://tavily.com) key.
 |---|---|
 | **TAB** | Start talking. Press **TAB** again when you have finished. |
 | **TAB** twice quickly | Open settings. |
-| **ENTER** (or just start typing) | Type a message; **ENTER** sends it. |
+| **ENTER** | Start typing a message; **ENTER** again sends it. |
 | **del** twice quickly | Start a new conversation: what was said so far is forgotten. Calendar, timers, reminders and saved memories are kept. |
 | **ESC** | Cancel what is happening: recording, typing, a running request, music. |
 | Hold **ESC** | Leave the app and return to the launcher. |
-| **fn**+**F** / **fn**+**X** | Scroll the conversation up and down. |
+| **F** / **X** (or **fn**+**F** / **fn**+**X**) | Scroll the conversation up and down. While typing, use **fn**+**F** / **fn**+**X**. |
 | **fn**+**S** / **fn**+**D** | Volume down / up. **fn**+**A** mutes and unmutes. |
 | **fn**+**U** / **fn**+**I** | Screen brightness down / up. |
 | **fn**+**Q** / **fn**+**W** / **fn**+**E** | Music: pause or resume / previous track / next track. |

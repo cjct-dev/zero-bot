@@ -447,7 +447,13 @@ struct App {
                 else last_delete = now;
                 break;
             case Key::Enter: if (ev.state == 1) chat.typing_begin(""); break;
-            case Key::Char: if (ev.text != " ") chat.typing_begin(ev.text); break;
+            // Typing starts only with ENTER, so plain letters are free for reading: F and X scroll
+            // like fn+F and fn+X, and any other letter just says how to start typing.
+            case Key::Char:
+                if (ev.text == "f" || ev.text == "F") chat.scroll(34);
+                else if (ev.text == "x" || ev.text == "X") chat.scroll(-34);
+                else if (ev.state == 1 && ev.text != " ") show_level("Press ENTER to type");
+                break;
             case Key::Up: chat.scroll(34); break;
             case Key::Down: chat.scroll(-34); break;
             case Key::PgUp: chat.scroll(110); break;
@@ -702,6 +708,16 @@ struct App {
             snap("delete-once");                   // one tap alone changes nothing
             handle_key(del);
             snap("new-conversation");
+            // A letter key does not start typing (ENTER does); it says how to.
+            KeyEvent letter; letter.key = Key::Char; letter.text = "h"; letter.state = 1;
+            handle_key(letter);
+            update_footer();
+            snap("letter-hint");
+            if (chat.typing()) {
+                fprintf(stderr, "a letter key started typing; only ENTER should\n");
+                failed = true;
+            }
+            level_until = 0;
             KeyEvent vol; vol.key = Key::VolumeUp; vol.state = 1;
             handle_key(vol);
             update_footer();
