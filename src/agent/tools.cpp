@@ -912,11 +912,11 @@ std::vector<Tool> build() {
          obj({{"id", N("Event id")}}, {"id"}), t_calendar_delete},
         {"timer", "Timers",
          "Countdown timers: the time left shows on the screen and an alarm rings when one ends. Use it for "
-         "anything counted down from now: 'set a timer for 10 minutes', 'the food needs to come out of the oven "
-         "in 5 minutes', 'I want to study for an hour'. Several can run at once, each with a short label. start "
-         "needs the length; if the user gave none, ask how long. cancel and add_time pick a timer by words from "
-         "its label, or with only one running need none. list gives each timer's time left. Calling this is the "
-         "only way a timer is started, changed or cancelled.",
+         "anything counted down from now: 'set a timer for 10 minutes', 'the eggs need six minutes', 'give me "
+         "half an hour to read'. Several can run at once, each with a short label. start needs the length; if the "
+         "user gave none, ask how long. cancel and add_time pick a timer by words from its label, or with only one "
+         "running need none. list gives each timer's time left. Calling this is the only way a timer is started, "
+         "changed or cancelled.",
          obj({{"action", E("What to do", {"start", "cancel", "list", "add_time"})},
               {"minutes", N("For start and add_time: minutes (fractions allowed; an hour is 60)")},
               {"seconds", N("For start and add_time: seconds, alone or on top of minutes")},
@@ -926,8 +926,8 @@ std::vector<Tool> build() {
               {"all", B("For cancel: true to cancel every timer")}},
              {"action"}), t_timer},
         {"reminder_set", "Setting a reminder",
-         "Set a reminder: a message the device chimes and speaks at a clock time or on a date ('remind me at 7 "
-         "tomorrow to call the hotel', 'wake me at half six'). Calling this is the only way one gets set. Give at "
+         "Set a reminder: a message the device chimes and speaks at a clock time or on a date ('remind me at 6 "
+         "on Friday to call the bank', 'wake me at half six'). Calling this is the only way one gets set. Give at "
          "for the clock time. A countdown from now ('set a timer', 'in 5 minutes', 'for an hour') is a timer: use "
          "timer instead. If the user gave no time at all, ask when. It fires only while this app is running. For "
          "an appointment that belongs in the calendar, use calendar_add with remind_minutes_before instead.",
