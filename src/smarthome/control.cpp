@@ -498,7 +498,7 @@ std::string status(const std::string &network_id, const NetworkEntry &e, const s
     }
     auto value = [&](const Item *m) -> json {
         const std::string key = key_of(m->device_id, m->thing.id);
-        if (errors.count(key)) return "not reachable";
+        if (errors.count(key)) return "could not be read: " + errors[key];
         return detail ? shown_state(m->thing, states[key]) : brief_state(m->thing, states[key]);
     };
     if (r.scope == Scope::Thing) {
