@@ -177,6 +177,7 @@ std::string describe(const std::string &action, const std::string &label, const 
     if (c.position) parts.push_back("position " + std::to_string(*c.position) + "%");
     if (c.volume) parts.push_back("volume " + std::to_string(*c.volume));
     if (c.source) parts.push_back(*c.source);
+    if (parts.empty()) return std::string(c.on && !*c.on ? "turn off " : "change ") + label;
     std::string what;
     for (const auto &p : parts) what += (what.empty() ? "" : ", ") + p;
     return "set " + label + " to " + what;
@@ -533,7 +534,14 @@ void run_parallel(size_t count, size_t workers, const std::function<void(size_t)
     if (count == 0) return;
     std::atomic<size_t> next{0};
     auto work = [&] {
-        for (size_t k; (k = next++) < count;) job(k);
+        // A job that throws (a driver that broke its promise not to) must not take the app with
+        // it; what it did not finish stays reported as failed.
+        for (size_t k; (k = next++) < count;) {
+            try {
+                job(k);
+            } catch (const std::exception &) {
+            }
+        }
     };
     std::vector<std::thread> threads;
     const size_t extra = std::min(count, std::max<size_t>(workers, 1)) - 1;
@@ -809,7 +817,13 @@ std::string refresh(const std::string &network_id, const std::string &only_devic
         Driver *drv = driver_for(*o.saved);
         if (!drv) return;
         o.dev = *o.saved;
-        const PairStep step = drv->next_step(o.dev);
+        PairStep step;
+        try {
+            step = drv->next_step(o.dev);
+        } catch (const std::exception &) {
+            o.problem = "Its driver could not tell what it needs.";
+            return;
+        }
         if (step.kind != Pairing::None) {
             o.setup = true;
             o.problem = step.prompt.empty() ? "It needs setting up first." : step.prompt;
