@@ -101,6 +101,14 @@ static const char *pairing_name(home::Pairing p) {
     return "?";
 }
 
+// The family's secrets, kept in the state file beside the device, as the app's store keeps them.
+struct FileSecrets : home::Secrets {
+    json all = json::object();
+    json get(const std::string &family) const override { return all.contains(family) ? all[family] : json::object(); }
+    void set(const std::string &family, const json &value) override { all[family] = value; }
+};
+static FileSecrets g_secrets;
+
 static bool load(const std::string &path, home::Device &d, std::vector<home::Thing> &things, std::string &err) {
     std::ifstream f(path);
     if (!f) {
@@ -129,6 +137,7 @@ static bool load(const std::string &path, home::Device &d, std::vector<home::Thi
     if (j.contains("things") && j["things"].is_array())
         for (const json &t : j["things"]) things.push_back(thing_from(t));
     d.things = things;
+    if (j.contains("secrets") && j["secrets"].is_object()) g_secrets.all = j["secrets"];
     return true;
 }
 
@@ -140,7 +149,8 @@ static bool save(const std::string &path, const home::Device &d, const std::vect
     const json j = {{"device",
                      {{"id", d.id}, {"kind", d.kind}, {"name", d.name}, {"model", d.model}, {"mac", d.mac},
                       {"ip", d.ip}, {"port", d.port}, {"info", info}, {"auth", d.auth}}},
-                    {"things", list}};
+                    {"things", list},
+                    {"secrets", g_secrets.all}};
     const std::string text = j.dump(2, ' ', false, json::error_handler_t::replace) + "\n";
     const std::string tmp = path + ".tmp";
     const int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
@@ -214,6 +224,7 @@ int main(int argc, char **argv) {
     }
     curl_global_init(CURL_GLOBAL_DEFAULT);
     auto driver = make_firetv_driver();
+    driver->attach(&g_secrets);
     int rc = 0;
     const auto started = std::chrono::steady_clock::now();
     const auto elapsed = [&] {
@@ -282,6 +293,7 @@ int main(int argc, char **argv) {
             }
             if (driver->apply(dev, thing, second, deadline, err)) printf("%s\n", json{{"ok", true}, {"ms", elapsed()}}.dump().c_str());
             else rc = fail(err);
+            save(path, dev, things);   // the secrets may hold a key the TV changed to
         }
     } else {
         rc = usage();

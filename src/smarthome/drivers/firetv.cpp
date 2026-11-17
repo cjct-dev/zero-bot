@@ -1035,6 +1035,7 @@ struct What {
 
 class Session {
 public:
+    enum class Rekey { NotTried, Accepted, Refused, Failed };
     Session(const Target &t, const Pairing &p, const Deadline &dl) : t_(t), p_(p), dl_(dl) {}
 
     const Deadline &deadline() const { return dl_; }
@@ -1058,8 +1059,23 @@ public:
         r.max_body = max_body;
         r.total_ms = std::min(cap_ms, dl_.left());
         r.connect_ms = std::min(kConnectMs, r.total_ms);
-        return note(perform(r));
+        const Reply first = note(perform(r));
+        if (!first.key_changed()) return first;
+        // Nothing of the request left: a different key ends the connection before it is sent.
+        switch (rekey()) {
+        case Rekey::Accepted:
+            r.pin = p_.pin;
+            r.total_ms = std::min(cap_ms, dl_.left());
+            r.connect_ms = std::min(kConnectMs, r.total_ms);
+            if (r.total_ms < kMinTryMs) return first;
+            return note(perform(r));
+        case Rekey::Refused: return rekey_reply_;   // judged as "pair again"
+        default: return first;
+        }
     }
+
+    // The key the TV presented instead of the pinned one, once accepted in this session.
+    const std::string &new_pin() const { return new_pin_; }
 
     // The DIAL launch of FireTVRemote that wakes the TV. Sent like the official app sends it
     // (empty body, text/plain), as captured in the forum thread. `connect_ms` bounds connecting;
@@ -1092,6 +1108,12 @@ public:
             r.total_ms = std::min(1000L, left);
             r.connect_ms = r.total_ms;
             const Reply probe = note(perform(r));
+            if (probe.key_changed()) {
+                const Rekey k = rekey();
+                if (k == Rekey::Accepted) continue;   // the next probe uses the new key
+                if (k == Rekey::Refused) return Woken::Up;   // it is up; the command then reads "pair again"
+                return Woken::KeyChanged;
+            }
             if (probe.blocked()) return Woken::KeyChanged;
             if (probe.answered()) return Woken::Up;
             if (probe.connected) silent = true;   // accepted, then said nothing
@@ -1194,7 +1216,8 @@ public:
         case Woken::NotServing: err = kNotServing; break;
         case Woken::Waking: err = std::string(kWaking) + " Try again in a moment."; break;
         case Woken::KeyChanged:
-            err = std::string(kKeyChanged) + " Nothing was sent to it. If the TV was reset, pair it again in the settings.";
+            err = std::string(kKeyChanged) + " It could not be checked, so only the wake-up request was sent. Try again in a "
+                  "moment; if it keeps saying this, pair it again in the settings.";
             break;
         case Woken::NoTime: err = kNoTime; break;
         }
@@ -1211,6 +1234,34 @@ public:
 
 private:
     // Every reply passes through here: a request was made, and whether the TV was heard.
+    // The TV presented a key other than the pinned one. As the owner chose, a changed key is
+    // accepted when the TV still accepts this pairing: one status read (it changes nothing) over a
+    // connection that takes whatever key the TV presents, carrying the token. A 2xx answer pins the
+    // new key; a 401 or 403 means pair again; anything else leaves the key refused. Only a paired
+    // session asks (pairing itself stays strict), and only once per session.
+    Rekey rekey() const {
+        if (rekey_ != Rekey::NotTried) return rekey_;
+        rekey_ = Rekey::Failed;
+        if (p_.token.empty() || dl_.left() < kMinTryMs) return rekey_;
+        Request r;
+        r.url = "https://" + t_.host + ":" + std::to_string(t_.api_port) + "/v1/FireTV/status";
+        r.headers = {std::string("X-Api-Key: ") + kApiKey, std::string("Content-Type: ") + kJson,
+                     "X-Client-Token: " + p_.token};
+        r.want_spki = true;
+        r.max_body = kSmallBody;
+        r.total_ms = std::min(1500L, dl_.left());
+        r.connect_ms = std::min(kConnectMs, r.total_ms);
+        const Reply check = note(perform(r));
+        if (check.ok() && valid_pin(check.spki)) {
+            p_.pin = new_pin_ = check.spki;
+            rekey_ = Rekey::Accepted;
+        } else if (check.status == 401 || check.status == 403) {
+            rekey_reply_ = check;
+            rekey_ = Rekey::Refused;
+        }
+        return rekey_;
+    }
+
     Reply note(Reply r) const {
         used_ = true;
         if (r.answered() || r.connected) heard_ = true;
@@ -1218,8 +1269,11 @@ private:
     }
 
     const Target &t_;
-    const Pairing &p_;
+    mutable Pairing p_;               // a copy: a new key the TV presents may replace the pin
     const Deadline &dl_;
+    mutable Rekey rekey_ = Rekey::NotTried;   // the check of a new key, at most once per session
+    mutable Reply rekey_reply_;               // its answer when the TV refused the pairing
+    mutable std::string new_pin_;             // the TV's new key, once accepted
     bool woke_ = false;               // a wake was tried for a command (once per session)
     bool woken_up_ = false;           // a wake in this session brought the API up
     mutable bool used_ = false;       // a request went to the TV in this session
@@ -1325,7 +1379,10 @@ public:
     }
 
     // The API has no call to forget a client: the TV is not told, the pairing is dropped here.
-    void unpair(home::Device &dev) override { dev.auth = json::object(); }
+    void unpair(home::Device &dev) override {
+        forget_new_key(dev);
+        dev.auth = json::object();
+    }
 
     bool enumerate(home::Device &dev, std::vector<home::Thing> &out, std::string &err) override {
         try {
@@ -1334,7 +1391,7 @@ public:
             Target t;
             Pairing p;
             if (!target_of(dev, t, err)) return false;
-            if (!paired(dev, p)) {
+            if (!pairing_of(dev, p)) {
                 err = std::string(kNotPaired) + " Pair it in the settings first.";
                 return false;
             }
@@ -1361,6 +1418,12 @@ public:
             if (!thing.state.contains("apps")) thing.state["apps"] = json::array();
             set_caps(thing);
             learn_wake_mac(dev);
+            // A key accepted now or since the last read becomes the pairing's own.
+            const std::string key = !s.new_pin().empty() ? s.new_pin() : p.pin;
+            if (caps.ok() && key != auth_string(dev.auth, "key_pin")) {
+                dev.auth["key_pin"] = key;
+                forget_new_key(dev);
+            }
             out.push_back(thing);
             return true;
         } catch (...) {
@@ -1376,7 +1439,7 @@ public:
             Target t;
             Pairing p;
             if (!target_of(dev, t, err)) return false;
-            if (!paired(dev, p)) {
+            if (!pairing_of(dev, p)) {
                 err = std::string(kNotPaired) + " Pair it in the settings first.";
                 return false;
             }
@@ -1384,6 +1447,7 @@ public:
             const Deadline dl(kReadMs);
             const Session s(t, p, dl);
             const Reply r = s.api(false, "/v1/FireTV/status", "", kJson, kSmallBody, 1500);
+            if (!s.new_pin().empty()) remember_new_key(dev, auth_string(dev.auth, "key_pin"), s.new_pin());
             if (r.blocked() || r.status == 401 || r.status == 403) {
                 Session::judge(r, err);
                 return false;
@@ -1408,7 +1472,7 @@ public:
             Target t;
             Pairing p;
             if (!target_of(dev, t, err)) return false;
-            if (!paired(dev, p)) {
+            if (!pairing_of(dev, p)) {
                 err = std::string(kNotPaired) + " Pair it in the settings first.";
                 return false;
             }
@@ -1435,6 +1499,7 @@ public:
             // The TV answered something: it is on, so an earlier unanswered wake-up signal no
             // longer says anything about it.
             if (s.heard()) forget_wake(who);
+            if (!s.new_pin().empty()) remember_new_key(dev, auth_string(dev.auth, "key_pin"), s.new_pin());
             return ok;
         } catch (...) {
             err = kInternal;
@@ -1538,6 +1603,7 @@ private:
                 dev.auth["token"] = token;
                 dev.auth["key_pin"] = pp.pin;
                 dev.auth["paired_at"] = static_cast<long long>(time(nullptr));
+                forget_new_key(dev);
                 learn_wake_mac(dev);
                 return true;
             case detail::PinReply::NotYet: continue;
@@ -1745,6 +1811,57 @@ private:
 
     std::mutex wake_mutex_;
     std::map<std::string, Clock::time_point> wake_started_;
+
+    // A key the TV presented in place of the pinned one and that a check accepted (Session::rekey).
+    // read() and apply() cannot change Device::auth, so it is kept here and, to survive a restart,
+    // in the family's secrets as {"rekeyed": {device: {"from": old pin, "to": new pin}}}. It applies
+    // only while the pairing still holds "from": pairing again or unpairing ends it, and the next
+    // enumerate writes it into Device::auth.
+    static std::string device_key(const home::Device &dev) { return dev.id.empty() ? dev.ip : dev.id; }
+
+    bool pairing_of(const home::Device &dev, Pairing &p) const {
+        if (!paired(dev, p)) return false;
+        const std::string id = device_key(dev);
+        std::lock_guard<std::mutex> lock(key_mutex_);
+        std::string to;
+        if (const auto it = new_keys_.find(id); it != new_keys_.end() && it->second.first == p.pin) to = it->second.second;
+        else if (secrets_) {
+            const json saved = secrets_->get(kind());
+            if (saved.is_object() && saved.contains("rekeyed") && saved["rekeyed"].is_object() && saved["rekeyed"].contains(id)) {
+                const json &e = saved["rekeyed"][id];
+                if (e.is_object() && auth_string(e, "from") == p.pin) to = auth_string(e, "to");
+            }
+        }
+        if (valid_pin(to)) p.pin = to;
+        return true;
+    }
+
+    void remember_new_key(const home::Device &dev, const std::string &from, const std::string &to) {
+        if (!valid_pin(to) || to == from) return;
+        const std::string id = device_key(dev);
+        std::lock_guard<std::mutex> lock(key_mutex_);
+        new_keys_[id] = {from, to};
+        if (!secrets_) return;
+        json saved = secrets_->get(kind());
+        if (!saved.is_object()) saved = json::object();
+        if (!saved.contains("rekeyed") || !saved["rekeyed"].is_object()) saved["rekeyed"] = json::object();
+        saved["rekeyed"][id] = {{"from", from}, {"to", to}};
+        secrets_->set(kind(), saved);
+    }
+
+    void forget_new_key(const home::Device &dev) {
+        const std::string id = device_key(dev);
+        std::lock_guard<std::mutex> lock(key_mutex_);
+        new_keys_.erase(id);
+        if (!secrets_) return;
+        json saved = secrets_->get(kind());
+        if (!saved.is_object() || !saved.contains("rekeyed") || !saved["rekeyed"].is_object() || !saved["rekeyed"].contains(id)) return;
+        saved["rekeyed"].erase(id);
+        secrets_->set(kind(), saved);
+    }
+
+    mutable std::mutex key_mutex_;
+    std::map<std::string, std::pair<std::string, std::string>> new_keys_;   // device -> (old pin, new pin)
 };
 
 }  // namespace

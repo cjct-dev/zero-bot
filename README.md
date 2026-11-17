@@ -240,7 +240,10 @@ device directly: nothing goes through the makers' cloud services. Supported so f
   mute work only on models that report network volume control (many sticks do not); for those,
   and for channels, inputs and number keys, use the infrared remote. A Fire TV in deep standby can
   be woken over the network only if Zero Bot heard its wake-up address while it was on, and then
-  takes about 7 seconds to come on; otherwise switching it on needs the infrared remote. Amazon
+  takes about 7 seconds to come on; otherwise switching it on needs the infrared remote. Zero Bot
+  remembers the TV's security key from pairing; if the TV later presents a new one (a Fire TV can
+  change it, for example after a restart), Zero Bot checks once that the TV still accepts the
+  pairing and then carries on with the new key; if it does not, it asks you to pair again. Amazon
   does not document this interface, so a Fire TV software update could change it. Tested so far
   only against a simulated TV.
 
@@ -297,6 +300,10 @@ devices, with or without this app.
   only by your user, with what a device needs to be talked to (for Tapo, the account e-mail and a
   SHA-1 of its password). While the assistant may use devices, their names and states are sent
   to your AI service with each request; addresses and account details never are.
+- A log of the tools the assistant used and what they returned is kept in
+  `~/.cache/zero-bot/activity.log` (readable only by your user, about 256 kB at most plus one
+  older file), to help diagnose problems. What you say is not written to it, nor any password or
+  token. Delete it whenever you like.
 - What you say, type and photograph is sent to the AI service you configured. Web searches go to
   Tavily; weather, currency and share-price lookups go to Open-Meteo, open.er-api.com and Yahoo
   Finance.

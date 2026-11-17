@@ -759,15 +759,45 @@ def auth_failure_tests(m, tv):
     rc, out, err, _ = tv.cli("read")
     check("read with a refused token: pair again", rc == 1 and fault(err) == "pair_again", err)
 
+    # A TV that presents another TLS key (a Fire TV can change it, for example at a restart): as
+    # the owner chose, the key is accepted when the TV still accepts the pairing, checked with one
+    # status read that changes nothing; the command then goes through, and the key is remembered.
+    pin_a = tv.auth()["key_pin"]
     m.reset(state="awake", caps="tv", cert="b")
     rc, out, err, _ = tv.apply({"key": "home"})
     st = m.stats()
-    check("a TV with another TLS key: refused as a changed key", rc == 1 and fault(err) == "key_changed", err)
-    check("a TV with another TLS key: no request (so no token) reached it, and no wake",
-          st["requests"] == [] and st["tls_connections"] >= 1 and st["dial_posts"] == 0, (st["requests"], st["tls_connections"]))
+    check("a TV with a new TLS key that still accepts the pairing: one status check, then the press goes through",
+          rc == 0 and keys(st) == ["home"] and len(api_requests(st, "/v1/FireTV/status")) == 1 and st["dial_posts"] == 0,
+          (rc, err, keys(st), [r["path"] for r in st["requests"]]))
+    rekeyed = tv.state().get("secrets", {}).get("fire_tv", {}).get("rekeyed", {})
+    check("... the new key is remembered for this TV (in the secrets) while the pairing still holds the old one",
+          len(rekeyed) == 1 and list(rekeyed.values())[0].get("from") == pin_a and tv.auth()["key_pin"] == pin_a, rekeyed)
+    m.reset(state="awake", caps="tv", cert="b")
+    rc, out, err, _ = tv.apply({"key": "back"})
+    st = m.stats()
+    check("... so the next command needs no check", rc == 0 and keys(st) == ["back"] and
+          not api_requests(st, "/v1/FireTV/status"), (rc, err, [r["path"] for r in st["requests"]]))
     rc, out, err, _ = tv.cli("enumerate")
-    check("enumerate against another key: refused as a changed key, nothing sent",
-          rc == 1 and fault(err) == "key_changed" and m.stats()["requests"] == [], err)
+    rekeyed = tv.state().get("secrets", {}).get("fire_tv", {}).get("rekeyed", {})
+    check("enumerate writes the new key into the pairing and forgets the note",
+          rc == 0 and tv.auth()["key_pin"] != pin_a and not rekeyed, (rc, err, rekeyed))
+    pin_b = tv.auth()["key_pin"]
+    # A new key and a pairing the TV no longer accepts: pair again, and nothing is pressed.
+    m.reset(state="awake", caps="tv", cert="a", revoked=True)
+    rc, out, err, _ = tv.apply({"key": "home"})
+    st = m.stats()
+    check("a new key and a refused pairing: pair again, nothing pressed, no wake, the key not taken",
+          rc == 1 and fault(err) == "pair_again" and keys(st) == [] and st["dial_posts"] == 0 and
+          not tv.state().get("secrets", {}).get("fire_tv", {}).get("rekeyed") and tv.auth()["key_pin"] == pin_b, (rc, err))
+    # A new key on a TV that is asleep: the wake goes out, the key is checked when the API comes up.
+    m.reset(state="idle", caps="tv", cert="a")
+    rc, out, err, _ = tv.apply({"on": True}, deadline=9000)
+    st = m.stats()
+    check("on=true, an idle TV with a new key: woken, the key checked and accepted, reported as on",
+          rc == 0 and st["dial_posts"] >= 1 and len(api_requests(st, "/v1/FireTV/status")) >= 1, (rc, err, st["dial_posts"]))
+    # Back to key a for the tests that follow.
+    rc, out, err, _ = tv.cli("enumerate")
+    check("enumerate on key a again", rc == 0 and tv.auth()["key_pin"] == pin_a, (rc, err))
     m.reset(state="awake", caps="tv", cert="a")
 
 

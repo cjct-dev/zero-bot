@@ -200,6 +200,11 @@ key, real audio), say so plainly rather than implying it was.
 
 ## 7. Working with the device
 
+- **Diagnosing what the assistant did**: the app's output goes to the launcher's socket, not to
+  the journal. `~/.cache/zero-bot/activity.log` on the device (`src/core/activity.cpp`) has every
+  tool call with its arguments, result and duration, request by request; read it as root over ADB.
+  It holds no words of the user's and no secrets; keep it that way.
+
 - The device is reached over USB ADB as root: left-side switch on Slave, cable in the
   right-hand USB-C port, ADB enabled in the device's Settings > Developer. Use `scripts/adbx`
   (it recovers an "offline" link). With a phone also attached, set `ANDROID_SERIAL`.

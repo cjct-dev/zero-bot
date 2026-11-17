@@ -1,5 +1,6 @@
 #include "agent/agent.h"
 
+#include <chrono>
 #include <regex>
 #include <unistd.h>
 
@@ -7,6 +8,7 @@
 #include "agent/prompt.h"
 #include "agent/speech.h"
 #include "agent/tools.h"
+#include "core/activity.h"
 #include "core/settings.h"
 #include "platform/audio.h"
 #include "smarthome/home.h"
@@ -298,6 +300,7 @@ void Agent::run_turn() {
     interrupted_ = false;
     if (absorb_inputs(true) == 0) return;
     trim_history();
+    activity::request();
 
     const json tool_schema = tools::schema();
     tools::Context tool_ctx;
@@ -486,7 +489,11 @@ void Agent::run_turn() {
                 const std::string label = tool ? tool->label : c.name;
                 set_state(AgentState::Working, label);
                 if (ev_.tool) ev_.tool(label);
+                const auto tool_started = std::chrono::steady_clock::now();
                 std::string result = cancel_ ? "ERROR: cancelled by the user" : tools::run(c.name, c.args, tool_ctx);
+                activity::tool(c.name, c.args, result,
+                               static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                     std::chrono::steady_clock::now() - tool_started).count()));
                 if (result.size() > kMaxToolResult) result = util::truncate_utf8(result, kMaxToolResult, " …[truncated]");
                 const std::string say = cancel_ ? "" : tools::confirmation(c.name, c.args, result);
                 if (say.empty()) all_confirmed = false;
