@@ -8,6 +8,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
+# Keep the build machine's directory names out of the binary (assert messages and debug info
+# would otherwise carry the full source path).
+add_compile_options("-ffile-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}=.")
+
 # ZB_DESKTOP=ON  -> PC simulator (SDL window + headless screenshots)
 # ZB_DESKTOP=OFF -> CardputerZero (fbdev + evdev), cross-built against the BSP sysroot
 option(ZB_DESKTOP "Build the desktop simulator instead of the device binary" ON)
@@ -69,9 +73,7 @@ target_include_directories(zero_bot PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 target_compile_options(zero_bot PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
-target_compile_definitions(zero_bot PRIVATE
-    ZB_VERSION="${PROJECT_VERSION}"
-    ZB_SOURCE_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/assets")
+target_compile_definitions(zero_bot PRIVATE ZB_VERSION="${PROJECT_VERSION}")
 if(ZB_CLI_ONLY)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(ZB_CLI_DEPS REQUIRED IMPORTED_TARGET libcurl)
