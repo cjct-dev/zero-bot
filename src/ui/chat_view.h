@@ -31,6 +31,7 @@ public:
     void set_now_playing(const std::string &text);
     void set_timer(const std::string &countdown);   // "4:59 +1" beside a stopwatch; "" hides it
     std::string status_name() const;                 // the name the status bar shows (for --shots checks)
+    bool now_playing_moves() const;                  // whether the now-playing text is scrolling (for --shots checks)
 
     // Footer
     void footer_hints(const std::string &text);

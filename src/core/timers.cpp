@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 
 #include "platform/audio.h"
 
@@ -101,20 +103,32 @@ std::vector<std::string> significant(const std::string &text) {
     static const char *const kNumbers[] = {"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
                                            "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
                                            "seventeen", "eighteen", "nineteen", "twenty"};
-    static const std::pair<const char *, const char *> kTens[] = {{"thirty", "30"}, {"forty", "40"}, {"fifty", "50"},
-                                                                 {"sixty", "60"}, {"ninety", "90"}};
+    static const char *const kTens[] = {"twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"};
+    auto index_in = [](const std::string &w, const char *const *list, int n) {
+        for (int k = 0; k < n; ++k)
+            if (w == list[k]) return k;
+        return -1;
+    };
     std::vector<std::string> out;
     const std::vector<std::string> words = words_of(text);
     for (size_t i = 0; i < words.size(); ++i) {
         std::string w = words[i];
+        const int tens = index_in(w, kTens, 8);
+        // A tens word and a ones word after it are one number: "twenty five" and "thirty-five" are
+        // 25 and 35, not 20 and 5 (which would pick the 5 minute timer for "twenty five minutes").
+        const int ones = tens >= 0 && i + 1 < words.size() ? index_in(words[i + 1], kNumbers, 10) : -1;
+        if (ones >= 1) {
+            out.push_back(std::to_string((tens + 2) * 10 + ones));
+            ++i;
+            continue;
+        }
         // "One" is a number before a unit ("the one minute timer") and a filler word otherwise
         // ("the oven one").
         if (w == "one" && i + 1 < words.size() && one_of(words[i + 1], kUnits)) w = "1";
         else if (one_of(w, kFiller)) continue;
-        for (int n = 0; n <= 20; ++n)
-            if (w == kNumbers[n]) w = std::to_string(n);
-        for (const auto &t : kTens)
-            if (w == t.first) w = t.second;
+        const int n = index_in(w, kNumbers, 21);
+        if (n >= 0) w = std::to_string(n);
+        else if (tens >= 0) w = std::to_string((tens + 2) * 10);
         out.push_back(w);
     }
     return out;
@@ -200,8 +214,19 @@ bool pick(const json &a, const std::vector<Reminder> &running, time_t now, Remin
     return false;
 }
 
+// Both clocks, in milliseconds: the wall clock, and the time since boot with sleep included, which
+// is real time passing (unlike the wall clock, it is never set).
+void read_clocks(long long &wall_ms, long long &steady_ms) {
+    timespec wall{}, steady{};
+    clock_gettime(CLOCK_REALTIME, &wall);
+    clock_gettime(CLOCK_BOOTTIME, &steady);
+    auto ms = [](const timespec &t) { return static_cast<long long>(t.tv_sec) * 1000 + t.tv_nsec / 1000000; };
+    wall_ms = ms(wall);
+    steady_ms = ms(steady);
+}
+
 // ---------------------------------------------------------------- actions
-std::string start(const json &a, time_t now) {
+std::string start(const json &a, time_t now, long long offset_ms) {
     const long seconds = length_arg(a);
     if (seconds < 0)
         return fail("give the length in minutes and/or seconds. If the user did not say how long, ask them");
@@ -211,7 +236,7 @@ std::string start(const json &a, time_t now) {
     Store &store = Store::get();
     const std::vector<Reminder> running = store.timers();
     const std::string label = unique_label(make_label(str_arg(a, "label"), seconds), running);
-    const int id = store.add_timer(label, seconds, now);
+    const int id = store.add_timer(label, seconds, now, offset_ms);
     if (!id)
         return fail(std::to_string(Store::kMaxTimers) + " timers are already running, which is the most at once. Tell the "
                     "user and offer to cancel one");
@@ -246,7 +271,7 @@ std::string cancel(const json &a, time_t now) {
     return reply(out);
 }
 
-std::string add_time(const json &a, time_t now) {
+std::string add_time(const json &a, time_t now, long long offset_ms) {
     const long extra = length_arg(a);
     if (extra <= 0) return fail("say how much time to add, in minutes and/or seconds");
     Store &store = Store::get();
@@ -281,7 +306,7 @@ std::string add_time(const json &a, time_t now) {
     }
     if (restart) {
         if (extra > kMaxSeconds) return fail("a timer runs for at most 24 hours");
-        if (!store.restart_timer(again.id, extra, now))
+        if (!store.restart_timer(again.id, extra, now, offset_ms))
             return fail(std::to_string(Store::kMaxTimers) + " timers are already running, which is the most at once");
         again.due = now + extra;
         return reply(json{{"restarted", describe(again, now)},
@@ -397,13 +422,33 @@ std::vector<Reminder> match(const std::vector<Reminder> &running, const std::str
 }
 
 // ---------------------------------------------------------------- the tool
-std::string run_tool(const json &args, time_t now) {
+std::string run_tool(const json &args, time_t now, long long offset_ms) {
+    // The time as the timers reckon it. Read just as the wall clock was set, it can be on the other
+    // side of the step from them (the main loop sees a step on its next tick): what is left and
+    // what has just ended then still compare like with like, and a timer started now is added by
+    // the clock the others go by, whichever that is by then.
+    now = Store::get().reckon(now, offset_ms);
     const std::string action = util::lower(str_arg(args, "action"));
-    if (action == "start") return start(args, now);
+    if (action == "start") return start(args, now, offset_ms);
     if (action == "cancel") return cancel(args, now);
     if (action == "list") return list(now);
-    if (action == "add_time") return add_time(args, now);
+    if (action == "add_time") return add_time(args, now, offset_ms);
     return fail("action must be start, cancel, list or add_time");
+}
+
+std::string run_tool(const json &args) {
+    long long wall = 0, steady = 0;
+    read_clocks(wall, steady);
+    // Just after the wall clock is set, the timers are on the old clock until the main loop moves
+    // them on its next tick. Waiting for that keeps the clock times in the result ("ends at 14:05")
+    // the ones on the clock; should the loop not come by (it is held up, or there is none), the
+    // time is reckoned across the step instead.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(kClockWaitMs);
+    while (Store::get().clock_stepped(wall - steady) && std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        read_clocks(wall, steady);
+    }
+    return run_tool(args, static_cast<time_t>(wall / 1000), wall - steady);
 }
 
 time_t now() {
@@ -413,14 +458,11 @@ time_t now() {
 
 void fix_clock(time_t t) { g_fixed_clock = t; }
 
-void follow_clock() {
-    // The steady clock is the time since boot, sleep included: real time passing, which the wall
-    // clock is not when it is set.
-    timespec wall{}, steady{};
-    clock_gettime(CLOCK_REALTIME, &wall);
-    clock_gettime(CLOCK_BOOTTIME, &steady);
-    auto ms = [](const timespec &t) { return static_cast<long long>(t.tv_sec) * 1000 + t.tv_nsec / 1000000; };
-    Store::get().follow_clock(ms(wall), ms(steady));
+time_t follow_clock() {
+    long long wall = 0, steady = 0;
+    read_clocks(wall, steady);
+    Store::get().follow_clock(wall, steady);
+    return static_cast<time_t>(wall / 1000);
 }
 
 // ---------------------------------------------------------------- the alarm

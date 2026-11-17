@@ -445,7 +445,7 @@ std::string t_calendar_delete(const json &a, Context &) {
 
 // ---------------------------------------------------------------- timers
 // The actions live in core/timers.cpp, where the unit tests reach them.
-std::string t_timer(const json &a, Context &) { return timers::run_tool(a, time(nullptr)); }
+std::string t_timer(const json &a, Context &) { return timers::run_tool(a); }
 
 // ---------------------------------------------------------------- reminders
 std::string t_reminder_set(const json &a, Context &) {

@@ -490,8 +490,7 @@ struct App {
     // Runs on every tick. Cheap unless a timer has just ended or the countdown's text has changed:
     // the store is only asked when its next end has come or its timers have changed.
     void update_timers(unsigned long now_ms) {
-        timers::follow_clock();                        // a clock set meanwhile moves the timers with it
-        const time_t now = time(nullptr);
+        const time_t now = timers::follow_clock();     // a clock set meanwhile moves the timers with it
         const std::vector<timers::Ended> ended = alarm.poll(now, now_ms, recorder.active(), muted);
         if (!ended.empty()) timers_ended(ended);
         alarm.tick(now_ms);
@@ -699,6 +698,27 @@ struct App {
             chat.set_now_playing("So What");                       // short enough not to scroll
             chat.set_timer(timers::badge({t0 + 300}, t0 + 1));
             snap("timer-one");
+            {
+                // A title that fits its whole room stays still when a countdown takes part of it: it
+                // is cut short, not scrolled (a moving title redraws the status bar many times a
+                // second for as long as the timer runs). Too long for its whole room, a title scrolls
+                // again once the countdown has gone.
+                chat.set_timer("");
+                chat.set_now_playing("Round Midnight");
+                lv_refr_now(nullptr);
+                const bool fits = !chat.now_playing_moves();
+                chat.set_timer(timers::badge({t0 + 300}, t0 + 1));
+                lv_refr_now(nullptr);
+                const bool still = !chat.now_playing_moves();
+                chat.set_timer("");
+                chat.set_now_playing("Dancing Queen · ABBA");
+                lv_refr_now(nullptr);
+                const bool moves = chat.now_playing_moves();
+                if (!fits || !still || !moves) {
+                    fprintf(stderr, "the now-playing text scrolled beside a countdown, or not when it needs to\n");
+                    failed = true;
+                }
+            }
             chat.add_user("I want to study for an hour, can you set a timer", false);
             chat.add_tool("Timers");
             chat.begin_answer();

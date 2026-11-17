@@ -256,15 +256,27 @@ void Store::timers_changed() {
     ++revision_;
 }
 
+// Milliseconds as whole seconds, to the nearest, alike either way round (a step and its undoing).
+static time_t whole_seconds(long long ms) { return static_cast<time_t>((ms + (ms > 0 ? 500 : -500)) / 1000); }
+
 void Store::follow_clock(long long wall_ms, long long steady_ms) {
     const long long offset = wall_ms - steady_ms;
+    // The usual case, on every tick: no step, and no lock (only this thread changes the offset).
+    const long long drift = offset - clock_offset_;
+    if (clock_known_ && drift > -kClockStepMs && drift < kClockStepMs) {
+        clock_offset_ = offset;
+        return;
+    }
+    // The wall clock has been set, or this is the first reading. The offset changes together with
+    // the timers, under the lock: a timer being started on another thread meanwhile (see reckon) is
+    // reckoned either by the old clock and moved with the rest, or by the new one and left alone.
+    std::lock_guard<std::mutex> lk(mtx_);
     const long long step = offset - clock_offset_.exchange(offset);
     if (!clock_known_.exchange(true) || (step > -kClockStepMs && step < kClockStepMs)) return;
-    // The wall clock has been set. A timer set in this run was reckoned by the clock as it was, so
-    // it moves with it and still ends when its length has passed; so does what ended recently, so
-    // "ended at" and "give it five more minutes" stay right.
-    std::lock_guard<std::mutex> lk(mtx_);
-    const time_t shift = static_cast<time_t>((step + (step > 0 ? 500 : -500)) / 1000);
+    // A timer set in this run was reckoned by the clock as it was, so it moves with it and still
+    // ends when its length has passed; so does what ended recently, so "ended at" and "give it five
+    // more minutes" stay right.
+    const time_t shift = whole_seconds(step);
     bool moved = false;
     for (auto &r : reminders_)
         if (r.timer() && !r.carried) {
@@ -279,6 +291,25 @@ void Store::follow_clock(long long wall_ms, long long steady_ms) {
     timers_changed();
 }
 
+time_t Store::reckon(time_t now, long long &offset_ms) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    return reckon_locked(now, offset_ms);
+}
+
+bool Store::clock_stepped(long long offset_ms) const {
+    if (offset_ms == kNoClock || !clock_known_) return false;
+    const long long step = offset_ms - clock_offset_;
+    return step <= -kClockStepMs || step >= kClockStepMs;
+}
+
+time_t Store::reckon_locked(time_t now, long long &offset_ms) const {
+    if (offset_ms == kNoClock || !clock_known_) return now;
+    const long long step = clock_offset_ - offset_ms;
+    offset_ms = clock_offset_;
+    if (step > -kClockStepMs && step < kClockStepMs) return now;
+    return now + whole_seconds(step);
+}
+
 std::vector<Reminder> Store::timers() {
     std::lock_guard<std::mutex> lk(mtx_);
     std::vector<Reminder> out;
@@ -288,10 +319,11 @@ std::vector<Reminder> Store::timers() {
     return out;
 }
 
-int Store::add_timer(const std::string &label, long seconds, time_t now) {
+int Store::add_timer(const std::string &label, long seconds, time_t now, long long offset_ms) {
     std::lock_guard<std::mutex> lk(mtx_);
     if (std::count_if(reminders_.begin(), reminders_.end(), [](const Reminder &r) { return r.timer(); }) >= kMaxTimers)
         return 0;
+    now = reckon_locked(now, offset_ms);   // by the clock the other timers go by, should it have been set meanwhile
     Reminder r;
     r.id = next_id_++;
     r.text = label;
@@ -373,12 +405,13 @@ std::vector<Reminder> Store::recent_timers(time_t now) {
     return out;
 }
 
-int Store::restart_timer(int id, long seconds, time_t now) {
+int Store::restart_timer(int id, long seconds, time_t now, long long offset_ms) {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = std::find_if(ended_.begin(), ended_.end(), [id](const Reminder &r) { return r.id == id; });
     if (it == ended_.end() ||
         std::count_if(reminders_.begin(), reminders_.end(), [](const Reminder &r) { return r.timer(); }) >= kMaxTimers)
         return 0;
+    now = reckon_locked(now, offset_ms);
     Reminder r = *it;
     ended_.erase(it);
     r.started = now;

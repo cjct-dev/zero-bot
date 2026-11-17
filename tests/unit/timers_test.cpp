@@ -17,6 +17,7 @@
 #include <functional>
 #include <string>
 #include <sys/resource.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -286,6 +287,27 @@ void test_label_matching() {
     CHECK(by_length("ten minute") == std::vector<int>{3});
     CHECK(by_length("the oven one") == std::vector<int>{5});      // and a filler word otherwise
 
+    // A number in two words is one number: "twenty five" is 25, not 20 and 5 (which fits the
+    // 5 minute timer, and the one of 1 hour 20 minutes, better than the 25 minute one).
+    const std::vector<Reminder> spelt = {timer(1, "5 minute timer"),  timer(2, "25 minute timer"), timer(3, "30 minute timer"),
+                                         timer(4, "35 minute timer"), timer(5, "45 minute timer"), timer(6, "1 minute timer"),
+                                         timer(7, "21 minute timer"), timer(8, "1 hour 20 minute timer")};
+    auto by_number = [&](const std::string &words) {
+        std::vector<int> out;
+        for (auto &r : timers::match(spelt, words)) out.push_back(r.id);
+        return out;
+    };
+    CHECK(by_number("twenty five minute timer") == std::vector<int>{2});
+    CHECK(by_number("the thirty-five minute timer") == std::vector<int>{4});
+    CHECK(by_number("forty five minute") == std::vector<int>{5});
+    CHECK(by_number("twenty-one minutes") == std::vector<int>{7});
+    CHECK(by_number("thirty minutes") == std::vector<int>{3});
+    CHECK(by_number("five minute") == std::vector<int>{1});
+    CHECK(by_number("the one minute one") == std::vector<int>{6});
+    CHECK(by_number("the twenty minute one") == std::vector<int>{8});
+    const std::vector<Reminder> bakes = {timer(1, "Bake 80"), timer(2, "Bake 8")};
+    CHECK(timers::match(bakes, "bake eighty").size() == 1 && timers::match(bakes, "bake eighty")[0].id == 1);
+
     // A timer's whole name means that timer, even when another differs from it only in filler
     // words (as two timers set before names were kept apart could).
     const std::vector<Reminder> alike = {timer(1, "Pasta"), timer(2, "Pasta timer")};
@@ -350,6 +372,30 @@ void test_ambiguity_reported() {
     j = parsed(tool(R"({"action":"cancel","label":"Pasta timer"})", T0 + 3));
     CHECK_EQ(text(j["cancelled"]), R"(["Pasta timer"])");
     CHECK(timer_id("Pasta") != 0);
+}
+
+// Timers named by their length, picked with the number spelt out in two words.
+void test_spelt_out_numbers() {
+    reset_store();
+    tool(R"({"action":"start","minutes":5})", T0);
+    tool(R"({"action":"start","minutes":25})", T0);
+    json j = parsed(tool(R"({"action":"cancel","label":"twenty five minute timer"})", T0 + 1));
+    CHECK_EQ(text(j["cancelled"]), R"(["25 minute timer"])");
+    CHECK_EQ(text(j["still_running"]), R"(["5 minute timer"])");
+
+    reset_store();
+    tool(R"({"action":"start","minutes":30})", T0);
+    tool(R"({"action":"start","minutes":35})", T0);
+    j = parsed(tool(R"({"action":"cancel","label":"the thirty-five minute timer"})", T0 + 1));
+    CHECK_EQ(text(j["cancelled"]), R"(["35 minute timer"])");
+
+    reset_store();
+    tool(R"({"action":"start","minutes":45})", T0);
+    tool(R"({"action":"start","minutes":5})", T0);
+    j = parsed(tool(R"({"action":"add_time","minutes":10,"label":"forty five minute"})", T0 + 1));
+    CHECK_EQ(text(j["extended"]["label"]), "45 minute timer");
+    CHECK_EQ(timer_end("45 minute timer"), T0 + 3300);
+    CHECK_EQ(timer_end("5 minute timer"), T0 + 300);
 }
 
 // ---------------------------------------------------------------- storage
@@ -556,6 +602,123 @@ void test_clock_set_while_running() {
     ended = alarm.poll(T0 + 3610, 11000, false, false);
     CHECK(ended.size() == 1 && ended[0].missed);                   // it ended long ago, while the app was closed
     CHECK(!alarm.ringing());
+}
+
+// The assistant starts a timer just as the wall clock is set. The main loop sees a step on its next
+// tick only, so the time the assistant read can be the new clock's while the timers still go by the
+// old one, or the old clock's when the loop has moved them already. Either way the timer ends when
+// its length has passed: not a whole step late, and not at once.
+void test_clock_set_as_a_timer_starts() {
+    Store &store = Store::get();
+    const long long boot = 7000000;
+    const long long before = T0 * 1000LL - boot, after = before + 3600 * 1000LL;   // wall minus steady, either side of the step
+    FakeSound fs;
+    Alarm alarm(fs.sound());
+    auto run = [](const char *args, time_t now, long long offset) { return timers::run_tool(json::parse(args), now, offset); };
+
+    // An hour forward ten seconds in: the assistant reads the new time, then the loop sees the step.
+    reset_store();
+    store.follow_clock(T0 * 1000LL, boot);
+    CHECK(!is_error(run(R"({"action":"start","minutes":5,"label":"Tea"})", T0 + 3610, after)));
+    store.follow_clock((T0 + 3610) * 1000LL + 66, boot + 10066);
+    CHECK_EQ(timer_end("Tea"), T0 + 3610 + 300);
+    CHECK(alarm.poll(T0 + 3610 + 299, 1000, false, false).empty());
+    CHECK_EQ(alarm.poll(T0 + 3610 + 300, 2000, false, false).size(), 1);
+    alarm.stop();
+
+    // The assistant read the time just before the step, and the loop saw the step before the timer
+    // went in.
+    reset_store();
+    store.follow_clock(T0 * 1000LL, boot);
+    store.follow_clock((T0 + 3610) * 1000LL + 10, boot + 10010);
+    CHECK(!is_error(run(R"({"action":"start","minutes":5,"label":"Eggs"})", T0 + 10, before)));
+    CHECK_EQ(timer_end("Eggs"), T0 + 3610 + 300);
+    CHECK(alarm.poll(T0 + 3611, 3000, false, false).empty());
+    CHECK(timer_id("Eggs") != 0);
+
+    // "Give it five more minutes" just after an alarm, as the clock is set: the timer that rang runs
+    // again for five minutes from then, whichever side of the step the request was read on.
+    for (const bool loop_first : {false, true}) {
+        reset_store();
+        store.follow_clock(T0 * 1000LL, boot);
+        tool(R"({"action":"start","minutes":1,"label":"Pasta"})", T0);
+        alarm.poll(T0 + 60, 4000, false, false);
+        alarm.stop();
+        if (loop_first) store.follow_clock((T0 + 3670) * 1000LL + 10, boot + 70010);
+        json j = parsed(loop_first ? run(R"({"action":"add_time","minutes":5})", T0 + 70, before)
+                                   : run(R"({"action":"add_time","minutes":5})", T0 + 3670, after));
+        CHECK_EQ(text(j["restarted"]["label"]), "Pasta");
+        if (!loop_first) store.follow_clock((T0 + 3670) * 1000LL + 30, boot + 70030);
+        CHECK_EQ(timer_end("Pasta"), T0 + 3670 + 300);
+    }
+
+    // The loop sees the step while the assistant is between reading the time and adding the timer:
+    // the store moves that time across the step as the timer goes in.
+    reset_store();
+    store.follow_clock(T0 * 1000LL, boot);
+    tool(R"({"action":"start","minutes":1,"label":"Rice"})", T0);
+    alarm.poll(T0 + 60, 6000, false, false);
+    alarm.stop();
+    store.follow_clock((T0 + 3670) * 1000LL, boot + 70000);
+    CHECK(store.add_timer("Soup", 300, T0 + 70, before) != 0);
+    CHECK_EQ(timer_end("Soup"), T0 + 3670 + 300);
+    const std::vector<Reminder> rang = store.recent_timers(T0 + 3670);
+    CHECK(rang.size() == 1 && store.restart_timer(rang[0].id, 120, T0 + 70, before) != 0);
+    CHECK_EQ(timer_end("Rice"), T0 + 3670 + 120);
+}
+
+// As the assistant calls it, by the real clocks: read just after the wall clock was set, before the
+// main loop has moved the timers, the tool waits for the loop's next tick, so that the time its
+// result names is the one on the clock. Should the loop not come by, it waits only so long.
+void test_tool_waits_for_the_loop() {
+    Store &store = Store::get();
+    auto clocks = [](long long &wall, long long &steady) {
+        timespec w{}, s{};
+        clock_gettime(CLOCK_REALTIME, &w);
+        clock_gettime(CLOCK_BOOTTIME, &s);
+        wall = static_cast<long long>(w.tv_sec) * 1000 + w.tv_nsec / 1000000;
+        steady = static_cast<long long>(s.tv_sec) * 1000 + s.tv_nsec / 1000000;
+    };
+    auto wall_now = [&] {
+        long long wall = 0, steady = 0;
+        clocks(wall, steady);
+        return static_cast<time_t>(wall / 1000);
+    };
+    auto loop_tick = [&](long long behind_ms) {   // the main loop's call, the clock `behind_ms` behind the real one
+        long long wall = 0, steady = 0;
+        clocks(wall, steady);
+        store.follow_clock(wall - behind_ms, steady);
+    };
+    const char *const start = R"({"action":"start","minutes":5,"label":"Tea"})";
+
+    reset_store();
+    loop_tick(3600 * 1000LL);                      // the loop last saw the clock an hour back: it has just been set
+    std::thread loop([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        loop_tick(0);                              // its next tick
+    });
+    const time_t before = wall_now();
+    auto t = std::chrono::steady_clock::now();
+    json j = parsed(timers::run_tool(json::parse(start)));
+    long long waited = ms_since(t);
+    const time_t after = wall_now();
+    loop.join();
+    CHECK(waited >= 40 && waited < timers::kClockWaitMs - 100);
+    const std::string ends = text(j["started"]["ends_at"]);
+    CHECK(ends == util::format_time(before + 300, "%H:%M") || ends == util::format_time(after + 300, "%H:%M"));
+    CHECK(timer_end("Tea") >= before + 300 && timer_end("Tea") <= after + 300);
+
+    // The loop does not come by: the tool goes on after kClockWaitMs, with the time as the timers
+    // reckon it, and the new timer moves with them when the loop does come.
+    reset_store();
+    loop_tick(3600 * 1000LL);
+    const time_t from = wall_now();
+    t = std::chrono::steady_clock::now();
+    CHECK(!is_error(timers::run_tool(json::parse(start))));
+    waited = ms_since(t);
+    CHECK(waited >= timers::kClockWaitMs - 20 && waited < timers::kClockWaitMs + 1500);
+    loop_tick(0);
+    CHECK(timer_end("Tea") >= from + 300 && timer_end("Tea") <= wall_now() + 300);
 }
 
 void test_alarm_rings_and_any_key_silences() {
@@ -974,6 +1137,7 @@ int main() {
     run("tool errors", test_tool_errors);
     run("label matching", test_label_matching);
     run("ambiguity reported", test_ambiguity_reported);
+    run("spelt-out numbers", test_spelt_out_numbers);
     run("survives a restart", test_survives_restart);
     run("old reminders.json", test_old_reminders_file);
     run("reminders unchanged", test_reminders_unchanged);
@@ -981,6 +1145,8 @@ int main() {
     run("missed on restart", test_missed_on_restart);
     run("late in this run", test_late_in_this_run);
     run("clock set while running", test_clock_set_while_running);
+    run("clock set as a timer starts", test_clock_set_as_a_timer_starts);
+    run("tool waits for the loop", test_tool_waits_for_the_loop);
     run("alarm: any key", test_alarm_rings_and_any_key_silences);
     run("alarm: TAB", test_alarm_tab_silences_and_listens);
     run("alarm: 60 s", test_alarm_stops_after_a_minute);

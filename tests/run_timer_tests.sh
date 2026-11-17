@@ -72,5 +72,8 @@ expect '{"action":"start"}' 'ERROR: give the length'
 expect '{"action":"start","minutes":2000}' 'ERROR: a timer runs for at most 24 hours'
 expect '{"action":"cancel","all":true}' '"cancelled":["90 second timer","Food out of the oven"]'
 expect '{"action":"list"}' '"note":"no timer is running"'
+expect '{"action":"start","minutes":5}' '"label":"5 minute timer"'
+expect '{"action":"start","minutes":25}' '"label":"25 minute timer"'
+expect '{"action":"cancel","label":"twenty-five minute timer"}' '"cancelled":["25 minute timer"]'
 echo "timer tool: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

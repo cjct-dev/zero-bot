@@ -63,6 +63,7 @@ void ChatView::create(lv_obj_t *parent) {
     playing_ = label(status, "", small(), kDim);
     lv_label_set_long_mode(playing_, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
     lv_obj_set_style_text_align(playing_, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_height(playing_, lv_font_get_line_height(small()));   // one line, also when cut short with dots
     place_playing(0);
     right_ = label(status, "", small(), kDim);
     lv_obj_align(right_, LV_ALIGN_RIGHT_MID, -kPadX, 0);
@@ -316,11 +317,18 @@ void ChatView::set_now_playing(const std::string &text) {
     lv_label_set_text(playing_, line.c_str());
 }
 
-// The now-playing text keeps its left edge and gives up `give_way` pixels on its right.
+// The now-playing text keeps its left edge and gives up `give_way` pixels on its right. In its
+// whole room a title too long for it scrolls; beside a countdown it is cut short with dots instead.
+// A scrolling label redraws the status bar at the screen's full frame rate, and in the smaller room
+// most titles would scroll, for as long as the timer runs.
 void ChatView::place_playing(int give_way) {
     lv_obj_set_width(playing_, kPlayingW - give_way);
     lv_obj_align(playing_, LV_ALIGN_RIGHT_MID, -kPlayingRight - give_way, 0);
+    const lv_label_long_mode_t mode = give_way ? LV_LABEL_LONG_MODE_DOTS : LV_LABEL_LONG_MODE_SCROLL_CIRCULAR;
+    if (lv_label_get_long_mode(playing_) != mode) lv_label_set_long_mode(playing_, mode);
 }
+
+bool ChatView::now_playing_moves() const { return playing_ && lv_anim_get(playing_, nullptr) != nullptr; }
 
 void ChatView::set_timer(const std::string &countdown) {
     if (countdown == timer_text_) return;   // it changes once a second at most

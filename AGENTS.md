@@ -256,7 +256,10 @@ screen only, so it would be missing from the screenshots.
 
 **The status bar** is redrawn by anything that sets one of its labels or colours, even to the
 value it already has. `ChatView`'s setters compare with what is shown and return early; keep
-that for anything added there (the timer countdown changes once a second, not every tick).
+that for anything added there (the timer countdown changes once a second, not every tick). A
+label that scrolls redraws the bar on every screen refresh (about 40 times a second, measured in
+the simulator), so nothing there should scroll for long: the now-playing text scrolls only when
+it has all of its room, and beside the countdown it is cut short with dots instead.
 
 **A settings value that changes by itself** (a timer's time left): set `MenuPage::live`.
 `Menu::tick` then reads the values on screen 15 times a second and redraws only those whose
@@ -275,7 +278,11 @@ the music (`audio::Music::hold`) lets go on every way out too.
 **Wall-clock time in a countdown** (timers): a board without a battery-backed clock is set by a
 time sync some while after it starts, so the wall clock can jump while the app runs.
 `Store::follow_clock` moves the timers set in this run along with it (the app calls it every
-tick); anything else counted down from "now" needs the same care.
+tick, and uses the time it read for the rest of the tick); anything else counted down from "now"
+needs the same care. A time read on another thread may be from the other side of a step the main
+loop has yet to see, or has just seen: the timer tool reads both clocks and passes how far apart
+they were (`Store::reckon`, `add_timer`), so a timer started just then is moved across the step
+once, not twice and not never.
 
 **A smart-home device family.** Recognise its announcement in `discovery.cpp` (`kServices` or a
 vendor query), add a driver beside `tapo`, and teach `home.cpp` to read and switch it. Build

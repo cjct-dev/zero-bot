@@ -70,8 +70,8 @@ and wakes on any key.
 Ask for a timer in your own words, and give it a name if you like: "the food needs to come out
 of the oven in 5 minutes", "I want to study for an hour, set a timer". Up to ten can run at
 once. The one that ends soonest counts down in the status bar, followed by "+2" when two more
-are running, and everything else keeps working meanwhile: talking, typing, settings, music, the
-breathing exercise.
+are running (the title of any music playing is shortened to make room), and everything else
+keeps working meanwhile: talking, typing, settings, music, the breathing exercise.
 
 - **When one ends** the screen lights up with a banner naming it, an alarm rings for up to a
   minute, music pauses, and the name is spoken once (if spoken replies are on): the alarm holds
