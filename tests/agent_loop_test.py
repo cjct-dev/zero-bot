@@ -1153,6 +1153,12 @@ def exp_reply_with_tool_and_after():
     check(n + ": the claim guard withdraws it and the tool is called", [t for t, _ in r.tools()] == ["timer"] and
           reqs and [g["guard"] for g in reqs[0]["guards"]] == ["claims_action"] and
           [b.get("tool_choice") for b in r.bodies()] == ["required", "auto"], (r, reqs))
+    n = "E3b the answer as text, then again in the reply call"
+    r = run({"default": {"text": "Lisbon is the capital of Portugal.", "calls": [reply_call(text="Lisbon is the capital of Portugal.")]}},
+            ask="what is the capital of portugal", fast=True, env=REQUIRED, trace=True)
+    cs = events(r, "call")
+    check(n + ": said once", r.answer == "Lisbon is the capital of Portugal." and r.out.count("capital of Portugal") == 1 and
+          cs and cs[0]["reply_after_text"] and cs[0]["reply_calls"] == 1, (r, cs))
     n = "E3b a service that ignores required"
     r = run({"default": {"text": "Lisbon is the capital of Portugal."}}, ask="what is the capital of portugal", fast=True, env=REQUIRED)
     check(n + ": plain text is the answer, with no second look", r.answer == "Lisbon is the capital of Portugal." and len(r.requests) == 1, r)

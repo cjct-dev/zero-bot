@@ -128,6 +128,9 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
     bool thinking = false, answer_over = false;
     experiment::ReplyCalls replies;   // experiments only (E3b): answers given through the reply tool, as text
     int reply_calls = 0;
+    // E3b: a service may stream the answer as text and then repeat it in the reply call; it is said once,
+    // from whichever came first.
+    bool plain_said = false, reply_said = false;
     auto emit = [&](const std::string &text) {
         if (text.empty()) return;
         out.content += text;
@@ -189,8 +192,9 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
         const json &delta = choice["delta"];
         if (delta.contains("content") && delta["content"].is_string()) {
             const std::string piece = delta["content"].get<std::string>();
-            if (!piece.empty()) {
+            if (!piece.empty() && !reply_said) {
                 if (tracing && first_text < 0) first_text = since();
+                if (!util::trim(piece).empty()) plain_said = true;
                 filter_text(piece, false);
             }
         }
@@ -209,8 +213,9 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
                     if (fn.contains("arguments") && fn["arguments"].is_string()) {
                         call.args += fn["arguments"].get<std::string>();
                         const std::string said = replies.feed(idx, call.name, fn["arguments"].get<std::string>());
-                        if (!said.empty()) {
+                        if (!said.empty() && !plain_said) {
                             if (tracing && first_text < 0) first_text = since();
+                            reply_said = true;
                             filter_text(said, false);
                         }
                     }
@@ -246,6 +251,7 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
         ttfb = first_text = first_call = -1;
         usage = nullptr;
         replies = experiment::ReplyCalls();
+        plain_said = reply_said = false;
     };
     // Upstream hiccups (5xx, dropped connections, a service that says it is overloaded) are common
     // on mobile links. As long as nothing has been passed on yet, the call is tried again, twice at
@@ -288,7 +294,7 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
     {
         std::string unstreamed;
         reply_calls = replies.finish(out.tool_calls, unstreamed);
-        if (!unstreamed.empty()) filter_text(unstreamed, false);
+        if (!unstreamed.empty() && !plain_said) filter_text(unstreamed, false);
     }
     filter_text("", true);
 
@@ -309,7 +315,8 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
                                 {"body_bytes", static_cast<long>(req.body.size())}, {"t_send", t_send}, {"ttfb_ms", ttfb},
                                 {"first_text_ms", first_text}, {"first_call_ms", first_call}, {"done_ms", since()},
                                 {"attempts", attempts}, {"status", res.status}, {"usage", usage}, {"outcome", outcome},
-                                {"text_chars", static_cast<long>(out.content.size())}, {"reply_calls", reply_calls}});
+                                {"text_chars", static_cast<long>(out.content.size())}, {"reply_calls", reply_calls},
+                                {"reply_after_text", reply_calls > 0 && plain_said}});
     }
 
     if (res.error == "cancelled") { out.cancelled = true; return out; }
