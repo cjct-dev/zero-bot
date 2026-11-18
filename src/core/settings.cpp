@@ -1,14 +1,59 @@
 #include "core/settings.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
+#include <mutex>
 
-Settings &Settings::get() {
-    static Settings s;
-    return s;
+namespace {
+
+std::mutex g_mtx;            // guards g_current and g_version
+Settings g_current;
+uint64_t g_version = 0;      // counts changes, so that an older save never overwrites a newer one
+std::mutex g_file_mtx;       // one save at a time; guards g_written
+uint64_t g_written = 0;      // the version on disk
+
+std::string settings_path() { return util::config_dir() + "/settings.json"; }
+
+// Writes the settings of version `version`, unless a newer version is already on disk.
+void write(const json &j, uint64_t version) {
+    std::lock_guard<std::mutex> lk(g_file_mtx);
+    if (version <= g_written) return;
+    if (util::save_json(settings_path(), j)) g_written = version;
 }
 
-static std::string settings_path() { return util::config_dir() + "/settings.json"; }
+}  // namespace
+
+const Settings Settings::get() {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    return g_current;
+}
+
+Settings Settings::update(const std::function<void(Settings &)> &change, bool save_now) {
+    Settings after;
+    json j;
+    uint64_t version;
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        change(g_current);
+        version = ++g_version;
+        after = g_current;
+        if (save_now) j = g_current.to_json();
+    }
+    if (save_now) write(j, version);
+    return after;
+}
+
+void Settings::save() {
+    json j;
+    uint64_t version;
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        j = g_current.to_json();
+        version = g_version;
+    }
+    write(j, version);
+}
 
 json Settings::to_json() const {
     return {
@@ -53,19 +98,28 @@ void Settings::from_json(const json &j) {
 }
 
 void Settings::load() {
-    from_json(util::load_json(settings_path(), json::object()));
+    Settings s;
+    s.from_json(util::load_json(settings_path(), json::object()));
     // Environment overrides make development on a PC possible without a settings file.
-    if (const char *v = getenv("ZB_API_BASE"); v && *v) api_base = v;
-    if (const char *v = getenv("ZB_API_KEY"); v && *v) api_key = v;
-    if (const char *v = getenv("ZB_SEARCH_KEY"); v && *v) search_key = v;
-    if (const char *v = getenv("ZB_FAST_MODE"); v && *v) fast_mode = *v != '0';
-    if (const char *v = getenv("ZB_DATE_ORDER"); v && *v) date_order = v;
-    if (date_order != "mdy") date_order = "dmy";
-    util::set_month_first(month_first());
-    util::apply_timezone(timezone);
+    if (const char *v = getenv("ZB_API_BASE"); v && *v) s.api_base = v;
+    if (const char *v = getenv("ZB_API_KEY"); v && *v) s.api_key = v;
+    if (const char *v = getenv("ZB_SEARCH_KEY"); v && *v) s.search_key = v;
+    if (const char *v = getenv("ZB_FAST_MODE"); v && *v) s.fast_mode = *v != '0';
+    if (const char *v = getenv("ZB_DATE_ORDER"); v && *v) s.date_order = v;
+    if (s.date_order != "mdy") s.date_order = "dmy";
+    uint64_t version;
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        g_current = s;
+        version = ++g_version;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_file_mtx);   // what was just read is what the file holds
+        g_written = std::max(g_written, version);
+    }
+    util::set_month_first(s.month_first());
+    util::apply_timezone(s.timezone);
 }
-
-void Settings::save() { util::save_json(settings_path(), to_json()); }
 
 static std::string strip_slash(std::string s) {
     while (!s.empty() && s.back() == '/') s.pop_back();

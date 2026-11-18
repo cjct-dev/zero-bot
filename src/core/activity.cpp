@@ -314,12 +314,15 @@ size_t delete_saved() {
     const std::string dir = conversations_dir();
     size_t n = 0;
     for (const SavedFile &f : saved_files(dir)) n += unlink((dir + "/" + f.name).c_str()) == 0;
-    // Half-written files from a save that was cut short, too (write_file_atomic's NAME.tmp).
+    // Half-written files from a save that was cut short, too (write_file_atomic's NAME.tmp.XXXXXX,
+    // or NAME.tmp from before 0.4.6).
     if (DIR *d = opendir(dir.c_str())) {
         std::vector<std::string> rest;
         while (const dirent *e = readdir(d)) {
             const std::string name = e->d_name;
-            if (name.size() > 4 && name.compare(name.size() - 4, 4, ".tmp") == 0 && is_save_name(name.substr(0, name.size() - 4)))
+            const size_t at = name.rfind(".tmp");
+            if (at != std::string::npos && (at + 4 == name.size() || (at + 11 == name.size() && name[at + 4] == '.')) &&
+                is_save_name(name.substr(0, at)))
                 rest.push_back(name);
         }
         closedir(d);

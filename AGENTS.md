@@ -71,7 +71,9 @@ Threads: the UI thread runs LVGL and the main loop in `ui/app.cpp`. The agent ha
 thread (`Agent::worker`), speech has one (`SpeechQueue::run`), keys are read on one, music has
 one per queue. Anything a worker wants on screen goes through `uiq::post()`; never touch LVGL
 from another thread. Slow work started from a menu uses `background(work, done)` in
-`settings_pages.cpp`.
+`settings_pages.cpp`. The settings are read on every thread and changed by the UI and by tools:
+`Settings::get()` returns a snapshot (a read-only copy taken under a lock), and every change goes
+through `Settings::update([](Settings &s) { ... })`, which makes it under that lock and saves.
 
 State on disk (all under the user's home, mode 0600 where they hold secrets):
 `~/.config/zero-bot/settings.json`, `~/.config/zero-bot/radio.json` (the user's own stations,
@@ -608,7 +610,9 @@ it in `README.md`.
 **A setting.** Add the field to `Settings` (`src/core/settings.{h,cpp}`: member, `to_json`,
 `from_json`), a row under its section's header in `open_settings` (each header is a page of its
 own, opened from the top page; a new header is a new section), the setup guide if a new user
-needs it, and a line in the README's settings table. Fix the screenshot key-press counts.
+needs it, and a line in the README's settings table. Fix the screenshot key-press counts. Rows read
+the value with `S()` and change it with `change(...)` (`Settings::update`), never by writing to a
+copy.
 
 **A key.** Chat-screen keys outside the input line are decided in `keyguide::chat_key`
 (`src/ui/key_guide.cpp`); add the key's line to the guide there too (`H` shows it), and keep the

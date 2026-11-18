@@ -164,7 +164,7 @@ struct App {
 
     // Picks sensible models the first time, so the app works before settings are touched.
     void auto_select_models() {
-        Settings &s = Settings::get();
+        const Settings s = Settings::get();
         if (!s.configured() || (!s.stt_model.empty() && !s.tts_model.empty() && !s.eff_llm_model().empty())) return;
         if (selecting_models.exchange(true)) return;
         std::thread([this] {
@@ -173,13 +173,13 @@ struct App {
             selecting_models = false;
             if (!err.empty()) return;   // offline, most likely; periodic() tries again later
             uiq::post([this, models] {
-                Settings &st = Settings::get();
-                for (auto &m : models) {
-                    if (st.stt_model.empty() && m.mode == "audio_transcription") st.stt_model = m.id;
-                    if (st.tts_model.empty() && m.mode == "audio_speech") st.tts_model = m.id;
-                    if (st.eff_llm_model().empty() && m.mode == "chat") st.llm_model = m.id;
-                }
-                st.save();
+                const Settings st = Settings::update([&models](Settings &s) {
+                    for (auto &m : models) {
+                        if (s.stt_model.empty() && m.mode == "audio_transcription") s.stt_model = m.id;
+                        if (s.tts_model.empty() && m.mode == "audio_speech") s.tts_model = m.id;
+                        if (s.eff_llm_model().empty() && m.mode == "chat") s.llm_model = m.id;
+                    }
+                });
                 if ((st.stt_model.empty() || st.tts_model.empty()) && !warned_models) {
                     warned_models = true;
                     chat.add_note("Choose speech models in settings (SPACE) to use voice.", theme::kThink);
@@ -321,34 +321,39 @@ struct App {
 
     // The fn-layer control keys work everywhere: while talking, typing, in settings.
     bool control_key(const KeyEvent &ev) {
-        Settings &s = Settings::get();
         audio::Music &music = audio::Music::get();
         switch (ev.key) {
             case Key::VolumeUp:
             case Key::VolumeDown: {
                 if (ev.state == 0) return true;
                 const int step = ev.key == Key::VolumeUp ? 5 : -5;
-                s.volume = std::max(0, std::min(100, (s.volume + (step > 0 ? 0 : 4)) / 5 * 5 + step));
+                const int volume = Settings::update([step](Settings &s) {   // saved after a pause (settings_dirty_at)
+                    s.volume = std::max(0, std::min(100, (s.volume + (step > 0 ? 0 : 4)) / 5 * 5 + step));
+                }, false).volume;
                 muted = false;
-                apply_volume(s.volume);
+                apply_volume(volume);
                 settings_dirty_at = display::now_ms();
-                show_level(level_bar("Volume", s.volume));
+                show_level(level_bar("Volume", volume));
                 return true;
             }
-            case Key::Mute:
+            case Key::Mute: {
                 if (ev.state != 1) return true;
                 muted = !muted;
-                apply_volume(muted ? 0 : s.volume);
-                show_level(muted ? "Muted   ·   fn+A to unmute" : level_bar("Volume", s.volume));
+                const int volume = Settings::get().volume;
+                apply_volume(muted ? 0 : volume);
+                show_level(muted ? "Muted   ·   fn+A to unmute" : level_bar("Volume", volume));
                 return true;
+            }
             case Key::BrightnessUp:
             case Key::BrightnessDown: {
                 if (ev.state == 0) return true;
                 const int step = ev.key == Key::BrightnessUp ? 10 : -10;
-                s.brightness = std::max(10, std::min(100, (s.brightness + (step > 0 ? 0 : 9)) / 10 * 10 + step));
-                display::set_brightness(s.brightness);
+                const int brightness = Settings::update([step](Settings &s) {
+                    s.brightness = std::max(10, std::min(100, (s.brightness + (step > 0 ? 0 : 9)) / 10 * 10 + step));
+                }, false).brightness;
+                display::set_brightness(brightness);
                 settings_dirty_at = display::now_ms();
-                show_level(level_bar("Brightness", s.brightness));
+                show_level(level_bar("Brightness", brightness));
                 return true;
             }
             case Key::MediaPlay:
@@ -714,7 +719,7 @@ struct App {
         }
         if (settings_dirty_at && now - settings_dirty_at > 1500) {
             settings_dirty_at = 0;
-            Settings::get().save();
+            Settings::save();
         }
         if (now - last_second >= 1000) {
             last_second = now;
@@ -752,9 +757,10 @@ struct App {
         chat.set_status("", theme::kFaint);
         bool failed = !chat.status_name().empty();
         if (failed) fprintf(stderr, "the status bar kept a name it was not given\n");
-        Settings &s = Settings::get();
-        s.agent_name = "Zero";
-        chat.set_status(s.agent_name, theme::kFaint);
+        // The screenshots change settings in memory only.
+        auto set = [](const std::function<void(Settings &)> &change) { Settings::update(change, false); };
+        set([](Settings &s) { s.agent_name = "Zero"; });
+        chat.set_status("Zero", theme::kFaint);
         chat.set_indicators(true, false, 68, false, "18:42");
         chat.footer_hints(keyguide::idle_hint(true));
         // A bubble once kept the height of one line while its text wrapped onto a second, so the
@@ -770,15 +776,13 @@ struct App {
         snap("welcome");
         {
             // Before an AI service is set up, the note and the bottom row say how to reach settings.
-            const std::string base = s.api_base, key = s.api_key;
-            s.api_base.clear();
-            s.api_key.clear();
+            const Settings was = Settings::get();
+            set([](Settings &s) { s.api_base.clear(); s.api_key.clear(); });
             chat.clear();
             welcome();
             update_footer();
             snap("not-set-up");
-            s.api_base = base;
-            s.api_key = key;
+            set([&was](Settings &s) { s.api_base = was.api_base; s.api_key = was.api_key; });
             chat.footer_hints(keyguide::idle_hint(true));   // as a set-up device shows it, for the frames to come
         }
 
@@ -794,14 +798,14 @@ struct App {
         chat.add_tool("Converting currency");
         chat.add_tool("Calculating");
         chat.footer_busy("Calculating", theme::kThink);
-        chat.set_status(s.agent_name, theme::kThink);
+        chat.set_status(Settings::get().agent_name, theme::kThink);
         snap("working");
 
         chat.begin_answer();
         chat.append_answer("85 euros is about 70.93 pounds, so that's 23.64 each.");
         chat.end_answer("", false);
         chat.footer_busy("Speaking   ·   TAB to interrupt", theme::kAccent);
-        chat.set_status(s.agent_name, theme::kAccent);
+        chat.set_status(Settings::get().agent_name, theme::kAccent);
         chat.set_now_playing("Dancing Queen · ABBA");
         snap("speaking");
         chat.set_now_playing("Harbour Classic FM", true);   // a radio station shows its name, as the player gives it
@@ -827,12 +831,12 @@ struct App {
             const float lvl = 0.15f + 0.75f * static_cast<float>((i * 37 % 17)) / 17.0f * (i % 9 < 6 ? 1.f : 0.25f);
             chat.footer_listening(lvl, 3.4, true);
         }
-        chat.set_status(s.agent_name, theme::kListen);
+        chat.set_status(Settings::get().agent_name, theme::kListen);
         snap("listening");
 
         chat.footer_hints("");
         chat.typing_begin("remind me at 7 to call the hot");
-        chat.set_status(s.agent_name, theme::kFaint);
+        chat.set_status(Settings::get().agent_name, theme::kFaint);
         snap("typing");
         {
             // Unused for the minutes set under Device, the screen dims, then goes off: drawn black,
@@ -840,8 +844,8 @@ struct App {
             // does nothing else, whatever is on screen: not ENTER (it would send the text being
             // typed), not a letter (typed), not SPACE or a key in settings or the key guide, nor
             // their repeats or releases. The next press works as usual.
-            const int minutes = s.screen_off_min;
-            s.screen_off_min = 5;
+            const int minutes = Settings::get().screen_off_min;
+            set([](Settings &s) { s.screen_off_min = 5; });
             chat.set_now_playing("");
             auto go_dark = [&] {
                 const unsigned long t = display::now_ms();
@@ -907,7 +911,7 @@ struct App {
                         dark, nothing_drawn, woke, swallowed, next_typed);
                 failed = true;
             }
-            s.screen_off_min = minutes;
+            set([minutes](Settings &s) { s.screen_off_min = minutes; });
             chat.set_now_playing("Dancing Queen · ABBA");          // as it was, for the frames to come
         }
         chat.typing_end();
@@ -1023,7 +1027,7 @@ struct App {
             chat.append_answer("Your 5 minute timer for the food is running.");
             chat.end_answer("", false);
             chat.footer_hints(keyguide::idle_hint(true));
-            chat.set_status(s.agent_name, theme::kFaint);
+            chat.set_status(Settings::get().agent_name, theme::kFaint);
             chat.set_now_playing("So What");                       // short enough not to scroll
             chat.set_timer(timers::badge({t0 + 300}, t0 + 1));
             snap("timer-one");
@@ -1068,13 +1072,13 @@ struct App {
             // as when the user has muted the device), and a key press silences it and goes no further.
             // The screen was off: the alarm turns it on at once.
             muted = true;
-            const int minutes = s.screen_off_min;
-            s.screen_off_min = 5;
+            const int minutes = Settings::get().screen_off_min;
+            set([](Settings &s) { s.screen_off_min = 5; });
             const unsigned long t = display::now_ms();
             wake_screen(t);
             tick_screen(t + 5 * 60000UL, false);
             const bool was_off = display::screen_is_off();
-            s.screen_off_min = minutes;
+            set([minutes](Settings &s) { s.screen_off_min = minutes; });
             Store::get().add_timer("Eggs", 1, time(nullptr) - 5);
             update_timers(display::now_ms());
             // The first frame drawn before the light comes on has the banner and the countdown.
@@ -1129,12 +1133,12 @@ struct App {
             menu.pop();
             for (int i = 0; i < 4; ++i) menu.key(down);
             menu.key(enter);                       // skip the live test in screenshots
-            s.llm_model = "example-chat-model"; s.stt_model = "example-speech-to-text"; s.tts_model = "example-text-to-speech";
+            set([](Settings &s) { s.llm_model = "example-chat-model"; s.stt_model = "example-speech-to-text"; s.tts_model = "example-text-to-speech"; });
             menu.refresh();
             snap("setup-models");
             for (int i = 0; i < 4; ++i) menu.key(down);
             menu.key(enter);
-            s.user_name = "Sam"; s.home_city = "London"; s.home_country = "United Kingdom";
+            set([](Settings &s) { s.user_name = "Sam"; s.home_city = "London"; s.home_country = "United Kingdom"; });
             menu.refresh();
             snap("setup-you");
             for (int i = 0; i < 6; ++i) menu.key(down);
@@ -1293,8 +1297,8 @@ struct App {
             // timer's alarm over settings, with the banner already in the frame drawn before the
             // light comes on. A key on a dark screen does nothing else in a settings text field
             // either (ENTER would save it, a letter would be typed), and a volume key changes nothing.
-            const int minutes = s.screen_off_min;
-            s.screen_off_min = 5;
+            const int minutes = Settings::get().screen_off_min;
+            set([](Settings &s) { s.screen_off_min = 5; });
             auto go_dark = [&] {
                 const unsigned long t = display::now_ms();
                 wake_screen(t);
@@ -1311,13 +1315,13 @@ struct App {
                 if (b) lv_draw_buf_destroy(b);
                 return v;
             };
-            const bool speak = s.speak_replies;
-            s.speak_replies = false;                                   // no voice in screenshots
+            const bool speak = Settings::get().speak_replies;
+            set([](Settings &s) { s.speak_replies = false; });       // no voice in screenshots
             bool dark = go_dark();
             store.add_reminder("Water the plants", time(nullptr) - 1);
             check_alerts();
             const bool reminder = !display::screen_is_off() && display::frame_current();
-            s.speak_replies = speak;
+            set([speak](Settings &s) { s.speak_replies = speak; });
 
             open_menu();
             menu.key(down); menu.key(down); menu.key(enter);           // "Your data", on "Calendar"
@@ -1330,10 +1334,10 @@ struct App {
             dark = go_dark() && dark;
             press(Key::Enter, "", {1, 0});
             still = still && menu.editing() && picture() == shown;
-            const int volume = s.volume;
+            const int volume = Settings::get().volume;
             dark = go_dark() && dark;
             press(Key::VolumeUp, "", {1, 2, 0});
-            still = still && s.volume == volume && !display::screen_is_off();
+            still = still && Settings::get().volume == volume && !display::screen_is_off();
             menu.close();
 
             open_menu();
@@ -1346,7 +1350,7 @@ struct App {
             const bool silenced = !alarm.ringing() && menu.open();
             muted = false;
             menu.close();
-            s.screen_off_min = minutes;
+            set([minutes](Settings &s) { s.screen_off_min = minutes; });
             if (!dark || !reminder || !field || !still || !alarm_first_frame || !silenced) {
                 fprintf(stderr, "a reminder or an alarm did not light the screen as it now is, or a key on a dark screen "
                                 "did more than wake it (dark %d, reminder %d, text field %d, untouched %d, alarm frame %d, "

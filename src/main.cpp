@@ -201,7 +201,7 @@ int main(int argc, char **argv) {
         if (FILE *f = fopen(marker.c_str(), "w")) fclose(f);
     }
     http::global_init();
-    Settings::get().load();
+    Settings::load();
     Store::get().load();
 
     if (!bench_wav.empty()) {
