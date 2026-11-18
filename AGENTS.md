@@ -372,6 +372,14 @@ key, real audio), say so plainly rather than implying it was.
 - Music must not start before the spoken reply, nor resume between a question and its answer.
   That is what the hold flags are for.
 - `pw-cat` raw input counts underruns while its source is slow to start; that is not a fault.
+- The sound graph runs in the smallest chunk any client asks for. The launcher keeps a stream open
+  at about 5 ms, which pulled the graph down to 128 samples (2.7 ms): music skipped whenever the
+  processor was busy, whatever latency the player itself asked for (`pw-top` showed it, ERR
+  counting dropouts). The app cannot raise it; a device-wide `default.clock.min-quantum = 1024`
+  can (README, Troubleshooting), with the owner's agreement. Look at `pw-top` first when sound skips.
+- With a plug in the 3.5 mm jack the board's driver moves the codec's input to the jack's
+  microphone pins (PGAL/PGAR Select Line 2P/2N); a plug without a microphone then recorded silence.
+  The recorder points it back at Line 1P/1N for each recording (`audio::detail`), and puts it back.
 - Radio: an HLS master playlist can point at variants that carry hours of rewind. One public
   broadcaster's was a ~200 KB playlist that a player re-reads every 6.4 s segment, more data than
   the sound itself; its live-only variant of one quality was 600 bytes. The README tells users to

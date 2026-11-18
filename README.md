@@ -108,7 +108,7 @@ Download `zero-bot_<version>_arm64.deb` from the Releases page, copy it to the C
 (over SSH, ADB or the microSD card) and install it on the device:
 
 ```sh
-sudo apt install ./zero-bot_0.4.1_arm64.deb
+sudo apt install ./zero-bot_0.4.2_arm64.deb
 ```
 
 "Zero Bot" then appears in the launcher within a few seconds. To build the package yourself
@@ -568,6 +568,16 @@ service to check that a change needing your yes waits for one.
   another app records, turn off the system's automatic switch to call mode:
   `wpctl settings --save bluetooth.autoswitch-to-headset-profile false`.
 - **It mishears you.** Raise *Device → Microphone gain*, and speak towards the top of the device.
+- **Speaker or headphones in the headphone socket.** The board switches its input to the socket's
+  microphone when a plug goes in. With *Device → Microphone: Built-in* (the default), Zero Bot
+  records from the built-in microphone anyway, so a speaker or headphones without a microphone work.
+- **Music skips now and then.** The launcher keeps a low-latency sound stream open, which makes the
+  whole sound system work in very small chunks (about 3 ms); on this processor they run dry
+  whenever something else is busy. A larger minimum fixes it for every app (sounds then start a few
+  milliseconds later). Put this in `~/.config/pipewire/pipewire.conf.d/10-min-quantum.conf` and
+  restart the device (delete the file to undo):
+  `context.properties = { default.clock.min-quantum = 1024 }`
+  To try it at once without a restart: `pw-metadata -n settings 0 clock.min-quantum 1024`.
 - **The device cannot see your Wi-Fi network.** The radio is 2.4 GHz only. On some system images
   it also only scans channels 1 to 11, so a router on channel 12 or 13 is invisible; see
   [docs/wifi-channels-12-13.md](docs/wifi-channels-12-13.md) for a fix.
