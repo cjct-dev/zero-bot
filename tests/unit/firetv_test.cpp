@@ -718,6 +718,12 @@ int main(int argc, char **argv) {
         c.on = false;
         check("apply: off with nothing listening is already_off, never no_answer (an infrared toggle would switch it on)",
               !driver->apply(d, tv, c, 800, err) && fault_of(err) == Fault::AlreadyOff, err);
+        // ZB-069 review: not on lately and its API port refused (the address answered, with that port
+        // closed): nothing that could wake the TV went out, and the words do not read as "did not
+        // answer", so the app does not spend 2.5 s searching the network for a TV that has not moved.
+        eq("apply: off, not on lately, API port refused: 'service is closed', not read as unreachable", err,
+           std::string(kAlreadyOff) + " Its remote control service is closed.");
+        check("... not read as unreachable", !reads_as_unreachable(err), err);
         c.on = true;   // no wake address known: no packet is sent
         check("apply: on with nothing listening and no wake address is no_answer (infrared may switch it on)",
               !driver->apply(d, tv, c, 800, err) && fault_of(err) == Fault::NoAnswer, err);

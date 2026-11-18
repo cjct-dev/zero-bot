@@ -27,10 +27,11 @@
 //    "apps": [[name, package], ...]}.
 //  - enumerate() and read() never wake the TV: a sleeping TV is listed with "reachable": false.
 //    apply() wakes an idle TV with the DIAL request when a command could not be delivered at all
-//    (the connection was refused, or TLS never completed), then sends it once more (on=false only
-//    when the TV has been on lately: see below). A command that went out but was not answered
-//    within the deadline is never sent again, because the TV may have carried it out (a toggle
-//    sent twice undoes itself): that is kNotServing. Only on=true sends the Wake-on-LAN packet.
+//    (the connection was refused, or TLS never completed), then sends it once more (in a change
+//    with on=false only when the TV has been on lately: see below). A command that went out but
+//    was not answered within the deadline is never sent again, because the TV may have carried it
+//    out (a toggle sent twice undoes itself): that is kNotServing. Only on=true sends the
+//    Wake-on-LAN packet.
 //  - on=true on a TV in deep standby takes 7 s or more after the first Wake-on-LAN packet
 //    (6.5-7.4 s measured). on=true reports kNoAnswer only when a DIAL request that started 8 s
 //    or more after that packet got nothing (the packet counted across on=true calls for the
@@ -68,7 +69,13 @@
 //    when its API port takes no connection, the TV is woken to take the sleep key only if, within
 //    the last minute, its API answered (in this call, or a change that did not ask for it to be
 //    switched off), it accepted a wake (it is starting), or this driver sent it a wake-up signal
-//    and has heard nothing since. Otherwise nothing more is sent and the answer is kAlreadyOff.
+//    and has heard nothing since. Otherwise nothing more is sent, for any part of a change that
+//    asks for off (on=false with a source or volume step: "set" at 0 %), and the answer is
+//    kAlreadyOff: "... Its remote control service is closed." when the API port refused the
+//    connection (the TV is at its address, so nothing in it reads as "unreachable" and the app
+//    does not search the network), "... It did not answer." when nothing answered at the address
+//    at all (the attempt timed out: unplugged, or moved, and the app's search at a new address
+//    may help).
 //    The cost: a TV left on until its API went idle (its screen saver, after 8 minutes or more
 //    unused) is not switched off over the network.
 //  - on=false when nothing answers on either port reports kAlreadyOff too: the TV is most likely
@@ -79,7 +86,8 @@
 //  - Every error begins with one of the sentences below; fault_of() tells them apart. Fall back
 //    to infrared only on Fault::NoAnswer (nothing answered: off, unplugged or moved) and
 //    Fault::Unsupported (the TV does not offer the control over the network). Of the fixed
-//    wording, only the no_answer and already_off messages contain a word that the app's
+//    wording, only the no_answer and already_off messages (but already_off's "remote control
+//    service is closed") contain a word that the app's
 //    control.cpp unreachable() list matches ("answer"), which is right: only then can a
 //    re-discovery at a new address help (a TV that is starting up has not moved: kStarting's
 //    messages have none of those words). But a message that quotes what was asked for (an app,
