@@ -183,8 +183,17 @@ def main():
     calls = [c for t in traced for c in turn_trace(t)[0]]
     print("## Model calls (%d traced turns, %d calls)\n" % (len(traced), len(calls)))
     rows = []
-    for p in ["all"] + sorted({c.get("purpose") or "-" for c in calls}):
-        cs = calls if p == "all" else [c for c in calls if (c.get("purpose") or "-") == p]
+
+    def cold(c):   # the service reused less than half of the prompt from its cache
+        pt, ca = usage(c, "prompt_tokens"), usage(c, "cached")
+        return pt is not None and ca is not None and ca < pt / 2
+
+    groups = [("all", calls)] + [(p, [c for c in calls if (c.get("purpose") or "-") == p])
+                                 for p in sorted({c.get("purpose") or "-" for c in calls})]
+    groups += [("warm prefix", [c for c in calls if not cold(c)]), ("cold prefix", [c for c in calls if cold(c)])]
+    for p, cs in groups:
+        if not cs:
+            continue
         ttfb = [c["ttfb_ms"] / 1000.0 for c in cs if c.get("ttfb_ms", -1) >= 0]
         gen = [(c["done_ms"] - c["ttfb_ms"]) / 1000.0 for c in cs if c.get("ttfb_ms", -1) >= 0]
         done = [c["done_ms"] / 1000.0 for c in cs]
