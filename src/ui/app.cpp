@@ -435,7 +435,8 @@ struct App {
         // DIAGNOSTICS (temporary): a SPACE waiting to open settings is a single press once another
         // key comes, so settings open now and the key goes to them, as both did before SPACE SPACE
         // existed ("SPACE, Down, ENTER" still works however quickly it is typed).
-        if (ev.state == 1 && !keyguide::is_settings_key(ev) && space_tap.cancel() && settings_may_open()) open_menu();
+        if (ev.state == 1 && ev.key != Key::None && !keyguide::is_settings_key(ev) && space_tap.cancel() && settings_may_open())
+            open_menu();
 
         // A ringing alarm takes the next key press, whatever the key and whatever is on screen (the
         // chat, a menu, the breathing exercise), and the press goes no further. TAB also starts
@@ -458,6 +459,9 @@ struct App {
             }
             return;
         }
+        // A modifier tapped on its own, or a key the app has no use for: it has woken the screen or
+        // kept it lit, and stopped an alarm ("any key"), above. Nothing more.
+        if (ev.key == Key::None) return;
 
         if (control_key(ev)) return;
 
@@ -958,6 +962,13 @@ struct App {
             press(Key::Char, "w", {1, 0});
             const bool next_typed = chat.typing_text() == typed + "w";
             press(Key::Backspace, "", {1, 0});
+            // fn or shift tapped on its own (the reader sends it as Key::None): it wakes the screen and
+            // types nothing, and on a lit screen does nothing at all.
+            dark = go_dark() && dark;
+            press(Key::None, "", {1});
+            bool modifier_woke = !display::screen_is_off() && display::frame_current() && chat.typing_text() == typed;
+            press(Key::None, "", {1});
+            modifier_woke = modifier_woke && chat.typing() && chat.typing_text() == typed && !menu.open();
             chat.typing_end();
             dark = go_dark() && dark;
             press(Key::Char, " ", {1, 0});
@@ -975,10 +986,11 @@ struct App {
             press(Key::Esc, "", {1, 0});
             swallowed = swallowed && menu.open() && menu.title() == kKeyGuideTitle && menu.first_shown() == 0;
             press(Key::Esc, "", {1, 0});
-            if (!dark || !nothing_drawn || !woke || !swallowed || !next_typed || menu.open() || display::screen_is_off()) {
+            if (!dark || !nothing_drawn || !woke || !swallowed || !next_typed || !modifier_woke || menu.open() ||
+                display::screen_is_off()) {
                 fprintf(stderr, "the screen did not go off, drew while off, or a waking key did more than wake it "
-                                "(dark %d, nothing drawn %d, woke %d, swallowed %d, next typed %d)\n",
-                        dark, nothing_drawn, woke, swallowed, next_typed);
+                                "(dark %d, nothing drawn %d, woke %d, swallowed %d, next typed %d, a modifier woke %d)\n",
+                        dark, nothing_drawn, woke, swallowed, next_typed, modifier_woke);
                 failed = true;
             }
             set([minutes](Settings &s) { s.screen_off_min = minutes; });
@@ -1433,7 +1445,12 @@ struct App {
             update_timers(display::now_ms());
             const bool alarm_first_frame = !display::screen_is_off() && alarm.ringing() && banner.visible() && display::frame_current();
             press(Key::Char, "a", {1, 0});
-            const bool silenced = !alarm.ringing() && menu.open();
+            bool silenced = !alarm.ringing() && menu.open();
+            store.add_timer("Kettle", 1, time(nullptr) - 5);
+            update_timers(display::now_ms());
+            const bool rang_again = alarm.ringing();
+            press(Key::None, "", {1});                                   // fn tapped on its own: "any key" too
+            silenced = silenced && rang_again && !alarm.ringing() && menu.open();
             muted = false;
             menu.close();
             set([minutes](Settings &s) { s.screen_off_min = minutes; });

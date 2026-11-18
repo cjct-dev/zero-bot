@@ -187,11 +187,30 @@ void test_hints() {
 
 }  // namespace
 
+// A modifier tapped on its own is passed on (as a Key::None press that only wakes the screen); a
+// chord is not, nor a modifier held while another key is pressed and let go.
+void test_lone_modifier() {
+    auto taps = [](std::initializer_list<std::pair<bool, bool>> codes) {   // (modifier, down) in order
+        LoneModifier lone;
+        int n = 0;
+        for (const auto &c : codes) n += lone.step(c.first, c.second);
+        return n;
+    };
+    check(taps({{true, true}, {true, false}}) == 1, "fn pressed and let go: one tap");
+    check(taps({{true, true}, {false, true}, {false, false}, {true, false}}) == 0, "fn+S: a chord, no tap");
+    check(taps({{true, true}, {false, true}, {true, false}, {false, false}}) == 0, "fn let go before S: no tap");
+    check(taps({{true, false}}) == 0, "a release with no press (the app started meanwhile): no tap");
+    check(taps({{true, true}, {true, true}, {true, false}, {true, false}}) == 1, "shift and fn together, let go: one tap");
+    check(taps({{false, true}, {false, false}}) == 0, "a letter: not the reader's tap (it is a key of its own)");
+    check(taps({{true, true}, {true, false}, {true, true}, {true, false}}) == 2, "tapped twice: two");
+}
+
 int main() {
     test_chat_keys();
     test_guide_matches_keys();
     test_double_tap();
     test_hints();
+    test_lone_modifier();
     printf("keys: %d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? 1 : 0;
 }

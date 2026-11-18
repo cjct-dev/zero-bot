@@ -15,6 +15,24 @@ struct KeyEvent {
     bool ctrl = false;
 };
 
+// A modifier (shift, ctrl, fn, caps lock) pressed and let go with no other key in between is a tap
+// of its own, which the reader passes on as a Key::None press: it wakes a dark screen (and keeps a
+// lit one lit), and does nothing else. A chord (fn+S, shift+A) is not a tap.
+class LoneModifier {
+public:
+    // For every key code, pressed (`down`) or let go: true when this is the release that ends a tap.
+    bool step(bool modifier, bool down) {
+        if (!modifier) { armed_ = false; return false; }
+        if (down) { armed_ = true; return false; }
+        const bool tap = armed_;
+        armed_ = false;
+        return tap;
+    }
+
+private:
+    bool armed_ = false;
+};
+
 namespace input {
 void start();                 // begin reading the hardware keyboard (device) or SDL (simulator)
 bool poll(KeyEvent &out);     // non-blocking; call from the UI thread
