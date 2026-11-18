@@ -16,6 +16,14 @@ namespace audio {
 constexpr int kMicRate = 16000;
 
 // Push-to-talk recorder: 16 kHz mono signed 16-bit.
+namespace detail {
+// With a plug in the 3.5 mm jack, points the codec's input back at the built-in microphone and
+// returns a number for put_back_jack_mic, which restores the jack's input afterwards (exposed for
+// the unit test; amixer is run, so neither may be called on the UI thread).
+int point_at_builtin_mic();
+void put_back_jack_mic(int gen);
+}  // namespace detail
+
 class Recorder {
 public:
     ~Recorder();

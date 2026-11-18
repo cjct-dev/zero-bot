@@ -53,6 +53,62 @@ std::string builtin_mic() {
 }
 }  // namespace
 
+// The board's audio driver moves the codec's input to the 3.5 mm jack's microphone pins when a plug
+// goes in ("PGAL Select"/"PGAR Select": Line 1P/1N is the built-in microphone, Line 2P/2N the
+// jack's). A speaker or headphones with no microphone then recorded silence. With the built-in
+// microphone chosen, the input is pointed back at it for the recording, and the jack's setting is
+// put back afterwards if the plug is still in and no recording has started since. amixer is a
+// process, so this runs on the recorder's thread, never the UI thread.
+namespace {
+const char kCodecCard[] = "ES8389Audio";
+const int kBuiltinLeft = 1, kBuiltinRight = 2;   // "Line 1P", "Line 1N"
+std::mutex g_route_mtx;
+int g_route_gen = 0;
+bool g_route_saved = false;
+int g_saved_left = -1, g_saved_right = -1;
+
+std::string amixer_get(const char *name) {
+    const proc::Result r = proc::run({"amixer", "-c", kCodecCard, "cget", std::string("name=") + name}, "", 2000);
+    if (!r.ok()) return "";
+    const size_t p = r.out.rfind(": values=");
+    if (p == std::string::npos) return "";
+    const std::string v = r.out.substr(p + 9);
+    return v.substr(0, v.find_first_of("\r\n"));
+}
+int amixer_int(const char *name) {
+    const std::string v = amixer_get(name);
+    return !v.empty() && isdigit(static_cast<unsigned char>(v[0])) ? atoi(v.c_str()) : -1;
+}
+void amixer_set(const char *name, int value) {
+    (void)proc::run({"amixer", "-c", kCodecCard, "-q", "cset", std::string("name=") + name, std::to_string(value)}, "", 2000);
+}
+}  // namespace
+
+namespace detail {
+int point_at_builtin_mic() {
+    std::lock_guard<std::mutex> lk(g_route_mtx);
+    const int gen = ++g_route_gen;
+    if (amixer_get("Headphones Jack") != "on") return gen;   // no plug: the driver already chose it
+    const int left = amixer_int("PGAL Select"), right = amixer_int("PGAR Select");
+    if (left < 0 || right < 0 || (left == kBuiltinLeft && right == kBuiltinRight)) return gen;
+    g_saved_left = left;
+    g_saved_right = right;
+    g_route_saved = true;
+    amixer_set("PGAL Select", kBuiltinLeft);
+    amixer_set("PGAR Select", kBuiltinRight);
+    return gen;
+}
+
+void put_back_jack_mic(int gen) {
+    std::lock_guard<std::mutex> lk(g_route_mtx);
+    if (gen != g_route_gen || !g_route_saved) return;        // a newer recording owns the input now
+    g_route_saved = false;
+    if (amixer_get("Headphones Jack") != "on") return;       // unplugged meanwhile: the driver chose already
+    amixer_set("PGAL Select", g_saved_left);
+    amixer_set("PGAR Select", g_saved_right);
+}
+}  // namespace detail
+
 void set_mic_builtin(bool builtin) {
     g_mic_builtin = builtin;
     // Look the name up ahead of time, so the first press of the talk key does not wait for it.
@@ -82,6 +138,13 @@ bool Recorder::start() {
 }
 
 void Recorder::reader() {
+    // With a plug in the jack, the built-in microphone is chosen again for this recording (above).
+    // pw-cat is already starting meanwhile; its first audio comes a few hundred milliseconds later.
+    const int route = g_mic_builtin ? detail::point_at_builtin_mic() : 0;
+    struct PutBack {
+        int gen;
+        ~PutBack() { if (gen) std::thread([g = gen] { detail::put_back_jack_mic(g); }).detach(); }
+    } put_back{route};
     int16_t buf[1024];
     size_t carry = 0;  // odd byte left over between reads
     char *raw = reinterpret_cast<char *>(buf);
