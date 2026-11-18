@@ -356,7 +356,8 @@ Music &Music::get() {
 }
 
 void Music::play(std::vector<std::string> paths) {
-    stop();
+    std::lock_guard<std::mutex> ctl(ctl_);
+    stop_locked();
     if (paths.empty()) return;
     {
         std::lock_guard<std::mutex> lk(mtx_);
@@ -404,6 +405,11 @@ void Music::play(std::vector<std::string> paths) {
 }
 
 void Music::stop() {
+    std::lock_guard<std::mutex> ctl(ctl_);
+    stop_locked();
+}
+
+void Music::stop_locked() {
     running_ = false;
     ++generation_;
     if (thread_.joinable()) thread_.join();
@@ -412,7 +418,96 @@ void Music::stop() {
     proc::stop(child_, SIGTERM);
     queue_.clear();
     current_.clear();
+    title_.clear();
+    live_ = false;
     holds_ &= ~kUser;
+}
+
+void Music::play_live(const std::string &url, const std::string &title) {
+    std::lock_guard<std::mutex> ctl(ctl_);
+    stop_locked();
+    if (url.empty()) return;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        current_ = url;
+        title_ = title;
+        problem_.clear();
+    }
+    live_ = true;
+    running_ = true;
+    holds_ &= ~kUser;   // asking for a station ends a pause the user set earlier
+    const int gen = ++generation_;
+    if (thread_.joinable()) thread_.join();
+    thread_ = std::thread(&Music::run_live, this, gen, url);
+}
+
+void Music::run_live(int gen, std::string url) {
+    using clock = std::chrono::steady_clock;
+    auto wanted = [this, gen] { return running_ && generation_ == gen; };
+    int failures = 0;   // starts in a row that ended by themselves
+    while (wanted()) {
+        // Like a track, the stream waits for quiet: the reply is still to be spoken, the microphone
+        // is open, or the user paused it.
+        if (holds_ != 0) { usleep(50 * 1000); continue; }
+        clock::time_point started;
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            if (holds_ != 0 || !wanted()) continue;
+            // The same player and output buffer as music. rw_timeout ends a player whose stream has
+            // gone silent (the Wi-Fi dropped) after 15 s, so that it is joined again rather than
+            // left waiting for ever; -autoexit ends it when the station closes the stream. A stream
+            // never ends by itself, so the player goes with this thread, which outlives it: an app
+            // that crashes or is killed does not leave a station playing that nothing can stop.
+            child_ = proc::spawn({"env", "PULSE_LATENCY_MSEC=300", "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
+                                  "-rw_timeout", "15000000", url},
+                                 false, false, false, true);
+            stopped_ = false;
+            started = clock::now();
+        }
+        bool ended_itself = false;
+        for (;;) {
+            usleep(100 * 1000);
+            std::lock_guard<std::mutex> lk(mtx_);
+            if (!wanted() || holds_ != 0) {
+                // Stopped, replaced, or held: hold() has silenced it already. Nothing of a live stream
+                // is worth keeping, so the player is ended at once, suspended or not.
+                proc::stop(child_, SIGKILL);
+                stopped_ = false;
+                break;
+            }
+            if (!proc::alive(child_)) { ended_itself = true; break; }
+        }
+        if (!ended_itself) continue;   // the top of the loop waits for the holds, or leaves
+        // A stream that played for a while and dropped starts the count again; one that will not
+        // start at all (off the air, refused, a wrong address) is given up after three tries. "A
+        // while" is well past the time a stall takes to end the player: a server that sends its
+        // opening burst and then nothing was measured ending it after 31 s (about twice the 15 s
+        // read timeout), and with 30 s here it was joined again every half-minute for ever.
+        failures = clock::now() - started > std::chrono::seconds(75) ? 1 : failures + 1;
+        if (failures >= 3) {
+            std::lock_guard<std::mutex> lk(mtx_);
+            if (generation_ == gen)
+                problem_ = (title_.empty() ? std::string("The radio") : title_) +
+                           " stopped: the stream could not be played. The station may be off the air or not available in "
+                           "this country, or its address may have changed.";
+            break;
+        }
+        for (int i = 0; i < failures * 20 - 10 && wanted(); ++i) usleep(100 * 1000);   // 1 s, then 3 s
+    }
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (generation_ == gen) { current_.clear(); title_.clear(); running_ = false; live_ = false; }
+}
+
+std::string Music::title() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    return live_ ? title_ : std::string();
+}
+
+std::string Music::take_problem() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    std::string out;
+    out.swap(problem_);
+    return out;
 }
 
 void Music::next() { skip_ = true; }

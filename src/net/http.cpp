@@ -171,6 +171,8 @@ Response send(const Request &req) {
     else if (rc == CURLE_COULDNT_RESOLVE_HOST || rc == CURLE_COULDNT_CONNECT) res.error = "no connection";
     else if (rc == CURLE_SSL_PINNEDPUBKEYNOTMATCH) res.error = "the device's certificate key has changed";
     else if (rc != CURLE_OK) res.error = curl_easy_strerror(rc);
+    char *content_type = nullptr;
+    if (curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &content_type) == CURLE_OK && content_type) res.content_type = content_type;
     if (req.want_peer_cert) {
         curl_certinfo *info = nullptr;
         if (curl_easy_getinfo(curl, CURLINFO_CERTINFO, &info) == CURLE_OK && info && info->num_of_certs > 0)

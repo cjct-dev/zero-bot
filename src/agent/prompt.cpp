@@ -3,6 +3,7 @@
 #include <ctime>
 
 #include "core/music_lib.h"
+#include "core/radio.h"
 #include "core/settings.h"
 #include "smarthome/home.h"
 #include "core/store.h"
@@ -112,6 +113,8 @@ std::string system_prompt() {
          "brackets, that meaning (day, month and year) is exact: use it as it stands.\n";
     p += std::string("- Units: ") + (s.units == "imperial" ? "imperial" : "metric") + "\n";
     p += "- Music library on this device: " + std::to_string(MusicLibrary::get().size()) + " tracks\n";
+    // Present only once the user has listed stations; until then nothing here mentions radio.
+    p += radio::prompt_line();
     // Present only on a network the user has scanned, so the prompt stays the same everywhere else.
     if (home::available())
         p += "- Home devices: this network has smart-home devices you can control with smart_home. Requests like "

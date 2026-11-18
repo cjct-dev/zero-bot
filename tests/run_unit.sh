@@ -1,16 +1,18 @@
 #!/bin/sh
 # Device-free unit tests: the smart-home layer (store, names, schema, safety rules, locking,
 # pairing, the Tapo driver's refusals, colours), the HTTP options for devices, the timers (the
-# timer tool, storage, the countdown, the alarm and its player) and the keys (what each does on the
-# chat screen, and the key guide). Nothing but 127.0.0.1 is
-# contacted, and no AI service, sound or screen is needed.
+# timer tool, storage, the countdown, the alarm and its player), the radio (the station file,
+# the tool, the check of a stream, the player's live mode) and the keys (what each does on the
+# chat screen, and the key guide). Nothing but 127.0.0.1 is contacted, and no AI service, sound
+# or screen is needed.
 #
 #   tests/run_unit.sh                   build into build/unit and run
 #   ZB_UPDATE_SNAPSHOTS=1 tests/run_unit.sh    rewrite tests/snapshots/*.json from the current schema
 #   ZB_BUILD_WRAPPER=cmd tests/run_unit.sh     run each compile through cmd (e.g. a lock on a shared machine)
 #
-# When the command-line build exists (build/cli/zero_bot), the timer tool is also run through it,
-# zero_bot --tool timer '{...}', with a fresh, temporary state folder. CXX picks the compiler
+# When the command-line build exists (build/cli/zero_bot), the timer and radio tools are also run
+# through it, zero_bot --tool timer '{...}', with a fresh, temporary state folder, and the system
+# prompt and tool list are checked to say nothing of radio until stations are listed. CXX picks the compiler
 # (default g++). Exits non-zero when anything fails.
 set -eu
 cd "$(dirname "$0")/.."
@@ -31,13 +33,15 @@ APP="src/smarthome/store.cpp src/smarthome/targets.cpp src/smarthome/control.cpp
      src/platform/sys.cpp src/net/http.cpp"
 # The timers need only these, with util.cpp and proc.cpp from above.
 TIMERS="src/core/timers.cpp src/core/store.cpp src/platform/audio.cpp"
+# The radio needs these on top of the smart-home objects (for its name cleaning) and audio.cpp.
+RADIO="src/core/radio.cpp src/core/tether.cpp"
 
 obj_of() { echo "$OUT/$(echo "$1" | tr '/' '_' | sed 's/\.cpp$/.o/')"; }
 
 # Objects are rebuilt only when their source or a header in src/ is newer.
 newest_header=$(find src -name '*.h' -newer "$OUT/.stamp" 2>/dev/null | head -n 1 || true)
-for src in $APP $TIMERS tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp \
-           tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp \
+for src in $APP $TIMERS $RADIO tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp \
+           tests/unit/radio_test.cpp tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp \
            tests/unit/hue_test.cpp tests/unit/hue_cli.cpp \
            src/ui/key_guide.cpp tests/unit/key_guide_test.cpp; do
     obj=$(obj_of "$src")
@@ -54,6 +58,9 @@ for src in $TIMERS; do timer_objs="$timer_objs $(obj_of "$src")"; done
 $WRAP $CXX -o "$OUT/smarthome_test" "$OUT/tests_unit_smarthome_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/http_test" "$OUT/tests_unit_http_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/timers_test" "$OUT/tests_unit_timers_test.o" $timer_objs -lpthread
+radio_objs="$(obj_of src/platform/audio.cpp)"
+for src in $RADIO; do radio_objs="$radio_objs $(obj_of "$src")"; done
+$WRAP $CXX -o "$OUT/radio_test" "$OUT/tests_unit_radio_test.o" $radio_objs $objs -lcurl -lcrypto -lpthread
 # The Fire TV driver's own tests; firetv_cli is what tests/firetv_e2e.py drives against its mock.
 $WRAP $CXX -o "$OUT/firetv_test" "$OUT/tests_unit_firetv_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/firetv_cli" "$OUT/tests_unit_firetv_cli.o" $objs -lcurl -lcrypto -lpthread
@@ -79,6 +86,9 @@ echo "=== Hue driver"
 "$OUT/hue_test" tests/mocks/hue || failed=1
 echo "=== keys"
 "$OUT/key_guide_test" || failed=1
+
+echo "=== radio"
+TMPDIR="$state" python3 -I tests/unit/radio_peer.py "$OUT/radio_test" || failed=1
 
 echo "=== timers"
 # As someone would run the binary by hand: no XDG folders set, and a home that holds data of its
@@ -135,4 +145,55 @@ expect '{"action":"start","minutes":25}' '"label":"25 minute timer"'
 expect '{"action":"cancel","label":"twenty-five minute timer"}' '"cancelled":["25 minute timer"]'
 echo "timer tool: $passed passed, $tool_failed failed"
 [ "$tool_failed" -eq 0 ] || failed=1
+
+echo "=== radio through the command-line build"
+# A dry run: stations are matched and nothing is checked or played.
+radio_state="$state/radio-cli"
+mkdir -p "$radio_state/config/zero-bot"
+passed=0
+radio_failed=0
+in_radio_state() {
+    HOME="$radio_state" XDG_CONFIG_HOME="$radio_state/config" XDG_DATA_HOME="$radio_state/data" \
+        XDG_CACHE_HOME="$radio_state/cache" ZB_DRY_RUN=1 ZB_TEST_NETWORK=1 "$@"
+}
+# radio_expect WHAT OUTPUT TEXT [absent]: OUTPUT must contain TEXT (or, with "absent", must not, ignoring case).
+radio_expect() {
+    if [ "${4:-}" = absent ]; then
+        if printf '%s' "$2" | grep -qi -- "$3"; then radio_failed=$((radio_failed + 1)); echo "FAIL $1: \"$3\" should not appear"
+        else passed=$((passed + 1)); fi
+    else
+        case "$2" in
+            *"$3"*) passed=$((passed + 1)) ;;
+            *) radio_failed=$((radio_failed + 1)); echo "FAIL $1"; echo "     expected: $3"; echo "     got:      $2" ;;
+        esac
+    fi
+}
+# No station file: no tool, and not a word about radio in the system prompt.
+radio_expect "the tool list with no station file" "$(in_radio_state "$cli" --schema)" '"name": "radio"' absent
+radio_expect "the system prompt with no station file" "$(in_radio_state "$cli" --prompt)" 'radio' absent
+radio_expect "the tool list without radio still has music" "$(in_radio_state "$cli" --schema)" '"name": "music"'
+radio_expect "the radio tool with no stations" "$(in_radio_state "$cli" --tool radio '{"action":"play","station":"Radio 2"}')" \
+    'ERROR: no radio stations are set up'
+printf '{"stations": []}\n' > "$radio_state/config/zero-bot/radio.json"
+radio_expect "the tool list with an empty station list" "$(in_radio_state "$cli" --schema)" '"name": "radio"' absent
+radio_expect "the system prompt with an empty station list" "$(in_radio_state "$cli" --prompt)" 'radio' absent
+cat > "$radio_state/config/zero-bot/radio.json" <<'STATIONS'
+{"stations": [
+  {"name": "Test Radio Two", "nicknames": ["T2"], "url": "http://127.0.0.1:9/two.m3u8"},
+  {"name": "Test Jazz", "url": "http://127.0.0.1:9/jazz.mp3", "low_data_url": "http://127.0.0.1:9/jazz-low.mp3"}
+]}
+STATIONS
+radio_expect "the tool list with stations" "$(in_radio_state "$cli" --schema)" '"name": "radio"'
+radio_expect "the station names as allowed values" "$(in_radio_state "$cli" --schema)" '"Test Radio Two",'
+radio_expect "the system prompt with stations" "$(in_radio_state "$cli" --prompt)" 'played with radio: Test Radio Two, Test Jazz'
+radio_expect "play by nickname" "$(in_radio_state "$cli" --tool radio '{"action":"play","station":"t2"}')" '{"playing":"Test Radio Two"}'
+radio_expect "play by name said in words" "$(in_radio_state "$cli" --tool radio '{"action":"play","station":"test radio two"}')" \
+    '{"playing":"Test Radio Two"}'
+radio_expect "an unknown station" "$(in_radio_state "$cli" --tool radio '{"action":"play","station":"Radio 4"}')" \
+    'ERROR: the user has no station called "Radio 4"'
+radio_expect "a phone's connection" "$(ZB_TEST_TETHER=1 in_radio_state "$cli" --tool radio '{"action":"play","station":"Test Jazz"}')" \
+    '"stream":"low data'
+radio_expect "stop" "$(in_radio_state "$cli" --tool radio '{"action":"stop"}')" 'radio stopped'
+echo "radio through the command-line build: $passed passed, $radio_failed failed"
+[ "$radio_failed" -eq 0 ] || failed=1
 exit $failed

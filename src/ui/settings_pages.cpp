@@ -12,6 +12,7 @@
 #include "agent/llm.h"
 #include "core/autostart.h"
 #include "core/music_lib.h"
+#include "core/radio.h"
 #include "core/settings.h"
 #include "smarthome/drivers/tapo_driver.h"
 #include "smarthome/home.h"
@@ -412,6 +413,49 @@ void open_remote(Menu &menu) {
             items.push_back(MenuItem::action("Forget all learned buttons", [&menu] {
                 menu.confirm("Forget every learned button?", "Forget all", [] { ir::forget_all(); });
             }, true));
+        return items;
+    };
+    menu.push(std::move(page));
+}
+
+// ---------------------------------------------------------------- radio
+// The stations are the user's own file. This page shows what the app made of it, plays a station
+// to try it, and says where the file is and what goes in it.
+void open_radio(Menu &menu) {
+    MenuPage page;
+    page.title = "Radio stations";
+    page.build = [&menu]() {
+        std::vector<MenuItem> items;
+        const std::vector<radio::Station> list = radio::stations();
+        const std::string problem = radio::problem();
+        if (!problem.empty()) {
+            items.push_back(MenuItem::header("Problem with the file"));
+            Menu::add_paragraph(items, problem + ".");
+        }
+        if (!list.empty()) items.push_back(MenuItem::header("ENTER plays a station"));
+        for (const radio::Station &station : list) {
+            const radio::Station s = station;
+            items.push_back(MenuItem::val(s.name, [s] { return s.url_low.empty() ? std::string() : std::string("low data too"); }, [&menu, s] {
+                audio::Music::get().play_live(radio::stream_for(s, radio::metered_link()), s.name);
+                menu.toast("Playing " + s.name);
+                menu.refresh();
+            }));
+        }
+        if (audio::Music::get().live())
+            items.push_back(MenuItem::action("Stop the radio", [&menu] {
+                audio::Music::get().stop();
+                menu.toast("Radio stopped");
+                menu.refresh();
+            }));
+        items.push_back(MenuItem::header(list.empty() ? "No stations yet" : "Adding stations"));
+        Menu::add_paragraph(items, "Add them to " + radio::shown_path() + ": a name, nicknames and a stream address each, "
+                                   "and a low-data one if there is. The README shows how; radio-browser.info lists addresses.");
+        // Also what makes the paragraph above reachable: the cursor stops at the last row it can select.
+        items.push_back(MenuItem::action("Read the file again", [&menu] {
+            menu.refresh();
+            const size_t n = radio::stations().size();
+            menu.toast(n ? std::to_string(n) + (n == 1 ? " station" : " stations") : std::string("No stations in the file"));
+        }));
         return items;
     };
     menu.push(std::move(page));
@@ -1141,6 +1185,10 @@ void open_settings(Menu &menu, const SettingsHooks &hooks) {
             background([] { MusicLibrary::get().refresh(S().eff_music_dir(), true); return MusicLibrary::get().size(); },
                        [&menu](size_t n) { menu.toast(std::to_string(n) + " tracks found"); menu.refresh(); });
         }));
+        items.push_back(MenuItem::val("Radio stations", [] {
+            const size_t n = radio::stations().size();
+            return n ? std::to_string(n) + (n == 1 ? " station" : " stations") : std::string("none");
+        }, [&menu] { open_radio(menu); }));
         items.push_back(MenuItem::action("Start a new conversation", [&menu, hooks] {
             if (hooks.new_conversation) hooks.new_conversation();
             menu.close();

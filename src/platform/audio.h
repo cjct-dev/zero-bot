@@ -120,16 +120,31 @@ public:
     bool paused() const { return (holds_ & kUser) != 0; }
     std::string current();                        // path of the track playing, or ""
 
+    // A live stream (internet radio) in place of the queue, played until stop() or play(). It has
+    // no place to come back to, so while it is held its player is ended (it uses no data then),
+    // and once the holds clear it starts afresh at the live point. A stream that ends by itself is
+    // joined again; after three failures in a row it is given up and take_problem() says so.
+    void play_live(const std::string &url, const std::string &title);
+    bool live() const { return live_; }
+    std::string title();                          // the live stream's name ("Harbour FM"), or ""
+    std::string take_problem();                   // why a live stream ended by itself, once; else ""
+
 private:
     Music() = default;
-    void run();
+    void run_live(int gen, std::string url);
+    void stop_locked();                           // stop() with ctl_ already held
+    // play(), play_live() and stop() are called from the UI thread (ESC, fn+W/fn+E, settings) and
+    // the agent's (the music and radio tools) and each replaces thread_: one at a time.
+    std::mutex ctl_;
     std::mutex mtx_;
     std::vector<std::string> queue_;
     size_t index_ = 0;
     std::string current_;
+    std::string title_, problem_;                 // the live stream's name, and why it ended (guarded by mtx_)
     proc::Child child_;
     std::thread thread_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> live_{false};
     std::atomic<bool> skip_{false};
     std::atomic<int> holds_{0};
     bool stopped_ = false;                        // the player process is suspended (guarded by mtx_)

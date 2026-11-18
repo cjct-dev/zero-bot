@@ -8,6 +8,7 @@
 
 #include "agent/agent.h"
 #include "agent/llm.h"
+#include "agent/prompt.h"
 #include "agent/tools.h"
 #include "core/music_lib.h"
 #include "core/settings.h"
@@ -36,6 +37,8 @@ void usage() {
          "  --follow-ups \"a|b|c\"   with --ask: send each of these as the previous answer begins, so that they\n"
          "                         are all handled inside one run\n"
          "  --tool NAME 'JSON'    call one tool directly and print its result\n"
+         "  --prompt              print the system prompt a request would get now\n"
+         "  --schema              print the tools a request would be offered now (JSON)\n"
          "  --stt FILE.wav        transcribe a 16-bit mono WAV file and print the text\n"
          "  --tts \"text\" OUT.raw  synthesize speech and write raw 16-bit 24 kHz mono PCM\n"
          "  --shots DIR           render the app's screens to PNG files in DIR and exit\n"
@@ -148,7 +151,7 @@ int main(int argc, char **argv) {
     setenv("RES_OPTIONS", "single-request", 0);
     std::string ask, shots, steer, talk_over, follow_ups, tool_name, tool_args = "{}";
     std::string stt_file, tts_text, tts_out, bench_wav, bench_opus;
-    bool chat = false, keydump = false, boot = false, discover = false, home_refresh = false;
+    bool chat = false, keydump = false, boot = false, discover = false, home_refresh = false, show_prompt = false, show_schema = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--ask" && i + 1 < argc) ask = argv[++i];
@@ -160,6 +163,8 @@ int main(int argc, char **argv) {
         else if (a == "--follow-ups" && i + 1 < argc) follow_ups = argv[++i];
         else if (a == "--tool" && i + 1 < argc) { tool_name = argv[++i]; if (i + 1 < argc) tool_args = argv[++i]; }
         else if (a == "--shots" && i + 1 < argc) shots = argv[++i];
+        else if (a == "--prompt") show_prompt = true;
+        else if (a == "--schema") show_schema = true;
         else if (a == "--codec-bench" && i + 2 < argc) { bench_wav = argv[++i]; bench_opus = argv[++i]; }
         else if (a == "--stt" && i + 1 < argc) stt_file = argv[++i];
         else if (a == "--tts" && i + 2 < argc) { tts_text = argv[++i]; tts_out = argv[++i]; }
@@ -264,6 +269,14 @@ int main(int argc, char **argv) {
             printf("%-11s %-26s %-16s %-15s port %-5d via %-10s%s\n", d.kind.c_str(), d.name.c_str(), d.model.c_str(), d.ip.c_str(),
                    d.port, how.c_str(), info.c_str());
         }
+        quit(0);
+    }
+    if (show_prompt || show_schema) {
+        // What the model would be given for a request made now (tools appear and disappear with
+        // the user's files: radio stations, the smart home on this network, a search key).
+        MusicLibrary::get().refresh(Settings::get().eff_music_dir());
+        if (show_prompt) puts(prompt::system_prompt().c_str());
+        if (show_schema) puts(tools::schema().dump(2, ' ', false, json::error_handler_t::replace).c_str());
         quit(0);
     }
     if (!tool_name.empty()) {

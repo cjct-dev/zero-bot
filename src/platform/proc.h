@@ -14,8 +14,12 @@ struct Child {
 };
 
 // Starts argv[0] (looked up on PATH) in its own process group. stderr is discarded
-// unless merge_err is set, in which case it joins stdout.
-Child spawn(const std::vector<std::string> &argv, bool pipe_in, bool pipe_out, bool merge_err = false);
+// unless merge_err is set, in which case it joins stdout. With die_with_parent the child is
+// killed when the thread that started it ends, the whole app included (a crash, an out-of-memory
+// kill): for a player that would otherwise go on for ever, such as a radio stream. That thread
+// must then outlive the child.
+Child spawn(const std::vector<std::string> &argv, bool pipe_in, bool pipe_out, bool merge_err = false,
+            bool die_with_parent = false);
 
 void close_in(Child &c);
 bool alive(Child &c);                      // reaps the child if it has exited
