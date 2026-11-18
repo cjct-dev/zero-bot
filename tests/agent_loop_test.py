@@ -36,6 +36,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.dont_write_bytecode = True   # importing agent_eval leaves no __pycache__ in tests/
 from agent_eval import TURN_RE, parse_turn   # noqa: E402  (the scored set's transcript parser)
 
 _ap = argparse.ArgumentParser(description="The request loop against a scripted chat service.")
