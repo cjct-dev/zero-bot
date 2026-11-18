@@ -545,6 +545,7 @@ struct Session {
     detail::KlapKeys klap;
     detail::TpapKeys keys;
     int32_t seq = 0;                // TPAP: sequence number of the next request
+    std::string mac;                // the saved MAC the plug in this session has been checked against ("" until then)
 };
 
 struct State {
@@ -881,6 +882,40 @@ std::string lower(std::string s) {
     return s;
 }
 
+// A MAC as 12 lower-case hex digits, whatever the notation ("AA-BB-..", "aa:bb:..", none); "" for
+// anything else.
+std::string mac_digits(const std::string &raw) {
+    std::string hex;
+    for (const unsigned char c : raw) {
+        if (c == ':' || c == '-') continue;
+        if (!isxdigit(c) || hex.size() >= 12) return "";
+        hex += static_cast<char>(tolower(c));
+    }
+    return hex.size() == 12 ? hex : "";
+}
+
+// Whether the plug in this session is the one saved (Device::mac, as `want`): another plug of the
+// same account given this one's address would accept the same login, and would then be switched
+// in its place. Asked once per session and per saved MAC (Session::mac), before anything else is
+// sent in it. A plug that names no MAC at all cannot be told apart and is taken as it is; one that
+// names a different MAC, or an unreadable one, gets nothing more (Sent::failed, the session
+// dropped). Sent::lost and failures on the way are send()'s own.
+Sent check_plug(const std::string &host, Session &s, const std::string &want, bool &keep, std::string &err) {
+    keep = true;
+    if (want.empty() || s.mac == want) return Sent::ok;
+    json resp;
+    const Sent sent = send(host, s, R"({"method":"get_device_info","params":null})", resp, keep, err);
+    if (sent != Sent::ok) return sent;
+    const json &result = get_obj(resp, "result");
+    if (result.is_object() && result.contains("mac") && mac_digits(get_str(result, "mac")) != want) {
+        keep = false;
+        err = "another plug answered at this plug's saved address, so nothing was sent to it";
+        return Sent::failed;
+    }
+    s.mac = want;
+    return Sent::ok;
+}
+
 // What the plug would check: KLAP hashes e-mail and password, TPAP the password alone.
 std::string fingerprint(bool tpap, const std::string &email, const std::string &pw_hex) {
     return detail::hex(detail::sha256((tpap ? std::string("TPAP") : "KLAP" + email) + '\0' + pw_hex));
@@ -938,6 +973,7 @@ bool exchange(const Device &dev, const Credentials &cred, const json &req, json 
     }
 
     const std::string host = dev.ip;
+    const std::string want_mac = mac_digits(dev.mac);
     const auto login = [&]() {
         st->session.reset();
         return tpap ? login_tpap(host, dev, pw_hex, *st, fp, err)
@@ -952,7 +988,9 @@ bool exchange(const Device &dev, const Credentials &cred, const json &req, json 
     json resp;
     for (;;) {
         bool keep = false;
-        const Sent sent = send(host, *st->session, plain, resp, keep, err);
+        // The plug is asked who it is first (once per session), so that the request goes to no other.
+        Sent sent = check_plug(host, *st->session, want_mac, keep, err);
+        if (sent == Sent::ok) sent = send(host, *st->session, plain, resp, keep, err);
         if (!keep) st->session.reset();
         if (sent == Sent::ok) break;
         if (sent == Sent::failed) return false;

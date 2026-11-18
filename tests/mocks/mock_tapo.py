@@ -364,8 +364,8 @@ class Mock:
             if child is not None:
                 return 0, child
             info = {"device_id": "8000000000000000000000000000000000000110", "fw_ver": "1.4.8 Build 260804 Rel.045837",
-                    "hw_ver": "1.0", "mac": "AA-BB-CC-DD-EE-FF", "model": "P304M" if strip else "P110",
-                    "nickname": b64("Mock Strip" if strip else "Mock Plug ☕"),
+                    "hw_ver": "1.0", "mac": self.args.mac, "model": "P304M" if strip else "P110",
+                    "nickname": b64(self.args.nickname or ("Mock Strip" if strip else "Mock Plug ☕")),
                     "ssid": base64.b64encode(b"Mock Wi-Fi \xff").decode(),      # not UTF-8: must not break the client
                     "rssi": -51, "type": "SMART.TAPOPLUG"}
             if not strip:
@@ -518,7 +518,7 @@ class Mock:
             if self.args.mode != "tpap":
                 return {"error_code": 0, "result": {"sub_method": "discover", "tpap_preferred": False}}
             return {"error_code": 0, "result": {"sub_method": "discover", "tpap_preferred": True,
-                                                "mac": "AABBCCDDEEFF", "tpap": self.tpap_info()}}
+                                                "mac": self.args.mac.replace("-", ""), "tpap": self.tpap_info()}}
         if self.args.mode != "tpap":
             return {"error_code": -1002}
         if sub == "pake_register":
@@ -708,6 +708,8 @@ def main():
     ap.add_argument("--model", choices=("p110", "p304m"), default="p110")
     ap.add_argument("--email", default="user@example.com")
     ap.add_argument("--password", default="hunter2")
+    ap.add_argument("--mac", default="AA-BB-CC-DD-EE-FF", help="the plug's MAC, as get_device_info gives it")
+    ap.add_argument("--nickname", default="", help="the plug's name (default: Mock Plug ☕ or Mock Strip)")
     ap.add_argument("--page", type=int, default=10, help="sockets per get_child_device_list answer")
     ap.add_argument("--lock-after", type=int, default=0, help="TPAP: answer -2101 after this many wrong passwords")
     ap.add_argument("--no-energy-usage", action="store_true", help="answer get_energy_usage and get_current_power with -1002")

@@ -275,7 +275,9 @@ Zero Bot can switch smart-home devices on your own Wi-Fi or wired network, talki
 device directly: nothing goes through the makers' cloud services. Supported so far:
 
 - **TP-Link Tapo** smart plugs and power strips (tested against simulated P110 plugs and a P304M
-  strip; each socket of a strip is switched on its own).
+  strip; each socket of a strip is switched on its own). Every plug of your Tapo account accepts
+  the same login, so after logging in Zero Bot asks the plug at the saved address which plug it
+  is: when the router has given that address to another of your plugs, nothing is switched.
 - **Accessories that work with Apple HomeKit**, over Wi-Fi or Ethernet: one driver for many
   brands, such as hubs and bridges (Hive, tado, Netatmo, ecobee, Aqara, IKEA) and Wi-Fi plugs,
   lights and thermostats that carry a HomeKit setup code. Zero Bot pairs with the accessory
@@ -401,9 +403,10 @@ Other families are added one driver at a time.
    asks "Turn on Bed heater?" and switches it only if your very next words are a plain yes ("yes",
    "go ahead", "yes please"). Anything else, including a new request or "leave it off", counts as
    no. Turn it off for something you use every day. A device a scan finds again in another way
-   (a Kasa plug once set up here as a HomeKit accessory) is added as a second entry that the
-   assistant does not use until you turn *Assistant may use it* on for it, so that what you set
-   for the first entry is not bypassed through the second.
+   after it was set up here the first way (a Kasa plug once set up here as a HomeKit accessory) is
+   added as a second entry that the assistant does not use until you turn *Assistant may use it*
+   on for it, so that what you set for the first entry is not bypassed through the second. (One
+   that was only listed the first way, never set up or switched off, is used at once.)
 
 A room's name means the lights in that room. Everything can be switched off at once, but not on.
 The assistant also asks first before changing more than eight things at once, before setting

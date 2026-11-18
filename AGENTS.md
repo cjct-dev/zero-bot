@@ -431,13 +431,20 @@ key, real audio), say so plainly rather than implying it was.
 - A change to discovery's ranking can give a saved device a new id (a Kasa EP25 saved as a
   HomeKit accessory now answers as Kasa). The new record must not reopen what the user closed on
   the old one ("Assistant may use it" off, "Ask before switching on"): `remember_scan` adds a
-  record whose MAC another record already has with the assistant's use switched off.
+  record whose MAC another record already has with the assistant's use switched off, when that
+  other record holds a decision (things read from it, or its use switched off). One that only
+  listed the device (a Hue Bridge heard only as HomeKit, which no driver claims) holds none, and
+  must not leave the right record switched off.
 - An address is not an identity. Routers hand a device's address to another one (a router that
   loses its leases when it restarts, a bulb switched off at the wall for a week), and a device
   with no key of its own (WiZ, and any family whose protocol has no login) answers whoever asks.
   The first review of the WiZ driver found that a command for a light switched the plug that now
   had its address. Such a driver checks the device's MAC (the one discovery saved it under)
   before every change, and fails with a word `unreachable()` knows so the app looks for it.
+  A login is no identity either: every plug of one Tapo account accepts the same password, and
+  until the integration review a command for a desk lamp switched on the heater plug that had
+  been given the lamp's address, with no question. The Tapo transport now asks each new session's
+  plug for its MAC (`tapo::Device::mac`) before sending anything else in it.
 - A default that reads a device's name must also read the name the user types. WiZ devices keep
   no name, so the heater question (on for a plug named like a heater) never applied to one until
   `set_thing_alias` learnt to switch it on for a name that newly sounds like a heater.

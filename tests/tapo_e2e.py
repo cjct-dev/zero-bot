@@ -39,9 +39,10 @@ def check(name, ok, detail=""):
 
 
 class Mock:
-    def __init__(self, mode, model):
+    def __init__(self, mode, model, mac, nickname=""):
         self.proc = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "mock_tapo.py"), "--port", "0", "--mode", mode,
-                                      "--model", model, "--email", EMAIL, "--password", PASSWORD, "--stdin-lifeline"],
+                                      "--model", model, "--email", EMAIL, "--password", PASSWORD, "--mac", mac,
+                                      "--nickname", nickname, "--stdin-lifeline"],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         line = self.proc.stdout.readline().split()
         if line[:2] != ["MOCK", "listening"]:
@@ -93,10 +94,10 @@ def old_file(network, plug_port, strip_port):
     return {"tapo": {"email": EMAIL, "password_sha1": SHA1},
             "networks": {network: {"label": "Test network", "gateway_mac": "02:00:00:00:00:00", "allowed_at": 1, "last_scan": 1,
                                    "devices": [
-                {"id": "tapo:p110", "kind": "tapo", "name": "Tapo P110", "model": "P110(UK)", "mac": "", "last_ip": "127.0.0.1",
+                {"id": "tapo:p110", "kind": "tapo", "name": "Tapo P110", "model": "P110(UK)", "mac": "aa:bb:cc:00:00:01", "last_ip": "127.0.0.1",
                  "port": plug_port, "info": {"scheme": "TPAP", "tpap": tpap, "device_type": "SMART.TAPOPLUG", "owner": OWNER},
                  "found_by": ["tapo"], "enabled": True, "last_seen": 1, "switches": [], "problem": ""},
-                {"id": "tapo:p304m", "kind": "tapo", "name": "Tapo P304M", "model": "P304M(UK)", "mac": "", "last_ip": "127.0.0.1",
+                {"id": "tapo:p304m", "kind": "tapo", "name": "Tapo P304M", "model": "P304M(UK)", "mac": "AA-BB-CC-00-00-02", "last_ip": "127.0.0.1",
                  "port": strip_port, "info": {"scheme": "KLAP", "device_type": "SMART.TAPOPLUG", "owner": OWNER},
                  "found_by": ["tapo"], "enabled": True, "last_seen": 1, "switches": [], "problem": ""}]}}}
 
@@ -106,9 +107,11 @@ def main():
         sys.exit("no app at %s (build the cli preset first)" % APP)
     mocks, app = [], App()
     try:
-        plug = Mock("tpap", "p110")
+        # Each plug names its own MAC, in the notation get_device_info uses; the saved MACs are in
+        # the ones discovery and older files used.
+        plug = Mock("tpap", "p110", "AA-BB-CC-00-00-01")
         mocks.append(plug)
-        strip = Mock("klap", "p304m")
+        strip = Mock("klap", "p304m", "AA-BB-CC-00-00-02")
         mocks.append(strip)
 
         # The stand-in network's id, from the app itself; nothing is saved for it yet.
@@ -173,6 +176,33 @@ def main():
         r = app.tool({"action": "off", "target": "all"})
         check("everything off switches all five off", r == {"changed": 5, "now": "off", "target": "all"} and plug.stats()["on"] is False and
               strip.stats()["children_on"] == [False] * 4, (r, plug.stats()["on"], strip.stats()["children_on"]))
+
+        # An address is not an identity. The plug saved as "Desk lamp" has gone, and the router gave
+        # its address to another plug of the same account, one that asks before it is switched on.
+        # That plug would accept the login: it is asked who it is first, and is sent nothing else.
+        heater = Mock("tpap", "p110", "AA-BB-CC-00-00-03", "Heater")
+        mocks.append(heater)
+        root = app.load()
+        devs = root["networks"][network]["devices"]
+        desk = json.loads(json.dumps(next(d for d in devs if d["id"] == "tapo:p110")))
+        desk.update(id="tapo:desk", name="Desk lamp", mac="aa:bb:cc:00:00:04", port=heater.port)
+        desk["things"][0].update(name="Desk lamp", alias="", ask_first=False)
+        devs.append(desk)
+        app.save(root)
+        r = app.tool({"action": "on", "target": "Desk lamp"})
+        check("another plug at a saved address is not switched in its place", isinstance(r, str) and
+              r.startswith('ERROR: could not change "Desk lamp"') and "another plug answered" in r and heater.stats()["on"] is False, r)
+        r = app.tool({"action": "status", "target": "Desk lamp"})
+        check("nor is its state reported as the saved plug's", isinstance(r, str) and "another plug answered" in r, r)
+        st = heater.stats()
+        check("that plug was only asked who it is", st["on"] is False and set(st["methods"]) == {"get_device_info"} and st["bad"] == [], st)
+        check("its refusal to be someone else is no refusal of the password", app.load()["secrets"]["tapo"].get("refused") is None,
+              app.load()["secrets"]["tapo"])
+        root = app.load()
+        root["networks"][network]["devices"] = [d for d in root["networks"][network]["devices"] if d["id"] != "tapo:desk"]
+        app.save(root)
+        r = app.tool({"action": "on", "target": PLUG})
+        check("the plugs that are where they were saved still switch", r == {"now": "on", "target": PLUG} and plug.stats()["on"] is True, r)
 
         # A wrong password: tried once, by each plug's rules, and never again, even by a new run.
         before = (plug.stats()["pake_share"], strip.stats()["handshake1"])
