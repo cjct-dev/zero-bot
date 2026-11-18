@@ -726,7 +726,7 @@ public:
         // every firmware, with at most half the time.
         const std::string expected = saved_mac(dev);
         if (!expected.empty()) {
-            const Outcome seen = call(t, "getPilot", "{}", "", now_ms() + left(deadline, 1250), result);
+            const Outcome seen = call(t, "getPilot", "{}", "", now_ms() + std::min(1250, left(deadline, 20000) / 2), result);
             if (seen != Outcome::Ok) {
                 err = sentence(seen);
                 return false;
