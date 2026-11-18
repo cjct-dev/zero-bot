@@ -498,37 +498,72 @@ std::string question_first(const std::string &sig, std::string reason, const std
 }
 
 // ---------------------------------------------------------------- talking to devices
-// A device whose saved address no longer answers is looked for again by asking the network, and
-// recognised by its identifier, never by going through addresses. One scan serves every device
-// that needs it for a short while. Never on the stand-in test network.
-bool relocate(const std::string &network_id, Saved &device) {
-    if (test_network()) return false;
-    static std::mutex mtx;
-    static std::vector<discovery::Device> found;
-    static std::string found_on;
-    static unsigned long found_at = 0;
-    std::lock_guard<std::mutex> lk(mtx);
+// A device whose saved address no longer answers is looked for again by asking the network the
+// way the user's own scan does (on a network they opted in, never on the stand-in test network),
+// and recognised by its identifier, never by going through addresses. One scan serves every device
+// that needs it for 20 seconds. Only addresses change: the saved devices that answered from a new
+// address (or port) are moved there; nothing is added and nothing else of theirs is replaced, since
+// a short scan in the middle of a command is not the user's scan from Settings, which alone adds
+// devices.
+enum class Lookup { NotTried, NotFound, StillThere, Moved };
+std::mutex g_lookup_mtx;
+std::vector<discovery::Device> g_found;
+std::string g_found_on;
+unsigned long g_found_at = 0;
+bool (*g_test_scan)(std::vector<discovery::Device> &found) = nullptr;
+
+// A port counts only when both are known: a saved port of 0 means the family's usual one.
+bool moved(const discovery::Device &f, const Device &d) {
+    return f.id == d.id && !f.ip.empty() && (f.ip != d.ip || (f.port > 0 && d.port > 0 && f.port != d.port));
+}
+
+Lookup relocate(const std::string &network_id, Saved &device) {
+    std::lock_guard<std::mutex> lk(g_lookup_mtx);
+    if (!g_test_scan && test_network()) return Lookup::NotTried;
     const discovery::Network net = network_now(true);
-    if (!net.usable || net.id() != network_id) return false;
-    if (found_on != network_id || found_at == 0 || now_ms() - found_at > 20000) {
+    if (!net.usable || net.id() != network_id) return Lookup::NotTried;
+    if (g_found_on != network_id || g_found_at == 0 || now_ms() - g_found_at > 20000) {
         std::vector<discovery::Device> fresh;
         std::string err;
         discovery::Options opt;
         opt.listen_ms = 2500;
-        if (!discovery::scan(opt, fresh, err)) return false;
-        found = fresh;
-        found_on = network_id;
-        found_at = now_ms() ? now_ms() : 1;
-        remember_scan(net, found);
+        if (!(g_test_scan ? g_test_scan(fresh) : discovery::scan(opt, fresh, err))) return Lookup::NotTried;
+        g_found = fresh;
+        g_found_on = network_id;
+        g_found_at = now_ms() ? now_ms() : 1;
+        modify_entry(network_id, [&](NetworkEntry &e) {
+            for (auto &d : e.devices)
+                for (const auto &f : g_found)
+                    if (moved(f, d)) {
+                        d.ip = f.ip;
+                        if (f.port > 0) d.port = f.port;
+                    }
+        });
     }
-    for (const auto &f : found)
-        if (f.id == device.id && f.ip != device.ip) {
+    for (const auto &f : g_found)
+        if (f.id == device.id) {
+            if (!moved(f, device)) return Lookup::StillThere;   // it answers the scan where it was, but not the command
             device.ip = f.ip;
-            device.port = f.port;
-            device.info = f.info;
-            return true;
+            if (f.port > 0) device.port = f.port;
+            return Lookup::Moved;
         }
-    return false;
+    return Lookup::NotFound;
+}
+
+// Added to "it did not answer" once the device has been looked for on the network.
+const char *after_lookup(Lookup where) {
+    if (where == Lookup::NotFound)
+        return "; it was not found at another address on the network either (it may be switched off at the wall, or out of "
+               "Wi-Fi range)";
+    if (where == Lookup::StillThere) return "; it still announces itself on the network at the same address, so it may be busy or starting up";
+    return "";
+}
+
+// A change that comes out the same however often it is made (on, 40 %, pause, an input) may be
+// sent a second time; one that moves on from where things are (volume steps, a key press, the next
+// track) never is by itself: had the first reached the device after all, it would happen twice.
+bool repeatable(const Change &c) {
+    return !c.volume_step && !c.key && !(c.transport && (*c.transport == "next" || *c.transport == "previous"));
 }
 
 // Whether a driver's error reads as "it did not answer" rather than "it said no".
@@ -606,14 +641,21 @@ void apply_device(const std::string &network_id, const Saved &saved, std::vector
                 }
                 todo[k]->ok = call_apply(drv, dev, todo[k]->item->thing, todo[k]->change, todo[k]->err);
             }
-        // No answer at the saved address: the router may have given the device a new one. Tried
-        // once, and only when the device turns up somewhere else.
+        // No answer at the saved address: the router may have given the device a new one. Sent
+        // there once more, and only when the device has turned up at another address, so the first
+        // cannot have reached it; and only a change that comes out the same if it did after all.
         const bool none_ok = std::none_of(todo.begin(), todo.end(), [](const Step *s) { return s->ok; });
-        if (attempt > 0 || !none_ok || !unreachable(todo[0]->err) || !relocate(network_id, dev)) return;
-        modify_entry(network_id, [&](NetworkEntry &e) {
-            for (auto &d : e.devices)
-                if (d.id == dev.id) { d.ip = dev.ip; d.port = dev.port; d.info = dev.info; }
-        });
+        if (attempt > 0 || !none_ok || !unreachable(todo[0]->err)) return;
+        const Lookup where = relocate(network_id, dev);   // saves the new address itself
+        for (auto *s : todo) s->err += after_lookup(where);
+        if (where != Lookup::Moved) return;
+        if (!std::all_of(todo.begin(), todo.end(), [](const Step *s) { return repeatable(s->change); })) {
+            for (auto *s : todo)
+                s->err = "it had moved to a new address on the network, which is now saved, and the change was not sent "
+                         "there: a volume step, key press or skip is never sent a second time by itself. Nothing was "
+                         "changed; ask the user whether to do it now";
+            return;
+        }
     }
 }
 
@@ -678,12 +720,12 @@ void read_now(const std::string &network_id, const NetworkEntry &e, const std::v
                     err = "the device's answer could not be understood";
                 }
                 if (!ok && err.empty()) err = "it did not answer";
-                // Re-discovery is worth its wait only for things asked about by name.
-                if (ok || attempt > 0 || !detail || !unreachable(err) || !relocate(network_id, dev)) break;
-                modify_entry(network_id, [&](NetworkEntry &en) {
-                    for (auto &d : en.devices)
-                        if (d.id == dev.id) { d.ip = dev.ip; d.port = dev.port; d.info = dev.info; }
-                });
+                // Re-discovery is worth its wait only for things asked about by name. Reading
+                // changes nothing, so it is always asked again at a new address.
+                if (ok || attempt > 0 || !detail || !unreachable(err)) break;
+                const Lookup where = relocate(network_id, dev);
+                err += after_lookup(where);
+                if (where != Lookup::Moved) break;
             }
         }
         std::lock_guard<std::mutex> lk(out_mtx);
@@ -1350,6 +1392,14 @@ void reset_control() {
     g_context_from = 0;
     g_pending.clear();
     g_rate.reset();
+    std::lock_guard<std::mutex> lookup(g_lookup_mtx);
+    g_found.clear();
+    g_found_on.clear();
+    g_found_at = 0;
+}
+void set_scan(bool (*scan)(std::vector<discovery::Device> &found)) {
+    std::lock_guard<std::mutex> lk(g_lookup_mtx);
+    g_test_scan = scan;
 }
 }  // namespace testing
 

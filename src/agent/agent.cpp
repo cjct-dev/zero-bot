@@ -1,6 +1,7 @@
 #include "agent/agent.h"
 
 #include <chrono>
+#include <map>
 #include <regex>
 #include <unistd.h>
 
@@ -87,6 +88,21 @@ bool claims_action(const std::string &raw) {
         "hinzugefügt|ajouté|enregistré|programmé|réglé|aggiunto|salvato|impostato)",
         std::regex::icase | std::regex::optimize);
     return std::regex_search(text, re);
+}
+
+// What a tool call asked for, to recognise the same call again: the tool and its arguments in a
+// fixed order, without "say" (a reworded confirmation is still the same call).
+std::string call_key(const std::string &name, const std::string &raw_args) {
+    json a = json::parse(util::trim(raw_args).empty() ? "{}" : raw_args, nullptr, false);
+    if (!a.is_object()) return name + "\n" + raw_args;
+    a.erase("say");
+    return name + "\n" + a.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+// A failure's words without the "ERROR: " in front, short enough to quote.
+std::string error_words(const std::string &result) {
+    std::string e = result.compare(0, 7, "ERROR: ") == 0 ? result.substr(7) : result;
+    return util::truncate_utf8(e, 200, "...");
 }
 
 // Set while run_blocking() owns the conversation, so input submitted during it (steering)
@@ -318,11 +334,48 @@ void Agent::run_turn() {
     bool acted = false;       // a tool has run for the current request
     bool guarded = false;     // the unbacked-claim guard fires at most once per request
     std::string correction;   // one-off note for the next model call; never stored in the history
+    // Tool calls that failed in this request, by what they asked (call_key), with their error. The
+    // same call is not run again until the user says something more: a change that may have
+    // reached a device is never repeated by the model on its own, and a model that keeps trying one
+    // thing is told so instead of spending the request on it.
+    std::map<std::string, std::string> failed_calls;
+    bool any_ok = false;            // a tool call of this request did what it was asked
+    int failures = 0;               // tool calls of this request that failed
+    bool failure_guarded = false;   // a "done" after calls that all failed has been withdrawn once
+    bool nudged = false;            // an empty reply has been sent back once
+    std::string done_said;          // the confirmations ("say") of calls that worked, for an answer made here
+    auto new_request = [&] {
+        acted = guarded = any_ok = failure_guarded = nudged = false;
+        failures = 0;
+        failed_calls.clear();
+        done_said.clear();
+    };
+    // Input that arrived meanwhile joins this request. It may be "try that again", so the calls
+    // that failed may be made once more.
+    auto steer_in = [&] {
+        const int added = absorb_inputs(false);
+        if (added > 0) failed_calls.clear();
+        return added;
+    };
 
     // While the microphone is open, what the user is saying will steer this request, so a reply
     // that is ready must not be spoken over them. Returns once they have finished (or cancelled).
     auto wait_while_listening = [&] {
         while (listening_ && !cancel_) usleep(50 * 1000);
+    };
+    // An answer made here rather than by the model (a confirmation, an apology): shown, spoken and
+    // kept in the conversation like the model's own.
+    auto deliver = [&](const std::string &text) {
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            history_.push_back({{"role", "assistant"}, {"content", text}});
+        }
+        last_answer_ = text;
+        if (ev_.answer_begin) ev_.answer_begin();
+        if (ev_.answer_delta) ev_.answer_delta(text);
+        set_state(AgentState::Speaking);
+        if (speak) speech.enqueue(text);
+        if (ev_.answer_end) ev_.answer_end(text, false);
     };
 
     int round = 0;
@@ -367,7 +420,9 @@ void Agent::run_turn() {
                 // model reconsider with the extra instruction.
                 if (!speech_started && has_pending()) { steered = true; round_cancel_ = true; return; }
                 // Checked before the first words are spoken: once said, a claim cannot be taken back.
-                if (!speech_started && !acted && !guarded && claims_action(sentence)) {
+                // "Done" is false when no tool has run, and when every one that ran failed or is
+                // waiting for the user's yes.
+                if (!speech_started && ((!acted && !guarded) || (acted && !any_ok && !failure_guarded)) && claims_action(sentence)) {
                     unbacked = true;
                     round_cancel_ = true;
                     return;
@@ -388,7 +443,7 @@ void Agent::run_turn() {
         if (steered || (!speech_started && !res.cancelled && res.error.empty() && has_pending() &&
                         (res.tool_calls.empty() || talked_over))) {
             if (began && ev_.answer_discard) ev_.answer_discard();
-            absorb_inputs(false);
+            steer_in();
             --round;  // a withdrawn draft does not count against the budget
             continue;
         }
@@ -409,6 +464,15 @@ void Agent::run_turn() {
         if (!res.error.empty()) {
             if (began && ev_.answer_end) ev_.answer_end(res.content, true);
             if (ev_.error) ev_.error(res.error);
+            // Tools have run, so something may have changed, or failed, that the user has not been
+            // told about. Say what is known rather than leave them with silence.
+            if (acted) {
+                const char *lost = "I lost the connection to the AI service before I could finish, so please ask again.";
+                deliver(speech_started ? lost
+                        : done_said + (failures ? "Something I tried did not work, and I lost the connection to the AI "
+                                                  "service before I could say what. Please ask again."
+                                                : lost));
+            }
             break;
         }
 
@@ -424,7 +488,7 @@ void Agent::run_turn() {
             wait_while_listening();
             if (cancel_) break;
             if (has_pending()) {  // the user added something while the draft was being checked
-                absorb_inputs(false);
+                steer_in();
                 --round;
                 continue;
             }
@@ -435,6 +499,17 @@ void Agent::run_turn() {
             }
         }
 
+        // "Done" after tool calls that all failed or wait for the user's yes: nothing was done, and
+        // the user must hear what went wrong, or the question, instead.
+        if (acted && (unbacked || (!any_ok && !failure_guarded && !speech_started && res.tool_calls.empty() && claims_action(res.content)))) {
+            failure_guarded = true;
+            if (began && ev_.answer_discard) ev_.answer_discard();
+            correction = "(Automatic note, not from the user.) Your draft reply began \"" + util::truncate_utf8(res.content, 160) +
+                         "\" but nothing has been done: every tool call for this request failed or is waiting for the "
+                         "user's answer (see the ERROR and CONFIRM results above), and the user has not heard that reply. "
+                         "Tell them plainly what did not work, or put to them the question a CONFIRM result gives.";
+            continue;
+        }
         // "Done, it's in your calendar" with no tool call behind it: withdraw the draft and make
         // the model either do the thing or admit it cannot.
         if (unbacked || (!acted && !guarded && !speech_started && res.tool_calls.empty() && claims_action(res.content))) {
@@ -456,6 +531,21 @@ void Agent::run_turn() {
                          "heard that reply. Call calendar_list with search (or reminder_list) now and answer from "
                          "what it returns.";
             continue;
+        }
+        // An empty reply leaves the user with silence: it goes back to the model once, and if the
+        // next one is empty too, an answer is made here from what is known.
+        if (res.tool_calls.empty() && util::trim(res.content).empty() && !speech_started && unsaid.empty()) {
+            if (began && ev_.answer_discard) ev_.answer_discard();
+            if (!nudged && round < kMaxRounds - 1) {
+                nudged = true;
+                correction = std::string("(Automatic note, not from the user.) Your reply was empty, so the user has heard "
+                                         "nothing. Answer them now in words") +
+                             (failures ? ": a tool call failed, so say plainly what did not work." : ".");
+                continue;
+            }
+            deliver(done_said + (failures ? "Sorry, something I tried did not work." : "Sorry, I have no answer to that."));
+            if (absorb_inputs(false) > 0) { new_request(); round = -1; continue; }   // a new request: fresh budget
+            break;
         }
         if (hold && res.tool_calls.empty()) {
             // The draft stands: release it as if it had streamed.
@@ -494,35 +584,40 @@ void Agent::run_turn() {
                 set_state(AgentState::Working, label);
                 if (ev_.tool) ev_.tool(label);
                 const auto tool_started = std::chrono::steady_clock::now();
-                std::string result = cancel_ ? "ERROR: cancelled by the user" : tools::run(c.name, c.args, tool_ctx);
+                const std::string key = call_key(c.name, c.args);
+                const auto earlier = failed_calls.find(key);
+                std::string result;
+                if (cancel_) result = "ERROR: cancelled by the user";
+                else if (earlier != failed_calls.end())
+                    result = "ERROR: this exact call already failed in this request, so it was not made again. It said: " +
+                             earlier->second + ". Change what that asks you to change, or tell the user it did not work";
+                else result = tools::run(c.name, c.args, tool_ctx);
                 activity::tool(c.name, c.args, result,
                                static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                                      std::chrono::steady_clock::now() - tool_started).count()));
                 if (result.size() > kMaxToolResult) result = util::truncate_utf8(result, kMaxToolResult, " …[truncated]");
+                if (tools::failed(result)) {
+                    ++failures;
+                    failed_calls.emplace(key, error_words(result));
+                } else if (result.compare(0, 7, "CONFIRM") != 0) {
+                    any_ok = true;
+                }
                 const std::string say = cancel_ ? "" : tools::confirmation(c.name, c.args, result);
                 if (say.empty()) all_confirmed = false;
                 else if (confirm.find(say) == std::string::npos) confirm += (confirm.empty() ? "" : " ") + say;
+                if (!say.empty() && done_said.find(say) == std::string::npos) done_said += say + " ";
                 std::lock_guard<std::mutex> lk(mtx_);
                 history_.push_back({{"role", "tool"}, {"tool_call_id", c.id}, {"content", result}});
             }
             acted = true;
             wait_while_listening();
             // Anything said meanwhile steers the next step, so the model has to look again.
-            if (absorb_inputs(false) > 0 || cancel_ || !all_confirmed) continue;
+            if (steer_in() > 0 || cancel_ || !all_confirmed) continue;
 
             // Every call succeeded and came with its own confirmation: speak that now rather than
             // spending another model call on it.
-            {
-                std::lock_guard<std::mutex> lk(mtx_);
-                history_.push_back({{"role", "assistant"}, {"content", confirm}});
-            }
-            last_answer_ = confirm;
-            if (ev_.answer_begin) ev_.answer_begin();
-            if (ev_.answer_delta) ev_.answer_delta(confirm);
-            set_state(AgentState::Speaking);
-            if (speak) speech.enqueue(confirm);
-            if (ev_.answer_end) ev_.answer_end(confirm, false);
-            if (absorb_inputs(false) > 0) { acted = guarded = false; round = -1; continue; }   // a new request: fresh budget
+            deliver(confirm);
+            if (absorb_inputs(false) > 0) { new_request(); round = -1; continue; }   // a new request: fresh budget
             break;
         }
 
@@ -538,22 +633,11 @@ void Agent::run_turn() {
         if (began && ev_.answer_end) ev_.answer_end(res.content, false);
         if (res.content.empty() && ev_.error) ev_.error("The model returned an empty answer.");
         // Something typed while the answer was being spoken becomes the next request.
-        if (absorb_inputs(false) > 0) { acted = guarded = false; round = -1; continue; }   // a new request: fresh budget
+        if (absorb_inputs(false) > 0) { new_request(); round = -1; continue; }   // a new request: fresh budget
         break;
     }
     // Leaving by running out of rounds means the last one asked to go round again, so nothing has
     // been said for this request. Say so rather than falling silent.
-    if (round >= kMaxRounds && !cancel_) {
-        const std::string sorry = "Sorry, that took more steps than I can do in one go. Please ask again.";
-        {
-            std::lock_guard<std::mutex> lk(mtx_);
-            history_.push_back({{"role", "assistant"}, {"content", sorry}});
-        }
-        last_answer_ = sorry;
-        if (ev_.answer_begin) ev_.answer_begin();
-        if (ev_.answer_delta) ev_.answer_delta(sorry);
-        if (speak) speech.enqueue(sorry);
-        if (ev_.answer_end) ev_.answer_end(sorry, false);
-    }
+    if (round >= kMaxRounds && !cancel_) deliver(done_said + "Sorry, that took more steps than I can do in one go. Please ask again.");
     speech.end_of_answer();
 }

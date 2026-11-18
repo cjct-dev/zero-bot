@@ -66,7 +66,10 @@ struct NetworkSource {
 };
 void set_network_source(const NetworkSource *source);
 void set_clock(unsigned long (*clock_ms)());               // nullptr restores the real clock
-void reset_control();                                      // forgets pending questions, rate counts, turn counters
+void reset_control();                                      // forgets pending questions, rate counts, turn counters, the last lookup
+// Stands in for the scan that looks for a device which stopped answering at its saved address
+// (relocate in control.cpp), on the stand-in network too; nullptr restores the real scan.
+void set_scan(bool (*scan)(std::vector<discovery::Device> &found));
 void clear_drivers();                                      // empties the driver table (and stops the built-in list loading)
 }  // namespace testing
 

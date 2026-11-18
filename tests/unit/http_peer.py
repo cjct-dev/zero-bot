@@ -22,6 +22,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 USER, PASSWORD, REALM, NONCE = "user", "pass word", "device", "dcd98b7102dd2f0e8b11d0f600bfb0c093"
 SEEN = {"away": [], "proxy": []}   # requests that reached the other host, and the pretend proxy
 AWAY = {"port": 0}
+# For the retry checks: how many requests reached each /flaky, /status, /hangup and /slowcount
+# address, by its key; /tries/KEY reports the count.
+TRIES = {}
+TRIES_LOCK = threading.Lock()
+
+
+def count(key):
+    with TRIES_LOCK:
+        TRIES[key] = TRIES.get(key, 0) + 1
+        return TRIES[key]
 
 
 def md5(text):
@@ -78,6 +88,30 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/seen":
             body = ("away=%d proxy=%d" % (len(SEEN["away"]), len(SEEN["proxy"]))).encode()
             self.reply(200, body)
+        elif self.path.startswith("/flaky/"):            # /flaky/KEY/N: 503 for the first N requests, then 200
+            _, _, key, n = self.path.split("/")
+            if count(key) <= int(n):
+                self.reply(503, b"<html>busy</html>")
+            else:
+                self.reply(200, b"fine")
+        elif self.path.startswith("/status/"):           # /status/CODE/KEY: always CODE
+            _, _, code, key = self.path.split("/")
+            count(key)
+            self.reply(int(code), b"status")
+        elif self.path.startswith("/hangup/"):           # /hangup/KEY: the connection closes with no answer
+            count(self.path.split("/")[2])
+            self.close_connection = True
+            self.connection.shutdown(2)
+        elif self.path.startswith("/slowcount/"):        # /slowcount/KEY: answers after 2 s, by when the client has gone
+            count(self.path.split("/")[2])
+            time.sleep(2)
+            try:
+                self.reply(200, b"late")
+            except OSError:
+                pass
+        elif self.path.startswith("/tries/"):
+            with TRIES_LOCK:
+                self.reply(200, str(TRIES.get(self.path.split("/")[2], 0)).encode())
         else:
             self.reply(404)
 

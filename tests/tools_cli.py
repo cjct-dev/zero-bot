@@ -98,7 +98,38 @@ def run_all(root):
     # ---- the tool runner itself
     error(s, "no_such_tool", {}, "there is no tool called")
     error(s, "calculator", '{"expression":', "not valid JSON")
-    error(s, "calculator", "[1,2]", "send a JSON object")
+    error(s, "calculator", "[1,2]", "must be one JSON object", "not a list")
+
+    # ---- what the runner checks before any tool runs (tools::run): the error names the argument,
+    # what it must be and what was sent, and an example where the form was wrong
+    error(s, "calculator", '{"expression": "2+2", "x": [1,', "stop before the object is closed", 'e.g. {"expression": "..."}')
+    error(s, "calculator", '{"expression" "2+2"}', "break off at character", "Send the call again")
+    error(s, "calender_add", {}, "the one meant is probably calendar_add")
+    error(s, "frobnicate", {}, "the tools are calculator, ", "device")
+    error(s, "calculator", {"expression": ["2+2"]}, "expression must be text, not a list")
+    error(s, "weather", {"days": "five"}, "days must be a number, such as 5; 'five' is not one")   # before any network
+    error(s, "weather", {"days": True}, "days must be a number, such as 5, not true")
+    error(s, "breathe", {"minutes": "a few"}, "minutes must be a number")
+    ok(s, "breathe", {"minutes": ""}, '"minutes":5')                       # empty text for a number is "not given"
+    error(s, "reminder_set", {"text": "tea", "minutes": 5}, "give either in_minutes or at",
+          "no argument called 'minutes'", "its arguments are at, in_minutes, text")
+    error(s, "timer", {"action": "start", "minutes": "five"}, "minutes must be a number")
+    error(s, "calendar_delete", {"id": [1]}, "id must be a whole number", "not a list")
+    error(s, "device", {"setting": "spoken_replies", "on": "perhaps"}, "on must be true or false, not 'perhaps'")
+    ok(s, "device", {"setting": "spoken_replies", "on": "no"}, "spoken replies off")   # yes/no taken as meant
+    ok(s, "device", {"setting": "spoken_replies", "on": 1}, "spoken replies on")
+    b = State(root, "booleans")
+    out = ok(b, "calendar_add", {"title": "Day off", "start": "2030-05-01", "all_day": "yes"}, '"all_day":true')
+    error(b, "calendar_add", {"title": "Day off", "start": "2030-05-02", "all_day": "maybe"}, "all_day must be true or false")
+    ok(b, "timer", {"action": "START", "minutes": "5"}, '"started"')     # an enum value in other capitals
+
+    # ---- one shape for every failure: a JSON object with "error" reads as an ERROR sentence
+    lib = State(root, "music")
+    os.makedirs(lib.dir + "/home/Music")
+    open(lib.dir + "/home/Music/Waterloo.mp3", "wb").close()
+    error(lib, "music", {"action": "play", "artist": "pink floyd"}, "ERROR: nothing in the library matches, so nothing was started.",
+          "not in their library")
+    ok(lib, "music", {"action": "play", "title": "waterloo"}, '"now_playing":"Waterloo"')
 
     # ---- calculator
     ok(s, "calculator", {"expression": "(84.50 + 12) * 1.125 / 4"}, "27.140625")
@@ -156,7 +187,7 @@ def run_all(root):
     error(r, "reminder_set", {"text": "  ", "in_minutes": 5}, "text is required")
     error(r, "reminder_set", {"text": "Tea", "at": "2030-12-25"}, "needs a clock time")
     error(r, "reminder_set", {"text": "Tea", "in_minutes": 0}, "more than 0")
-    error(r, "reminder_set", {"text": "Tea", "in_minutes": "nan"}, "more than 0")
+    error(r, "reminder_set", {"text": "Tea", "in_minutes": "nan"}, "in_minutes must be a number", "'nan' is not one")
     error(r, "reminder_set", {"text": "Tea", "in_minutes": 1e12}, "within a year")
     error(r, "reminder_set", {"text": "Tea", "at": "2030-02-30 10:00"}, "is not one")
     error(r, "reminder_set", {"text": "Tea"}, "give either in_minutes or at")
@@ -192,7 +223,7 @@ def run_all(root):
     d = State(root, "device")
     ok(d, "device", {"setting": "status"}, "volume_percent")
     ok(d, "device", {"setting": "volume", "value": 1e300}, "volume set to 100%")
-    error(d, "device", {"setting": "volume", "value": "nan"}, "value is required")
+    error(d, "device", {"setting": "volume", "value": "nan"}, "value must be a number")
     ok(d, "device", {"setting": "brightness", "value": 2}, "brightness set to 5%")
     error(d, "device", {"setting": "spoken_replies"}, "on is required")       # it used to toggle, whatever "say" claimed
     ok(d, "device", {"setting": "spoken_replies", "on": False}, "spoken replies off")
@@ -232,6 +263,8 @@ def run_all(root):
         out = expect(p, "run_python", {"code": "a = bytearray(300 * 1024 * 1024)\nprint(len(a))"}, "MemoryError")
         expect(p, "run_python", {"code": "print('x' * 10000)"}, "output cut short after 6000 bytes")
         error(p, "run_python", {"code": "  "}, "code is required")
+        error(p, "run_python", {"code": "raise ValueError(42)"}, "ERROR: the code stopped with an error (exit code 1)",
+              "Fix it and run it again", "ValueError: 42")
         out = expect(p, "run_python", {"code": "import socket\nsocket.create_connection(('127.0.0.1', 9), 1)"}, "ERROR")
         out = expect(p, "run_python", {"code": "print(open('/etc/passwd').read())"}, "ERROR")
     else:
