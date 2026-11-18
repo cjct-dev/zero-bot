@@ -67,8 +67,11 @@ int g_route_gen = 0;
 bool g_route_saved = false;
 int g_saved_left = -1, g_saved_right = -1;
 
-std::string amixer_get(const char *name) {
-    const proc::Result r = proc::run({"amixer", "-c", kCodecCard, "cget", std::string("name=") + name}, "", 2000);
+// `id` is amixer's control identifier: "name=..." finds a mixer control only; the jack's sensor is a
+// card control and needs "iface=CARD,name=..." (without it amixer answers "Cannot find the given
+// element", and the first version of this read every plug as none).
+std::string amixer_get(const std::string &id) {
+    const proc::Result r = proc::run({"amixer", "-c", kCodecCard, "cget", id}, "", 2000);
     if (!r.ok()) return "";
     const size_t p = r.out.rfind(": values=");
     if (p == std::string::npos) return "";
@@ -76,7 +79,7 @@ std::string amixer_get(const char *name) {
     return v.substr(0, v.find_first_of("\r\n"));
 }
 int amixer_int(const char *name) {
-    const std::string v = amixer_get(name);
+    const std::string v = amixer_get(std::string("name=") + name);
     return !v.empty() && isdigit(static_cast<unsigned char>(v[0])) ? atoi(v.c_str()) : -1;
 }
 void amixer_set(const char *name, int value) {
@@ -88,7 +91,8 @@ namespace detail {
 int point_at_builtin_mic() {
     std::lock_guard<std::mutex> lk(g_route_mtx);
     const int gen = ++g_route_gen;
-    if (amixer_get("Headphones Jack") != "on") return gen;   // no plug: the driver already chose it
+    // Whatever moved the input (a plug in the jack, as far as is known), it goes back to the built-in
+    // microphone for the recording; the jack's sensor is not needed for that.
     const int left = amixer_int("PGAL Select"), right = amixer_int("PGAR Select");
     if (left < 0 || right < 0 || (left == kBuiltinLeft && right == kBuiltinRight)) return gen;
     g_saved_left = left;
@@ -103,7 +107,7 @@ void put_back_jack_mic(int gen) {
     std::lock_guard<std::mutex> lk(g_route_mtx);
     if (gen != g_route_gen || !g_route_saved) return;        // a newer recording owns the input now
     g_route_saved = false;
-    if (amixer_get("Headphones Jack") != "on") return;       // unplugged meanwhile: the driver chose already
+    if (amixer_get("iface=CARD,name=Headphones Jack") != "on") return;   // unplugged meanwhile: the driver chose already
     amixer_set("PGAL Select", g_saved_left);
     amixer_set("PGAR Select", g_saved_right);
 }

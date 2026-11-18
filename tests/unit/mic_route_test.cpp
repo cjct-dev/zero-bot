@@ -46,7 +46,12 @@ const char kAmixer[] = R"SH(#!/bin/sh
 state="$(dirname "$0")/state"
 [ "$2" = "ES8389Audio" ] || { echo "no such card: $2" >&2; exit 1; }
 if [ "$3" = "cget" ]; then
-  name="${4#name=}"
+  # The jack's sensor is a card control: like the real amixer, a plain name= finds mixer controls only.
+  case "$4" in
+    name=Headphones\ Jack) echo "amixer: Cannot find the given element from control sysdefault:1" >&2; exit 1;;
+    iface=CARD,name=*) name="${4#iface=CARD,name=}";;
+    *) name="${4#name=}";;
+  esac
   v=$(grep -F "$name=" "$state" | head -n1 | cut -d= -f2)
   [ -n "$v" ] || exit 1
   printf "numid=1,iface=MIXER,name='%s'\n  ; type=ENUMERATED\n  : values=%s\n" "$name" "$v"
@@ -75,6 +80,20 @@ int main() {
     setenv("PATH", (dir + ":" + original_path).c_str(), 1);
     using audio::detail::point_at_builtin_mic;
     using audio::detail::put_back_jack_mic;
+
+    // The owner's 0.4.2 case, as the device reports it: a speaker in, the input on the jack's pins.
+    // The recording must use the built-in microphone (0.4.2 read the jack sensor as a mixer control,
+    // got nothing, took it for "no plug", and recorded silence).
+    write_state({{"Headphones Jack", "on"}, {"PGAL Select", "2"}, {"PGAR Select", "1"}});
+    {
+        const int g0 = point_at_builtin_mic();
+        auto s0 = read_state();
+        check(s0["PGAL Select"] == "1" && s0["PGAR Select"] == "2", "a speaker in: the built-in microphone for the recording");
+        put_back_jack_mic(g0);
+        s0 = read_state();
+        check(s0["PGAL Select"] == "2" && s0["PGAR Select"] == "1", "a speaker in: the jack's input put back after");
+    }
+    std::remove((dir + "/sets").c_str());
 
     // Nothing in the jack: the driver has the built-in microphone already; nothing is changed.
     write_state({{"Headphones Jack", "off"}, {"PGAL Select", "1"}, {"PGAR Select", "2"}});
