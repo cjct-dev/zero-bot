@@ -287,6 +287,11 @@ std::vector<Device> merge(const Seen &seen) {
         // The instance name is "Name._type._tcp.local": the part before the service type is the label.
         const size_t cut0 = util::lower(name).find("." + type);
         if (type == kHttpService && !shelly_label(cut0 == std::string::npos ? name : name.substr(0, cut0))) continue;
+        // A web server is taken for a Shelly only when nothing more specific came from its address
+        // (instances arrive sorted by type, so _esphomelib, _hap, _googlecast... come first): an
+        // ESPHome device that kept a Shelly's host name stays ESPHome.
+        if (type == kHttpService)
+            if (const auto it = by_ip.find(ip); it != by_ip.end() && !it->second.kind.empty() && it->second.kind != "shelly") continue;
         if (kind == "airplay") {
             // Not a kind of its own here: it only lends its readable name and model to the device.
             friendly[ip] = {clean(cut0 == std::string::npos ? name : name.substr(0, cut0)), clean(txt.count("model") ? txt["model"] : "")};

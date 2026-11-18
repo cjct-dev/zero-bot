@@ -1999,6 +1999,15 @@ void test_discovery_shelly() {
     }
     // A printer's web page alone is nothing: not "other", not listed.
     CHECK(discovery::devices_from({printer, named}).empty());
+    // review: an ESPHome device that kept a Shelly's host name, with its web server, stays ESPHome
+    // (it was listed as a Shelly, under a second id, and asked /shelly).
+    const std::string esp_ip("\xC0\x00\x02\x63", 4);
+    const auto esp = discovery::devices_from(
+        {{"mdns", "192.0.2.99", service_answer("_http._tcp.local", "shelly-1pm-kitchen", "shelly-1pm-kitchen.local", esp_ip, {})},
+         {"mdns", "192.0.2.99", service_answer("_esphomelib._tcp.local", "shelly-1pm-kitchen", "shelly-1pm-kitchen.local", esp_ip,
+                                               {"platform=ESP8266"})}});
+    CHECK_MSG(esp.size() == 1 && esp[0].kind == "esphome" && esp[0].id.rfind("esphome:", 0) == 0,
+              esp.empty() ? "none" : esp[0].kind + " " + esp[0].id);
     // The family's driver claims what discovery reports (this test registers its own drivers, so
     // it is made here rather than looked up).
     const auto drv = make_shelly_driver();
