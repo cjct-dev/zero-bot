@@ -31,6 +31,11 @@ struct Device {
     std::string scheme;     // "KLAP" or "TPAP", from discovery's mgt_encrypt_schm.encrypt_type
     json tpap;              // discovery's "tpap" object when present. If null on a TPAP device, the plug is asked for it (not a login).
     std::string owner;      // discovery's "owner" field (MD5 of the account e-mail), may be empty
+    // The MAC the plug was saved under (any notation), "" for none. An address is not an identity:
+    // after a router hands this plug's address to another plug of the same account, that plug
+    // accepts the same login. So each new session is asked get_device_info first, and a plug that
+    // names another MAC gets nothing else (request() fails, saying another plug answered).
+    std::string mac;
 };
 
 // Lower-case hex SHA-1, for turning a typed password into the stored form.
@@ -45,6 +50,8 @@ bool owned_by(const Device &dev, const std::string &email);
 // once if the plug no longer knows the session; at most one login is made per call. Returns
 // false with a human-readable `err` otherwise. No login is attempted when owned_by() is false,
 // or after the plug rejected these credentials, or while it reports itself locked.
+// With Device::mac set, a session is used only once the plug has named that MAC (one extra
+// request per login).
 // Thread-safe; requests to one plug (one ip and port) are serialised and share one session.
 // Each HTTP exchange is limited to 3 s to connect and 6 s in total; a call that has to log in
 // first makes three of them (four when it must also ask a TPAP plug how to log in). A refused

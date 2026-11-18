@@ -57,6 +57,7 @@ tapo::Device transport(const home::Device &d) {
     const json tpap = json::parse(info_of(d, "tpap"), nullptr, false);
     if (tpap.is_object()) t.tpap = tpap;
     t.owner = info_of(d, "owner");
+    t.mac = d.mac;   // the plug discovery saved: another plug of the account at its address is refused
     return t;
 }
 

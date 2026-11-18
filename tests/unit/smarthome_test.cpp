@@ -2443,8 +2443,9 @@ void test_discovery_shelly() {
 // alone; this checks that the rules hold side by side (each family's answers are merged in a loop
 // of its own) and that every device found is claimed by exactly one driver, or by none when no
 // driver should touch it. Several addresses answer two ways, as real devices do.
-void test_discovery_every_family() {
-    Section s("discovery: every family heard in one scan; each device is one kind, claimed by one driver at most");
+// What a home with every family answers to one scan. Several addresses answer two ways, as real
+// devices do.
+std::vector<discovery::Packet> every_family_heard() {
     auto ip4 = [](int last) { return std::string("\xC0\x00\x02", 3) + static_cast<char>(last); };
     const std::string hap = "_hap._tcp.local";
     const std::string tapo_p110 = tplink_answer(R"J({"error_code":0,"result":{"device_id":"80225A0B","device_model":"P110(UK)",
@@ -2479,6 +2480,12 @@ void test_discovery_every_family() {
         {"mdns", "192.0.2.60", fire_tv_answer("A1B2C3D4E5", "fire.local", ip4(60), {"n=Lounge TV"})},
         {"mdns", "192.0.2.90", service_answer("_http._tcp.local", "Office Printer", "printer.local", ip4(90), {"path=/"})},
     };
+    return heard;
+}
+
+void test_discovery_every_family() {
+    Section s("discovery: every family heard in one scan; each device is one kind, claimed by one driver at most");
+    const std::vector<discovery::Packet> heard = every_family_heard();
     const std::map<std::string, std::pair<std::string, std::string>> want = {   // address -> (kind, the driver that claims it)
         {"192.0.2.10", {"tapo", "tapo"}},          {"192.0.2.11", {"tplink", "kasa"}},     {"192.0.2.12", {"tplink", "kasa"}},
         {"192.0.2.20", {"wiz", "wiz"}},            {"192.0.2.21", {"wiz", "wiz"}},         {"192.0.2.30", {"hue_bridge", "hue"}},
@@ -2754,6 +2761,179 @@ void test_moved_devices() {
     g_fake->broken.clear();
 }
 
+// ---------------------------------------------------------------- every family, saved and scanned again
+// The hardware address of each device of every_family_heard(), as the neighbour table would give
+// it (discovery reads it there when a protocol names none; this test cannot): the same device has
+// the same MAC however it is heard.
+discovery::Device with_mac(discovery::Device d, int shift = 0) {
+    static const std::map<std::string, std::string> kMacs = {
+        {"192.0.2.10", "aa:bb:cc:00:00:0a"}, {"192.0.2.11", "50:c7:bf:00:00:31"}, {"192.0.2.12", "50:c7:bf:00:00:32"},
+        {"192.0.2.20", "a8:bb:50:00:00:20"}, {"192.0.2.21", "a8:bb:50:00:00:21"}, {"192.0.2.30", "00:17:88:00:53:01"},
+        {"192.0.2.40", "a8:03:2a:b1:23:40"}, {"192.0.2.41", "02:00:00:00:00:41"}, {"192.0.2.50", "02:00:00:00:00:50"},
+        {"192.0.2.60", "02:00:00:00:00:60"}};
+    if (d.mac.empty())
+        if (const auto it = kMacs.find(d.ip); it != kMacs.end()) {
+            d.mac = it->second;
+            // An id discovery made from the address for want of a MAC is made from the MAC, as it
+            // would have been with the neighbour table to hand.
+            if (d.id == d.kind + ":" + d.ip) d.id = d.kind + ":" + d.mac;
+        }
+    if (shift) d.ip = "192.0.2." + std::to_string(std::stoi(d.ip.substr(d.ip.rfind('.') + 1)) + shift);
+    return d;
+}
+
+std::vector<discovery::Device> scan_of(const std::vector<discovery::Packet> &heard, int shift = 0) {
+    std::vector<discovery::Device> out;
+    for (const auto &d : discovery::devices_from(heard)) out.push_back(with_mac(d, shift));
+    return out;
+}
+
+// The scan of test_discovery_every_family saved as the settings page saves a scan, each device set
+// up and read, then scanned again: in another order, with answers lost, from other addresses and
+// with two devices of different families swapping addresses. No record may change hands (its kind,
+// the driver that claims it, its pairing and its things stay), a scan that hears the same devices
+// adds nothing, and a device heard another way is added under another id at most, unused by the
+// assistant while the first record holds what the user decided. Needs every driver: registered
+// here, so this runs last.
+void test_rescan_every_family() {
+    Section s("store: every family saved, then scanned again in other orders, with answers lost and from new addresses");
+    g_fake->reset();
+    home::register_driver(make_hue_driver(), "Hue Bridge");
+    home::register_driver(make_homekit_driver(), "HomeKit");
+    home::register_driver(make_wiz_driver(), "WiZ");
+    home::register_driver(make_shelly_driver(), "Shelly");
+    home::register_driver(make_firetv_driver(), "Fire TV");
+    auto claimer = [](const home::Device &d) {
+        const home::Driver *drv = home::driver_for(d);
+        return std::string(drv ? drv->kind() : "none");
+    };
+    const std::vector<discovery::Packet> heard = every_family_heard();
+    write_home({});
+    const auto first = scan_of(heard);
+    CHECK_MSG(home::remember_scan(g_net, first) == 10, std::to_string(first.size()) + " found");
+
+    // Each set up and read: a pairing of its own and a thing, one of them a heater that asks first.
+    home::modify_entry(g_net.id(), [&](home::NetworkEntry &e) {
+        for (auto &d : e.devices) {
+            d.auth = {{"paired", d.id}};
+            home::Thing t;
+            t.id = "1";
+            t.name = d.ip == "192.0.2.12" ? "Bedroom heater" : "Thing at " + d.ip;
+            t.type = "plug";
+            t.caps = home::kPower;
+            home::merge_things(d, {t}, time(nullptr));
+        }
+    });
+    struct Was { std::string kind, driver, auth, ip; bool enabled, ask_first; };
+    std::map<std::string, Was> was;
+    for (const auto &d : home::entry(g_net.id()).devices)
+        was[d.id] = {d.kind, claimer(d), d.auth.dump(), d.ip, d.enabled, !d.things.empty() && d.things[0].ask_first};
+    CHECK_MSG(was.count("tplink:50:c7:bf:00:00:32") && was["tplink:50:c7:bf:00:00:32"].ask_first, "the heater asks first");
+    const std::map<std::string, std::string> drivers = {
+        {"tapo:80225a0b", "tapo"}, {"tplink:50:c7:bf:00:00:31", "tplink"}, {"tplink:50:c7:bf:00:00:32", "tplink"},
+        {"wiz:a8bb50000020", "wiz"}, {"wiz:a8bb50000021", "wiz"}, {"hue:00005efffe005301", "hue_bridge"},
+        {"shelly:shellyplus1pm-a8032ab12340", "shelly"}, {"homekit:aa:bb:cc:00:00:50", "homekit"},
+        {"fire_tv:02:00:00:00:00:60", "fire_tv"}, {"esphome:02:00:00:00:00:41", "none"}};
+    for (const auto &d : drivers)
+        CHECK_MSG(was.count(d.first) && was[d.first].driver == d.second, d.first + " claimed by " + (was.count(d.first) ? was[d.first].driver : "nothing saved"));
+    const size_t items_before = home::catalog(home::entry(g_net.id())).size();
+    CHECK_MSG(items_before == 9, std::to_string(items_before) + " things offered (all but the ESPHome device's)");
+
+    // What every record must still be after each later scan, apart from its address.
+    auto unchanged = [&](const std::string &when, bool same_ip) {
+        for (const auto &d : home::entry(g_net.id()).devices) {
+            const auto it = was.find(d.id);
+            if (it == was.end()) continue;
+            const Was &w = it->second;
+            CHECK_MSG(d.kind == w.kind && claimer(d) == w.driver, when + ": " + d.id + " is now " + d.kind + ", claimed by " + claimer(d));
+            CHECK_MSG(d.auth.dump() == w.auth, when + ": " + d.id + "'s pairing changed");
+            CHECK_MSG(d.enabled == w.enabled && d.things.size() == 1 && d.things[0].ask_first == w.ask_first,
+                      when + ": " + d.id + "'s settings changed");
+            if (same_ip) CHECK_MSG(d.ip == w.ip, when + ": " + d.id + " moved to " + d.ip);
+        }
+    };
+
+    // The same devices, heard in another order: nothing new, nothing changed.
+    const std::vector<discovery::Packet> reversed(heard.rbegin(), heard.rend());
+    CHECK(home::remember_scan(g_net, scan_of(heard)) == 0);
+    CHECK(home::remember_scan(g_net, scan_of(reversed)) == 0);
+    unchanged("scanned again", true);
+
+    // Answers lost: the Hue Bridge's SSDP, the WiZ light's and the Kasa plug's own answers, the
+    // Shelly's own service. Heard only through HomeKit, three devices are added under HomeKit ids
+    // (the Shelly keeps its id through its web server's name), unused by the assistant, since the
+    // records the user set up are theirs; the Hue Bridge's, heard only as HomeKit, no driver claims.
+    std::vector<discovery::Packet> lossy;
+    for (const auto &p : heard) {
+        if ((p.src == "192.0.2.30" && p.proto == "ssdp") || (p.src == "192.0.2.21" && p.proto == "wiz") ||
+            (p.src == "192.0.2.12" && p.proto == "kasa") || (p.src == "192.0.2.40" && has(p.bytes, "_shelly")))
+            continue;
+        lossy.push_back(p);
+    }
+    CHECK(home::remember_scan(g_net, scan_of(lossy)) == 3);
+    unchanged("answers lost", true);
+    for (const char *id : {"homekit:aa:bb:cc:00:53:01", "homekit:aa:bb:cc:00:00:21", "homekit:aa:bb:cc:00:00:12"}) {
+        const home::Saved *d = saved(id);
+        CHECK_MSG(d && !d->enabled && d->auth.empty() && d->things.empty(), std::string(id) + (d ? " enabled or paired" : " not saved"));
+    }
+    CHECK(saved("homekit:aa:bb:cc:00:53:01") && claimer(*saved("homekit:aa:bb:cc:00:53:01")) == "none");
+    CHECK_MSG(home::catalog(home::entry(g_net.id())).size() == items_before, "the same things offered, none twice");
+    // Heard as HomeKit, the heater still asks first, under its own name.
+    CHECK_MSG(starts(home::tool_run({{"action", "on"}, {"target", "Bedroom heater"}}, true), "CONFIRM"), "the heater asks first");
+
+    // Every device at a new address: each record follows its own id. And two devices of different
+    // families swap addresses (the Tapo plug takes the Kasa plug's, and the other way round): each
+    // record goes with its device, never with the address.
+    CHECK(home::remember_scan(g_net, scan_of(heard, 100)) == 0);
+    unchanged("all at new addresses", false);
+    for (const auto &d : home::entry(g_net.id()).devices)
+        if (was.count(d.id))
+            CHECK_MSG(d.ip == "192.0.2." + std::to_string(std::stoi(was[d.id].ip.substr(8)) + 100), d.id + " at " + d.ip);
+    std::vector<discovery::Device> swapped = scan_of(heard);
+    for (auto &d : swapped) {
+        if (d.ip == "192.0.2.10") d.ip = "192.0.2.11";
+        else if (d.ip == "192.0.2.11") d.ip = "192.0.2.10";
+    }
+    CHECK(home::remember_scan(g_net, swapped) == 0);
+    unchanged("two addresses swapped", false);
+    // (saved() hands out a pointer into one shared copy, so each record is copied before the next call.)
+    auto where = [](const std::string &id) {
+        const home::Saved *d = saved(id);
+        return d ? home::Saved(*d) : home::Saved();
+    };
+    const home::Saved tapo = where("tapo:80225a0b"), kasa = where("tplink:50:c7:bf:00:00:31");
+    const std::string tapo_at = tapo.ip + " " + tapo.mac, kasa_at = kasa.ip + " " + kasa.mac;
+    CHECK_MSG(tapo_at == "192.0.2.11 aa:bb:cc:00:00:0a" && kasa_at == "192.0.2.10 50:c7:bf:00:00:31", tapo_at + ", " + kasa_at);
+
+    // A record that only listed a device holds nothing the user decided: a Hue Bridge first heard
+    // only as HomeKit (no driver claims that), then properly, is used at once. One whose use the
+    // user switched off, or one set up and read, still leaves the new record unused.
+    std::vector<discovery::Packet> hue_hap;
+    for (const auto &p : heard)
+        if (p.src == "192.0.2.30" && p.proto == "mdns") hue_hap.push_back(p);
+    std::vector<discovery::Packet> hue_all;
+    for (const auto &p : heard)
+        if (p.src == "192.0.2.30") hue_all.push_back(p);
+    for (const int how : {0, 1, 2}) {   // 0: only listed; 1: listed, its use switched off; 2: set up and read
+        write_home({});
+        CHECK(home::remember_scan(g_net, scan_of(hue_hap)) == 1);
+        if (how == 1) home::set_enabled(g_net.id(), "homekit:aa:bb:cc:00:53:01", false);
+        if (how == 2)
+            home::modify_entry(g_net.id(), [](home::NetworkEntry &e) {
+                home::Thing t;
+                t.id = "1";
+                t.name = "Lamp";
+                t.type = "light";
+                t.caps = home::kPower;
+                for (auto &d : e.devices) home::merge_things(d, {t}, time(nullptr));
+            });
+        CHECK(home::remember_scan(g_net, scan_of(hue_all)) == 1);
+        const home::Saved *hue = saved("hue:00005efffe005301");
+        CHECK_MSG(hue && hue->enabled == (how == 0) && claimer(*hue) == "hue_bridge",
+                  "case " + std::to_string(how) + ": " + (hue ? std::string(hue->enabled ? "used" : "unused") : "not saved"));
+    }
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -2806,6 +2986,7 @@ int main(int argc, char **argv) {
     test_discovery_every_family();
     test_names_and_colours();
     test_moved_devices();
+    test_rescan_every_family();   // registers every driver: last
 
     const std::string rm = "rm -rf '" + dir + "'";
     if (system(rm.c_str()) != 0) fprintf(stderr, "could not remove %s\n", dir.c_str());

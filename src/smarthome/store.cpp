@@ -448,11 +448,16 @@ int remember_scan(const discovery::Network &net, const std::vector<discovery::De
     int added = 0;
     for (const auto &f : found) {
         Saved *known = nullptr;
-        bool twin = false;   // the same device (its MAC) is already saved under another id
+        // The same device (its MAC) is already saved under another id, and something was decided
+        // there: the assistant's use switched off, or things read, which carry the user's settings
+        // (and the heater question a name brings). A record that only listed the device (a Hue
+        // Bridge heard only as HomeKit, which no driver claims; a device never set up) holds no
+        // decision, and must not leave the record that can control it switched off.
+        bool twin = false;
         const std::string mac = mac_key(f.mac);
         for (auto &d : e.devices) {
             if (d.id == f.id) known = &d;
-            else twin = twin || (!mac.empty() && mac_key(d.mac) == mac);
+            else twin = twin || (!mac.empty() && mac_key(d.mac) == mac && (!d.enabled || !d.things.empty()));
         }
         if (!known) {
             e.devices.emplace_back();
