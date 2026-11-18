@@ -90,6 +90,15 @@ bool claims_action(const std::string &raw) {
     return std::regex_search(text, re);
 }
 
+// "Done" said after tool calls that all failed or wait for the user's yes. An offer put as a
+// question is not that claim, and is often the right answer then: "Shall I put it in for next
+// year?" after a date in the past, "Shall I set the heater to 28 degrees?" for a change that waits
+// for a yes. "Done, anything else?" still claims.
+bool claims_done(const std::string &raw) {
+    static const std::regex offer("\\b(shall|should|can|could|may|will|would|do) i\\b", std::regex::icase | std::regex::optimize);
+    return claims_action(std::regex_replace(raw, offer, "$1"));
+}
+
 // What a tool call asked for, to recognise the same call again: the tool and its arguments in a
 // fixed order, without "say" (a reworded confirmation is still the same call).
 std::string call_key(const std::string &name, const std::string &raw_args) {
@@ -422,7 +431,8 @@ void Agent::run_turn() {
                 // Checked before the first words are spoken: once said, a claim cannot be taken back.
                 // "Done" is false when no tool has run, and when every one that ran failed or is
                 // waiting for the user's yes.
-                if (!speech_started && ((!acted && !guarded) || (acted && !any_ok && !failure_guarded)) && claims_action(sentence)) {
+                if (!speech_started && ((!acted && !guarded && claims_action(sentence)) ||
+                                        (acted && !any_ok && !failure_guarded && claims_done(sentence)))) {
                     unbacked = true;
                     round_cancel_ = true;
                     return;
@@ -501,7 +511,7 @@ void Agent::run_turn() {
 
         // "Done" after tool calls that all failed or wait for the user's yes: nothing was done, and
         // the user must hear what went wrong, or the question, instead.
-        if (acted && (unbacked || (!any_ok && !failure_guarded && !speech_started && res.tool_calls.empty() && claims_action(res.content)))) {
+        if (acted && (unbacked || (!any_ok && !failure_guarded && !speech_started && res.tool_calls.empty() && claims_done(res.content)))) {
             failure_guarded = true;
             if (began && ev_.answer_discard) ev_.answer_discard();
             correction = "(Automatic note, not from the user.) Your draft reply began \"" + util::truncate_utf8(res.content, 160) +

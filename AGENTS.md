@@ -134,14 +134,17 @@ Things in that loop that exist for a reason; do not remove them without re-runni
     and 505; never a refusal, and never a timeout once the request had gone out), after a pause
     and inside the request's own time limit. Nothing that changes, logs in or pairs is retried by
     this; a device change is resent only by the smart-home layer, at a device's new address, and
-    only when it comes out the same if made twice (on, 40 %, pause; never a volume step, key press
-    or skip). In the loop, a call that failed is not made again unchanged in the same request
-    (`call_key`: tool and arguments, "say" aside): the model is told it already failed. What the
-    user says next clears that, so "try again" works.
+    only when it comes out the same if made twice (on, 40 %, an input; never a volume step, key
+    press or playback control: some TVs toggle play and pause with one command). In the loop, a
+    call that failed is not made again unchanged in the same request (`call_key`: tool and
+    arguments, "say" aside): the model is told it already failed. What the user says next clears
+    that, so "try again" works.
   - *Never silence.* "Done" in a reply after tool calls that all failed or wait for a yes is
-    withdrawn once, like the guard for no tool at all. An empty reply goes back to the model once,
-    then an answer is made in code. When the service is lost after tools ran, the user hears the
-    confirmations of the calls that worked and that the rest could not be finished.
+    withdrawn once, like the guard for no tool at all (`claims_done`: an offer put as a question,
+    "Shall I put it in for next year?", is not withdrawn; it is often the right answer then). An
+    empty reply goes back to the model once, then an answer is made in code. When the service is
+    lost after tools ran, the user hears the confirmations of the calls that worked and that the
+    rest could not be finished.
 
 ## 5. Building
 

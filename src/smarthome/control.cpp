@@ -550,20 +550,31 @@ Lookup relocate(const std::string &network_id, Saved &device) {
     return Lookup::NotFound;
 }
 
-// Added to "it did not answer" once the device has been looked for on the network.
-const char *after_lookup(Lookup where) {
+// Whether a driver's error says the device did answer, only not as hoped ("answered with error
+// code -1501", "the plug's answer could not be read"). unreachable() lets these through too, since
+// another device may have taken the address, but such a device is not "busy or starting up".
+bool answered(const std::string &err) {
+    const std::string e = util::lower(err);
+    return e.find("answered") != std::string::npos || e.find("'s answer") != std::string::npos ||
+           e.find("its answer") != std::string::npos;
+}
+
+// Added to "it did not answer" (`err`) once the device has been looked for on the network.
+const char *after_lookup(Lookup where, const std::string &err) {
     if (where == Lookup::NotFound)
         return "; it was not found at another address on the network either (it may be switched off at the wall, or out of "
                "Wi-Fi range)";
-    if (where == Lookup::StillThere) return "; it still announces itself on the network at the same address, so it may be busy or starting up";
+    if (where == Lookup::StillThere && !answered(err))
+        return "; it still announces itself on the network at the same address, so it may be busy or starting up";
     return "";
 }
 
-// A change that comes out the same however often it is made (on, 40 %, pause, an input) may be
-// sent a second time; one that moves on from where things are (volume steps, a key press, the next
-// track) never is by itself: had the first reached the device after all, it would happen twice.
+// A change that comes out the same however often it is made (on, 40 %, an input) may be sent a
+// second time; one that moves on from where things are (volume steps, a key press, the next track)
+// never is by itself: had the first reached the device after all, it would happen twice. Nor is
+// any playback control: some TVs have a single play/pause toggle, so a pause sent twice plays again.
 bool repeatable(const Change &c) {
-    return !c.volume_step && !c.key && !(c.transport && (*c.transport == "next" || *c.transport == "previous"));
+    return !c.volume_step && !c.key && !c.transport;
 }
 
 // Whether a driver's error reads as "it did not answer" rather than "it said no".
@@ -647,12 +658,12 @@ void apply_device(const std::string &network_id, const Saved &saved, std::vector
         const bool none_ok = std::none_of(todo.begin(), todo.end(), [](const Step *s) { return s->ok; });
         if (attempt > 0 || !none_ok || !unreachable(todo[0]->err)) return;
         const Lookup where = relocate(network_id, dev);   // saves the new address itself
-        for (auto *s : todo) s->err += after_lookup(where);
+        for (auto *s : todo) s->err += after_lookup(where, s->err);
         if (where != Lookup::Moved) return;
         if (!std::all_of(todo.begin(), todo.end(), [](const Step *s) { return repeatable(s->change); })) {
             for (auto *s : todo)
                 s->err = "it had moved to a new address on the network, which is now saved, and the change was not sent "
-                         "there: a volume step, key press or skip is never sent a second time by itself. Nothing was "
+                         "there: a volume step, key press or playback control is never sent a second time by itself. Nothing was "
                          "changed; ask the user whether to do it now";
             return;
         }
@@ -724,7 +735,7 @@ void read_now(const std::string &network_id, const NetworkEntry &e, const std::v
                 // changes nothing, so it is always asked again at a new address.
                 if (ok || attempt > 0 || !detail || !unreachable(err)) break;
                 const Lookup where = relocate(network_id, dev);
-                err += after_lookup(where);
+                err += after_lookup(where, err);
                 if (where != Lookup::Moved) break;
             }
         }

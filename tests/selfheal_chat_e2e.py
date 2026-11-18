@@ -71,7 +71,7 @@ class Run:
         self.out = out
 
 
-def converse(script, said, plug=False, refuse=False):
+def converse(script, said, plug=False, refuse=False, ask_first=False):
     state = tempfile.mkdtemp(prefix="zb-selfheal-e2e-")
     procs = []
     try:
@@ -103,7 +103,7 @@ def converse(script, said, plug=False, refuse=False):
             home = json.load(open(path))
             for d in home["networks"][network]["devices"]:
                 for t in d["things"]:
-                    t["alias"] = "Desk lamp"
+                    t["alias"], t["ask_first"] = "Desk lamp", ask_first
             json.dump(home, open(path, "w"))
             mock_call(plug_port, "/mock/reset", {"refuse_set": refuse})   # also forgets the setup's session and counts
         json.dump({"llm_model": "scripted", "fast_mode": False, "speak_replies": False}, open(state + "/config/zero-bot/settings.json", "w"))
@@ -188,6 +188,30 @@ def main():
     check("'I've turned on the desk lamp' after the failure is withdrawn and the failure told instead",
           r.answers == ["Sorry, the desk lamp did not respond.", "Sorry, the desk lamp is still not responding, so it is off."]
           and r.withdrawn == 1, (r.answers, r.withdrawn))
+
+    # ---- an offer put as a question is not "done": after a failure, or for a change that waits for a yes
+    offer = "Shall I put it in for the 3rd of March 2031 instead, since that date has gone by?"
+    r = converse({"user": [["lunch with sam", {"tool": "calendar_add", "args": {"title": "Lunch with Sam", "start": "2020-03-03 13:00",
+                                                                                 "say": "Lunch is in."}}]],
+                  "after": [["ERROR: that start is in the past", {"text": offer}]],
+                  "note": [["nothing has been done", {"text": "Sorry, that date is in the past."}]]},
+                 ["put lunch with sam in my calendar on 3 march 2020 at 1pm"])
+    check("'Shall I put it in for next year?' after a failed call is spoken as it is, not withdrawn",
+          r.answers == [offer] and r.withdrawn == 0 and len(r.requests) == 2, (r.answers, r.withdrawn, len(r.requests)))
+    question = "Shall I put the desk lamp on?"
+    r = converse({"user": [["turn on the desk lamp", {"tool": "smart_home", "args": LAMP_ON}], ["yes", {"tool": "smart_home", "args": LAMP_ON}]],
+                  "after": [["CONFIRM", {"text": question}]],
+                  "note": [["nothing has been done", {"text": "The desk lamp asks first. Switch it on?"}]]},
+                 ["turn on the desk lamp", "yes"], plug=True, ask_first=True)
+    sets = r.device["methods"].count("set_device_info") if r.device else -1
+    check("a change waiting for a yes: '%s' is put to the user at once" % question,
+          r.answers[:1] == [question] and r.withdrawn == 0, (r.answers, r.withdrawn))
+    check("... and the yes switches the lamp, once", sets == 1 and r.answers[1:] == ["The desk lamp is on."], (sets, r.answers))
+    r = converse({"user": [["remind me", {"tool": "reminder_set", "args": {"text": "tea"}}]],
+                  "after": [["ERROR", {"text": "Done, shall I do anything else?"}]],
+                  "note": [["nothing has been done", {"text": "I could not set it: it needs a time."}]]}, ["remind me about tea"])
+    check("'Done, shall I do anything else?' after a failed call is still withdrawn",
+          r.answers == ["I could not set it: it needs a time."] and r.withdrawn == 1, (r.answers, r.withdrawn))
 
     # ---- never silence: an empty reply goes back once; then an answer is made here
     r = converse({"user": [["capital of portugal", {"text": ""}]], "note": [["Your reply was empty", {"text": "Lisbon."}]]},

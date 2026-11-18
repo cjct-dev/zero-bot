@@ -84,6 +84,7 @@ struct FakeDriver : home::Driver {
     std::map<std::string, std::vector<home::Thing>> listing;   // what enumerate() answers, by device id
     std::map<std::string, json> live;                          // state by "device/thing"
     std::set<std::string> broken;                              // devices that do not answer
+    std::map<std::string, std::string> refusing;               // devices that answer every change with this error
     std::vector<std::string> log;                              // one line per apply / apply_many
     std::mutex mtx;
     int delay_ms = 0;
@@ -184,6 +185,7 @@ struct FakeDriver : home::Driver {
         busy(d.id);
         std::lock_guard<std::mutex> lk(mtx);
         if (broken.count(d.id)) { err = "it did not answer"; return false; }
+        if (refusing.count(d.id)) { err = refusing[d.id]; return false; }
         if (deadline_ms <= 0 || deadline_ms > 2500) { err = "bad deadline"; return false; }
         log.push_back("apply " + d.id + "/" + t.id + " " + change_text(c));
         remember(d.id + "/" + t.id, t, c);
@@ -202,7 +204,7 @@ struct FakeDriver : home::Driver {
     }
     void reset() {
         std::lock_guard<std::mutex> lk(mtx);
-        listing.clear(); live.clear(); broken.clear(); log.clear();
+        listing.clear(); live.clear(); broken.clear(); refusing.clear(); log.clear();
         delay_ms = 0; many = false; wants_pairing = false; account_pairing = false; reject.clear(); unpair_unreached = false;
         slow_device.clear(); slow_ms = 0;
         active = 0; most = 0; device_active.clear(); device_most = 0;
@@ -2122,7 +2124,10 @@ void test_moved_devices() {
     // after all, it would happen twice. The new address is saved all the same.
     for (const json &change : {json{{"action", "set"}, {"target", "Bedroom TV"}, {"volume_step", 3}},
                                json{{"action", "press"}, {"target", "Bedroom TV"}, {"key", "down"}},
-                               json{{"action", "next"}, {"target", "Bedroom TV"}}}) {
+                               json{{"action", "next"}, {"target", "Bedroom TV"}},
+                               // Some TVs have one play/pause toggle: a pause sent twice plays again.
+                               json{{"action", "pause"}, {"target", "Bedroom TV"}},
+                               json{{"action", "play"}, {"target", "Bedroom TV"}}}) {
         home_with_tv();
         g_fake->broken = {"fake:tv"};
         g_scan_answer = {found_at("fake:tv", "127.0.0.2")};
@@ -2151,6 +2156,16 @@ void test_moved_devices() {
     r = run({{"action", "off"}, {"target", "Bedroom TV"}});
     CHECK_MSG(has(r, "still announces itself on the network at the same address") && !has(r, "switched off at the wall"), r);
     CHECK(applies() == 1);
+
+    // The device answered, only with a refusal: it is not "busy or starting up", whatever the scan says.
+    home_with_tv();
+    g_fake->broken.clear();
+    g_fake->refusing["fake:tv"] = "the TV answered with error code -1501";
+    g_scan_answer = {found_at("fake:tv", "127.0.0.1")};
+    r = run({{"action", "off"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": the TV answered with error code -1501. Tell the user", r);
+    CHECK(applies() == 1);
+    g_fake->refusing.clear();
 
     // One scan serves a second device that stops answering within 20 seconds.
     home_with_tv();
