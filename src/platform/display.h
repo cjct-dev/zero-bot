@@ -17,7 +17,8 @@ unsigned long now_ms();
 // reboot. While `percent` is set (5 to 100), a fatal signal (SIGSEGV, SIGBUS, SIGFPE, SIGILL,
 // SIGABRT, SIGTRAP, SIGSYS, SIGQUIT, SIGHUP) writes it to the backlight before the process ends as
 // it would have; -1 when the screen is lit as set (nothing to put back). The first call installs
-// the handler. SIGKILL cannot be caught: after one, the backlight stays as it was.
+// the handler (not for a signal the app was started with ignored, such as a hang-up under nohup:
+// that stays ignored). SIGKILL cannot be caught: after one, the backlight stays as it was.
 void restore_after_crash(int percent);
 namespace detail {
 // The file a crash writes the brightness to: the device's backlight (none on a desktop build); the

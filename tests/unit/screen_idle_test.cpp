@@ -160,12 +160,13 @@ void test_choices() {
 // A crash while the screen is dimmed or off puts the brightness setting back (the launcher does
 // not), and the process still ends by the same signal. Each case runs in a child of its own, which
 // writes to a file of the test's own instead of the backlight.
-std::string crash(int sig, int restore, bool fault, const std::string &file) {
+std::string crash(int sig, int restore, bool fault, const std::string &file, bool ignored = false) {
     { std::ofstream(file) << "0"; }                    // the backlight as the screen off leaves it
     const pid_t pid = fork();
     if (pid == 0) {
         prctl(PR_SET_DUMPABLE, 0);                     // no core files from the deliberate crashes
         display::detail::set_backlight_file(file.c_str());
+        if (ignored) signal(sig, SIG_IGN);             // as started under nohup, say
         display::restore_after_crash(55);              // the screen dims ...
         display::restore_after_crash(restore);         // ... and then, say, lights again (-1)
         if (fault) {
@@ -200,6 +201,9 @@ void test_crash() {
     check(got == ends(SIGBUS, "0"), "lit as set (-1): nothing written: " + got);
     got = crash(SIGFPE, 7, false, file);
     check(got == ends(SIGFPE, "7"), "one digit: " + got);
+    // A hang-up the app was started with ignored stays ignored: it carries on, nothing written.
+    got = crash(SIGHUP, 60, false, file, true);
+    check(got == ends(-1, "0"), "a signal ignored from the start is left ignored: " + got);
     unlink(file.c_str());
     rmdir(dir.c_str());
 }

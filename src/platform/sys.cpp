@@ -86,7 +86,13 @@ void restore_after_crash(int percent) {
     sa.sa_handler = on_fatal;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESETHAND | SA_NODEFER | (own_stack ? SA_ONSTACK : 0);
-    for (const int sig : kFatal) sigaction(sig, &sa, nullptr);
+    // A signal the app was started with ignored (a hang-up, under nohup or a parent that ignores
+    // it) stays ignored: the handler ends the process, which the signal did not do before.
+    for (const int sig : kFatal) {
+        struct sigaction was {};
+        if (sigaction(sig, nullptr, &was) == 0 && was.sa_handler == SIG_IGN) continue;
+        sigaction(sig, &sa, nullptr);
+    }
 }
 
 namespace detail {
