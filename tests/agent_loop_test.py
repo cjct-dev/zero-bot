@@ -833,6 +833,23 @@ def trace_slow_and_refused():
 
 
 @scenario
+def trace_refusal_was_the_reasoning_field():
+    # A 400 for "reasoning_effort", not for the token counts: the counts are asked for again and kept.
+    script = {"rules": [{"when": {"effort": True}, "reply": {"status": 400, "body": '{"error": {"message": "unknown field reasoning_effort"}}'}},
+                        {"when": {"said": "CHECK BEFORE SPEAKING"}, "reply": {"text": "OK"}}],
+              "default": {"text": "Lisbon."}}
+    r = run(script, said=["capital of portugal", "and of spain"], fast=True, trace=True)
+    n = "trace, a service that refuses the reasoning field"
+    sent = [("reasoning_effort" in b, "stream_options" in b) for b in r.bodies()]
+    check(n + ": counts dropped once, asked again with the field dropped, then always asked",
+          sent[:3] == [(True, True), (True, False), (False, True)] and all(x == (False, True) for x in sent[3:]), sent)
+    cs = events(r, "call")
+    check(n + ": the counts are reported once the call goes through", bool(cs) and cs[0]["attempts"] == 3 and
+          cs[0]["usage"].get("prompt_tokens", 0) > 0 and all(c["usage_asked"] for c in cs), cs[:1])
+    check(n + ": the answers still come", [t["answer"] for t in r.turns] == ["Lisbon.", "Lisbon."], r)
+
+
+@scenario
 def trace_cache_bust_and_tts_probe():
     script = {"rules": [{"when": {"said": "hello"}, "reply": {"chunks": ["Hello there. ", "How can I help?"]}}], "default": {"text": "Bye."}}
     r = run(script, said=["hello", "bye"], env={"ZB_EXP_CACHE_BUST": "1", "ZB_EXP_TTS_PROBE": "1"}, trace=True,

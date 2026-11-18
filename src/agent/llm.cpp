@@ -256,14 +256,15 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
     if (sent_usage && res.status == 400 && out.content.empty() && out.tool_calls.empty()) {
         // Experiments only: a service that turns down the request for token counts gets the call
         // without it. If that is refused too, the counts were not the reason; ask for them again.
+        // Only an answer without them proves they were (a failure on the way proves nothing).
         body.erase("stream_options");
         req.body = dump(body);
         reset();
         ++attempts;
         retry.budget_ms = remaining_budget();
         res = http::send_retrying(req, retry);
-        if (res.status != 400) usage_rejected = true;
-        else body["stream_options"] = {{"include_usage", true}};
+        if (res.ok()) usage_rejected = true;
+        else if (res.status == 400) body["stream_options"] = {{"include_usage", true}};
     }
     if (sent_effort && res.status == 400 && out.content.empty() && out.tool_calls.empty()) {
         effort_rejected = true;
