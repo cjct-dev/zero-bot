@@ -2064,6 +2064,19 @@ void test_tplink_discovery() {
                   mixed.empty() ? "nothing" : mixed[0].kind + " " + mixed[0].id);
     }
 
+    // A flood of answers from made-up addresses, each padded to the largest datagram: at most 256
+    // are kept, and of each only the few fields used (it once kept every answer whole: 3000 of
+    // them took over 200 MB).
+    {
+        std::string pad;
+        while (pad.size() < 8000) pad += "0,";
+        const std::string padded = sysinfo(R"J("type":"IOT.SMARTPLUGSWITCH","alias":"Flood","mac":"50:C7:BF:00:00:99","pad":[)J" + pad + "0]");
+        std::vector<discovery::Packet> flood;
+        for (int i = 0; i < 300; ++i) flood.push_back({"kasa", "198.18." + std::to_string(i / 250) + "." + std::to_string(i % 250), padded});
+        const auto many = discovery::devices_from(flood);
+        CHECK_MSG(many.size() == 256 && many[0].name == "Flood" && many[0].kind == "tplink", std::to_string(many.size()));
+    }
+
     // The same plug before and after a firmware update keeps its id, so a later scan updates it.
     const auto before = discovery::devices_from({{"kasa", "192.0.2.80", sysinfo(R"J("type":"IOT.SMARTPLUGSWITCH","alias":"x","mac":"50:C7:BF:00:00:80")J")}});
     const auto after = discovery::devices_from({{"tapo", "192.0.2.81", moved("IOT.SMARTPLUGSWITCH", "50-c7-bf-00-00-80")}});

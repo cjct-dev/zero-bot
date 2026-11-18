@@ -247,15 +247,26 @@ void parse_tapo(const unsigned char *buf, size_t len, const std::string &src, Se
     seen.tapo[src] = j["result"];
 }
 
+// Addresses kept from 9999 answers during one scan: more than any home has. A flood of answers
+// from made-up addresses must not exhaust a small device's memory, nor its time in merge().
+constexpr size_t kMaxKasaAnswers = 256;
+
 void parse_kasa(const unsigned char *buf, size_t len, const std::string &src, Seen &seen) {
     if (len == 0 || len > kMaxPacket) return;
+    if (seen.kasa.size() >= kMaxKasaAnswers && !seen.kasa.count(src)) return;
     const std::string text = kasa_unscramble(buf, len);
     if (json_too_deep(text)) return;
     const json j = json::parse(text, nullptr, false);
     if (!j.is_object() || !j.contains("system") || !j["system"].is_object()) return;
     const json &sys = j["system"];
     if (!sys.contains("get_sysinfo") || !sys["get_sysinfo"].is_object()) return;
-    seen.kasa[src] = sys["get_sysinfo"];
+    // Only what merge() reads is kept (a whole answer parsed can take many times its size).
+    json keep = json::object();
+    for (const char *key : {"type", "mic_type", "model", "alias", "mac", "mic_mac"}) {
+        const auto it = sys["get_sysinfo"].find(key);
+        if (it != sys["get_sysinfo"].end() && it->is_string()) keep[key] = *it;
+    }
+    seen.kasa[src] = keep;
 }
 
 void parse_ssdp(const char *buf, size_t len, const std::string &src, Seen &seen) {
