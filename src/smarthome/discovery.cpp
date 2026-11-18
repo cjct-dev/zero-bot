@@ -343,7 +343,12 @@ std::vector<Device> merge(const Seen &seen) {
                     it->second.found_by.push_back("ssdp");
             continue;
         }
+        const auto before = by_ip.find(s.first);
+        const bool had_hue = before != by_ip.end() && before->second.kind == "hue_bridge";
         Device &d = take(s.first, kind, "ssdp");
+        // A Hue Bridge's port is the one its own _hue._tcp record gives (else the default, 0). The
+        // port of another service heard from it (HomeKit's 8080) is not the bridge's interface.
+        if (kind == "hue_bridge" && !had_hue) d.port = 0;
         if (d.name.empty()) d.name = kind == "hue_bridge" ? "Hue Bridge" : clean(get("server"));
         if (!get("hue-bridgeid").empty()) { d.id = "hue:" + util::lower(get("hue-bridgeid")); d.info["bridgeid"] = util::lower(get("hue-bridgeid")); }
     }

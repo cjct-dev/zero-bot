@@ -2032,6 +2032,16 @@ void test_discovery_hue() {
     CHECK(by_ssdp.size() == 1 && by_ssdp[0].kind == "hue_bridge" && by_ssdp[0].id == "hue:00005efffe005301" &&
           by_ssdp[0].port == 0 && info(by_ssdp[0], "bridgeid") == "00005efffe005301");
     CHECK(by_ssdp.size() == 1 && hue_driver->claims(by_ssdp[0].kind, by_ssdp[0].info));
+    // SSDP and HomeKit heard, the bridge's own _hue._tcp answer lost: a Hue Bridge, but never on
+    // HomeKit's port 8080 (the HomeKit service there does not speak the bridge's HTTPS interface).
+    for (const auto &order : std::vector<std::vector<discovery::Packet>>{
+             {{"ssdp", "192.0.2.70", ssdp}, {"mdns", "192.0.2.70", hap}}, {{"mdns", "192.0.2.70", hap}, {"ssdp", "192.0.2.70", ssdp}}}) {
+        const auto seen = discovery::devices_from(order);
+        CHECK_MSG(seen.size() == 1 && seen[0].kind == "hue_bridge" && seen[0].id == "hue:00005efffe005301",
+                  "SSDP and HomeKit only: one Hue Bridge");
+        CHECK_MSG(seen.size() == 1 && seen[0].port == 0,
+                  "SSDP and HomeKit only: the default HTTPS port, not HomeKit's: " + (seen.empty() ? std::string("none") : std::to_string(seen[0].port)));
+    }
     // Found by _hue._tcp alone.
     const auto by_mdns = discovery::devices_from({{"mdns", "192.0.2.70", hue}});
     CHECK(by_mdns.size() == 1 && by_mdns[0].kind == "hue_bridge" && by_mdns[0].port == 443);
