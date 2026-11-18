@@ -119,10 +119,12 @@ class Tv:
     def apply(self, change, deadline=2500):
         return self.cli("apply", json.dumps(change), deadline=deadline)
 
-    def apply_twice(self, change, gap_ms, deadline=2500, then=None, first_device=None):
+    def apply_twice(self, change, gap_ms, deadline=2500, then=None, first_device=None, between=None):
         """Two calls from one driver object, gap_ms apart (as the app would make them): `change`,
         then `then` (by default the same change again). With first_device (another Tv), the first
-        call goes to that device instead. Returns (first fault, second rc, second error, total s)."""
+        call goes to that device instead. With `between` (a config for Mock.set), the mock is set to
+        it as soon as the first call has returned, before the second starts. Returns (first fault,
+        second rc, second error, total s)."""
         cmd = [CLI, self.path, "apply", json.dumps(change), "--wake-port", str(self.mock.wol), "--deadline", str(deadline),
                "--again-after", str(gap_ms)]
         if then is not None:
@@ -130,13 +132,21 @@ class Tv:
         if first_device is not None:
             cmd += ["--first-device", first_device.path]
         t0 = time.time()
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        seen_output.append(p.stdout + p.stderr)
+        if between is None:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            stdout, stderr = p.stdout, p.stderr
+        else:
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            head = p.stdout.readline()   # the first call's {"first": ...} line, printed before the gap
+            self.mock.set(**between)
+            rest, stderr = p.communicate(timeout=60)
+            stdout = head + rest
+        seen_output.append(stdout + stderr)
         first = {}
-        for line in p.stdout.splitlines():
+        for line in stdout.splitlines():
             if line.startswith('{"first"'):
                 first = json.loads(line)["first"]
-        return first.get("fault"), p.returncode, p.stderr.strip(), time.time() - t0
+        return first.get("fault"), p.returncode, stderr.strip(), time.time() - t0
 
     def apply_seq(self, changes, gap_ms, deadline=2500):
         """Several calls from one driver object, gap_ms apart. Returns ([{"ok", "fault", "error"}
@@ -900,6 +910,19 @@ def starting_tests(m, tv):
     rc, out, err, elapsed = nomac.apply({"on": True}, deadline=2500)
     check("nothing answers DIAL and no wake address: on=true fails, no_answer, as before",
           rc == 1 and fault(err) == "no_answer" and elapsed < 2.9, (rc, err, elapsed))
+    # The TV took a wake (here late, from deep standby) and is resuming, and then nothing answers
+    # on either port for a moment: switching it on or off again then gets 'waking', never no_answer
+    # (the caller's infrared power toggle would switch off the TV that is coming on) nor already_off
+    # (it would come on and stay on). Review of 0.4.4: the wake-up signal's memory is dropped once
+    # the DIAL port takes a connection, so these read as no_answer and already_off.
+    for dev, label, again in ((nomac, "no wake address", {"on": True}), (nomac, "no wake address", {"on": False}),
+                              (tv, "a wake address", {"on": False})):
+        m.reset(state="idle", caps="tv", wake_delay=20.0, dial_late=3.0)
+        first, rc, err, elapsed = dev.apply_twice({"on": True}, 1500, then=again, between={"state": "gone"})
+        check("deep standby, %s: on=true done (DIAL late), then nothing answers: %s gets 'waking', never no_answer "
+              "or already_off" % (label, json.dumps(again)),
+              first == "none" and rc == 1 and fault(err) == "waking" and not reads_as_unreachable(err) and
+              (again["on"] or "not switched off" in err), (first, rc, err))
 
     # A changed key that cannot be checked still fails on=true, though the TV took the wake: the
     # API comes up 0.3 s after it presenting key b, and the one check of it gets a 500.

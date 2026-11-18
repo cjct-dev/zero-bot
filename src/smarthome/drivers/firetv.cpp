@@ -1661,7 +1661,8 @@ private:
     // latest evidence, when the next 2.5 s slot does not fit before the deadline one more DIAL
     // request (no packet) goes out kFinalTryMs before it, instead of waiting idle. Without a
     // packet that actually left (no wake address, an IPv6 TV, no interface on the TV's subnet)
-    // nothing is waking the TV: kNoAnswer.
+    // nothing is waking the TV: kNoAnswer. While the TV is starting (it took a wake under a minute
+    // ago and its API has not answered since), nothing answering is a TV resuming: kWaking too.
     bool power_on(Session &s, const home::Device &dev, const std::string &who, bool alone, std::string &err) {
         using std::chrono::milliseconds;
         const Deadline &dl = s.deadline();
@@ -1735,6 +1736,8 @@ private:
                 err = kNotServing;
             else if (connected)   // accepted, then closed, reset or not answered in HTTP (or never sent)
                 err = detail::woken_error(Woken::NotServing, s.starting());
+            else if (s.starting())   // nothing now, but the TV took a wake under a minute ago: it may be resuming
+                err = detail::woken_error(Woken::Waking, true);
             else if (!origin)
                 err = std::string(kNoAnswer) + " It may be off or unplugged.";
             else if (evidence && *evidence >= *origin + milliseconds(kDeepResumeMs))
@@ -1796,11 +1799,12 @@ private:
                 if (i) return partial(i, "Then it stopped taking them.");
                 // Nothing answered on either port: the TV is most likely off already, and an
                 // infrared power toggle would switch it on. Unless a wake-up signal from here went
-                // out less than kDeepResumeMs before this was asked and nothing has answered since:
-                // then the TV may be coming on right now, and "off already" would be wrong.
+                // out less than kDeepResumeMs before this was asked and nothing has answered since,
+                // or the TV took a wake under a minute ago and its API has not answered since
+                // (starting): then the TV may be coming on right now, and "off already" would be wrong.
                 if (switching_off && fault_of(err) == Fault::NoAnswer) {
                     const auto origin = remembered_wake(who);
-                    if (origin && asked < *origin + std::chrono::milliseconds(kDeepResumeMs))
+                    if ((origin && asked < *origin + std::chrono::milliseconds(kDeepResumeMs)) || s.starting())
                         err = std::string(kWaking) + kNotSwitchedOff;
                     else
                         err = std::string(kAlreadyOff) + " It did not answer.";
