@@ -165,6 +165,7 @@ int main(int argc, char **argv) {
     eq("fault name: already off", fault_name(fault_of(std::string(kAlreadyOff) + " It did not answer.")), "already_off");
     eq("fault name: not serving", fault_name(fault_of(kNotServing)), "not_serving");
     eq("fault name: waking", fault_name(fault_of(std::string(kWaking) + " Try again in a moment.")), "waking");
+    eq("fault name: starting", fault_name(fault_of(std::string(kStarting) + " Try again in a moment.")), "starting");
     eq("fault name: not paired", fault_name(fault_of(kNotPaired)), "not_paired");
     eq("fault name: pair again", fault_name(fault_of(kPairAgain)), "pair_again");
     eq("fault name: key changed", fault_name(fault_of(kKeyChanged)), "key_changed");
@@ -173,9 +174,71 @@ int main(int argc, char **argv) {
     eq("fault name: no error", fault_name(fault_of("")), "none");
     // Only "nothing answered" may read as unreachable to the app (it then searches the network
     // and may apply the change again at a new address): never a TV that was there.
-    for (const char *s : {kNotServing, kWaking, kNotPaired, kPairAgain, kKeyChanged, kUnsupported, kAlreadyOff})
+    for (const char *s : {kNotServing, kWaking, kStarting, kNotPaired, kPairAgain, kKeyChanged, kUnsupported, kAlreadyOff})
         check(std::string("app word list: \"") + s + "\" does not read as unreachable", !reads_as_unreachable(s));
     check("app word list: \"" + std::string(kNoAnswer) + "\" does (a new address may help)", reads_as_unreachable(kNoAnswer));
+
+    // ---- a TV that is starting up (ZB-060): what a wake comes to, and the memory of one
+    {
+        using std::chrono::milliseconds;
+        using std::chrono::seconds;
+        // on=true after the TV accepted the DIAL wake: power alone is done whatever the API does,
+        // unless its key changed and could not be accepted; anything more needs the API.
+        check("on alone, the TV took the wake, API silent: done", power_on_done(Woken::NotServing, true));
+        check("on alone, the TV took the wake, API still refusing: done", power_on_done(Woken::Waking, true));
+        check("on alone, the TV took the wake, no time left to wait for the API: done", power_on_done(Woken::NoTime, true));
+        check("on alone, API up: done", power_on_done(Woken::Up, true));
+        check("on alone, the API's key changed and could not be accepted: not done", !power_on_done(Woken::KeyChanged, true));
+        check("on with more, API up: the rest can go", power_on_done(Woken::Up, false));
+        for (const Woken w : {Woken::NotServing, Woken::Waking, Woken::KeyChanged, Woken::NoTime, Woken::NoAnswer})
+            check("on with more, API not up (" + std::to_string(static_cast<int>(w)) + "): not done", !power_on_done(w, false));
+
+        // A silent API reads as "still starting up" only while the TV is starting.
+        eq("silent API, not starting: not serving, as before", woken_error(Woken::NotServing, false), kNotServing);
+        const std::string s = woken_error(Woken::NotServing, true);
+        eq("silent API while starting: still starting up", s, "The TV is still starting up. Try again in a moment.");
+        check("... fault starting, and nothing that sends the app looking elsewhere",
+              fault_of(s) == Fault::Starting && !reads_as_unreachable(s), s);
+        eq("refused while starting: waking, as before", woken_error(Woken::Waking, true), woken_error(Woken::Waking, false));
+        check("refused while starting: fault waking", fault_of(woken_error(Woken::Waking, true)) == Fault::Waking);
+        eq("nothing on either port while starting: no answer, as before (a new address may help)",
+           woken_error(Woken::NoAnswer, true), woken_error(Woken::NoAnswer, false));
+        check("... fault no_answer", fault_of(woken_error(Woken::NoAnswer, true)) == Fault::NoAnswer);
+        eq("a key that changed while starting: as before", woken_error(Woken::KeyChanged, true), woken_error(Woken::KeyChanged, false));
+        check("... fault key_changed", fault_of(woken_error(Woken::KeyChanged, true)) == Fault::KeyChanged);
+        eq("no time while starting: as before", woken_error(Woken::NoTime, true), "There was no time left to finish that. Try again in a moment.");
+        eq("up: no error", woken_error(Woken::Up, true), "");
+
+        // A request that went out and got no answer.
+        eq("unanswered command, not starting: as before", unconfirmed_error(true, false),
+           std::string(kNotServing) + " The command may still have been carried out.");
+        eq("unanswered read, not starting: as before", unconfirmed_error(false, false), kNotServing);
+        const std::string acted = unconfirmed_error(true, true), read = unconfirmed_error(false, true);
+        eq("unanswered command while starting: may have been carried out, check first", acted,
+           "The TV is still starting up. The command may still have been carried out, so check the TV before trying again.");
+        eq("unanswered read while starting: try again", read, "The TV is still starting up. Try again in a moment.");
+        check("... both fault starting, neither reads as unreachable",
+              fault_of(acted) == Fault::Starting && fault_of(read) == Fault::Starting && !reads_as_unreachable(acted) &&
+                  !reads_as_unreachable(read));
+
+        // The memory: per device, the earliest start kept, forgotten after its time or when told.
+        Recall r(60000);
+        const auto t0 = Recall::Clock::now();
+        check("memory: nothing noted, nothing kept", !r.get("tv1", t0));
+        r.note("tv1", t0, t0);
+        check("memory: kept within the minute", r.get("tv1", t0 + seconds(59)) == t0);
+        check("memory: per device", !r.get("tv2", t0 + seconds(1)));
+        check("memory: a later wake does not move the start (a stuck API is not 'starting' for ever)",
+              r.note("tv1", t0 + seconds(30), t0 + seconds(30)) == t0 && r.get("tv1", t0 + seconds(31)) == t0);
+        check("memory: gone after the minute", !r.get("tv1", t0 + seconds(60) + milliseconds(1)));
+        check("memory: a new wake after that starts a new minute",
+              r.note("tv1", t0 + seconds(61), t0 + seconds(61)) == t0 + seconds(61) &&
+                  r.get("tv1", t0 + seconds(62)) == t0 + seconds(61));
+        r.note("tv2", t0 + seconds(61), t0 + seconds(61));
+        r.forget("tv1");
+        check("memory: forgotten when told (its API answered), the other device's kept",
+              !r.get("tv1", t0 + seconds(62)) && r.get("tv2", t0 + seconds(62)) == t0 + seconds(61));
+    }
 
     // ---- untrusted text
     eq("UTF-8 kept as it is", sanitize_utf8("Mock TV \xe2\x98\x95"), "Mock TV \xe2\x98\x95");

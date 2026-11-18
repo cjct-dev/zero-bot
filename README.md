@@ -307,16 +307,18 @@ device directly: nothing goes through the makers' cloud services. Supported so f
 - **Amazon Fire TV** (Fire OS televisions, sticks and cubes; the newer Vega OS sticks are
   untested), worked the way Amazon's Fire TV phone app does: it can move around the menus (up,
   down, left, right, OK, back, home, menu), play and pause, rewind and fast-forward, open an
-  installed app by name ("put Netflix on"), switch the screen off and wake the TV again. Volume and
-  mute work only on models that report network volume control (many sticks do not); for those,
-  and for channels, inputs and number keys, use the infrared remote. A Fire TV in deep standby can
-  be woken over the network only if Zero Bot heard its wake-up address while it was on, and then
-  takes about 7 seconds to come on; otherwise switching it on needs the infrared remote. Zero Bot
-  remembers the TV's security key from pairing; if the TV later presents a new one (a Fire TV can
-  change it, for example after a restart), Zero Bot checks once that the TV still accepts the
-  pairing and then carries on with the new key; if it does not, it asks you to pair again. Amazon
-  does not document this interface, so a Fire TV software update could change it. Tested so far
-  only against a simulated TV.
+  installed app by name ("put Netflix on"), switch the screen off and wake the TV again. Switching
+  it on counts as done once the TV takes the wake-up request; the TV then needs a few seconds
+  before it takes other commands, and Zero Bot says it is still starting up if asked sooner.
+  Volume and mute work only on models that report network volume control (many sticks do not);
+  for those, and for channels, inputs and number keys, use the infrared remote. A Fire TV in deep
+  standby can be woken over the network only if Zero Bot heard its wake-up address while it was
+  on, and then takes about 7 seconds to come on; otherwise switching it on needs the infrared
+  remote. Zero Bot remembers the TV's security key from pairing; if the TV later presents a new one
+  (a Fire TV can change it, for example after a restart), Zero Bot checks once that the TV still
+  accepts the pairing and then carries on with the new key; if it does not, it asks you to pair
+  again. Amazon does not document this interface, so a Fire TV software update could change it.
+  Tested so far only against a simulated TV.
 - **Philips Hue**, through the Hue Bridge (the square bridge and the Hue Bridge Pro; the first,
   round bridge is not supported), over the bridge's own local interface: switch, dim and colour
   lights and set shades of white, switch Hue smart plugs, start scenes, and read the motion and

@@ -3,7 +3,7 @@
 
 usage: firetv_e2e.py [path/to/firetv_cli] [group ...]   (default: build/unit/firetv_cli, which
 tests/run_unit.sh builds; every group)
-groups: wrong_code command capability wake auth hostile unknown (pairing and enumerate always
+groups: wrong_code command capability wake starting auth hostile unknown (pairing and enumerate always
 run; naming groups is for quick checks of one area, e.g. of a deliberately broken build)
 
 Prints one line per check and exits non-zero when any fails. Nothing outside 127.0.0.1 is
@@ -137,6 +137,19 @@ class Tv:
             if line.startswith('{"first"'):
                 first = json.loads(line)["first"]
         return first.get("fault"), p.returncode, p.stderr.strip(), time.time() - t0
+
+    def apply_seq(self, changes, gap_ms, deadline=2500):
+        """Several calls from one driver object, gap_ms apart. Returns ([{"ok", "fault", "error"}
+        for every call but the last], last rc, last error, total s)."""
+        cmd = [CLI, self.path, "apply", json.dumps(changes[0]), "--wake-port", str(self.mock.wol), "--deadline",
+               str(deadline), "--again-after", str(gap_ms)]
+        for change in changes[1:]:
+            cmd += ["--then", json.dumps(change)]
+        t0 = time.time()
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        seen_output.append(p.stdout + p.stderr)
+        earlier = [json.loads(line)["first"] for line in p.stdout.splitlines() if line.startswith('{"first"')]
+        return earlier, p.returncode, p.stderr.strip(), time.time() - t0
 
     def state(self):
         with open(self.path) as f:
@@ -749,6 +762,108 @@ def wake_tests(m, tv):
           rc == 1 and fault(err) == "waking" and keys(st) == [] and st["dial_posts"] == 1, (rc, err, keys(st), elapsed))
 
 
+def starting_tests(m, tv):
+    """A TV whose API, after the TV took the DIAL wake, accepts connections and says nothing for
+    a while (ZB-060: the owner's TV, from standby, came on while the app reported a failure)."""
+    for mode, delay in (("silent", 0.3), ("silent_tls", 0.0)):
+        m.reset(state="idle", caps="tv", wake_delay=delay, starting_s=6.0, starting_mode=mode)
+        rc, out, err, elapsed = tv.apply({"on": True}, deadline=2500)
+        st = m.stats()
+        check("starting (%s): on=true is done once the TV took the DIAL wake, though its API is still silent" % mode,
+              rc == 0 and st["dial_posts"] == 1 and st["wakes"] == 1 and st["state"] == "starting" and
+              st["silent_connections"] >= 1 and keys(st) == [] and elapsed < 2.9,
+              (rc, err, st["dial_posts"], st["state"], st["silent_connections"], elapsed))
+
+    # The very next command, while the API is still silent: "still starting up", never "not
+    # replying", and nothing that would send the app looking for the TV elsewhere. A request that
+    # went out (TLS completed) may still be carried out, so it says so instead of "try again".
+    for mode, ends, dials in (("silent", "The command may still have been carried out, so check the TV before trying again.", 1),
+                              ("silent_tls", "Try again in a moment.", 2)):
+        m.reset(state="idle", caps="tv", wake_delay=0.3, starting_s=8.0, starting_mode=mode)
+        first, rc, err, elapsed = tv.apply_twice({"on": True}, 200, then={"key": "home"})
+        st = m.stats()
+        check("starting (%s): the next command, while the API is still silent, says the TV is still starting up" % mode,
+              first == "none" and rc == 1 and fault(err) == "starting" and
+              message(err).startswith("The TV is still starting up. ") and message(err).endswith(ends) and
+              not reads_as_unreachable(err), (first, rc, err))
+        check("starting (%s): ... nothing was carried out, and no request was sent twice" % mode,
+              keys(st) == [] and st["requests"] == [] and st["dial_posts"] == dials and st["state"] == "starting",
+              (keys(st), st["dial_posts"], st["state"]))
+
+    # A key press that wakes the TV itself (its API refused), whose API then starts slowly: the
+    # same answer, and so for the next command.
+    m.reset(state="idle", caps="tv", wake_delay=0.3, starting_s=8.0)
+    first, rc, err, elapsed = tv.apply_twice({"key": "home"}, 200, then={"key": "back"})
+    st = m.stats()
+    check("starting: a key press that woke the TV, whose API then stays silent, and the next one: 'still starting up' both",
+          first == "starting" and rc == 1 and fault(err) == "starting" and keys(st) == [] and st["dial_posts"] == 1,
+          (first, rc, err, keys(st), st["dial_posts"]))
+
+    # Once the API is up, commands work (no new wake); and once it has answered, the TV is no
+    # longer "starting": a silent API is "not serving" again.
+    m.reset(state="idle", caps="tv", wake_delay=0.2, starting_s=3.0, faults={"POST /v1/FireTV": "silent"},
+            fault_after={"POST /v1/FireTV": 1})
+    earlier, rc, err, elapsed = tv.apply_seq([{"on": True}, {"key": "home"}, {"key": "back"}], 1500)
+    st = m.stats()
+    check("starting: on=true while the API is silent, then a key once it is up: carried out, no new wake",
+          len(earlier) == 2 and earlier[0]["ok"] and earlier[1]["ok"] and keys(st) == ["home"] and st["dial_posts"] == 1,
+          (earlier, keys(st), st["dial_posts"]))
+    check("starting: after the API has answered, a silent API is 'not serving' again, not 'starting'",
+          rc == 1 and fault(err) == "not_serving" and "may still have been carried out" in err, (rc, err))
+
+    # An API stuck before any wake: the wake a command sends then (DIAL answers) starts nothing.
+    m.reset(state="hung_tls", caps="tv")
+    first, rc, err, elapsed = tv.apply_twice({"key": "home"}, 0, then={"key": "back"})
+    check("a stuck API (hung_tls): a command's DIAL wake does not make it 'starting'; not serving, twice",
+          first == "not_serving" and rc == 1 and fault(err) == "not_serving", (first, rc, err))
+
+    # A TV that did not take the wake fails as before, and is not "starting" afterwards.
+    m.reset(state="hung", caps="tv", faults={"POST /apps/FireTVRemote": "500"})
+    first, rc, err, elapsed = tv.apply_twice({"on": True}, 200, then={"key": "home"})
+    st = m.stats()
+    check("a DIAL wake answered 500: on=true fails as before (not serving); the next command's silence is not 'starting'",
+          first == "not_serving" and rc == 1 and fault(err) == "not_serving" and st["dial_posts"] == 1 and keys(st) == [],
+          (first, rc, err, st["dial_posts"]))
+    m.reset(state="idle", caps="tv", faults={"POST /apps/FireTVRemote": "silent"})
+    rc, out, err, elapsed = tv.apply({"on": True}, deadline=2500)
+    st = m.stats()
+    check("a DIAL wake that is never answered: on=true fails as before (not serving), the TV stays idle",
+          rc == 1 and fault(err) == "not_serving" and st["wakes"] == 0 and st["state"] == "idle" and elapsed < 2.9,
+          (rc, err, st["wakes"], elapsed))
+    nomac = Tv(m, info={"wakeup": None})
+    nomac.set_auth({k: v for k, v in tv.auth().items() if k != "wake_mac"})
+    m.reset(state="gone", caps="tv")
+    rc, out, err, elapsed = nomac.apply({"on": True}, deadline=2500)
+    check("nothing answers DIAL and no wake address: on=true fails, no_answer, as before",
+          rc == 1 and fault(err) == "no_answer" and elapsed < 2.9, (rc, err, elapsed))
+
+    # A changed key that cannot be checked still fails on=true, though the TV took the wake: the
+    # API comes up 0.3 s after it presenting key b, and the one check of it gets a 500.
+    m.reset(state="idle", caps="tv", wake_delay=0.3, cert="b", faults={"GET /v1/FireTV/status": "500"})
+    rc, out, err, elapsed = tv.apply({"on": True}, deadline=2500)
+    st = m.stats()
+    check("on=true, the TV took the wake but its API's new key could not be checked: fails as before (key_changed)",
+          rc == 1 and fault(err) == "key_changed" and st["dial_posts"] == 1 and
+          not tv.state().get("secrets", {}).get("fire_tv", {}).get("rekeyed"), (rc, err, st["dial_posts"]))
+    m.reset(state="awake", caps="tv", cert="a")
+
+    # Deep standby keeps its timing (Wake-on-LAN, then DIAL every 2.5 s), with an API that starts
+    # 5 s after the boot: at the app's 2500 ms 'waking' (no DIAL answer yet), then done once it has
+    # booted, its API still silent; in one call at 9000 ms, done by the DIAL answer at 7.5 s.
+    m.reset(state="deep", caps="tv", mac=MAC, boot_delay=7.0, starting_s=5.0)
+    first, rc, err, elapsed = tv.apply_twice({"on": True}, 6000, deadline=2500)
+    st = m.stats()
+    check("deep standby, API slow after the boot, on=true at 2500 ms twice 6 s apart: 'waking', then done",
+          first == "waking" and rc == 0 and st["boots"] == 1 and st["state"] == "starting", (first, rc, err, st["state"]))
+    m.reset(state="deep", caps="tv", mac=MAC, boot_delay=7.0, starting_s=5.0)
+    rc, out, err, elapsed = tv.apply({"on": True}, deadline=9000)
+    st = m.stats()
+    check("deep standby, API slow after the boot, one on=true at 9000 ms: done, four packets 2.5 s apart as before",
+          rc == 0 and st["boots"] == 1 and len(st["magic"]) == 4 and st["state"] == "starting" and elapsed < 9.6,
+          (rc, err, len(st["magic"]), st["state"], elapsed))
+    m.reset(state="awake", caps="tv")
+
+
 def auth_failure_tests(m, tv):
     m.reset(state="awake", caps="tv", revoked=True)
     rc, out, err, _ = tv.apply({"key": "home"})
@@ -970,6 +1085,8 @@ def main():
         capability_variant_tests(m, tv)
     if wanted("wake"):
         wake_tests(m, tv)
+    if wanted("starting"):
+        starting_tests(m, tv)
     if wanted("auth"):
         auth_failure_tests(m, tv)
     if wanted("hostile"):

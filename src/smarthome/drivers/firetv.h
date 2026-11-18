@@ -40,10 +40,23 @@
 //    9000 ms to settle it in one call; with the usual 2500 ms the first call says kWaking, and a
 //    repeat says kNoAnswer only once its own requests reach past 8 s and still get nothing. A
 //    wake address with no packet sent (an IPv6 TV, no interface on the TV's subnet) is no wake.
+//  - on=true alone is done once the TV has accepted the DIAL wake (a 2xx answer): the TV is
+//    coming on, even when its API, which starts some seconds later, is still refusing or
+//    accepting connections without answering when the deadline comes (the owner's TV did that
+//    for longer than 2.5 s). It still fails when the API presents a key that changed and could
+//    not be accepted (kKeyChanged), and when the TV did not accept the wake (no answer, an answer
+//    that is not 2xx: as above). Anything else in the change needs the API.
 //  - When on=true is combined with other fields, the wake keeps 300 ms back for them. A later
 //    part of a change that would start with less than 200 ms left is not sent: kWaking ("Try
 //    again in a moment.") after a wake, else "There was no time left to finish that. Try again
 //    in a moment." (Fault::Other). Never kNoAnswer: infrared would toggle the TV just woken.
+//  - The TV is "starting" for up to a minute after it accepted a DIAL wake from this driver
+//    (on=true's, or the one sent for a command while its API refused connections), until its API
+//    answers anything. Then a command that finds the API silent (it accepts and does not answer)
+//    fails with kStarting, not kNotServing: "The TV is still starting up. Try again in a moment.",
+//    or, when the request went out, "... The command may still have been carried out, so check
+//    the TV before trying again." The minute counts from the first accepted wake of a run with no
+//    answer from the API, so an API that is stuck reads as kNotServing again after it.
 //  - on=false when nothing answers on either port reports kAlreadyOff: the TV is most likely
 //    off (deep standby) already. Never answer it with an infrared power toggle. Exception: when
 //    this driver sent the TV a wake-up signal less than 8 s before on=false was asked and nothing
@@ -54,7 +67,8 @@
 //    Fault::Unsupported (the TV does not offer the control over the network). Of the fixed
 //    wording, only the no_answer and already_off messages contain a word that the app's
 //    control.cpp unreachable() list matches ("answer"), which is right: only then can a
-//    re-discovery at a new address help. But a message that quotes what was asked for (an app,
+//    re-discovery at a new address help (a TV that is starting up has not moved: kStarting's
+//    messages have none of those words). But a message that quotes what was asked for (an app,
 //    key or playback control name: "No app called "Reach" is on the TV.") can bring such a word
 //    in with the quote. Classify with fault_of(), not with words.
 //  - Ports. The API port is Device::info "api_port" when present (digits), else Device::port
@@ -73,9 +87,12 @@
 // Depends on the C++ standard library, POSIX sockets, libcurl, OpenSSL libcrypto and
 // nlohmann/json. The application should have called curl_global_init() first.
 #pragma once
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -94,11 +111,14 @@ enum class Fault {
                   // fallback: the infrared power key toggles, so it would switch the TV on.
     NotServing,   // the TV is on the network but its control service did not reply: it accepted and stayed
                   // silent (waking does not help), or a command went out and its answer did not come in time
-                  // (it may have been carried out, so it is not repeated). Not an infrared fallback.
+                  // (it may have been carried out, so it is not repeated). Not an infrared fallback. (In the
+                  // minute after the TV accepted a wake from this driver, that is Starting instead.)
     Waking,       // a wake is under way: acknowledged by the TV, or a Wake-on-LAN packet went out and no DIAL
                   // request made 8 s or more after it has gone unanswered yet (also on=false then, and a
                   // later part of a change left without time after a wake). Not an infrared fallback (a
                   // power toggle would race the TV coming on): try again.
+    Starting,     // the TV accepted a wake from this driver less than a minute ago and its API, accepting
+                  // connections, has not answered since: it is coming on. Not an infrared fallback: try again.
     NotPaired,    // no pairing stored
     PairAgain,    // the TV rejected the stored pairing
     KeyChanged,   // the TV presented a different TLS key from the one pinned at pairing; nothing was sent
@@ -114,6 +134,7 @@ extern const char *const kNoAnswer;      // "The TV did not answer."
 extern const char *const kAlreadyOff;    // "The TV seems to be off already."
 extern const char *const kNotServing;    // "The TV is on the network but its remote control service is not replying."
 extern const char *const kWaking;        // "The TV is waking up."
+extern const char *const kStarting;      // "The TV is still starting up."
 extern const char *const kNotPaired;     // "The TV is not paired yet."
 extern const char *const kPairAgain;     // "The TV no longer accepts this pairing."
 extern const char *const kKeyChanged;    // "The TV's security key has changed."
@@ -227,6 +248,43 @@ struct Action {
 // contacting anything. Capabilities come from thing.ref. False with an error sentence when any
 // part of the change is not available on this thing; then nothing at all is sent.
 bool plan(const home::Thing &thing, const home::Change &change, std::vector<Action> &out, std::string &err);
+
+// What a wake came to: the API answered (Up); nothing answered on either port (NoAnswer); the TV
+// was there but its API did not answer: it accepted connections and stayed silent, or DIAL did not
+// accept the wake (NotServing); the API kept refusing after an accepted wake (Waking); the API
+// presented a key that could not be accepted (KeyChanged); there was no time to try (NoTime).
+enum class Woken { Up, NoAnswer, NotServing, Waking, KeyChanged, NoTime };
+// The error a wake that did not bring the API up reports ("" for Up). `starting`: the TV accepted
+// a wake from this driver less than a minute ago and its API has not answered since, so an API
+// that is silent is starting up (kStarting), not stuck (kNotServing).
+std::string woken_error(Woken w, bool starting);
+// The error for a request that went out and got no answer in time. `acts`: it makes the TV do
+// something, so it may have been carried out (never sent again by itself).
+std::string unconfirmed_error(bool acts, bool starting);
+// Whether on=true is done once the TV has accepted the DIAL wake (a 2xx answer), given what the
+// wait for the API found (`api`) and whether the change asks for nothing else (`alone`). Power
+// alone is done unless the API presented a key that could not be accepted; anything more needs Up.
+bool power_on_done(Woken api, bool alone);
+
+// When something began, per device (Device::id, or the address when there is none), kept for
+// `keep_ms` and then forgotten: the first magic packet of a still unanswered attempt to switch
+// the TV on, and the first DIAL wake the TV accepted whose API has not answered since. Safe to
+// use from several threads. `now` is a parameter for the tests.
+class Recall {
+public:
+    using Clock = std::chrono::steady_clock;
+    explicit Recall(long keep_ms) : keep_(keep_ms) {}
+    std::optional<Clock::time_point> get(const std::string &who, Clock::time_point now = Clock::now());
+    // Keeps `at` for `who`, unless an earlier time is still kept; returns the time kept.
+    Clock::time_point note(const std::string &who, Clock::time_point at, Clock::time_point now = Clock::now());
+    void forget(const std::string &who);
+
+private:
+    void prune(Clock::time_point now);   // with mutex_ held
+    const std::chrono::milliseconds keep_;
+    std::mutex mutex_;
+    std::map<std::string, Clock::time_point> at_;
+};
 
 }  // namespace detail
 }  // namespace firetv

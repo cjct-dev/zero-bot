@@ -21,9 +21,11 @@
 // as a line on stdout, waits MS and applies it again with the same driver object, as the app
 // would (the driver remembers unanswered wake packets per device between calls); the second
 // result is printed as usual. --then CHANGE makes the second call apply CHANGE instead (for
-// example on=false after on=true), and --first-device OTHER.json makes the first call go to the
-// device saved in OTHER.json instead (two TVs, one driver object); either one alone also asks
-// for the two calls, with no wait unless --again-after gives one. OTHER.json is only read.
+// example on=false after on=true); given more than once, each makes one more call, in order,
+// MS apart, and every call but the last prints its {"first": ...} line. --first-device
+// OTHER.json makes the first call go to the device saved in OTHER.json instead (two TVs, one
+// driver object); either one alone also asks for the two calls, with no wait unless
+// --again-after gives one. OTHER.json is only read.
 //
 // Prints one line of JSON on stdout, or "error[<fault>]: <message>" on stderr. Exit status 0 on
 // success, 1 on failure, 2 for a usage error. Nothing secret is printed: the token stays in the file.
@@ -193,9 +195,9 @@ static int fail(const std::string &err) {
 }
 
 int main(int argc, char **argv) {
-    std::vector<std::string> args;
+    std::vector<std::string> args, then_changes;
     int deadline = 2500, again_after = -1;
-    std::string then_change, first_device;
+    std::string first_device;
     for (int i = 1; i < argc; i++) {
         const std::string a = argv[i];
         if ((a == "--deadline" || a == "--wake-port" || a == "--again-after" || a == "--then" || a == "--first-device") &&
@@ -204,11 +206,11 @@ int main(int argc, char **argv) {
         if (a == "--deadline") deadline = atoi(argv[++i]);
         else if (a == "--wake-port") firetv::detail::set_wake_port(atoi(argv[++i]));
         else if (a == "--again-after") again_after = atoi(argv[++i]);
-        else if (a == "--then") then_change = argv[++i];
+        else if (a == "--then") then_changes.push_back(argv[++i]);
         else if (a == "--first-device") first_device = argv[++i];
         else args.push_back(a);
     }
-    if ((!then_change.empty() || !first_device.empty()) && again_after < 0) again_after = 0;
+    if ((!then_changes.empty() || !first_device.empty()) && again_after < 0) again_after = 0;
     if (args.size() < 2) return usage();
     const std::string &path = args[0], &cmd = args[1];
     const bool takes_arg = cmd == "apply";
@@ -264,8 +266,11 @@ int main(int argc, char **argv) {
         }
     } else if (cmd == "apply") {
         const home::Change change = change_from(json::parse(args[2], nullptr, false), err);
-        home::Change second = change;
-        if (err.empty() && !then_change.empty()) second = change_from(json::parse(then_change, nullptr, false), err);
+        // The calls after the first: the same change again, or each --then in turn.
+        std::vector<home::Change> later;
+        for (const std::string &text : then_changes)
+            if (err.empty()) later.push_back(change_from(json::parse(text, nullptr, false), err));
+        if (later.empty()) later.push_back(change);
         home::Device other;
         std::vector<home::Thing> other_things;
         if (err.empty() && !first_device.empty()) load(first_device, other, other_things, err);
@@ -281,17 +286,26 @@ int main(int argc, char **argv) {
                 return thing;
             };
             const home::Thing thing = tv_of(things);
+            const auto report = [&](bool ok, const std::string &e) {
+                const json first = {{"ok", ok}, {"fault", firetv::fault_name(firetv::fault_of(e))}, {"error", e}};
+                printf("%s\n", json{{"first", first}}.dump().c_str());
+                fflush(stdout);
+                std::this_thread::sleep_for(std::chrono::milliseconds(again_after));
+            };
+            home::Change last = change;
             if (again_after >= 0) {
                 std::string first_err;
                 const bool first_ok = first_device.empty()
                                           ? driver->apply(dev, thing, change, deadline, first_err)
                                           : driver->apply(other, tv_of(other_things), change, deadline, first_err);
-                const json first = {{"ok", first_ok}, {"fault", firetv::fault_name(firetv::fault_of(first_err))}, {"error", first_err}};
-                printf("%s\n", json{{"first", first}}.dump().c_str());
-                fflush(stdout);
-                std::this_thread::sleep_for(std::chrono::milliseconds(again_after));
+                report(first_ok, first_err);
+                for (size_t k = 0; k + 1 < later.size(); k++) {
+                    std::string e;
+                    report(driver->apply(dev, thing, later[k], deadline, e), e);
+                }
+                last = later.back();
             }
-            if (driver->apply(dev, thing, second, deadline, err)) printf("%s\n", json{{"ok", true}, {"ms", elapsed()}}.dump().c_str());
+            if (driver->apply(dev, thing, last, deadline, err)) printf("%s\n", json{{"ok", true}, {"ms", elapsed()}}.dump().c_str());
             else rc = fail(err);
             save(path, dev, things);   // the secrets may hold a key the TV changed to
         }

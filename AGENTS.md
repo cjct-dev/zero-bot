@@ -480,6 +480,12 @@ key, real audio), say so plainly rather than implying it was.
   `set_thing_alias` learnt to switch it on for a name that newly sounds like a heater.
 - Before promising a device can be controlled, check whether it has a local interface at all.
   Several popular products are cloud-only.
+- Judge a change by what it needs, not by everything the device will do next. The owner's Fire TV
+  took the DIAL wake and came on, but its control API accepted connections without answering for
+  longer than the 2.5 s change deadline while it started; waiting for the API turned a power-on
+  that worked into "not replying", and the assistant offered the infrared remote (a power toggle).
+  Power-on alone is now judged by the DIAL answer, and a command in the minute after a wake says
+  the TV is still starting up (`firetv.cpp`, `detail::power_on_done`, the `starting_` memory).
 - The keyboard's three lights (caps lock, fn, symbols) have no kernel interface: the keypad takes no
   EV_LED events and they are not LED-class devices. The M5Stack keypad driver sets them by writing a
   mode (0 off, 1 blink, 2 fast, 3 on) into registers 0xBD to 0xBF of the M5IOE1 expander, the

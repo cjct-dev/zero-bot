@@ -29,6 +29,12 @@ States (what a real TV does, from firehose-remote docs/protocol.md section 3):
   deep_blackhole  as deep, but connection attempts are dropped (they time out)
   gone            both ports refuse and nothing wakes it (unplugged)
   gone_blackhole  as gone, but connection attempts time out
+  starting        a TV coming on: DIAL answers (201, no new wake), the API port accepts and says
+                  nothing (config starting_mode: "silent", TLS completes, the default; or
+                  "silent_tls", TLS never starts). A wake from idle or deep passes through it for
+                  starting_s seconds before awake when starting_s > 0 (0 by default), as the
+                  owner's TV did after a DIAL wake on 2026-11-18 (its API accepted connections
+                  without answering for longer than 2.5 s; whether TLS completed is not known).
 
 Config keys for /reset and /set (all optional):
   state, caps ("stick" | "tv" | "tv_power" | "levels_only" | "empty"), cert ("a" | "b"), mac,
@@ -36,13 +42,17 @@ Config keys for /reset and /set (all optional):
   "OK" replies before the token), wrong_reply ("400" | "200text"), verify ("normal" |
   "always_ok" | "unreadable" | "silent"), revoked (every token refused), apps (a JSON list
   served by appsV2), faults ({"GET /v1/FireTV": mode, ...}; modes: garbage, huge, drip, deep,
-  notjson, wrongtypes, truncated, silent, close, 500, 400, 404, 405, badutf8, hugeheader),
+  notjson, wrongtypes, truncated, silent, close, 500, 400, 404, 405, badutf8, hugeheader; the
+  DIAL wake is "POST /apps/FireTVRemote", and a fault there means the TV did not take the wake),
   fault_after ({"POST /v1/FireTV": 2}: that many requests to the endpoint are answered normally
-  first), late (seconds: every command - a key, a media action, an app launch - is carried out
-  at once and answered only after this long, like a busy TV), slow_tls_every (N: every Nth TLS
-  handshake on the API port waits slow_tls_s seconds, 0.3 by default, before it starts).
-  The late and slow_tls behaviours and the 404 body are invented, for tests: no source records
-  a TV doing them (the 400 body is the forum's, the 405 body firehose's).
+  first), starting_s and starting_mode (see the starting state), late (seconds: every command -
+  a key, a media action, an app launch - is carried out at once and answered only after this
+  long, like a busy TV), slow_tls_every (N: every Nth TLS handshake on the API port waits
+  slow_tls_s seconds, 0.3 by default, before it starts).
+  The late and slow_tls behaviours, the DIAL faults and the 404 body are invented, for tests: no
+  source records a TV doing them (the 400 body is the forum's, the 405 body firehose's).
+/stats counts, besides the requests: tls_connections (API handshakes completed), and
+silent_connections (connections the API port accepted in a silent mode: hung, hung_tls, starting).
 /reset also clears the counters and the request log and hides any code shown; tokens issued
 before stay valid unless "forget_tokens" is true.
 """
@@ -215,6 +225,7 @@ class Slot:
         conn.settimeout(10)
         try:
             if mode == "silent_tls":
+                self.serve.note_silent()
                 conn.settimeout(60)
                 while conn.recv(4096):
                     pass
@@ -226,6 +237,7 @@ class Slot:
                 conn = self.tls().wrap_socket(conn, server_side=True)
                 self.serve.note_tls()
             if mode == "silent":
+                self.serve.note_silent()
                 conn.settimeout(60)
                 while conn.recv(4096):
                     pass
@@ -280,11 +292,12 @@ class Tv:
             self.cfg = {"state": "awake", "caps": "tv", "cert": "a", "mac": DEFAULT_MAC, "wake_delay": 0.9,
                         "boot_delay": 7.0, "ok_first": 0, "wrong_reply": "400", "verify": "normal",
                         "revoked": False, "faults": {}, "apps": DEFAULT_APPS, "late": 0, "slow_tls_every": 0,
-                        "slow_tls_s": 0.3}
+                        "slow_tls_s": 0.3, "starting_s": 0, "starting_mode": "silent"}
             self.cfg.update(keep)
             if cfg.get("forget_tokens"):
                 self.tokens = set()
-            self.stats = {"requests": [], "tls_connections": 0, "dial_posts": 0, "dial_gets": 0, "magic": [],
+            self.stats = {"requests": [], "tls_connections": 0, "silent_connections": 0, "dial_posts": 0, "dial_gets": 0,
+                          "magic": [],
                           "pin_display": 0, "pin_verify": 0, "shown_pin": None, "wakes": 0, "boots": 0,
                           "display": "on", "playing": False, "volume": 20, "muted": False, "launched": [],
                           "keys": [], "ignored": [], "scans": [], "issued": []}
@@ -304,10 +317,13 @@ class Tv:
             self.set_state(self.cfg["state"])
 
     def set_state(self, state):
+        starting_mode = self.cfg.get("starting_mode", "silent")
+        if starting_mode not in ("silent", "silent_tls"):
+            raise ValueError("unknown starting_mode " + str(starting_mode))
         modes = {"awake": ("open", "open"), "idle": ("closed", "open"), "hung": ("silent", "open"),
                  "hung_tls": ("silent_tls", "open"), "deep": ("closed", "closed"),
                  "deep_blackhole": ("blackhole", "blackhole"), "gone": ("closed", "closed"),
-                 "gone_blackhole": ("blackhole", "blackhole")}
+                 "gone_blackhole": ("blackhole", "blackhole"), "starting": (starting_mode, "open")}
         if state not in modes:
             raise ValueError("unknown state " + state)
         with self.lock:
@@ -325,6 +341,26 @@ class Tv:
     def note_tls(self):
         with self.lock:
             self.stats["tls_connections"] += 1
+
+    def note_silent(self):
+        with self.lock:
+            self.stats["silent_connections"] += 1
+
+    def come_on(self):
+        """The TV has come on (a DIAL wake from idle, or a boot from deep standby): awake at once,
+        or after cfg["starting_s"] seconds in the starting state when that is set."""
+        with self.lock:
+            starting = float(self.cfg.get("starting_s") or 0)
+            if starting <= 0:
+                self.set_state("awake")
+                return
+            self.set_state("starting")
+
+            def started():
+                with self.lock:
+                    if self.cfg["state"] == "starting":
+                        self.set_state("awake")
+            self.later(starting, started)
 
     def tls_delay(self):
         """Seconds to wait before this TLS handshake on the API port (config slow_tls_every)."""
@@ -362,7 +398,7 @@ class Tv:
             self.stats["booting"] = False
             self.stats["boots"] += 1
             self.stats["display"] = "on"
-            self.set_state("awake")
+            self.come_on()
 
     # ---- HTTP on the api and dial ports
     def connection(self, port_name, conn):
@@ -425,8 +461,16 @@ class Tv:
         if method != "POST":
             self.send(conn, 405)
             return
+        endpoint = "POST /apps/FireTVRemote"
         with self.lock:
             self.stats["dial_posts"] += 1
+            self.counts[endpoint] = count = self.counts.get(endpoint, 0) + 1
+            fault = self.cfg["faults"].get(endpoint)
+            spared = int(self.cfg.get("fault_after", {}).get(endpoint, 0))
+        if fault and count > spared:
+            self.fault(conn, fault, endpoint)    # the TV does not take the wake
+            return
+        with self.lock:
             state = self.cfg["state"]
             if state == "idle" and not self.stats.get("waking"):
                 self.stats["waking"] = True
@@ -436,7 +480,7 @@ class Tv:
                     with self.lock:
                         self.stats["waking"] = False
                         self.stats["display"] = "on"
-                        self.set_state("awake")
+                        self.come_on()
                 self.later(self.cfg["wake_delay"], wake)
             elif state == "awake":
                 # Assumed, not documented: a DIAL wake also lights a screen that action=sleep darkened.
@@ -826,6 +870,30 @@ def selftest():
     time.sleep(0.6)
     st, _ = api("GET", "/v1/FireTV/status", headers=dict(key, **{"X-Client-Token": token}))
     check("idle: the API answers after the wake delay", st == 200, st)
+    for mode in ("silent", "silent_tls"):
+        tv.apply_cfg({"state": "idle", "starting_s": 0.7, "starting_mode": mode})
+        before = tv.stats["silent_connections"]
+        st, _ = dial_post()                      # the API starts at 0.4 s, answers from 1.1 s
+        time.sleep(0.6)
+        try:
+            api("GET", "/v1/FireTV/status", headers=key, timeout=0.3)
+            check("starting (%s): the API accepts and says nothing for starting_s after the wake" % mode, False)
+        except (socket.timeout, TimeoutError):
+            check("starting (%s): the API accepts and says nothing for starting_s after the wake" % mode,
+                  st == 201 and tv.stats["state"] == "starting" and tv.stats["silent_connections"] == before + 1,
+                  (st, tv.stats["state"], tv.stats["silent_connections"]))
+        st, _ = dial_post()
+        check("starting (%s): DIAL answers 201 meanwhile, and wakes nothing more" % mode, st == 201, st)
+        time.sleep(0.5)
+        st, _ = api("GET", "/v1/FireTV/status", headers=key)
+        check("starting (%s): then the API answers" % mode, st == 403 and tv.stats["state"] == "awake", st)
+    tv.apply_cfg({"state": "idle", "starting_s": 0, "starting_mode": "silent", "faults": {"POST /apps/FireTVRemote": "500"}})
+    wakes = tv.stats["wakes"]
+    st, _ = dial_post()
+    time.sleep(0.6)
+    check("a DIAL fault: answered 500, and the TV stays idle", st == 500 and tv.stats["wakes"] == wakes and
+          refused(tv.api.port), st)
+    tv.apply_cfg({"faults": {}})
     tv.set_state("deep")
     check("deep: both ports refuse", refused(tv.api.port) and refused(tv.dial.port))
     w = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
