@@ -16,8 +16,10 @@ this file agreeing means two independent implementations agree. `--selftest` che
 against published vectors.
 
 Test hooks (never present on a real plug): GET /mock/stats, and POST /mock/reset with any of
-{"budget":[1,0], "lock_after":1, "no_energy_usage":true, "page":3}, which also clears all state.
-The budget is how many requests each successive session serves before the plug forgets it.
+{"budget":[1,0], "lock_after":1, "no_energy_usage":true, "page":3, "refuse_set":true}, which also clears all
+state. The budget is how many requests each successive session serves before the plug forgets it;
+refuse_set answers every switch command with error -1001 (the plug says no), for tests of what the
+app does after a command fails.
 
 It binds 127.0.0.1 only.
 """
@@ -315,6 +317,7 @@ class Mock:
         self.lock_after = cfg.get("lock_after", self.args.lock_after)
         self.no_energy_usage = cfg.get("no_energy_usage", self.args.no_energy_usage)
         self.page = cfg.get("page", self.args.page)
+        self.refuse_set = cfg.get("refuse_set", False)
         self.sessions = {}       # cookie or token -> session dict
         self.pending = None      # TPAP: the handshake between pake_register and pake_share
         self.failed_logins = 0
@@ -369,6 +372,8 @@ class Mock:
                 info["device_on"] = self.on
             return 0, info
         if method == "set_device_info":
+            if self.refuse_set:
+                return -1001, None
             if (strip and child is None) or not isinstance(params.get("device_on"), bool):
                 return -1008, None
             if child is not None:

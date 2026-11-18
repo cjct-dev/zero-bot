@@ -1245,7 +1245,10 @@ std::string check_args(const json &props, json &args, std::vector<std::string> &
         const std::string key = it.key();
         json &v = it.value();
         const auto p = props.find(key);
-        if (p == props.end()) { unknown.push_back(key); continue; }
+        if (p == props.end()) {
+            if (key != "say") unknown.push_back(key);   // a confirmation offered to a tool that takes none is harmless
+            continue;
+        }
         if (v.is_null()) continue;
         const std::string type = jget(*p, "type", std::string());
         if (type == "string") {
