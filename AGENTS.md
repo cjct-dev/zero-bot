@@ -315,6 +315,15 @@ key, real audio), say so plainly rather than implying it was.
   an address change another device of the same family gets the login (in the clear, with HTTP
   basic), and its refusal is kept against the right one, which typing the password again cannot
   clear.
+- Tie a password to the device that accepted it when it is typed (Shelly: `auth.dev`), not only
+  to the things read from it later: a paired device that is never listed (a garage door with a
+  password has nothing to offer) has no things to tell it apart, and its password went to whatever
+  answered at its old address.
+- A safety rule applied when a device is listed goes stale: the app reads names and settings again
+  only when asked to in Settings, and the owner can rename a relay "Garage door" or rewire it as an
+  opener in the maker's app at any time. Where the rule depends on such settings, ask again just
+  before the change (the Shelly driver reads the channel's settings before switching a relay or
+  blind).
 
 **Power**
 - The fuel gauge (`/sys/class/power_supply/bq27220-0/`) reports `current_now` in µA: positive

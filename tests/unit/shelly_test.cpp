@@ -507,6 +507,59 @@ static void test_frames() {
           !left_out("Kettle", "Kitchen", ""));
     CHECK(left_out("Pump", "", "", 1) && left_out("Pump", "", "", kPulseSeconds) && !left_out("Pump", "", "", kPulseSeconds + 1) &&
           !left_out("Pump", "", "", 0));
+    // review 2: "opener", and door, gate, lock and garage in the other languages the app's yes
+    // words cover, with their letters beyond ASCII ("Tür" is one word, not "t" and "r").
+    for (const char *name : {"Opener", "Tor", "Haustür", "Haus Tür", "Hoftor", "Rolltor", "Türschloss", "Schloss", "Porte du garage",
+                             "Portail", "Puerta", "Portón", "Cancello", "Portão", "Voordeur", "Tuinpoort", "Brama", "Garaż", "Garaje",
+                             "Serrure", "Tür", "TOR", "Brama wjazdowa"})
+        CHECK_MSG(banned(name, ""), name);
+    for (const char *name : {"Torch", "Tortoise lamp", "Porch", "Türkis", "Portable fan", "Motor", "Radiator", "Monitor", "Ventilator"})
+        CHECK_MSG(!banned(name, ""), name);
+}
+
+// ---------------------------------------------------------------- review 2: asked again before a change
+static void test_recheck() {
+    auto th = [](int gen, const char *comp, int id) {
+        home::Thing t;
+        t.id = std::string(comp) + ":" + std::to_string(id);
+        t.ref = {{"gen", gen}, {"comp", comp}, {"id", id}, {"dev", "x"}};
+        return t;
+    };
+    std::string err;
+    // Gen2+: still a desk lamp; renamed "Garage door"; its device renamed with the relay unnamed;
+    // given a one-second auto-off; a long device name whose "garage" clean_name() would cut off.
+    const home::Thing sw = th(2, "switch", 0), cover = th(2, "cover", 0);
+    CHECK(recheck(sw, json::parse(R"({"sys":{"device":{"name":null}},"switch:0":{"name":"Desk lamp","auto_off":false,"auto_off_delay":1}})"), err));
+    CHECK(!recheck(sw, json::parse(R"({"switch:0":{"name":"Garage door"}})"), err) && err.find("does not control") != std::string::npos);
+    CHECK(!recheck(sw, json::parse(R"({"sys":{"device":{"name":"Front gate"}},"switch:0":{"name":null}})"), err));
+    CHECK(!recheck(sw, json::parse(R"({"switch:0":{"name":"Desk lamp","auto_off":true,"auto_off_delay":0.5}})"), err));
+    CHECK(!recheck(sw, json::parse(R"({"sys":{"ui_data":{"consumption_types":["Gate"]}},"switch:0":{"name":"Big one"}})"), err));
+    const json long_name = {{"sys", {{"device", {{"name", std::string(45, 'x') + " garage"}}}}}, {"switch:0", {{"name", nullptr}}}};
+    CHECK(!recheck(sw, long_name, err));
+    std::string device_name;
+    CHECK(things_gen2(gen2_who("Plus1"), long_name, json::parse(R"({"switch:0":{"output":false}})"), device_name).empty());
+    // A 2PM changed to the cover profile: switch:0 is gone; and the other way round.
+    CHECK(!recheck(sw, json::parse(R"({"cover:0":{"name":"Lounge blind"}})"), err) && err.find("no longer has") != std::string::npos);
+    CHECK(!recheck(cover, json::parse(R"({"switch:0":{"name":"Lamp"},"switch:1":{"name":"Fan"}})"), err));
+    CHECK(recheck(cover, json::parse(R"({"sys":{"device":{"name":"Lounge"}},"cover:0":{"name":null}})"), err));
+    CHECK(!recheck(cover, json::parse(R"({"sys":{"device":{"name":"Garage"}},"cover:0":{"name":null}})"), err));
+    // Lights and sensors have no such rule; an answer that is not an object is not understood.
+    CHECK(recheck(th(2, "light", 0), json::parse(R"({"sys":{"device":{"name":"Garage door"}}})"), err));
+    CHECK(!recheck(sw, json::array(), err) && starts(err, shelly::kNotUnderstood));
+    // Gen1: relay and roller by mode; renamed, a pulse, a mode change.
+    const home::Thing relay = th(1, "relay", 0), relay1 = th(1, "relay", 1), roller = th(1, "roller", 0);
+    CHECK(recheck(relay, json::parse(R"({"name":null,"relays":[{"name":"Porch light","appliance_type":"lights","auto_off":0}]})"), err));
+    CHECK(!recheck(relay, json::parse(R"({"name":"Garage door","relays":[{"name":null}]})"), err));
+    CHECK(!recheck(relay, json::parse(R"({"relays":[{"name":"Porch light","auto_off":1.0}]})"), err));
+    CHECK(!recheck(relay1, json::parse(R"({"relays":[{"name":"Porch light"}]})"), err) && err.find("no longer has") != std::string::npos);
+    CHECK(!recheck(relay, json::parse(R"({"mode":"roller","relays":[{"name":null},{"name":null}],"rollers":[{"positioning":true}]})"), err));
+    CHECK(recheck(roller, json::parse(R"({"mode":"roller","name":"Landing","relays":[{},{}],"rollers":[{"positioning":true}]})"), err));
+    CHECK(!recheck(roller, json::parse(R"({"mode":"roller","name":"Garage door","rollers":[{}]})"), err));
+    CHECK(!recheck(roller, json::parse(R"({"mode":"relay","name":"Landing","relays":[{},{}],"rollers":[{}]})"), err));
+    CHECK(recheck(th(1, "light", 0), json::parse(R"({"name":"Garage door"})"), err));
+    // The rule while listing uses the same, uncut names (Gen1 too).
+    const json gen1_long = {{"name", std::string(45, 'x') + " Garage door"}, {"relays", json::array({json::object()})}};
+    CHECK(things_gen1(gen1_who("SHSW-1"), gen1_long, json::parse(R"({"relays":[{"ison":false}]})"), device_name).empty());
 }
 
 // ---------------------------------------------------------------- the driver, without a device
@@ -732,6 +785,7 @@ int main() {
     test_gen1_things();
     test_plan();
     test_frames();
+    test_recheck();
     test_driver();
     test_refusals_together();
     curl_global_cleanup();

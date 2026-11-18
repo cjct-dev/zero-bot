@@ -22,8 +22,9 @@
 //    depending on its profile; a Gen1 2.5 likewise by its mode. At most 32 things a device.
 //  - Never offered: inputs, energy meters, thermostats, smoke, gas, flood and door sensors, and
 //    any relay or blind whose name (its own, or the device's when its own does not say it is a
-//    light) or appliance type reads as a garage door, gate, door, lock, valve, alarm or siren (a
-//    Shelly 1 is a common garage-door retrofit), unless the name also says it is a light ("Front
+//    light) or appliance type reads as a garage door, gate, door, lock, opener, valve, alarm or siren
+//    (in English, or the words for garage, door, gate and lock in German, French, Spanish, Italian,
+//    Portuguese, Dutch or Polish; a Shelly 1 is a common garage-door retrofit), unless the name also says it is a light ("Front
 //    door light"); nor a relay set to switch itself off within seconds (a pulse, as a door or gate
 //    opener is wired), whatever it is called.
 //  - Changes: on/off; brightness, colour (Change::hs) and white (Change::kelvin) where the thing
@@ -32,16 +33,20 @@
 //    positioning), and Change::transport "stop" stops it. A brightness, colour or white without
 //    Change::on also switches the light on; brightness 0 switches it off. Calibration, setup,
 //    firmware and every other call that changes how a device is set up are never sent.
-//  - Before every change, and before anything that carries a password (read() with one, pair()),
-//    the device is asked who it is (GET /shelly): when another device answers at the saved
-//    address, nothing is sent (kOtherDevice, whose wording counts as "did not answer" for the
-//    app's re-discovery), so a password never reaches another device and its refusal is never
-//    kept against this one. read() without a password checks the MAC in the status it reads.
+//  - Before every change, every read and pairing, the device is asked who it is (GET /shelly): when
+//    another device answers at the saved address, nothing is sent (kOtherDevice, whose wording
+//    counts as "did not answer" for the app's re-discovery), so a password never reaches another
+//    device and its answers (a refusal, a 401) are never kept against this one. "Who it is" is the
+//    id or MAC its things were read with, and the one that took the password when it was typed
+//    (Device::auth "dev"), so a paired device that has never been read is recognised too.
+//  - Before a change to a relay or blind, its settings are read again (Shelly.GetConfig, Gen1
+//    /settings): one renamed "Garage door", given a switch-off timer of seconds, or gone (a 2PM or
+//    2.5 changed between relay and blind) since the device was last read is not switched.
 //  - Pairing: none, unless the device asks for a password. The driver learns that from GET
 //    /shelly or a 401, and keeps it in the family's secrets (secrets.shelly.locked[device] =
 //    generation), because read() and apply() cannot change Device::auth. next_step() then asks:
 //    Gen2+ for the password (the user is always "admin"); Gen1 first for the login's user name,
-//    then its password. Device::auth holds {"user", "password"}.
+//    then its password. Device::auth holds {"user", "password", "dev"}.
 //  - A password the device rejected is never sent again, by this run or any later one: its
 //    fingerprint (SHA-256 of user and password, not the password) is kept as
 //    secrets.shelly.refused[device] until a password is typed again (pair) or the device is
@@ -131,6 +136,11 @@ bool banned(const std::string &name, const std::string &appliance_type);
 // garage door, gate or door opener, or a bell, is wired, whatever it is called).
 constexpr double kPulseSeconds = 10;
 bool left_out(const std::string &name, const std::string &device_name, const std::string &appliance_type, double auto_off_s = 0);
+// Before a change: whether a relay or blind (Gen2+ switch/cover, Gen1 relay/roller) is still what
+// it was read as, by the device's current settings (Gen2+: the result of Shelly.GetConfig; Gen1:
+// the body of /settings): still there, and not left out now. False with a sentence when it is
+// gone or left out; true for any other thing.
+bool recheck(const home::Thing &thing, const json &config, std::string &err);
 
 }  // namespace detail
 }  // namespace shelly

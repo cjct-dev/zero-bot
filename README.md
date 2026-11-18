@@ -254,13 +254,18 @@ device directly: nothing goes through the makers' cloud services. Supported so f
   and closed only once the blind has been calibrated in the Shelly app), and read power use,
   temperature and humidity; battery sensors such as the H&T can only be read while they are awake.
   It never starts a calibration or changes any of the device's settings. A relay or blind named
-  like a garage door, gate, door, lock, valve, alarm or siren is never offered (a Shelly 1 is often
-  fitted to a garage door), unless its name says it is a light ("Front door light"); an unnamed
-  relay or blind goes by the device's name, so a Shelly named "Garage door" is left out too. Nor is
-  a relay set in the Shelly app to switch itself off within ten seconds (that is how a door or gate
-  opener is wired, whatever it is called), nor thermostats, or smoke, gas, flood and door sensors.
-  Before every change, and before a password is sent, Zero Bot checks that the device at the saved
-  address is still the same Shelly. Tested so far only against simulated devices.
+  like a garage door, gate, door, lock, opener, valve, alarm or siren is never offered (a Shelly 1
+  is often fitted to a garage door), unless its name says it is a light ("Front door light"); the
+  words for garage, door, gate and lock in German, French, Spanish, Italian, Portuguese, Dutch and
+  Polish count too. An unnamed relay or blind goes by the device's name, so a Shelly named "Garage
+  door" is left out too. Nor is a relay set in the Shelly app to switch itself off within ten
+  seconds (that is how a door or gate opener is wired, whatever it is called), nor thermostats, or
+  smoke, gas, flood and door sensors. Because any of that can be changed in the Shelly app later,
+  Zero Bot reads a relay's or blind's settings again just before each change and does nothing if
+  it is now one of those. Before every change, read and pairing it checks that the device at the
+  saved address is still the same Shelly (the one whose things it read, and the one that took the
+  password), so a password never goes to another device. Tested so far only against simulated
+  devices.
 
 Other families (Hue, WiZ, Kasa and more) are added one driver at a time.
 

@@ -174,12 +174,13 @@ def gen2_open():
     m.reset()
     ok, out, kind, err, ms = cli(st, "apply", "switch:0", '{"on":true}')
     log = m.log()
-    check("gen2: on: /shelly first, then Switch.Set {id:0, on:true}", ok and paths(log) == ["/shelly", "Switch.Set"] and
-          log[1]["rpc"]["params"] == {"id": 0, "on": True}, (err, paths(log)))
+    check("gen2: on: /shelly first, the relay's settings again (review 2), then Switch.Set {id:0, on:true}",
+          ok and paths(log) == ["/shelly", "Shelly.GetConfig", "Switch.Set"] and log[2]["rpc"]["params"] == {"id": 0, "on": True},
+          (err, paths(log)))
     check("gen2: the device is on", m.state()["switch:0"]["output"] is True)
     m.reset()
     ok, out, *_ = cli(st, "read")
-    check("gen2: read: one Shelly.GetStatus, state on", ok and paths(m.log()) == ["Shelly.GetStatus"] and
+    check("gen2: read: /shelly (review 2), one Shelly.GetStatus, state on", ok and paths(m.log()) == ["/shelly", "Shelly.GetStatus"] and
           things_of(out)["switch:0"]["state"]["on"] is True, out)
     m.reset()
     for change, what in (('{"brightness":40}', "a brightness"), ('{"position":50}', "a position"), ('{"hs":[0,100]}', "a colour"),
@@ -255,7 +256,7 @@ def gen2_password():
     m.config(stale_once=True)
     m.reset()
     ok, out, kind, err, ms = cli(st, "apply", "switch:0", '{"on":false}')
-    check("gen2 pw: a stale nonce is answered with the new one", ok and logins(m.log()) == ["stale", "ok"], (err, m.log()))
+    check("gen2 pw: a stale nonce is answered with the new one", ok and logins(m.log()) == ["stale", "ok", "ok"], (err, m.log()))
     ok, out, *_ = cli(st, "step")
     check("gen2 pw: and is not a refusal", ok and out["kind"] == "none")
     # Unpair forgets the password.
@@ -301,8 +302,9 @@ def gen1_password():
           paths(m.log()) == ["/shelly", "/settings", "/status"] and [r["auth"] for r in m.log()] == ["none", "ok", "ok"], m.log())
     m.reset()
     ok, out, kind, err, ms = cli(st, "apply", "relay:0", '{"on":true}')
-    check("gen1 pw: on is /relay/0?turn=on, logged in", ok and paths(m.log()) == ["/shelly", "/relay/0?turn=on"] and
-          m.log()[1]["auth"] == "ok" and m.state()["relays"][0]["ison"] is True, (err, paths(m.log())))
+    check("gen1 pw: on is /relay/0?turn=on, logged in (after /settings, review 2)",
+          ok and paths(m.log()) == ["/shelly", "/settings", "/relay/0?turn=on"] and
+          m.log()[2]["auth"] == "ok" and m.state()["relays"][0]["ison"] is True, (err, paths(m.log())))
     m.config(password="changed")
     m.reset()
     ok, out, kind, err, ms = cli(st, "read")
@@ -326,8 +328,8 @@ def covers():
         m.reset()
         ok, out, kind, err, ms = cli(st, "apply", "cover:0", change)
         log = m.log()
-        check("cover: %s is %s" % (change, method), ok and paths(log) == ["/shelly", method] and log[1]["rpc"]["params"] == params,
-              (err, paths(log)))
+        check("cover: %s is %s" % (change, method), ok and paths(log) == ["/shelly", "Shelly.GetConfig", method] and
+              log[2]["rpc"]["params"] == params, (err, paths(log)))
     check("cover: the position reached", m.state()["cover:0"]["current_pos"] == 100)
     m.stop()
     m = Mock("plus2pm-cover-uncal")
@@ -350,7 +352,7 @@ def covers():
                          ('{"position":0}', "/roller/0?go=close")):
         m.reset()
         ok, out, kind, err, ms = cli(st, "apply", "roller:0", change)
-        check("roller: %s is %s" % (change, path), ok and paths(m.log()) == ["/shelly", path], (err, paths(m.log())))
+        check("roller: %s is %s" % (change, path), ok and paths(m.log()) == ["/shelly", "/settings", path], (err, paths(m.log())))
     m.stop()
     m = Mock("25-roller-uncal")
     st = new_state("roller-uncal", m, "shelly:shelly25-a4cf12f45378")
@@ -566,7 +568,7 @@ def identity_and_hostile():
     m.reset()
     ok, out, kind, err, ms = cli(st, "apply", "switch:0", '{"on":true}')
     check("hostile redirect: not followed (one request after /shelly, nothing more)", not ok and len(m.log()) == 2 and
-          m.log()[1]["path"] == "/rpc/Switch.Set", (err, paths(m.log())))
+          m.log()[1]["path"] == "/rpc/Shelly.GetConfig", (err, paths(m.log())))
     m.config(hostile="slow")
     ok, out, kind, err, ms = cli(st, "apply", "switch:0", '{"on":true}', deadline=2500)
     check("deadline: a device that stalls costs at most the 2.5 s given", not ok and kind == "no_answer" and ms < 3200, (kind, err, ms))
@@ -580,6 +582,105 @@ def identity_and_hostile():
     st = new_state("closed", m, "shelly:shellyplus1pm-a8032ab12345")
     ok, out, kind, err, ms = cli(st, "enumerate")
     check("nothing at the port: did not answer", not ok and kind == "no_answer", (kind, err))
+
+
+def review2():
+    """Second review: what the first round left open."""
+    # A relay or blind set up differently in the Shelly app after it was read (renamed "Garage
+    # door", its device renamed, a one-second switch-off timer, a profile change): the same device
+    # (same id or MAC), so the identity check passes; its settings are asked again and nothing is sent.
+    for first, later, dev_id, thing, change, why in (
+            ("plus1pm", "plus1-garage", "shelly:shellyplus1pm-a8032ab12345", "switch:0", '{"on":true}', "gen2 relay renamed Garage door"),
+            ("plus1pm", "plus1-garage-dev", "shelly:shellyplus1pm-a8032ab12345", "switch:0", '{"on":false}', "gen2 device renamed Garage door (off too)"),
+            ("plus1pm", "plus1-pulse", "shelly:shellyplus1pm-a8032ab12345", "switch:0", '{"on":true}', "gen2 relay given a 1 s auto-off"),
+            ("plus2pm-cover", "plus2pm-cover-garage", "shelly:shellyplus2pm-a8032ab12345", "cover:0", '{"position":0}', "gen2 blind's device renamed Garage"),
+            ("plus2pm", "plus2pm-cover", "shelly:shellyplus2pm-a8032ab12345", "switch:1", '{"on":true}', "gen2 2PM changed to the cover profile"),
+            ("1pm", "1-garage-dev", "shelly:shelly1pm-a4cf12f45378", "relay:0", '{"on":true}', "gen1 device renamed Garage door"),
+            ("1pm", "1-pulse", "shelly:shelly1pm-a4cf12f45378", "relay:0", '{"on":true}', "gen1 relay given a 1 s auto-off"),
+            ("25-roller", "25-roller-garage", "shelly:shelly25-a4cf12f45378", "roller:0", '{"position":0}', "gen1 blind's device renamed Garage door"),
+            ("25", "25-roller", "shelly:shelly25-a4cf12f45378", "relay:0", '{"on":true}', "gen1 2.5 changed to roller mode")):
+        a = Mock(first)
+        st = new_state("r2-stale-" + later, a, dev_id)
+        ok, out, kind, err, ms = cli(st, "enumerate")
+        a.stop()
+        b = Mock(later)
+        point_at(st, b)
+        before = b.state()
+        ok2, out2, kind2, err2, ms2 = cli(st, "apply", thing, change)
+        check("review 2: settings asked again before a change: %s: not switched" % why,
+              ok and thing in things_of(out) and not ok2 and kind2 != "other_device" and
+              paths(b.log()) == ["/shelly", "Shelly.GetConfig" if b.model.startswith("plus") else "/settings"] and b.state() == before,
+              (kind2, err2, paths(b.log())))
+        b.stop()
+    # A paired device that has never been read (it has nothing to offer: a garage door with a
+    # password): its password is tied to the device that took it, so another Shelly at its address
+    # later is sent nothing, its refusal is not kept, and typing the password again goes nowhere.
+    for gen, garage, other, dev_id, user, pw_a, pw_b, extra in (
+            (1, "1-garage-dev", "1pm", "shelly:shelly1-a4cf12f45378", "owner", "S3cret:Gen1", "wrong-Gen1", ["--mac", "A4CF12000000"]),
+            (2, "plus1-garage-dev", "plus1pm", "shelly:shellyplus1pm-a8032ab12345", None, "hunter2-Gen2", "wrong-Gen2",
+             ["--id", "shellyplus1pm-ffffffffffff", "--mac", "FFFFFFFFFFFF"])):
+        a = Mock(garage, "--password", pw_a, *(["--user", user] if user else []))
+        b = Mock(other, "--password", pw_b, *(["--user", user] if user else []), *extra)
+        st = new_state("r2-anchor%d" % gen, a, dev_id)
+        cli(st, "enumerate")
+        if user:
+            cli(st, "pair", user)
+        okp, *_ = cli(st, "pair", pw_a)
+        anchor = load(st)["device"]["auth"].get("dev")
+        ok, out, kind, err, ms = cli(st, "enumerate")
+        check("review 2 gen%d: pairing ties the password to the device that took it" % gen,
+              okp and anchor == ("a4cf12f45378" if gen == 1 else "shellyplus1pm-a8032ab12345") and not ok and "nothing Zero Bot may use" in err,
+              (anchor, err))
+        point_at(st, b)
+        b.reset()
+        ok2, out2, kind2, err2, ms2 = cli(st, "enumerate")
+        refused = load(st).get("secrets", {}).get("shelly", {}).get("refused", {})
+        check("review 2 gen%d: never read, another Shelly at its address is sent no login" % gen,
+              not ok2 and kind2 == "other_device" and logins(b.log()) == [] and paths(b.log()) == ["/shelly"], (kind2, err2, b.log()))
+        check("review 2 gen%d: and no refusal is kept against it" % gen, refused == {}, refused)
+        # Its owner changes its password; it is refused once, at its own address. Then the other
+        # Shelly has the address when the new password is typed (Gen1: user name first).
+        new_pw = "changed-Gen%d" % gen
+        point_at(st, a)
+        a.config(password=new_pw)
+        ok3, out3, kind3, err3, ms3 = cli(st, "enumerate")
+        point_at(st, b)
+        b.reset()
+        if user:
+            cli(st, "pair", user)
+        ok4, out4, kind4, err4, ms4 = cli(st, "pair", new_pw)
+        check("review 2 gen%d: never read, the password typed again goes only to its own device" % gen,
+              kind3 == "refused" and not ok4 and "Another device" in err4 and logins(b.log()) == [] and
+              load(st)["device"]["auth"].get("dev") == anchor and load(st)["device"]["auth"].get("password") == new_pw,
+              (kind3, err4, b.log(), load(st)["device"]["auth"].get("dev")))
+        point_at(st, a)
+        a.reset()
+        ok4, out4, kind4, err4, ms4 = cli(st, "enumerate")
+        check("review 2 gen%d: back at its address, it is asked with its own login" % gen,
+              not ok4 and "nothing Zero Bot may use" in err4 and logins(a.log()) == ["ok", "ok"], (err4, a.log()))
+        ok5, *_ = cli(st, "unpair")
+        check("review 2 gen%d: unpair forgets which device it was" % gen, ok5 and load(st)["device"]["auth"] == {}, load(st)["device"]["auth"])
+        a.stop()
+        b.stop()
+    # Read without a password while another Shelly, which has one, answers at the address: its 401
+    # is not kept as "this one needs a password" (which would hide the device until a password it
+    # does not have is typed); the app is told another device answers, and looks for it.
+    a = Mock("plus1pm")
+    b = Mock("plus1pm", "--password", "hunter2-Gen2", "--id", "shellyplus1pm-ffffffffffff", "--mac", "FFFFFFFFFFFF")
+    st = new_state("r2-readlock", a, "shelly:shellyplus1pm-a8032ab12345")
+    cli(st, "enumerate")
+    point_at(st, b)
+    ok, out, kind, err, ms = cli(st, "read")
+    locked = load(st).get("secrets", {}).get("shelly", {}).get("locked", {})
+    okst, step, *_ = cli(st, "step")
+    check("review 2: read, no password, another (locked) Shelly at the address: 'another device', nothing kept",
+          not ok and kind == "other_device" and locked == {} and step["kind"] == "none" and paths(b.log()) == ["/shelly"],
+          (kind, err, locked, step, paths(b.log())))
+    point_at(st, a)
+    ok2, out2, kind2, err2, ms2 = cli(st, "read")
+    check("review 2: back at its address it is read as before", ok2 and "switch:0" in things_of(out2), (kind2, err2))
+    a.stop()
+    b.stop()
 
 
 # ================================================================ part 2: the app
@@ -613,6 +714,7 @@ def app_part():
         print("info  %s not built: the app part was skipped" % APP)
         return
     lamp, blind, kettle = Mock("plus1pm"), Mock("plus2pm-cover"), Mock("plugs", "--password", "hunter2-Gen2")
+    mocks_here = []
     app = App()
     try:
         out = app.run("--home-refresh")
@@ -644,7 +746,8 @@ def app_part():
         lamp.reset()
         r = app.tool({"action": "on", "target": "Desk lamp"})
         check("app: 'turn on the desk lamp' reaches the device as Switch.Set", not r.startswith("ERROR") and
-              paths(lamp.log()) == ["/shelly", "Switch.Set"] and lamp.state()["switch:0"]["output"] is True, (r, paths(lamp.log())))
+              paths(lamp.log()) == ["/shelly", "Shelly.GetConfig", "Switch.Set"] and lamp.state()["switch:0"]["output"] is True,
+              (r, paths(lamp.log())))
         blind.reset()
         r = app.tool({"action": "set", "target": "Lounge blind", "position": 30})
         check("app: 'set the lounge blind to 30' is Cover.GoToPosition 30", not r.startswith("ERROR") and paths(blind.log())[-1] == "Cover.GoToPosition" and
@@ -655,10 +758,25 @@ def app_part():
         lamp.reset()
         r = app.tool({"action": "status", "target": "Desk lamp"})
         check("app: the status of the lamp comes from the device", '"on":true' in r.replace(" ", "") and "12.5" in r and
-              paths(lamp.log()) == ["Shelly.GetStatus"], (r, paths(lamp.log())))
+              paths(lamp.log()) == ["/shelly", "Shelly.GetStatus"], (r, paths(lamp.log())))
         check("app: results carry no address, id or MAC", "127.0.0.1" not in r and "a8032ab12345" not in r.lower(), r)
+        # review 2: since it was read, the desk lamp's Shelly has been set up as a garage door
+        # opener in the Shelly app (same device). Nothing has read it again; it is still offered
+        # under its old name, but asked again, it is not switched.
+        lamp.stop()
+        garage = Mock("plus1-garage")
+        mocks_here.append(garage)
+        root = app.load()
+        for d in root["networks"][network]["devices"]:
+            if d["id"] == "shelly:shellyplus1pm-a8032ab12345":
+                d["port"] = garage.port
+        app.save(root)
+        r = app.tool({"action": "on", "target": "Desk lamp"})
+        check("app: a lamp since set up as a garage door is not switched (its settings asked again)",
+              r.startswith("ERROR") and "does not control" in r and paths(garage.log()) == ["/shelly", "Shelly.GetConfig"] and
+              garage.state()["switch:0"]["output"] is False, (r, paths(garage.log())))
     finally:
-        for m in (lamp, blind, kettle):
+        for m in (lamp, blind, kettle, *mocks_here):
             m.stop()
         shutil.rmtree(app.state, ignore_errors=True)
 
@@ -676,6 +794,7 @@ def main():
         lights()
         sensors_and_exclusions()
         identity_and_hostile()
+        review2()
         app_part()
     finally:
         for m in mocks:

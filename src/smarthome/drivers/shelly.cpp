@@ -250,20 +250,33 @@ std::string fingerprint(const std::string &user, const std::string &password) {
     return out;
 }
 
+// Words of a name, lower case. Bytes of UTF-8 letters ("ü", "ż") belong to their word, so "Tür" is
+// one word, not "t" and "r".
 static std::vector<std::string> name_words(const std::string &s) {
     std::vector<std::string> out;
     std::string w;
     for (const char c : util::lower(s) + " ") {
-        if (isalnum(static_cast<unsigned char>(c))) w += c;
+        if (isalnum(static_cast<unsigned char>(c)) || static_cast<unsigned char>(c) >= 0x80) w += c;
         else if (!w.empty()) { out.push_back(w); w.clear(); }
     }
     return out;
 }
 static bool says_banned(const std::string &s) {
-    static const std::set<std::string> kBanned = {"gate",  "gates",  "door",  "doors", "lock", "locks",
-                                                  "latch", "valve", "valves", "alarm", "siren", "doorlock"};
-    for (const auto &w : name_words(s))
+    // English, and the words for door, gate, lock and garage in the languages the app's yes words
+    // cover (German, French, Spanish, Italian, Portuguese, Dutch) and Polish.
+    static const std::set<std::string> kBanned = {
+        "gate", "gates", "door", "doors", "lock", "locks", "latch", "valve", "valves", "alarm", "siren", "doorlock", "opener",
+        "openers", "tor", "tore", "hoftor", "gartentor", "rolltor", "schiebetor", "einfahrtstor", "porte", "portes", "portail",
+        "portails", "serrure", "verrou", "puerta", "puertas", "portón", "porton", "cerradura", "garaje", "porta", "portone",
+        "cancello", "serratura", "portão", "portao", "fechadura", "brama", "drzwi", "zamek", "garaż"};
+    // Endings of German and Dutch compounds ("Haustür", "Voordeur", "Türschloss"). Not "tor": motor,
+    // radiator and monitor end in it.
+    static const char *const kBannedEnds[] = {"tür", "türe", "tuer", "deur", "deuren", "poort", "schloss", "riegel"};
+    for (const auto &w : name_words(s)) {
         if (kBanned.count(w) || w.find("garage") != std::string::npos) return true;   // "GarageDoor", "Garagentor"
+        for (const char *end : kBannedEnds)
+            if (w.size() >= strlen(end) && w.compare(w.size() - strlen(end), std::string::npos, end) == 0) return true;
+    }
     return false;
 }
 static bool says_light(const std::string &s) {
@@ -284,6 +297,72 @@ bool left_out(const std::string &name, const std::string &device_name, const std
     if (banned(device_name, "") && !says_light(name)) return true;
     // Switched off again within seconds of being switched on: a pulse to an opener or a bell.
     return auto_off_s > 0 && auto_off_s <= kPulseSeconds;
+}
+
+// left_out() for one Gen2+ "switch:N" or "cover:N", from the result of Shelly.GetConfig. Names are
+// taken as the device has them, before clean_name() (which may cut a long name short).
+static bool gen2_channel_left_out(const json &config, const std::string &comp, int id) {
+    std::string device_name, appliance;
+    const json *consumption = nullptr;
+    if (const json *sys = member_obj(config, "sys")) {
+        if (const json *dev = member_obj(*sys, "device")) device_name = text(member(*dev, "name"));
+        if (const json *ui = member_obj(*sys, "ui_data")) consumption = member_arr(*ui, "consumption_types");
+    }
+    const std::string key = comp + ":" + std::to_string(id);
+    const json *cfg = member_obj(config, key.c_str());
+    const std::string name = cfg ? text(member(*cfg, "name")) : "";
+    if (comp == "cover") return left_out(name, device_name, "");   // a "garage door" wired as a cover is still a garage door
+    if (consumption && id < static_cast<int>(consumption->size())) appliance = text(&(*consumption)[id]);
+    // Auto-off (Switch config auto_off, auto_off_delay in seconds).
+    double auto_off = 0;
+    if (cfg && boolean(member(*cfg, "auto_off")).value_or(false)) auto_off = number(member(*cfg, "auto_off_delay"), 0, 1e9).value_or(0);
+    return left_out(name, device_name, appliance, auto_off);
+}
+
+// left_out() for one Gen1 relay or roller, from the body of /settings.
+static bool gen1_channel_left_out(const json &settings, const std::string &comp, size_t i) {
+    const std::string device_name = text(member(settings, "name"));
+    const json *list = member_arr(settings, comp == "roller" ? "rollers" : "relays");
+    const json *ch = list && i < list->size() && (*list)[i].is_object() ? &(*list)[i] : nullptr;
+    const std::string name = ch ? text(member(*ch, "name")) : "";
+    // Gen1 blinds have no name of their own (the documentation lists none): the device's counts.
+    if (comp == "roller") return left_out(name, device_name, "");
+    // auto_off: "automatic flip back timer, seconds", 0 when off.
+    return left_out(name, device_name, ch ? text(member(*ch, "appliance_type")) : "",
+                    ch ? number(member(*ch, "auto_off"), 0, 1e9).value_or(0) : 0);
+}
+
+bool recheck(const home::Thing &thing, const json &config, std::string &err) {
+    const int gen = ref_int(thing, "gen", 1, 9, 0);
+    const std::string comp = ref_text(thing, "comp");
+    const int id = ref_int(thing, "id", 0, kMaxComponentId, -1);
+    if (gen == 0 || id < 0 || !config.is_object()) {
+        err = kNotUnderstood;
+        return false;
+    }
+    bool there = true, out = false;
+    if (gen >= 2) {
+        if (comp != "switch" && comp != "cover") return true;
+        there = member_obj(config, (comp + ":" + std::to_string(id)).c_str()) != nullptr;   // a 2PM changed profile: gone
+        out = there && gen2_channel_left_out(config, comp, id);
+    } else {
+        if (comp != "relay" && comp != "roller") return true;
+        // A 2.5 changed between relay and roller mode: the channel is gone.
+        const bool roller_mode = util::lower(text(member(config, "mode"))) == "roller";
+        const json *list = member_arr(config, comp == "roller" ? "rollers" : "relays");
+        there = (comp == "roller") == roller_mode && list && static_cast<size_t>(id) < list->size() && (*list)[id].is_object();
+        out = there && gen1_channel_left_out(config, comp, static_cast<size_t>(id));
+    }
+    if (!there) {
+        err = std::string("The Shelly has changed since it was read: it no longer has this channel. Nothing was sent. ") + kReadAgain;
+        return false;
+    }
+    if (out) {
+        err = std::string("The Shelly's settings now make this a door, gate, lock or opener (by its name, or a timer that switches "
+                          "it off within seconds), which Zero Bot does not control. Nothing was sent. ") + kReadAgain;
+        return false;
+    }
+    return true;
 }
 
 bool parse_identity(const std::string &body, Identity &out) {
@@ -367,12 +446,9 @@ std::vector<home::Thing> things_gen2(const Identity &who, const json &config, co
         home::Thing t;
         if (comp == "switch") {
             if (thermostat_relay) continue;   // the device's own thermostat drives it
+            if (gen2_channel_left_out(config, comp, id)) continue;   // garage doors, locks, pulses (apply() asks again)
             std::string appliance;
             if (consumption && id < static_cast<int>(consumption->size())) appliance = text(&(*consumption)[id]);
-            // Auto-off (Switch config auto_off, auto_off_delay in seconds).
-            double auto_off = 0;
-            if (cfg && boolean(member(*cfg, "auto_off")).value_or(false)) auto_off = number(member(*cfg, "auto_off_delay"), 0, 1e9).value_or(0);
-            if (left_out(name, device_name, appliance, auto_off)) continue;
             const std::string type = light_type(appliance) ? "light" : plug ? "plug" : "switch";
             uint32_t caps = home::kPower;
             if (st && number(member(*st, "apower"), -100000, 100000)) caps |= home::kSensor;
@@ -391,7 +467,7 @@ std::vector<home::Thing> things_gen2(const Identity &who, const json &config, co
             t.ref["kmin"] = lo;
             t.ref["kmax"] = hi;
         } else if (comp == "cover") {
-            if (left_out(name, device_name, "")) continue;   // a "garage door" wired as a cover is still a garage door
+            if (gen2_channel_left_out(config, comp, id)) continue;   // a "garage door" wired as a cover is still a garage door
             t = make_thing(who, comp, id, key, name, "cover", home::kPosition);
             t.ref["calibrated"] = st && boolean(member(*st, "pos_control")).value_or(false);
         } else if (comp == "temperature") {
@@ -437,9 +513,8 @@ std::vector<home::Thing> things_gen1(const Identity &who, const json &settings, 
         const json *named = member_arr(settings, "rollers");
         for (size_t i = 0; rollers && i < rollers->size() && i < kMaxChannels; ++i) {
             if (!(*rollers)[i].is_object()) continue;
-            // Gen1 blinds have no name of their own (the documentation lists none): the device's counts.
             const std::string name = named && i < named->size() && (*named)[i].is_object() ? text(member((*named)[i], "name")) : "";
-            if (left_out(name, device_name, "")) continue;
+            if (gen1_channel_left_out(settings, "roller", i)) continue;   // garage doors (apply() asks again)
             const int id = static_cast<int>(i);
             home::Thing t = make_thing(who, "roller", id, "roller:" + std::to_string(id), name, "cover", home::kPosition);
             t.ref["calibrated"] = boolean(member((*rollers)[i], "positioning")).value_or(false);
@@ -451,8 +526,7 @@ std::vector<home::Thing> things_gen1(const Identity &who, const json &settings, 
             if (!(*relays)[i].is_object()) continue;
             const json &r = (*relays)[i];
             const std::string name = text(member(r, "name")), appliance = text(member(r, "appliance_type"));
-            // auto_off: "automatic flip back timer, seconds", 0 when off.
-            if (left_out(name, device_name, appliance, number(member(r, "auto_off"), 0, 1e9).value_or(0))) continue;
+            if (gen1_channel_left_out(settings, "relay", i)) continue;   // garage doors, locks, pulses (apply() asks again)
             const std::string kind = light_type(appliance) ? "light" : starts_with(type, "SHPLG") ? "plug" : "switch";
             const int id = static_cast<int>(i);
             home::Thing t = make_thing(who, "relay", id, "relay:" + std::to_string(id), name, kind,
@@ -928,7 +1002,11 @@ public:
                 err = "That cannot be a Shelly user name (no colons, at most 64 characters).";
                 return false;
             }
-            dev.auth = {{"user", user}};   // a new user name starts afresh: its password is asked for next
+            // A new user name starts afresh: its password is asked for next. The device the login
+            // is for stays the same.
+            const std::string paired = text(member(dev.auth, "dev"));
+            dev.auth = {{"user", user}};
+            if (!paired.empty()) dev.auth["dev"] = paired;
             forget(key, false);
             return true;
         }
@@ -948,7 +1026,7 @@ public:
             err += " The password is kept, and is tried when the device is next read.";
             return false;
         }
-        if (!same_device(dev.things, who, dev.things.empty() ? 0 : ref_int(dev.things[0], "gen", 1, 9, 0), err)) {
+        if (!same_device(dev.things, dev.auth, who, dev.things.empty() ? 0 : ref_int(dev.things[0], "gen", 1, 9, 0), err)) {
             err += " The password typed is kept.";
             return false;
         }
@@ -965,6 +1043,9 @@ public:
                            : "The Shelly did not accept this password. Capitals count; type it again.";
             return false;
         }
+        // From now on the password belongs to the device that answered, and goes to no other, even
+        // before its things are read (one with nothing to offer never has any to tell it apart).
+        dev.auth["dev"] = who.who();
         if (r.answered && r.status == 429) {
             err = std::string(kThrottled) + " after wrong passwords. The password is saved and will be tried when the "
                                             "device is next read; wait a few minutes first.";
@@ -995,12 +1076,9 @@ public:
             const Deadline dl(kListMs);
             Identity who;
             if (!identify(t, dl, who, err)) return false;
-            // A device that answers at the address of another, already read, is not taken for it.
-            const std::string known = known_device(dev.things, "dev");
-            if (!known.empty() && known != who.who()) {
-                err = std::string(kOtherDevice) + " Scan the network again in Settings, Smart home.";
-                return false;
-            }
+            // A device that answers at the address of another, already read or paired, is not taken
+            // for it (nor sent its password).
+            if (!same_device(dev.things, dev.auth, who, 0, err)) return false;
             const Login login = login_of(dev, who.gen);
             if (!may_log_in(t, who, login, err)) return false;
             std::string name;
@@ -1047,11 +1125,11 @@ public:
             const Login login = login_of(dev, gen);
             if (!ready(t, gen, login, err)) return false;
             const Deadline dl(kListMs);
-            if (login.have()) {
-                // A password goes only to the device it is for (see pair()).
-                Identity who;
-                if (!identify(t, dl, who, err) || !same_device(things, who, gen, err)) return false;
-            }
+            // Who answers, first: a password goes only to the device it is for (see pair()), and
+            // another device's answer (its 401, a web server's 404) is not kept as this one's.
+            Identity who;
+            if (!identify(t, dl, who, err) || !same_device(things, dev.auth, who, gen, err)) return false;
+            if (!may_log_in(t, who, login, err)) return false;
             json status;
             if (gen >= 2) {
                 if (!rpc(t, gen, &login, "Shelly.GetStatus", dl, status, err)) return false;
@@ -1092,8 +1170,18 @@ public:
             if (login.have() && is_refused(t.key, login)) return refused_error(err);
             const Deadline dl(deadline_ms);
             Identity who;
-            if (!identify(t, dl, who, err) || !same_device({thing}, who, gen, err)) return false;
+            if (!identify(t, dl, who, err) || !same_device({thing}, dev.auth, who, gen, err)) return false;
             if (!may_log_in(t, who, login, err)) return false;
+            // A relay or blind is asked again what it is now: renamed "Garage door" in the Shelly app,
+            // given a switch-off timer of a second (an opener's pulse), or a 2PM changed to the other
+            // profile since it was read, it is not switched. Lights have no such rule.
+            const std::string comp = ref_text(thing, "comp");
+            if (comp == "switch" || comp == "cover" || comp == "relay" || comp == "roller") {
+                json config;
+                if (gen >= 2 ? !rpc(t, gen, &login, "Shelly.GetConfig", dl, config, err) : !get_json(t, &login, "/settings", dl, config, err))
+                    return false;
+                if (!detail::recheck(thing, config, err)) return false;
+            }
             if (gen >= 2) {
                 json result;
                 return rpc(t, gen, &login, call.method, dl, result, err, call.params);
@@ -1166,14 +1254,15 @@ private:
         return "";
     }
 
-    // Whether the device that answered /shelly is the one these things were read from (its id, or
-    // for Gen1 its MAC) and of the same generation (`gen`, from their refs; 0 when not known).
-    static bool same_device(const std::vector<home::Thing> &things, const Identity &who, int gen, std::string &err) {
-        const std::string known = known_device(things, "dev");
-        if (!known.empty() && known != who.who()) {
-            err = std::string(kOtherDevice) + " Nothing was sent to it. Scan the network again in Settings, Smart home.";
-            return false;
-        }
+    // Whether the device that answered /shelly is the one these things were read from, and the one
+    // the saved password was typed for (auth "dev"): its id, or for Gen1 its MAC. And of the same
+    // generation (`gen`, from the things' refs; 0 when not known).
+    static bool same_device(const std::vector<home::Thing> &things, const json &auth, const Identity &who, int gen, std::string &err) {
+        for (const std::string &known : {known_device(things, "dev"), text(member(auth, "dev"))})
+            if (!known.empty() && known != who.who()) {
+                err = std::string(kOtherDevice) + " Nothing was sent to it. Scan the network again in Settings, Smart home.";
+                return false;
+            }
         if (gen > 0 && (who.gen >= 2) != (gen >= 2)) {
             err = std::string("The Shelly has changed since it was read. ") + kReadAgain;
             return false;
