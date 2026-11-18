@@ -1145,7 +1145,17 @@ public:
     Woken wake(bool silent) {
         if (dl_.left() < kMinTryMs) return Woken::NoTime;
         const Reply d = dial(std::min(1500L, dl_.left()));
-        if (!d.answered()) return silent || d.connected ? Woken::NotServing : Woken::NoAnswer;
+        if (!d.answered()) {
+            // Taken late, as the owner's TV takes a wake from deep standby (power_on's rule): with
+            // its API refusing, the TV is coming on. It is starting, so the command says "still
+            // starting up" (Woken::NotServing then reads so), and nothing more is sent: the API is
+            // not up. Not after an API that accepted without answering (stuck, not asleep).
+            if (!silent && detail::wake_taken_late(d.connected, d.sent, d.rc)) {
+                wake_accepted(Clock::now());
+                return Woken::NotServing;
+            }
+            return silent || d.connected ? Woken::NotServing : Woken::NoAnswer;
+        }
         if (!d.ok()) return Woken::NotServing;
         // An API that refused connections was asleep, and the TV took the wake: it is starting.
         // One that accepted them without answering was not asleep, so this wake starts nothing
@@ -1714,7 +1724,7 @@ private:
             // slowly. A connection closed or reset without an answer, or answered with something
             // that is not HTTP, is not that: whatever took it did not take the wake (another
             // service on this port at the TV's address does so with a plain HTTP request).
-            if (d.connected && d.sent && d.rc == CURLE_OPERATION_TIMEDOUT) dial_late = true;
+            if (detail::wake_taken_late(d.connected, d.sent, d.rc)) dial_late = true;
             if (budget >= kMinTryMs) evidence = begun;   // a request with almost no time proves nothing
             if (final) break;
         }
@@ -1933,6 +1943,10 @@ std::string unconfirmed_error(bool acts, bool starting) {
 }
 
 bool power_on_done(Woken api, bool alone) { return api == Woken::Up || (alone && api != Woken::KeyChanged); }
+
+bool wake_taken_late(bool connected, bool sent, int curl_code) {
+    return connected && sent && curl_code == CURLE_OPERATION_TIMEDOUT;
+}
 
 std::optional<Recall::Clock::time_point> Recall::get(const std::string &who, Clock::time_point now) {
     std::lock_guard<std::mutex> lock(mutex_);

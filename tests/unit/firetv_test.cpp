@@ -15,6 +15,7 @@
 #include "smarthome/drivers/firetv.h"
 
 #include <arpa/inet.h>
+#include <curl/curl.h>
 
 #include <chrono>
 #include <climits>
@@ -192,6 +193,21 @@ int main(int argc, char **argv) {
         check("on with more, API up: the rest can go", power_on_done(Woken::Up, false));
         for (const Woken w : {Woken::NotServing, Woken::Waking, Woken::KeyChanged, Woken::NoTime, Woken::NoAnswer})
             check("on with more, API not up (" + std::to_string(static_cast<int>(w)) + "): not done", !power_on_done(w, false));
+
+        // A DIAL request with no HTTP answer that counts as a wake taken late (on=true's and a
+        // command's wake alike, ZB-070): only one that connected, went out and was still waiting
+        // when its time ran out. What libcurl reports for each, measured in the review of 0.4.4
+        // with this PC's libcurl and the device's: refused 7, closed 52, reset 56, not HTTP 1.
+        check("DIAL unanswered, connected, sent, timed out: a wake taken late",
+              wake_taken_late(true, true, CURLE_OPERATION_TIMEDOUT));
+        check("DIAL refused: not taken", !wake_taken_late(false, false, CURLE_COULDNT_CONNECT));
+        check("DIAL connection never made before the time ran out: not taken",
+              !wake_taken_late(false, false, CURLE_OPERATION_TIMEDOUT));
+        check("DIAL connected, the request not sent when the time ran out: not taken",
+              !wake_taken_late(true, false, CURLE_OPERATION_TIMEDOUT));
+        check("DIAL closed without an answer: not taken", !wake_taken_late(true, true, CURLE_GOT_NOTHING));
+        check("DIAL reset: not taken", !wake_taken_late(true, true, CURLE_RECV_ERROR));
+        check("DIAL answered in something that is not HTTP: not taken", !wake_taken_late(true, true, CURLE_UNSUPPORTED_PROTOCOL));
 
         // A silent API reads as "still starting up" only while the TV is starting.
         eq("silent API, not starting: not serving, as before", woken_error(Woken::NotServing, false), kNotServing);

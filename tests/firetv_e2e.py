@@ -948,6 +948,43 @@ def starting_tests(m, tv):
     check("deep standby, API slow after the boot, one on=true at 9000 ms: done, four packets 2.5 s apart as before",
           rc == 0 and st["boots"] == 1 and len(st["magic"]) == 4 and st["state"] == "starting" and elapsed < 9.6,
           (rc, err, len(st["magic"]), st["state"], elapsed))
+
+    # A key, a playback control or an app sent while the TV is in deep standby (its API refused):
+    # the wake sent to deliver it is taken late, as the owner's TV takes one from deep standby, and
+    # the TV comes on. As on=true does since 0.4.4 (ZB-070): the TV is starting, so "still starting
+    # up, try again" and nothing more is sent (its API is not up); never "not replying".
+    for change, what in (({"key": "home"}, "a key"), ({"transport": "play"}, "play/pause"),
+                         ({"source": "Netflix"}, "an app")):
+        m.reset(state="idle", caps="tv", wake_delay=0.3, starting_s=8.0, dial_late=3.0)
+        rc, out, err, elapsed = tv.apply(change)
+        st = m.stats()
+        check("deep standby, %s: its DIAL wake taken late: 'still starting up, try again', nothing more sent, "
+              "never 'not replying'" % what,
+              rc == 1 and fault(err) == "starting" and message(err) == "The TV is still starting up. Try again in a moment." and
+              not reads_as_unreachable(err) and st["dial_posts"] == 1 and st["wakes"] == 1 and st["requests"] == [] and
+              st["silent_connections"] == 0 and keys(st) == [] and st["launched"] == [] and elapsed < 2.9,
+              (rc, err, st["dial_posts"], st["wakes"], len(st["requests"]), st["silent_connections"], elapsed))
+    m.reset(state="idle", caps="tv", wake_delay=0.3, starting_s=8.0, dial_late=3.0)
+    first, rc, err, elapsed = tv.apply_twice({"key": "home"}, 200, then={"key": "back"})
+    st = m.stats()
+    check("deep standby: a key whose wake was taken late, then the next one with the API silent: 'still starting up' both",
+          first == "starting" and rc == 1 and fault(err) == "starting" and not reads_as_unreachable(err) and
+          keys(st) == [] and st["dial_posts"] == 1, (first, rc, err, keys(st), st["dial_posts"]))
+    # Only a wake taken late counts (power_on's rule): a DIAL request closed, reset or answered in
+    # something that is not HTTP was not taken, so "not replying" as before, and the next command
+    # is not "starting"; nor does a late DIAL answer make an API that took the connection without
+    # completing TLS (stuck, not asleep) "starting".
+    for mode in ("close", "reset", "garbage"):
+        m.reset(state="idle", caps="tv", faults={"POST /apps/FireTVRemote": mode})
+        first, rc, err, elapsed = tv.apply_twice({"key": "home"}, 200, then={"key": "back"})
+        st = m.stats()
+        check("a key, its DIAL wake answered '%s' (not taken): not serving, and so is the next (not 'starting')" % mode,
+              first == "not_serving" and rc == 1 and fault(err) == "not_serving" and st["wakes"] == 0 and keys(st) == [],
+              (first, rc, err, st["wakes"]))
+    m.reset(state="hung_tls", caps="tv", dial_late=3.0)
+    first, rc, err, elapsed = tv.apply_twice({"key": "home"}, 200, then={"key": "back"})
+    check("a key, the API taking the connection without TLS and the DIAL wake answered late: not serving twice, "
+          "not 'starting'", first == "not_serving" and rc == 1 and fault(err) == "not_serving", (first, rc, err))
     m.reset(state="awake", caps="tv")
 
 

@@ -43,16 +43,21 @@
 //  - on=true alone is done once the TV has accepted the DIAL wake (a 2xx answer): the TV is
 //    coming on, even when its API, which starts some seconds later, is still refusing or
 //    accepting connections without answering when the deadline comes (the owner's TV did that
-//    for longer than 2.5 s). It still fails when the API presents a key that changed and could
-//    not be accepted (kKeyChanged), and when the TV did not accept the wake (no answer, an answer
-//    that is not 2xx: as above). Anything else in the change needs the API.
+//    for longer than 2.5 s). A DIAL request that went out and was still unanswered, its connection
+//    open, when its time ran out counts as accepted: the owner's TV takes a wake from deep standby
+//    so (one closed, reset or answered in something that is not HTTP does not). It still fails when
+//    the API presents a key that changed and could not be accepted (kKeyChanged), and when the TV
+//    did not accept the wake (no answer, an answer that is not 2xx: as above). Anything else in
+//    the change needs the API.
 //  - When on=true is combined with other fields, the wake keeps 300 ms back for them. A later
 //    part of a change that would start with less than 200 ms left is not sent: kWaking ("Try
 //    again in a moment.") after a wake, else "There was no time left to finish that. Try again
 //    in a moment." (Fault::Other). Never kNoAnswer: infrared would toggle the TV just woken.
 //  - The TV is "starting" for up to a minute after it accepted a DIAL wake from this driver
-//    (on=true's, or the one sent for a command while its API refused connections), until its API
-//    answers anything. Then a command that finds the API silent (it accepts and does not answer)
+//    (on=true's, or the one sent for a command while its API refused connections, accepted late as
+//    above included), until its API answers anything. A command whose own wake was accepted late
+//    fails at once with kStarting ("The TV is still starting up. Try again in a moment."), sending
+//    nothing more. Then a command that finds the API silent (it accepts and does not answer)
 //    fails with kStarting, not kNotServing: "The TV is still starting up. Try again in a moment.",
 //    or, when the request went out, "... The command may still have been carried out, so check
 //    the TV before trying again." So does an on=true then whose DIAL request is accepted and not
@@ -253,9 +258,15 @@ bool plan(const home::Thing &thing, const home::Change &change, std::vector<Acti
 
 // What a wake came to: the API answered (Up); nothing answered on either port (NoAnswer); the TV
 // was there but its API did not answer: it accepted connections and stayed silent, or DIAL did not
-// accept the wake (NotServing); the API kept refusing after an accepted wake (Waking); the API
-// presented a key that could not be accepted (KeyChanged); there was no time to try (NoTime).
+// accept the wake, or accepted it late, which makes the TV "starting" (NotServing); the API kept
+// refusing after an accepted wake (Waking); the API presented a key that could not be accepted
+// (KeyChanged); there was no time to try (NoTime).
 enum class Woken { Up, NoAnswer, NotServing, Waking, KeyChanged, NoTime };
+// Whether a DIAL request that got no HTTP answer is a wake the TV accepted late: it connected, went
+// out, and was still waiting when its time ran out (`curl_code` CURLE_OPERATION_TIMEDOUT). The
+// owner's TV answers one that late from deep standby, and comes on. A connection refused, closed,
+// reset or answered in something that is not HTTP is not: whatever took it did not take the wake.
+bool wake_taken_late(bool connected, bool sent, int curl_code);
 // The error a wake that did not bring the API up reports ("" for Up). `starting`: the TV accepted
 // a wake from this driver less than a minute ago and its API has not answered since, so an API
 // that is silent is starting up (kStarting), not stuck (kNotServing).
