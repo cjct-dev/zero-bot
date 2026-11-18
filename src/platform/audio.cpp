@@ -356,7 +356,8 @@ Music &Music::get() {
 }
 
 void Music::play(std::vector<std::string> paths) {
-    stop();
+    std::lock_guard<std::mutex> ctl(ctl_);
+    stop_locked();
     if (paths.empty()) return;
     {
         std::lock_guard<std::mutex> lk(mtx_);
@@ -404,6 +405,11 @@ void Music::play(std::vector<std::string> paths) {
 }
 
 void Music::stop() {
+    std::lock_guard<std::mutex> ctl(ctl_);
+    stop_locked();
+}
+
+void Music::stop_locked() {
     running_ = false;
     ++generation_;
     if (thread_.joinable()) thread_.join();
@@ -418,7 +424,8 @@ void Music::stop() {
 }
 
 void Music::play_live(const std::string &url, const std::string &title) {
-    stop();
+    std::lock_guard<std::mutex> ctl(ctl_);
+    stop_locked();
     if (url.empty()) return;
     {
         std::lock_guard<std::mutex> lk(mtx_);
@@ -448,10 +455,12 @@ void Music::run_live(int gen, std::string url) {
             if (holds_ != 0 || !wanted()) continue;
             // The same player and output buffer as music. rw_timeout ends a player whose stream has
             // gone silent (the Wi-Fi dropped) after 15 s, so that it is joined again rather than
-            // left waiting for ever; -autoexit ends it when the station closes the stream.
+            // left waiting for ever; -autoexit ends it when the station closes the stream. A stream
+            // never ends by itself, so the player goes with this thread, which outlives it: an app
+            // that crashes or is killed does not leave a station playing that nothing can stop.
             child_ = proc::spawn({"env", "PULSE_LATENCY_MSEC=300", "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
                                   "-rw_timeout", "15000000", url},
-                                 false, false);
+                                 false, false, false, true);
             stopped_ = false;
             started = clock::now();
         }
@@ -470,8 +479,11 @@ void Music::run_live(int gen, std::string url) {
         }
         if (!ended_itself) continue;   // the top of the loop waits for the holds, or leaves
         // A stream that played for a while and dropped starts the count again; one that will not
-        // start at all (off the air, refused, a wrong address) is given up after three tries.
-        failures = clock::now() - started > std::chrono::seconds(30) ? 1 : failures + 1;
+        // start at all (off the air, refused, a wrong address) is given up after three tries. "A
+        // while" is well past the time a stall takes to end the player: a server that sends its
+        // opening burst and then nothing was measured ending it after 31 s (about twice the 15 s
+        // read timeout), and with 30 s here it was joined again every half-minute for ever.
+        failures = clock::now() - started > std::chrono::seconds(75) ? 1 : failures + 1;
         if (failures >= 3) {
             std::lock_guard<std::mutex> lk(mtx_);
             if (generation_ == gen)

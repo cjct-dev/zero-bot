@@ -14,6 +14,7 @@
 #include <functional>
 #include <string>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -21,6 +22,7 @@
 #include "core/util.h"
 #include "net/http.h"
 #include "platform/audio.h"
+#include "platform/proc.h"
 
 namespace {
 
@@ -128,6 +130,17 @@ void test_malformed() {
     CHECK_HAS(why, "\"Spaces\": the url must be");
     CHECK_HAS(why, "two stations are called \"good\"");
     CHECK_HAS(why, "low_data_url must start with");
+    // Nothing but a web address ever reaches the player: not an option for it, a local file or
+    // another of ffmpeg's protocols, whichever key it is under.
+    for (const char *bad : {"-i http://example.org/x.mp3", "-autoexit", "--", "file:/etc/passwd", "concat:http://e.org/a|http://e.org/b",
+                            "subfile,,start,0,end,9,,:http://e.org/x", "data:audio/mpeg;base64,AAAA", "pipe:0", "async:http://e.org/x",
+                            "cache:http://e.org/x", "crypto+http://e.org/x", "hls+http://e.org/x.m3u8", "tcp://e.org:80", "/etc/passwd",
+                            "./stream.mp3", "http://e.org/a\nhttp://e.org/b", "http://e.org/\x01", "http://", "https://"}) {
+        const json one = json::array({json{{"name", "Bad"}, {"url", bad}}, json{{"name", "Low"}, {"url", "http://e.org/ok"}, {"low_data_url", bad}}});
+        const auto got = parsed(one.dump(), problems);
+        CHECK(got.size() == 1);
+        if (got.size() == 1) { CHECK_EQ(got[0].name, "Low"); CHECK_EQ(got[0].url_low, ""); }
+    }
     // Comments are allowed (people edit this file by hand), and a bare list works too.
     CHECK(parsed("// mine\n[{\"name\": \"A\", \"url\": \"http://example.org/a\"}] /* end */", problems).size() == 1);
     CHECK(problems.empty());
@@ -328,6 +341,13 @@ void test_check() {
     CHECK_EQ(m3u.url, g_base + "/stream.mp3");
     const radio::Check hls = radio::check(g_base + "/live.m3u8");
     CHECK_EQ(hls.url, g_base + "/live.m3u8");          // HLS is the player's to read
+    // A playlist from the network is not trusted: entries that are a local file, an option for the
+    // player or another protocol are passed over, and only a web address is followed.
+    for (const char *list : {"/mixed.pls", "/mixed.m3u"}) {
+        const radio::Check mixed = radio::check(g_base + list);
+        CHECK_EQ(mixed.error, "");
+        CHECK_EQ(mixed.url, g_base + "/stream.mp3");
+    }
 }
 
 // ---------------------------------------------------------------- the player's live mode
@@ -421,6 +441,46 @@ void test_live_player() {
     m.stop();
 }
 
+// fn+E on the UI thread and the radio tool on the agent's thread can start a station at the same
+// moment (and ESC can stop one): the player takes them one at a time instead of crashing the app.
+void test_concurrent_starts() {
+    StandIn s;
+    if (!s.make()) { check(false, "the stand-in player could be written", __LINE__); return; }
+    audio::Music &m = audio::Music::get();
+    auto starter = [&m](const std::string &url, const char *name) {
+        for (int i = 0; i < 15; ++i) {
+            m.play_live(url, name);
+            if (i % 5 == 2) m.stop();   // the last thing each does is to start one
+        }
+    };
+    std::thread a(starter, g_base + "/stream.mp3", "A FM"), b(starter, g_base + "/stream.mp3", "B FM");
+    a.join();
+    b.join();
+    CHECK(m.live());
+    m.stop();
+    CHECK(!m.playing() && !m.live());
+    usleep(300 * 1000);
+    for (const auto &start : s.starts()) CHECK(wait_for([&] { return gone(start.first); }, 2000));
+}
+
+// The app can end without stopping the player: a crash, the system ending it for want of memory,
+// or the command-line build leaving straight after a tool. A station must not go on playing (and
+// using data) with nothing left to stop it, so its player ends with the app. The app here is this
+// program run again ("--play-then-die"), which starts a station and is then killed.
+void test_player_ends_with_app() {
+    StandIn s;
+    if (!s.make()) { check(false, "the stand-in player could be written", __LINE__); return; }
+    proc::Child app = proc::spawn({"/proc/self/exe", "--play-then-die", g_base + "/stream.mp3"}, false, false);
+    CHECK(app.running());
+    proc::wait(app);
+    const auto started = s.starts();
+    CHECK(started.size() == 1);
+    if (started.empty()) return;
+    const bool ended = wait_for([&] { return gone(started[0].first); }, 3000);
+    CHECK(ended);
+    if (!ended) kill(started[0].first, SIGKILL);   // not left behind by the test either
+}
+
 void test_tool_plays() {
     StandIn s;
     if (!s.make()) { check(false, "the stand-in player could be written", __LINE__); return; }
@@ -457,9 +517,21 @@ void run(const char *name, void (*fn)()) {
 }  // namespace
 
 int main(int argc, char **argv) {
+    // The app for test_player_ends_with_app: start a station, wait for its player, and die.
+    if (argc == 3 && std::string(argv[1]) == "--play-then-die") {
+        audio::Music::get().play_live(argv[2], "Test FM");
+        for (int i = 0; i < 300 && !audio::Music::get().current().empty(); ++i) {
+            usleep(10 * 1000);
+            const char *dir = getenv("XDG_CACHE_HOME");
+            std::string log;
+            if (dir && util::read_file(std::string(dir) + "/stand-in/started.log", log) && !log.empty()) break;
+        }
+        raise(SIGKILL);
+    }
     if (argc < 3) { fprintf(stderr, "usage: radio_test SERVER_URL CLOSED_URL (run through tests/unit/radio_peer.py)\n"); return 2; }
     g_base = argv[1];
     g_closed = argv[2];
+    alarm(240);   // a player that deadlocks fails the run instead of hanging it (it takes about 20 s)
     // Whatever proxy the shell running the tests names is not wanted for 127.0.0.1.
     for (const char *v : {"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"}) unsetenv(v);
     const char *tmp = getenv("TMPDIR");
@@ -484,6 +556,8 @@ int main(int argc, char **argv) {
     run("tool, dry run", test_tool_dry_run);
     run("checking a stream", test_check);
     run("live player", test_live_player);
+    run("concurrent starts", test_concurrent_starts);
+    run("player ends with the app", test_player_ends_with_app);
     run("tool plays", test_tool_plays);
     audio::Music::get().stop();
     std::error_code ec;

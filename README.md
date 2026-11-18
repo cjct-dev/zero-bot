@@ -236,8 +236,10 @@ the list is empty the assistant is not offered radio at all. Put your stations i
 - `url` is the stream itself: an MP3 or AAC stream, an HLS playlist (`.m3u8`), or a `.pls` or
   `.m3u` playlist file that names one. A web page with a player on it is not a stream, and the
   assistant says so.
-- `low_data_url` (optional) is used when the internet comes through your phone, where data may
-  cost money. Without one, the assistant mentions that radio uses about 30 to 70 MB an hour.
+- `low_data_url` (optional) is used when the internet comes through your phone by Bluetooth or a
+  USB cable, where data may cost money. Without one, the assistant mentions that radio uses about
+  30 to 70 MB an hour. A phone's Wi-Fi hotspot looks like any other Wi-Fi network to the device,
+  so there the main address plays.
 - A change to the file is used from the next request; no restart is needed. *Your data → Radio
   stations* shows what the app made of the file (with anything it could not use, and why), and
   plays a station so you can try it.

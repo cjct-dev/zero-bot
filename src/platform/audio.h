@@ -132,6 +132,10 @@ public:
 private:
     Music() = default;
     void run_live(int gen, std::string url);
+    void stop_locked();                           // stop() with ctl_ already held
+    // play(), play_live() and stop() are called from the UI thread (ESC, fn+W/fn+E, settings) and
+    // the agent's (the music and radio tools) and each replaces thread_: one at a time.
+    std::mutex ctl_;
     std::mutex mtx_;
     std::vector<std::string> queue_;
     size_t index_ = 0;

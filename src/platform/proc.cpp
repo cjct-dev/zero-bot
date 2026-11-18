@@ -7,14 +7,16 @@
 #include <cstring>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 namespace proc {
 
-Child spawn(const std::vector<std::string> &argv, bool pipe_in, bool pipe_out, bool merge_err) {
+Child spawn(const std::vector<std::string> &argv, bool pipe_in, bool pipe_out, bool merge_err, bool die_with_parent) {
     Child c;
+    const pid_t parent = getpid();
     if (argv.empty()) return c;
     int in_pipe[2] = {-1, -1}, out_pipe[2] = {-1, -1};
     if (pipe_in && pipe2(in_pipe, O_CLOEXEC) != 0) return c;
@@ -33,6 +35,11 @@ Child spawn(const std::vector<std::string> &argv, bool pipe_in, bool pipe_out, b
         return c;
     }
     if (pid == 0) {
+        if (die_with_parent) {
+            // Kept across exec (env, then the player). If the parent has already gone, so do we.
+            prctl(PR_SET_PDEATHSIG, SIGKILL);
+            if (getppid() != parent) _exit(127);
+        }
         setpgid(0, 0);
         int devnull = open("/dev/null", O_RDWR);
         dup2(pipe_in ? in_pipe[0] : devnull, STDIN_FILENO);

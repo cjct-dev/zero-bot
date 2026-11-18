@@ -10,6 +10,8 @@ Answers, by path:
   /list.pls     a PLS playlist naming /stream.mp3;  /list.m3u  a plain M3U naming /stream.mp3
   /loop.pls     a PLS playlist naming itself
   /nothing.pls  a PLS playlist that names no stream
+  /mixed.pls / /mixed.m3u  playlists whose first entries are a local file, an option for the
+                player and other ffmpeg protocols, and only then /stream.mp3
   /geo 403, /gone 404, /fault 500, /busy 429
   /page         a web page (text/html)
   /empty        audio/mpeg with no body at all
@@ -68,6 +70,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, "audio/x-mpegurl", ("#EXTM3U\n#EXTINF:-1,Test\n%s/stream.mp3\n" % base).encode())
             elif path == "/loop.pls":
                 self.send(200, "audio/x-scpls", ("[playlist]\nFile1=%s/loop.pls\n" % base).encode())
+            elif path in ("/mixed.pls", "/mixed.m3u"):
+                hostile = ["file:///etc/passwd", "-i http://127.0.0.1:9/x.mp3", "concat:%s/a.mp3|%s/b.mp3" % (base, base),
+                           "subfile,,start,0,end,99,,:%s/stream.mp3" % base, "data:audio/mpeg;base64,AAAA",
+                           "/stream.mp3", "%s/a b.mp3" % base, "%s/stream.mp3" % base]
+                if path.endswith(".pls"):
+                    body = "[playlist]\n" + "".join("File%d=%s\n" % (i + 1, u) for i, u in enumerate(hostile))
+                    self.send(200, "audio/x-scpls", body.encode())
+                else:
+                    self.send(200, "audio/x-mpegurl", ("#EXTM3U\n" + "\n".join(hostile) + "\n").encode())
             elif path == "/nothing.pls":
                 self.send(200, "audio/x-scpls", b"[playlist]\nNumberOfEntries=0\n")
             elif path == "/geo":

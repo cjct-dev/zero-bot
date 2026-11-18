@@ -268,6 +268,10 @@ key, real audio), say so plainly rather than implying it was.
   again (`Music::play_live`): a stalled connection is dropped by the server, and resuming would
   play stale audio. ffplay refuses to start on an option nothing consumed, so add player options
   only after checking them with `ffprobe` (`-rw_timeout` is safe for any http(s) address).
+  A stream never ends by itself, so its player is started with `proc::spawn(..., die_with_parent)`:
+  without it, an app that crashed or was killed left the station playing with nothing to stop it.
+  `Music::play`, `play_live` and `stop` are called from the UI thread and the agent's at once
+  (fn+E while the radio tool starts a station); unserialised, that crashed in a stress test.
 - ICY `StreamTitle` on the stations tried was empty or carried advert markers, so "what's on" is
   left to web search rather than read from the stream.
 
