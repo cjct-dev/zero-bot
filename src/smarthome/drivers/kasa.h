@@ -18,7 +18,8 @@
 //  - A device whose firmware moved it to TP-Link's newer login (KLAP, the one Tapo plugs use) is
 //    recognised from Device::info "scheme" (set by discovery from the 20002 reply), or when its
 //    port refuses the connection and a 20002 query to its address says so. Nothing is then sent
-//    and the error begins with kNewLogin. This driver does not speak that login.
+//    and the error begins with kNewLogin. This driver does not speak that login. A 20002 answer
+//    that names another MAC than Device::mac is another device's: the error is kOtherDevice.
 //  - The device at the saved address must be the saved one: when Device::mac is known, every
 //    get_sysinfo answer is checked against it, and a change is preceded by a get_sysinfo (one more
 //    connection) so that nothing is switched on another Kasa device that has taken the address.
@@ -65,8 +66,8 @@ bool switched_type(const std::string &device_type);
 // Whether discovery said this device needs the newer login ("scheme" other than "" or "XOR").
 bool needs_new_login(const std::map<std::string, std::string> &info);
 // Whether a 20002 discovery reply (the bytes after its 16-byte header) is from a Kasa device that
-// needs the newer login.
-bool reply_says_new_login(const std::string &json_text);
+// needs the newer login; when it is, `mac` (if given) gets the MAC it reports (mac_digits form).
+bool reply_says_new_login(const std::string &json_text, std::string *mac = nullptr);
 
 // The things of a device from its get_sysinfo object. False with an error sentence when the
 // device is not of a kind switched here. Names are cleaned; at most 16 sockets are kept.

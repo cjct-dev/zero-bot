@@ -51,6 +51,7 @@ const char *const kUnreadable = "the Kasa device's reply could not be understood
 const char *const kNotSupported = "the Kasa device does not support that";
 const char *const kCommandRefused = "the Kasa device refused the command";
 const char *const kNotThisKind = "Zero Bot cannot control this kind of Kasa device";
+const char *const kStripWhole = "this Kasa power strip's sockets are switched one at a time; read the device again in Settings";
 
 // TP-Link's discovery query for UDP 20002, the form that carries no key: a 16-byte header with
 // no body (the same bytes the app's discovery broadcasts).
@@ -212,8 +213,9 @@ Outcome exchange(const std::string &ip, int port, const json &request, json &rep
 }
 
 // After port 9999 refused: asks the device's discovery port whether it now needs the newer
-// login. Only its own answer counts (the socket is connected to its address and port).
-bool probe_says_new_login(const std::string &ip, Clock::time_point until) {
+// login. Only its own answer counts (the socket is connected to its address and port); `mac` is
+// the MAC that answer gives.
+bool probe_says_new_login(const std::string &ip, Clock::time_point until, std::string &mac) {
     const Clock::time_point stop = std::min(until, Clock::now() + std::chrono::milliseconds(700));
     sockaddr_in to{};
     to.sin_family = AF_INET;
@@ -228,7 +230,7 @@ bool probe_says_new_login(const std::string &ip, Clock::time_point until) {
         const ssize_t n = recv(s.fd, &buf[0], buf.size(), 0);
         if (n < 0 && (errno == EAGAIN || errno == EINTR)) continue;
         if (n <= 16) return false;   // nothing listens there, or no answer of the expected shape
-        return detail::reply_says_new_login(buf.substr(16, static_cast<size_t>(n) - 16));
+        return detail::reply_says_new_login(buf.substr(16, static_cast<size_t>(n) - 16), &mac);
     }
     return false;
 }
@@ -350,6 +352,12 @@ private:
             if (!ask(dev, {{kRelay, {{"get_sysinfo", json::object()}}}}, reply, until, err) ||
                 !sysinfo_in(dev, reply, sysinfo, err))
                 return false;
+            // A thing saved without a socket (read once when the strip listed none) is never
+            // switched as a whole strip.
+            if (!request.contains("context") && sysinfo.contains("children")) {
+                err = kStripWhole;
+                return false;
+            }
             reply = json();
         }
         if (!ask(dev, request, reply, until, err)) return false;
@@ -366,9 +374,17 @@ private:
         switch (exchange(dev.ip, port, request, reply, until)) {
         case Outcome::Ok:
             return true;
-        case Outcome::Refused:
-            err = probe_says_new_login(dev.ip, until) ? new_login_error() : kRefused;
+        case Outcome::Refused: {
+            // The answer may be from another Kasa device that moved to the newer login and now has
+            // this one's address: then this one has not moved, and is looked for again.
+            std::string mac;
+            if (!probe_says_new_login(dev.ip, until, mac)) err = kRefused;
+            else if (!detail::mac_digits(dev.mac).empty() && !detail::mac_digits(mac).empty() &&
+                     detail::mac_digits(dev.mac) != detail::mac_digits(mac))
+                err = kOtherDevice;
+            else err = new_login_error();
             return false;
+        }
         case Outcome::NoAnswer:
             err = kNoAnswer;
             return false;
@@ -477,7 +493,8 @@ bool needs_new_login(const std::map<std::string, std::string> &info) {
     return !scheme.empty() && scheme != "XOR";
 }
 
-bool reply_says_new_login(const std::string &json_text) {
+bool reply_says_new_login(const std::string &json_text, std::string *mac) {
+    if (mac) mac->clear();
     if (json_text.size() > 9000 || too_deep(json_text)) return false;
     const json j = json::parse(json_text, nullptr, false);
     const json &r = member(j, "result");
@@ -485,7 +502,9 @@ bool reply_says_new_login(const std::string &json_text) {
     const std::string type = upper(util::trim(text(r, "device_type")));
     if (type.compare(0, 4, "IOT.") != 0) return false;
     const std::string scheme = upper(util::trim(text(member(r, "mgt_encrypt_schm"), "encrypt_type")));
-    return !scheme.empty() && scheme != "XOR";
+    if (scheme.empty() || scheme == "XOR") return false;
+    if (mac) *mac = mac_digits(text(r, "mac"));
+    return true;
 }
 
 bool things_from(const json &sysinfo, std::vector<home::Thing> &out, std::string &err) {
@@ -497,8 +516,15 @@ bool things_from(const json &sysinfo, std::vector<home::Thing> &out, std::string
     const std::string type = type_of(sysinfo);
     const bool metered = upper(text(sysinfo, "feature")).find("ENE") != std::string::npos;
     if (type == "IOT.SMARTPLUGSWITCH") {
+        // A power strip is told by its "children", even an empty list: read as one plug, it would
+        // get a command without a socket, which may switch every socket at once, each without the
+        // question its owner set for it.
         const json &children = member(sysinfo, "children");
-        if (children.is_array() && !children.empty()) {
+        if (sysinfo.contains("children")) {
+            if (!children.is_array()) {
+                err = kUnreadable;
+                return false;
+            }
             std::set<std::string> seen;
             for (const json &c : children) {
                 if (out.size() >= kMaxSockets) break;

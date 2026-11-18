@@ -283,7 +283,10 @@ Other families (Hue, Shelly, WiZ and more) are added one driver at a time.
    by default for anything whose name suggests heat (heater, kettle, iron, …): the assistant then
    asks "Turn on Bed heater?" and switches it only if your very next words are a plain yes ("yes",
    "go ahead", "yes please"). Anything else, including a new request or "leave it off", counts as
-   no. Turn it off for something you use every day.
+   no. Turn it off for something you use every day. A device a scan finds again in another way
+   (a Kasa plug once set up here as a HomeKit accessory) is added as a second entry that the
+   assistant does not use until you turn *Assistant may use it* on for it, so that what you set
+   for the first entry is not bypassed through the second.
 
 A room's name means the lights in that room. Everything can be switched off at once, but not on.
 The assistant also asks first before changing more than eight things at once, before setting

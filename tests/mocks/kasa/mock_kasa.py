@@ -34,6 +34,7 @@ Modes (all but normal are for tests of the client's defences):
     array         answers a JSON array instead of an object
     names         hostile names, socket ids and values in get_sysinfo
     many          a strip with 600 sockets
+    no_sockets    a strip whose get_sysinfo lists no sockets (an empty "children")
     refuse        every set_* method answers err_code -3
     unsupported   every method answers module not support (err_code -1)
     energy        meter readings that are not plausible (strings, negative, enormous)
@@ -166,6 +167,8 @@ class Device:
             if "light_state" in info:
                 info["light_state"] = {"on_off": 1, "brightness": -40, "hue": "red", "saturation": 1e300,
                                        "color_temp": 0, "mode": "normal"}
+        if self.mode == "no_sockets" and "children" in info:
+            info["children"] = []
         if self.mode == "many" and "children" in info:
             base = info["deviceId"]
             info["children"] = [{"id": base + "%04d" % i, "state": i % 2, "alias": "S%d" % i} for i in range(600)]

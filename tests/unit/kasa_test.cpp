@@ -135,6 +135,10 @@ static void test_parsing() {
     const std::string moved = R"J({"error_code":0,"result":{"device_id":"0","device_model":"HS100(UK)","device_type":"IOT.SMARTPLUGSWITCH",
       "mac":"CC-32-E5-00-00-0A","mgt_encrypt_schm":{"encrypt_type":"KLAP","http_port":80,"is_support_https":false}}})J";
     check("a 20002 reply from a Kasa device on KLAP says the newer login", reply_says_new_login(moved));
+    std::string mac = "stale";
+    check("... and gives the MAC it names, to be compared with the saved one", reply_says_new_login(moved, &mac) && mac == "cc32e500000a",
+          mac);
+    check("no MAC from a reply that does not say so", !reply_says_new_login("not json", &mac) && mac.empty());
     std::string tapo = moved;
     tapo.replace(tapo.find("IOT.SMARTPLUGSWITCH"), 19, "SMART.TAPOPLUG");
     check("a Tapo device's 20002 reply does not (it is the Tapo driver's)", !reply_says_new_login(tapo));
@@ -218,6 +222,14 @@ static void test_things() {
     json all_bad = json::parse(kStripNoMeter);
     all_bad["children"] = json::array({{{"id", ""}}, {{"id", "a b"}}});
     check("a strip with no usable socket is an error", !things_from(all_bad, out, err) && out.empty() && has(err, "understood"));
+    // A strip is told by "children" even when the list is empty or not a list: read as one plug,
+    // its "on" would go without a socket (the whole strip).
+    json no_sockets = json::parse(kStripNoMeter);
+    no_sockets["children"] = json::array();
+    check("a strip listing no sockets is an error, not one plug", !things_from(no_sockets, out, err) && out.empty() &&
+                                                                      has(err, "understood"));
+    no_sockets["children"] = "none";
+    check("a strip whose sockets are not a list is an error", !things_from(no_sockets, out, err) && out.empty());
     json dim = json::parse(kDimmer);
     dim["brightness"] = 9999;
     dim["relay_state"] = 1;

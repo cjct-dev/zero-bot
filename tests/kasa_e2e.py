@@ -392,6 +392,17 @@ def test_swap(mock):
     rc2, out2, err2, _ = cli(bulb, "apply", "main", json.dumps({"on": True, "brightness": 30}))
     check("own address: a bulb, known by its mic_mac", rc == 0 and rc2 == 0 and
           mock.stats("bulb")["state"]["light_state"].get("brightness") == 30, (err, err2))
+    # The address now belongs to another Kasa plug, one that moved to the newer login: its port
+    # refuses and its 20002 answer names its own MAC. The saved plug has not moved; it is elsewhere.
+    mock.reset()
+    kettle = state_file(mock, "plug", port=mock.ports["moved"]["tcp"], fname="kettle-at-moved", plug=True, mac=MACS["plug"])
+    rc, out, err, _ = cli(kettle, "apply", "main", json.dumps({"on": True}), probe_port=mock.ports["moved"]["probe"])
+    check("swap: another device's 20002 answer is not taken for this plug's (it is looked for again, not called moved)",
+          rc == 1 and "another Kasa device now answers" in err and NEW_LOGIN not in err and mock.stats("moved")["probes"] == 1,
+          (rc, err, mock.stats("moved")["probes"]))
+    rc, out, err, _ = cli(state_file(mock, "moved", fname="moved-mac", plug=True, mac="cc:32:e5:00:00:0a"), "apply", "main",
+                          json.dumps({"on": True}), probe_port=mock.ports["moved"]["probe"])
+    check("the moved plug's own 20002 answer still says it moved", rc == 1 and NEW_LOGIN in err, (rc, err))
     mock.reset()
 
 
@@ -444,6 +455,24 @@ def test_hostile(mock):
     mock.mode("strip", "many")
     rc, out, err, _ = cli(state_file(mock, "strip"), "enumerate")
     check("a strip claiming 600 sockets gives at most 16", rc == 0 and len(things(out)) == 16, (rc, len(things(out)), err))
+    # A strip that lists no sockets is not taken for one plug: "on" for it would go without a
+    # socket and switch the whole strip, each socket without its own question.
+    mock.reset()
+    mock.mode("strip", "no_sockets")
+    empty = state_file(mock, "strip", fname="strip-empty")
+    rc, out, err, _ = cli(empty, "enumerate")
+    with open(empty) as f:
+        kept = json.load(f)["things"]
+    check("a strip listing no sockets: enumerate refuses and saves no plug for it", rc == 1 and "could not be understood" in err and
+          not any(t["id"] == "main" for t in kept), (rc, out, err, kept))
+    mock.reset()
+    before = mock.stats("strip")["state"]["children"]
+    stale = state_file(mock, "strip", fname="strip-stale", plug=True, mac=MACS["strip"])   # "main", as an older read left it
+    rc, out, err, _ = cli(stale, "apply", "main", json.dumps({"on": True}))
+    st = mock.stats("strip")
+    check("a thing saved without a socket is never switched as the whole strip: asked who it is, nothing more",
+          rc == 1 and "one at a time" in err and st["requests"] == [GET_SYSINFO] and st["state"]["children"] == before,
+          (rc, err, st["requests"], st["state"]))
     mock.reset()
 
 

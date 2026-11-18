@@ -56,6 +56,18 @@ bool env_test_network() {
     return v && *v && std::string(v) != "0";
 }
 
+// The twelve hex digits of a MAC address in any of the notations saved ("aa:bb:..", "AA-BB-..",
+// none), lower case; "" when it is not one, or is all zeros.
+std::string mac_key(const std::string &raw) {
+    std::string hex;
+    for (const char c : raw) {
+        if (c == ':' || c == '-') continue;
+        if (!isxdigit(static_cast<unsigned char>(c)) || hex.size() >= 12) return "";
+        hex += static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    }
+    return hex.size() == 12 && hex != "000000000000" ? hex : "";
+}
+
 // A thing as the app first meets it: a room guessed from its name, and a question before a
 // plug that sounds like a heater is switched on. The user can change both.
 void first_seen_defaults(Thing &t) {
@@ -433,9 +445,23 @@ int remember_scan(const discovery::Network &net, const std::vector<discovery::De
     int added = 0;
     for (const auto &f : found) {
         Saved *known = nullptr;
-        for (auto &d : e.devices)
+        bool twin = false;   // the same device (its MAC) is already saved under another id
+        const std::string mac = mac_key(f.mac);
+        for (auto &d : e.devices) {
             if (d.id == f.id) known = &d;
-        if (!known) { e.devices.emplace_back(); known = &e.devices.back(); known->id = f.id; ++added; }
+            else twin = twin || (!mac.empty() && mac_key(d.mac) == mac);
+        }
+        if (!known) {
+            e.devices.emplace_back();
+            known = &e.devices.back();
+            known->id = f.id;
+            ++added;
+            // Found another way this time (a Kasa plug that was saved as a HomeKit accessory): the
+            // new record starts unused by the assistant, so that nothing decided about the first
+            // (the assistant may not use it, ask before switching on) is bypassed through it. Its
+            // things are still read, and the user can switch it on in settings.
+            if (twin) known->enabled = false;
+        }
         // Settings, pairing and things read from the device survive; what discovery reports is refreshed.
         known->kind = f.kind; known->model = f.model;
         if (known->things.empty() || known->name.empty()) known->name = f.name;

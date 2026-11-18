@@ -2091,6 +2091,84 @@ void test_tplink_discovery() {
     CHECK_MSG(!home::driver_for(dev)->enumerate(dev, things, err) && starts(err, kasa::kNewLogin), err);
 }
 
+// ---------------------------------------------------------------- one device, two records
+// A Kasa EP25 also offers HomeKit. A version without the Kasa driver saved it as a HomeKit
+// accessory, and its owner paired it, called it "Heater" and set it to ask before switching on;
+// the owner also keeps the fridge's plug away from the assistant. Now the plugs answer the older
+// Kasa query, which wins, so a scan finds them under new ids. What was decided about the first
+// records must not be bypassed through the new ones: those start unused by the assistant.
+void test_found_again() {
+    Section s("store: a device already saved under another id starts unused when found again (EP25: HomeKit, then Kasa)");
+    g_fake->reset();
+    // The fake family stands in for HomeKit: its records are controllable, nothing is contacted.
+    json heater = device("fake:hk-heater", {thing("1.9", "Bedroom plug", "plug", home::kPower, "Bedroom", json::object(), true)});
+    heater["mac"] = "AC-15-A2-00-00-01";   // any notation: the neighbour table's, a 20002 answer's
+    heater["things"][0]["alias"] = "Heater";
+    json fridge = device("fake:hk-fridge", {thing("1.9", "Kitchen plug", "plug", home::kPower, "Kitchen")});
+    fridge["mac"] = "ac:15:a2:00:00:02";
+    fridge["things"][0]["enabled"] = false;
+    write_home({heater, fridge});
+    const std::string heater_info = R"J({"mic_type":"IOT.SMARTPLUGSWITCH","model":"EP25(US)","alias":"Bedroom plug","mac":"AC:15:A2:00:00:01","relay_state":0,"err_code":0})J";
+    const std::string fridge_info = R"J({"mic_type":"IOT.SMARTPLUGSWITCH","model":"EP25(US)","alias":"Kitchen plug","mac":"AC:15:A2:00:00:02","relay_state":1,"err_code":0})J";
+    const std::string lamp_info = R"J({"mic_type":"IOT.SMARTPLUGSWITCH","model":"EP25(US)","alias":"Desk lamp","mac":"AC:15:A2:00:00:03","relay_state":0,"err_code":0})J";
+    auto answer = [](const std::string &info) { return kasa_scrambled(R"J({"system":{"get_sysinfo":)J" + info + "}}"); };
+    const std::string hap = "_hap._tcp.local";
+    const auto found = discovery::devices_from({
+        {"mdns", "192.0.2.61", service_answer(hap, "Bedroom plug", "ep25a.local", std::string("\xC0\x00\x02\x3D", 4), {"id=AA:BB:CC:00:00:61", "ci=7", "sf=0"})},
+        {"kasa", "192.0.2.61", answer(heater_info)},
+        {"kasa", "192.0.2.62", answer(fridge_info)},
+        {"kasa", "192.0.2.63", answer(lamp_info)}});
+    CHECK_MSG(found.size() == 3 && std::all_of(found.begin(), found.end(), [](const discovery::Device &d) { return d.kind == "tplink"; }),
+              std::to_string(found.size()));
+    CHECK(home::remember_scan(g_net, found) == 3);
+    // What reading each new record saves (refresh's merge, without contacting anything).
+    const std::map<std::string, std::string> infos = {{"tplink:ac:15:a2:00:00:01", heater_info},
+                                                      {"tplink:ac:15:a2:00:00:02", fridge_info},
+                                                      {"tplink:ac:15:a2:00:00:03", lamp_info}};
+    home::modify_entry(g_net.id(), [&](home::NetworkEntry &e) {
+        for (auto &d : e.devices) {
+            const auto it = infos.find(d.id);
+            if (it == infos.end()) continue;
+            std::vector<home::Thing> fresh;
+            std::string err;
+            kasa::detail::things_from(json::parse(it->second), fresh, err);
+            home::merge_things(d, fresh, time(nullptr));
+        }
+    });
+    const home::NetworkEntry e = home::entry(g_net.id());
+    auto saved = [&](const std::string &id) -> const home::Saved * {
+        for (const auto &d : e.devices) if (d.id == id) return &d;
+        return nullptr;
+    };
+    const home::Saved *kasa_heater = saved("tplink:ac:15:a2:00:00:01"), *kasa_fridge = saved("tplink:ac:15:a2:00:00:02"),
+                      *kasa_lamp = saved("tplink:ac:15:a2:00:00:03");
+    CHECK(kasa_heater && kasa_fridge && kasa_lamp);
+    if (!kasa_heater || !kasa_fridge || !kasa_lamp) return;
+    CHECK_MSG(!kasa_heater->enabled && !kasa_fridge->enabled, "the same plugs under new ids start unused");
+    CHECK_MSG(kasa_lamp->enabled, "a plug saved under no other id is used at once, as before");
+    CHECK_MSG(kasa_heater->things.size() == 1 && kasa_fridge->things.size() == 1, "their things are still read, for the settings page");
+    const auto items = home::catalog(e);
+    auto offered = [&](const std::string &device_id) {
+        return std::any_of(items.begin(), items.end(), [&](const home::Item &i) { return i.device_id == device_id; });
+    };
+    CHECK(!offered(kasa_heater->id) && !offered(kasa_fridge->id) && offered(kasa_lamp->id) && offered("fake:hk-heater"));
+    // The heater is still switched on only after a question, under any name the assistant knows.
+    for (const char *name : {"Heater", "Bedroom plug"}) {
+        const std::string r = home::tool_run({{"action", "on"}, {"target", name}}, true);
+        CHECK_MSG(starts(r, "CONFIRM") || starts(r, "ERROR"), std::string(name) + ": " + r);
+    }
+    // "Everything off" leaves alone the plug the assistant may not use: the heater and the lamp only.
+    const std::string r = home::tool_run({{"action", "off"}, {"target", "everything"}}, true);
+    const json off = json::parse(r, nullptr, false);
+    CHECK_MSG(off.is_object() && off.value("changed", 0) == 2, r);
+    // A scan that finds the same records again leaves them as the user set them.
+    home::set_enabled(g_net.id(), kasa_heater->id, true);
+    home::remember_scan(g_net, found);
+    const home::NetworkEntry again = home::entry(g_net.id());
+    for (const auto &d : again.devices)
+        if (d.id == "tplink:ac:15:a2:00:00:01") CHECK_MSG(d.enabled, "switched on by the user: stays on");
+}
+
 // ---------------------------------------------------------------- names and colours
 void test_names_and_colours() {
     Section s("names and colours");
@@ -2228,6 +2306,7 @@ int main(int argc, char **argv) {
     test_tv_keys();
     test_discovery();
     test_tplink_discovery();
+    test_found_again();
     test_names_and_colours();
 
     const std::string rm = "rm -rf '" + dir + "'";
