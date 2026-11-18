@@ -351,19 +351,33 @@ struct App {
         }
     }
 
-    // fn+E and fn+W while a station plays: the next or previous station in the user's list. No
-    // check of the stream here (that would wait on the network on this thread); a station that
-    // will not play is given up by the player, and update_indicators() reports it.
+    // fn+E and fn+W while a station plays: the next or previous station in the user's list. Its
+    // stream is checked first, beside this thread, as the radio tool does: a playlist file is
+    // followed to the stream it names (the player cannot open one), and a station that will not
+    // play says why at once while the one playing goes on. Presses made meanwhile count on from
+    // the station chosen last (for as long as a check can take: a station chosen in settings
+    // meanwhile wins, and this one's answer then never comes).
+    std::string station_chosen;   // the station being checked, until it plays or is given up
+    unsigned long station_chosen_at = 0;
     void change_station(int step) {
         const std::vector<radio::Station> list = radio::stations();
-        audio::Music &music = audio::Music::get();
         if (list.size() < 2) { show_level(list.empty() ? "No radio stations set up" : "No other station"); return; }
-        const int at = radio::find(list, music.title());
+        const unsigned long now = display::now_ms();
+        const bool counting_on = !station_chosen.empty() && now - station_chosen_at < 30000;
+        const int at = radio::find(list, counting_on ? station_chosen : audio::Music::get().title());
         const int n = static_cast<int>(list.size());
-        const radio::Station &next = list[static_cast<size_t>(((at < 0 ? 0 : at + step) % n + n) % n)];
-        music.play_live(radio::stream_for(next, radio::metered_link()), next.name);
+        const radio::Station next = list[static_cast<size_t>(((at < 0 ? 0 : at + step) % n + n) % n)];
+        station_chosen = next.name;
+        station_chosen_at = now;
         show_level(next.name);
-        last_indicators = 0;   // the status bar shows the new name at the next tick
+        radio::check_async(next, [this, name = next.name](const radio::Check &c) {
+            station_chosen.clear();
+            audio::Music &music = audio::Music::get();
+            if (!music.live()) return;   // stopped meanwhile (ESC, or the assistant was asked to)
+            if (!c.error.empty()) { chat.add_note(name + " did not play: " + c.error + ".", theme::kListen); return; }
+            music.play_live(c.url, name);
+            last_indicators = 0;         // the status bar shows the new name at the next tick
+        });
     }
 
     void handle_key(const KeyEvent &ev) {
@@ -535,7 +549,7 @@ struct App {
             chat.add_note(ended, theme::kListen);
             Agent::get().add_context(ended);
         }
-        if (music.live()) chat.set_now_playing(music.title());
+        if (music.live()) chat.set_now_playing(music.title(), true);   // shown for hours: it never scrolls
         else if (current.empty()) chat.set_now_playing("");
         else {
             const Track t = MusicLibrary::get().lookup(current);
@@ -720,8 +734,23 @@ struct App {
         chat.set_status(s.agent_name, theme::kAccent);
         chat.set_now_playing("Dancing Queen · ABBA");
         snap("speaking");
-        chat.set_now_playing("Harbour Classic FM");      // a radio station shows its name, as the player gives it
+        chat.set_now_playing("Harbour Classic FM", true);   // a radio station shows its name, as the player gives it
         snap("radio-playing");
+        {
+            // A station plays for hours, and a scrolling name would redraw the status bar many times
+            // a second for all that time: one too long for its room is cut short instead. A track's
+            // title still scrolls.
+            chat.set_now_playing("Radio Harbour Classic and Jazz", true);
+            lv_refr_now(nullptr);
+            const bool still = !chat.now_playing_moves();
+            chat.set_now_playing("Radio Harbour Classic and Jazz");
+            lv_refr_now(nullptr);
+            const bool moves = chat.now_playing_moves();
+            if (!still || !moves) {
+                fprintf(stderr, "a station's long name scrolled in the status bar, or a track's long title did not\n");
+                failed = true;
+            }
+        }
         chat.set_now_playing("Dancing Queen · ABBA");
 
         for (int i = 0; i < 40; ++i) {
@@ -1041,6 +1070,34 @@ struct App {
         }
         for (int i = 0; i < 3; ++i) menu.key(down);    // "Read the file again", below how to add stations
         snap("radio-stations-help");
+        {
+            // ENTER on a station checks its stream before playing it, as the assistant does (a
+            // playlist file is followed to its stream: the player cannot open one), and a station
+            // that will not play says why. Nothing listens at this address.
+            std::string kept;
+            util::read_file(radio::path(), kept);
+            util::write_file_atomic(radio::path(), R"({"stations": [{"name": "Closed FM", "url": "http://127.0.0.1:9/closed.pls"}]})");
+            menu.refresh();
+            KeyEvent up; up.key = Key::Up; up.state = 1;
+            for (int i = 0; i < 12; ++i) menu.key(up);
+            const bool on_station = menu.selected() == "Closed FM";
+            menu.key(enter);
+            const bool waited = !audio::Music::get().live();   // not started before its check
+            for (int i = 0; i < 250 && menu.title() != "Closed FM did not play"; ++i) {
+                uiq::drain();
+                usleep(20 * 1000);
+            }
+            const bool told = menu.title() == "Closed FM did not play";
+            if (!on_station || !waited || !told || audio::Music::get().live()) {
+                fprintf(stderr, "a station chosen in settings was played before its stream was checked, or did not say why it failed\n");
+                failed = true;
+            }
+            audio::Music::get().stop();
+            if (told) menu.pop();
+            util::write_file_atomic(radio::path(), kept);
+            menu.refresh();
+            for (int i = 0; i < 12; ++i) menu.key(down);   // back on "Read the file again", as before
+        }
         menu.key(esc);                                 // back to "Your data"
         menu.key(esc);                                 // the top page, still on "Your data"
         menu.key(down);                                // "AI service"

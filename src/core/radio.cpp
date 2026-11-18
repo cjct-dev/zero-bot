@@ -4,9 +4,11 @@
 #include <cstring>
 #include <mutex>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 
 #include "core/tether.h"
+#include "core/ui_queue.h"
 #include "net/http.h"
 #include "platform/audio.h"
 #include "platform/proc.h"
@@ -353,6 +355,17 @@ std::string stream_for(const Station &s, bool metered) { return metered && !s.ur
 Check check(const std::string &url, std::atomic<bool> *cancel) {
     if (!good_url(url)) return Check{url, "the address is not a web address"};
     return check_at(url, cancel, 0);
+}
+
+void check_async(const Station &s, std::function<void(const Check &)> done) {
+    static std::atomic<int> newest{0};
+    const int ticket = ++newest;
+    std::thread([s, done, ticket] {
+        const Check c = check(stream_for(s, metered_link()));
+        uiq::post([c, done, ticket] {
+            if (ticket == newest && done) done(c);
+        });
+    }).detach();
 }
 
 json tool_spec(bool can_search) {

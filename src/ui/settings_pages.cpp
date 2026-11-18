@@ -438,9 +438,19 @@ void open_radio(Menu &menu) {
         for (const radio::Station &station : list) {
             const radio::Station s = station;
             items.push_back(MenuItem::val(s.name, [s] { return s.url_low.empty() ? std::string() : std::string("low data too"); }, [&menu, s] {
-                audio::Music::get().play_live(radio::stream_for(s, radio::metered_link()), s.name);
-                menu.toast("Playing " + s.name);
-                menu.refresh();
+                // Checked first, as the assistant does: a playlist file is followed to its stream,
+                // and a station that will not play says why here rather than failing quietly.
+                menu.toast("Trying " + s.name + "…");
+                radio::check_async(s, [&menu, s](const radio::Check &c) {
+                    if (!c.error.empty()) {
+                        std::string why = c.error;   // "the station refused ...": a sentence of its own here
+                        why[0] = static_cast<char>(toupper(static_cast<unsigned char>(why[0])));
+                        if (menu.open()) menu.problem(s.name + " did not play", why + ".");
+                        return;
+                    }
+                    audio::Music::get().play_live(c.url, s.name);
+                    if (menu.open()) { menu.toast("Playing " + s.name); menu.refresh(); }
+                });
             }));
         }
         if (audio::Music::get().live())

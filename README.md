@@ -250,7 +250,7 @@ the list is empty the assistant is not offered radio at all. Put your stations i
   so there the main address plays.
 - A change to the file is used from the next request; no restart is needed. *Your data → Radio
   stations* shows what the app made of the file (with anything it could not use, and why), and
-  plays a station so you can try it.
+  plays a station so you can try it (one that will not play says why).
 - **Finding addresses:** [radio-browser.info](https://www.radio-browser.info) is a free directory
   of stations' stream addresses: search for the station and copy its stream address. Where a
   station offers several qualities, 96 to 128 kbit/s suits the speaker and 48 kbit/s the phone.

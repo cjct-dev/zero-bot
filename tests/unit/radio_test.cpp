@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "core/radio.h"
+#include "core/ui_queue.h"
 #include "core/util.h"
 #include "net/http.h"
 #include "platform/audio.h"
@@ -509,6 +510,40 @@ void test_tool_plays() {
     CHECK(!audio::Music::get().playing());
 }
 
+// A station chosen with fn+W/fn+E or in settings is checked as the tool's is, off the UI thread: a
+// playlist file is followed to its stream (ffplay cannot open a .pls or a plain .m3u: given one
+// directly, it said "Failed to open file"), a refusal comes back as a reason, and the answer is
+// handed over on the UI thread's queue, the newest choice only.
+void test_check_async() {
+    radio::Station listed, abroad;
+    listed.name = "Playlist FM";
+    listed.url = g_base + "/list.pls";
+    abroad.name = "Abroad FM";
+    abroad.url = g_base + "/geo";
+    unsetenv("ZB_TEST_TETHER");
+    std::vector<std::string> got;
+    auto note = [&got](const char *who) {
+        return [&got, who](const radio::Check &c) { got.push_back(std::string(who) + " " + c.url + " " + c.error); };
+    };
+    radio::check_async(listed, note("listed"));
+    usleep(300 * 1000);
+    CHECK(got.empty());   // nothing runs until the UI thread drains its queue
+    CHECK(wait_for([&] { uiq::drain(); return !got.empty(); }, 5000));
+    CHECK_EQ(got.empty() ? std::string() : got[0], "listed " + g_base + "/stream.mp3 ");
+    got.clear();
+    // Two choices in a row (fn+E pressed twice): only the second is handed over, whichever check ends first.
+    radio::check_async(listed, note("first"));
+    radio::check_async(abroad, note("second"));
+    CHECK(wait_for([&] { uiq::drain(); return !got.empty(); }, 5000));
+    usleep(500 * 1000);
+    uiq::drain();
+    CHECK(got.size() == 1);
+    if (!got.empty()) {
+        CHECK_HAS(got[0], "second ");
+        CHECK_HAS(got[0], "not available in this country");
+    }
+}
+
 void run(const char *name, void (*fn)()) {
     g_test = name;
     fn();
@@ -559,6 +594,7 @@ int main(int argc, char **argv) {
     run("concurrent starts", test_concurrent_starts);
     run("player ends with the app", test_player_ends_with_app);
     run("tool plays", test_tool_plays);
+    run("a station chosen on the screen", test_check_async);
     audio::Music::get().stop();
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
