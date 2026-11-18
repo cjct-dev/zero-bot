@@ -589,7 +589,11 @@ static void test_driver() {
     auto drv = make_shelly_driver();
     MemSecrets sec;
     drv->attach(&sec);
-    CHECK(std::string(drv->kind()) == "shelly" && drv->claims("shelly", {}) && !drv->claims("tapo", {}));
+    CHECK(std::string(drv->kind()) == "shelly" && drv->claims("shelly", {{"gen", "2"}}) && drv->claims("shelly", {{"id", "shelly1-abc"}}) &&
+          !drv->claims("tapo", {{"id", "x"}}));
+    // review 2: a Shelly saved by a version before this driver (an id from its address, nothing of
+    // its announcement kept) is not claimed; the scan saves it again under its own id.
+    CHECK(!drv->claims("shelly", {}) && !drv->claims("shelly", {{"app", "Plus1PM"}}));
     CHECK(home::driver_for("shelly") != nullptr && home::kind_label([] { home::Device d; d.id = "x"; d.kind = "shelly"; return d; }()) == "Shelly");
 
     home::Device dev;

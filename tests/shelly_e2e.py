@@ -115,7 +115,9 @@ def logins(log):
 
 def new_state(name, mock, device_id, auth=None):
     path = os.path.join(TMP, name + ".json")
-    dev = {"id": device_id, "kind": "shelly", "name": "", "ip": "127.0.0.1", "port": mock.port, "info": {}, "auth": auth or {}}
+    # "id": what discovery keeps for every Shelly it finds (the driver claims a record by it).
+    dev = {"id": device_id, "kind": "shelly", "name": "", "ip": "127.0.0.1", "port": mock.port,
+           "info": {"id": device_id.split(":", 1)[1]}, "auth": auth or {}}
     with open(path, "w") as f:
         json.dump({"device": dev, "things": []}, f)
     return path
@@ -723,16 +725,22 @@ def app_part():
 
         def dev(id_, mock, name):
             return {"id": id_, "kind": "shelly", "name": name, "last_ip": "127.0.0.1", "port": mock.port, "enabled": True, "things": [],
-                    "found_by": ["mdns"]}
+                    "found_by": ["mdns"], "info": {"id": name, "gen": "2"}}
         app.save({"version": 2, "secrets": {}, "networks": {network: {
             "label": "Test network", "gateway_mac": "02:00:00:00:00:00", "allowed_at": 1, "last_scan": 1, "devices": [
                 dev("shelly:shellyplus1pm-a8032ab12345", lamp, "shellyplus1pm-a8032ab12345"),
                 dev("shelly:shellyplus2pm-a8032ab12345", blind, "shellyplus2pm-a8032ab12345"),
-                dev("shelly:shellyplusplugs-a8032ab12345", kettle, "shellyplusplugs-a8032ab12345")]}}})
+                dev("shelly:shellyplusplugs-a8032ab12345", kettle, "shellyplusplugs-a8032ab12345"),
+                # review 2: the lamp as a version before the driver saved it (an id from its address,
+                # nothing of its announcement kept), beside the record the next scan made.
+                dict(dev("shelly:127.0.0.1", lamp, "shellyplus1pm-a8032ab12345"), info={})]}}})
         out = app.run("--home-refresh")
         check("app: refresh reads the two open devices; the third wants its password", "2 ready, 1 not" in out and "password" in out, out)
         root = app.load()
         devs = {d["id"]: d for d in root["networks"][network]["devices"]}
+        check("app: a record saved before the driver existed is not read (the lamp's things are listed once)",
+              devs["shelly:127.0.0.1"]["things"] == [] and paths(lamp.log()) == ["/shelly", "Shelly.GetConfig", "Shelly.GetStatus"],
+              (devs["shelly:127.0.0.1"], paths(lamp.log())))
         lamp_things = [t["id"] for t in devs["shelly:shellyplus1pm-a8032ab12345"]["things"]]
         check("app: the lamp's and the blind's things are saved", lamp_things == ["switch:0"] and
               [t["id"] for t in devs["shelly:shellyplus2pm-a8032ab12345"]["things"]] == ["cover:0"], devs)

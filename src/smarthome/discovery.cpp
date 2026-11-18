@@ -332,8 +332,11 @@ std::vector<Device> merge(const Seen &seen) {
                 if (txt.count(key)) d.info[key] = txt[key];
         }
         if (txt.count("bridgeid")) d.id = "hue:" + util::lower(txt["bridgeid"]);
-        else if (kind == "shelly" && shelly_label(label)) d.id = "shelly:" + util::lower(label);   // one id whichever service is heard
-        else if (txt.count("id")) d.id = kind + ":" + util::lower(txt["id"]);
+        else if (kind == "shelly" && shelly_label(label)) {
+            d.id = "shelly:" + util::lower(label);   // one id whichever service is heard
+            // What the driver claims by: a record saved before it existed has neither "id" nor "gen".
+            if (!d.info.count("id")) d.info["id"] = util::lower(label);
+        } else if (txt.count("id")) d.id = kind + ":" + util::lower(txt["id"]);
     }
 
     for (const auto &t : seen.tapo) {

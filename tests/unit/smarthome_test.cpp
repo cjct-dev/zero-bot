@@ -438,6 +438,27 @@ void test_survival() {
     home::merge_things(d, {a, c}, now + 31 * 86400);
     CHECK(d.thing("b") == nullptr && d.meta.count("b") == 0);
 
+    // Shelly review 2: renamed in its maker's app into a heater (a relay met as "Shelly Plus1PM"),
+    // or reported as a switch from then on, a thing asks first as it would have if met that way;
+    // once the user has switched that off, it stays off.
+    {
+        home::Saved s;
+        home::Thing p, l;
+        p.id = "p"; p.name = "Shelly Plus1PM"; p.type = "switch"; p.caps = home::kPower;
+        l.id = "l"; l.name = "Heat lamp"; l.type = "light"; l.caps = home::kPower;
+        home::merge_things(s, {p, l}, now);
+        CHECK(s.thing("p") && !s.thing("p")->ask_first && s.thing("l") && !s.thing("l")->ask_first);
+        p.name = "Towel heater";
+        home::merge_things(s, {p, l}, now);
+        CHECK(s.thing("p") && s.thing("p")->ask_first);
+        for (auto &t : s.things) if (t.id == "p") t.ask_first = false;   // the user switched the question off
+        home::merge_things(s, {p, l}, now);
+        CHECK(s.thing("p") && !s.thing("p")->ask_first);
+        l.type = "switch";
+        home::merge_things(s, {p, l}, now);
+        CHECK(s.thing("l") && s.thing("l")->ask_first);
+    }
+
     // A scan keeps things, settings and the name the device gave; it refreshes the address.
     found.ip = "127.0.0.7";
     found.name = "Something else";
@@ -2012,6 +2033,20 @@ void test_discovery_shelly() {
     // it is made here rather than looked up).
     const auto drv = make_shelly_driver();
     CHECK(drv && g1 && g2 && drv->claims(g1->kind, g1->info) && drv->claims(g2->kind, g2->info));
+    // review 2: discovery always keeps what the driver claims by ("id", and Gen2+ "gen"), however
+    // the device was heard: a Gen1 without TXT keys, a Gen2+ through one service. A record saved by
+    // a version before the driver (an id from the address, no info) is not claimed.
+    const auto bare = discovery::devices_from({{"mdns", "192.0.2.81", service_answer("_http._tcp.local", "shellyplug-s-7C87CE0A1B2C",
+                                                "shellyplug-s-7C87CE0A1B2C.local", std::string("\xC0\x00\x02\x51", 4), {})}});
+    CHECK_MSG(bare.size() == 1 && bare[0].id == "shelly:shellyplug-s-7c87ce0a1b2c" && info(bare[0], "id") == "shellyplug-s-7c87ce0a1b2c" &&
+                  drv->claims(bare[0].kind, bare[0].info),
+              bare.empty() ? "none" : bare[0].id);
+    for (const auto &one : {gen2_shelly, gen2_http}) {
+        const auto alone = discovery::devices_from({one});
+        CHECK(alone.size() == 1 && info(alone[0], "gen") == "2" && info(alone[0], "id") == "shellyplus1pm-a8032ab12345" &&
+              drv->claims(alone[0].kind, alone[0].info));
+    }
+    CHECK(!drv->claims("shelly", {}));
 }
 
 // ---------------------------------------------------------------- names and colours

@@ -964,6 +964,15 @@ class ShellyDriver : public home::Driver {
 public:
     const char *kind() const override { return kFamily; }
 
+    // A Shelly saved by a version of Zero Bot before this driver was added (a Gen2+ heard through
+    // _shelly._tcp then got an id made from its address, and nothing of its announcement was kept)
+    // is not claimed: the next scan saves it again under its own id, and claiming both would list
+    // every thing twice, so that no name picks one ("more than one device is called...") and each
+    // command goes out twice. Discovery now always keeps "id" (and Gen2+ "gen") for a Shelly.
+    bool claims(const std::string &device_kind, const std::map<std::string, std::string> &info) const override {
+        return device_kind == kFamily && (info.count("id") || info.count("gen"));
+    }
+
     home::PairStep next_step(const home::Device &dev) const override {
         home::PairStep step;
         const std::string key = device_key(dev);

@@ -56,11 +56,14 @@ bool env_test_network() {
     return v && *v && std::string(v) != "0";
 }
 
+// A plug or switch whose name sounds like a heater: the app asks before switching it on.
+bool sounds_like_heater(const Thing &t) { return (t.type == "plug" || t.type == "switch") && suggests_heat(t.name); }
+
 // A thing as the app first meets it: a room guessed from its name, and a question before a
 // plug that sounds like a heater is switched on. The user can change both.
 void first_seen_defaults(Thing &t) {
     if (t.room.empty()) t.room = infer_room(t.name);
-    if ((t.type == "plug" || t.type == "switch") && suggests_heat(t.name)) t.ask_first = true;
+    if (sounds_like_heater(t)) t.ask_first = true;
 }
 
 json thing_to_json(const Thing &t, const ThingMeta &m) {
@@ -515,6 +518,10 @@ void merge_things(Saved &device, std::vector<Thing> fresh, time_t now) {
             f.alias = old->alias;
             f.enabled = old->enabled;
             f.ask_first = old->ask_first;
+            // Renamed in its maker's app into a heater (a relay first called "Shelly Plus1PM", now
+            // "Towel heater"), or now reported as a plug or switch: it asks first, as it would have
+            // if it had been met that way. The user can switch that off again.
+            if (sounds_like_heater(f) && !sounds_like_heater(*old)) f.ask_first = true;
             if (meta.room_by_user) f.room = old->room;
             else if (f.room.empty()) f.room = infer_room(f.name);
         } else {
