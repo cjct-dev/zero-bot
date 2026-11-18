@@ -1,0 +1,183 @@
+// Device-free tests of what the assistant's tools stand on: the calculator (deep nesting, which
+// used to overflow the stack and end the app, and the percent forms that read one way and compute
+// another), dates and clock times that do not exist, time zones that are folders or tables rather
+// than zones, and running a helper program (cancelling it, bounding the wait for it, and giving it
+// no open file of the app's but its three standard streams).
+//
+// Built and run by tests/run_unit.sh. Needs /bin/sh, sleep and ls; writes nothing outside the
+// temporary folder it is given.
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <fcntl.h>
+#include <string>
+#include <thread>
+#include <unistd.h>
+
+#include "agent/calc.h"
+#include "core/util.h"
+#include "platform/proc.h"
+
+namespace {
+
+int g_checks = 0, g_failures = 0;
+const char *g_test = "";
+
+void check(bool ok, const char *what, int line) {
+    ++g_checks;
+    if (ok) return;
+    ++g_failures;
+    fprintf(stderr, "FAIL %s, line %d: %s\n", g_test, line, what);
+}
+
+void check_has(const std::string &got, const std::string &want, const char *what, int line) {
+    ++g_checks;
+    if (got.find(want) != std::string::npos) return;
+    ++g_failures;
+    fprintf(stderr, "FAIL %s, line %d: %s is \"%s\", expected it to contain \"%s\"\n", g_test, line, what, got.c_str(), want.c_str());
+}
+
+#define CHECK(cond) check((cond), #cond, __LINE__)
+#define CHECK_HAS(got, want) check_has((got), (want), #got, __LINE__)
+
+std::string calc_text(const std::string &expr) {
+    double v = 0;
+    std::string err;
+    return calc::evaluate(expr, v, err) ? calc::format(v) : "ERROR " + err;
+}
+
+double ms_since(std::chrono::steady_clock::time_point t) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+}
+
+void test_calculator() {
+    g_test = "calculator";
+    CHECK(calc_text("(84.50 + 12) * 1.125 / 4") == "27.140625");
+    CHECK(calc_text("2^3^2") == "512");
+    CHECK(calc_text("-2^2") == "-4");
+    CHECK(calc_text("10 % 3") == "1");
+    CHECK(calc_text("50% * 80") == "40");
+    CHECK(calc_text("1,234.5 * 2") == "2469");
+    CHECK(calc_text("200*1.1") == "220");
+    // Deep nesting is refused with a sentence, not a crashed app (it overflowed the stack at 20 000).
+    for (const std::string &deep : {std::string(50000, '(') + "1" + std::string(50000, ')'), std::string(50000, '-') + "1"}) {
+        CHECK_HAS(calc_text(deep), "nested too deeply");
+    }
+    std::string pow_chain;
+    for (int i = 0; i < 30000; ++i) pow_chain += "2^";
+    CHECK_HAS(calc_text(pow_chain + "1"), "nested too deeply");
+    CHECK(calc_text(std::string(90, '(') + "7" + std::string(90, ')')) == "7");   // ordinary nesting still works
+    // "200 + 10%" computes 200.1; asked for a tip, that is a confident wrong answer.
+    CHECK_HAS(calc_text("200 + 10%"), "ambiguous: to add 10% write 200*1.1, or for 10% of it alone 200*0.1");
+    CHECK_HAS(calc_text("84.50 - 12.5%"), "to take off 12.5% write 84.50*0.875");
+    CHECK_HAS(calc_text("(1 + 2) + 10%"), "write (1 + 2)*1.1");
+    CHECK_HAS(calc_text("1 + 2 + 10%"), "write (1 + 2)*1.1");
+    CHECK_HAS(calc_text("15% of 80"), "write '15% of 80' as 0.15*80");
+    CHECK_HAS(calc_text("1e999"), "too large");
+    CHECK_HAS(calc_text("\x01"), "control character");
+    CHECK_HAS(calc_text("1/0"), "division by zero");
+}
+
+void test_dates() {
+    g_test = "dates";
+    time_t t = 0;
+    CHECK(util::parse_local("2027-03-14 18:30", t));
+    CHECK(util::parse_local("2027-03-14", t));
+    CHECK(util::parse_local("2028-02-29 09:00", t));   // a leap day
+    CHECK(util::parse_local("2027-12-31T23:59:59", t));
+    // mktime would make these into other days without a word.
+    CHECK(!util::parse_local("2027-02-29 09:00", t));
+    CHECK(!util::parse_local("2027-02-31", t));
+    CHECK(!util::parse_local("2027-04-31 10:00", t));
+    CHECK(!util::parse_local("2027-01-10 25:00", t));
+    CHECK(!util::parse_local("2027-01-10 24:00", t));
+    CHECK(!util::parse_local("2027-01-10 10:99", t));
+    CHECK(!util::parse_local("2027-01-10 10:30:75", t));
+    CHECK(!util::parse_local("tomorrow at 5", t));
+    // The typed form, which goes through parse_local, is unchanged.
+    CHECK(util::parse_typed("14/03/2027 18:30", t) && util::format_time(t, "%Y-%m-%d %H:%M") == "2027-03-14 18:30");
+    CHECK(!util::parse_typed("31/02/2027", t));
+}
+
+void test_zones() {
+    g_test = "time zones";
+    if (access("/usr/share/zoneinfo/Europe/London", R_OK) != 0) {
+        fprintf(stderr, "(no zone database here: the time zone checks were skipped)\n");
+        return;
+    }
+    CHECK(util::timezone_exists("Europe/London"));
+    CHECK(util::timezone_exists("Asia/Tokyo"));
+    CHECK(util::timezone_exists("UTC"));
+    // Folders named like countries with several zones, and the database's own tables: TZ set to
+    // any of these silently meant UTC.
+    for (const char *bad : {"Australia", "Brazil", "Canada", "US", "Europe", "zone.tab", "iso3166.tab", "../../etc/passwd",
+                            "/etc/passwd", "", "Nowhere/Special"})
+        check(!util::timezone_exists(bad), bad, __LINE__);
+}
+
+void test_processes(const std::string &tmp) {
+    g_test = "helper programs";
+    // A descriptor the app holds open without close-on-exec does not reach the child.
+    const std::string path = tmp + "/held-open";
+    const int fd = open(path.c_str(), O_CREAT | O_WRONLY, 0600);
+    CHECK(fd >= 3);
+    proc::Result r = proc::run({"sh", "-c", "ls /proc/self/fd"}, "", 5000);
+    CHECK(r.ok());
+    // The shell's own 0, 1, 2 and the one ls opens to read the folder: nothing numbered like ours
+    // (ls's own descriptor is the lowest free one, 3, so look for ours only when it is above that).
+    if (fd > 3) CHECK(r.out.find("\n" + std::to_string(fd) + "\n") == std::string::npos);
+    int count = 0;
+    for (const auto &line : util::split(util::trim(r.out), '\n')) count += !line.empty();
+    CHECK(count <= 4);
+    close(fd);
+
+    // The time limit holds, and the program is gone afterwards.
+    auto t0 = std::chrono::steady_clock::now();
+    r = proc::run({"sleep", "30"}, "", 300);
+    CHECK(r.timed_out && !r.ok());
+    CHECK(ms_since(t0) < 2000);
+
+    // A program that closes its output but goes on running is not waited for beyond the limit.
+    t0 = std::chrono::steady_clock::now();
+    r = proc::run({"sh", "-c", "exec >&- 2>&-; sleep 30"}, "", 400);
+    CHECK(r.timed_out);
+    CHECK(ms_since(t0) < 2000);
+
+    // Cancelling stops it within a fraction of a second.
+    std::atomic<bool> cancel{false};
+    std::thread canceller([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        cancel = true;
+    });
+    t0 = std::chrono::steady_clock::now();
+    r = proc::run({"sleep", "30"}, "", 20000, 4096, false, &cancel);
+    canceller.join();
+    CHECK(r.cancelled && !r.ok());
+    CHECK(ms_since(t0) < 1500);
+    // A flag already set: nothing is started.
+    r = proc::run({"sh", "-c", "echo started"}, "", 5000, 4096, false, &cancel);
+    CHECK(r.cancelled && r.out.empty());
+
+    // Output beyond the limit is cut, and says so.
+    r = proc::run({"sh", "-c", "i=0; while [ $i -lt 200 ]; do echo 0123456789; i=$((i+1)); done"}, "", 5000, 100);
+    CHECK(r.ok() && r.truncated && r.out.size() == 100);
+    r = proc::run({"sh", "-c", "echo short"}, "", 5000, 100);
+    CHECK(r.ok() && !r.truncated && r.out == "short\n");
+    // Exit codes still come through.
+    r = proc::run({"sh", "-c", "exit 3"}, "", 5000);
+    CHECK(r.code == 3 && !r.timed_out);
+}
+
+}  // namespace
+
+int main(int argc, char **argv) {
+    const std::string tmp = argc > 1 ? argv[1] : "/tmp";
+    test_calculator();
+    test_dates();
+    test_zones();
+    test_processes(tmp);
+    printf("tools: %d checks, %d failed\n", g_checks, g_failures);
+    return g_failures ? 1 : 0;
+}

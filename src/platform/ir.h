@@ -1,5 +1,6 @@
 // Infrared remote control: built-in TV codes for common brands plus learn-and-replay.
 #pragma once
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -11,9 +12,12 @@ std::vector<std::string> brands();
 // channel_down, input, up, down, left, right, ok, menu, back, home, 0..9.
 std::vector<std::string> keys();
 
-// Sends `key` `repeat` times. Learned buttons (see learn) take priority over built-in codes.
-// Returns "" on success or a short error message.
-std::string send(const std::string &brand, const std::string &key, int repeat = 1);
+// Sends `key` `repeat` times (at most kMaxRepeat). Learned buttons (see learn) take priority over
+// built-in codes. Each press takes about 0.1 s, or about 0.5 s with "auto" (every brand in turn);
+// setting `cancel` stops between presses. Returns "" on success or a short error message.
+constexpr int kMaxRepeat = 30;
+std::string send(const std::string &brand, const std::string &key, int repeat = 1,
+                 const std::atomic<bool> *cancel = nullptr);
 
 // Captures one button press from a real remote pointed at the receiver and stores it
 // under `name`. Blocks up to timeout_ms. Returns "" on success or an error message.

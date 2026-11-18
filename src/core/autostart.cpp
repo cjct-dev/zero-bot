@@ -1,6 +1,7 @@
 #include "core/autostart.h"
 
 #include <string>
+#include <thread>
 #include <unistd.h>
 
 #include "core/util.h"
@@ -37,7 +38,9 @@ bool set(bool on) {
     } else if (unlink(dropin_path().c_str()) != 0 && enabled()) {
         return false;
     }
-    proc::run({"systemctl", "--user", "daemon-reload"}, "", 8000);
+    // The setting is the file above, written by now; the reload that tells the service manager
+    // can take seconds and is called from a settings row on the UI thread, so it runs beside it.
+    std::thread([] { proc::run({"systemctl", "--user", "daemon-reload"}, "", 8000); }).detach();
     return true;
 }
 

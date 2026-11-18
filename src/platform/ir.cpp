@@ -255,10 +255,11 @@ std::vector<std::string> keys() {
             "left", "right", "ok", "menu", "back", "home", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"};
 }
 
-std::string send(const std::string &brand_in, const std::string &key_in, int repeat) {
+std::string send(const std::string &brand_in, const std::string &key_in, int repeat, const std::atomic<bool> *cancel) {
     const std::string key = norm(key_in), brand = norm(brand_in);
     if (repeat < 1) repeat = 1;
-    if (repeat > 30) repeat = 30;
+    if (repeat > kMaxRepeat) repeat = kMaxRepeat;
+    auto stopped = [cancel] { return cancel && *cancel; };
 
     // A learned button always wins: it came from the user's actual remote.
     const json learned_db = util::load_json(learned_path(), json::object());
@@ -266,6 +267,7 @@ std::string send(const std::string &brand_in, const std::string &key_in, int rep
         Pulses p = learned_db[key].value("pulses", Pulses{});
         const int carrier = learned_db[key].value("carrier", 38000);
         for (int i = 0; i < repeat; ++i) {
+            if (stopped()) return "stopped: the request was cancelled";
             const std::string err = transmit(p, carrier);
             if (!err.empty()) return err;
             usleep(110 * 1000);
@@ -287,6 +289,7 @@ std::string send(const std::string &brand_in, const std::string &key_in, int rep
         for (const Brand *b : targets) {
             uint32_t cmd;
             if (!find_code(*b, key, cmd)) continue;
+            if (stopped()) return "stopped: the request was cancelled";
             const std::string err = transmit(encode(*b, cmd), carrier_for(b->proto));
             if (!err.empty()) return err;
             sent_any = true;

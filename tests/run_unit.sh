@@ -1,15 +1,17 @@
 #!/bin/sh
 # Device-free unit tests: the smart-home layer (store, names, schema, safety rules, locking,
-# pairing, the Tapo driver's refusals, colours), the HTTP options for devices, and the timers (the
-# timer tool, storage, the countdown, the alarm and its player). Nothing but 127.0.0.1 is
-# contacted, and no AI service, sound or screen is needed.
+# pairing, the Tapo driver's refusals, colours), the HTTP options for devices, the timers (the
+# timer tool, storage, the countdown, the alarm and its player), and what the other tools stand on
+# (calculator, dates, time zones, helper programs). Nothing but 127.0.0.1 is contacted, and no AI
+# service, sound or screen is needed.
 #
 #   tests/run_unit.sh                   build into build/unit and run
 #   ZB_UPDATE_SNAPSHOTS=1 tests/run_unit.sh    rewrite tests/snapshots/*.json from the current schema
 #   ZB_BUILD_WRAPPER=cmd tests/run_unit.sh     run each compile through cmd (e.g. a lock on a shared machine)
 #
 # When the command-line build exists (build/cli/zero_bot), the timer tool is also run through it,
-# zero_bot --tool timer '{...}', with a fresh, temporary state folder. CXX picks the compiler
+# zero_bot --tool timer '{...}', with a fresh, temporary state folder, and so are the other tools
+# that need no network (tests/tools_cli.py: good, wrong and hostile arguments). CXX picks the compiler
 # (default g++). Exits non-zero when anything fails.
 set -eu
 cd "$(dirname "$0")/.."
@@ -30,12 +32,14 @@ APP="src/smarthome/store.cpp src/smarthome/targets.cpp src/smarthome/control.cpp
      src/platform/sys.cpp src/net/http.cpp"
 # The timers need only these, with util.cpp and proc.cpp from above.
 TIMERS="src/core/timers.cpp src/core/store.cpp src/platform/audio.cpp"
+# The tools' foundations need only the calculator, with util.cpp and proc.cpp from above.
+TOOLS="src/agent/calc.cpp"
 
 obj_of() { echo "$OUT/$(echo "$1" | tr '/' '_' | sed 's/\.cpp$/.o/')"; }
 
 # Objects are rebuilt only when their source or a header in src/ is newer.
 newest_header=$(find src -name '*.h' -newer "$OUT/.stamp" 2>/dev/null | head -n 1 || true)
-for src in $APP $TIMERS tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp \
+for src in $APP $TIMERS $TOOLS tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp tests/unit/tools_test.cpp \
            tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp; do
     obj=$(obj_of "$src")
     if [ ! -f "$obj" ] || [ "$src" -nt "$obj" ] || [ -n "$newest_header" ]; then
@@ -51,6 +55,8 @@ for src in $TIMERS; do timer_objs="$timer_objs $(obj_of "$src")"; done
 $WRAP $CXX -o "$OUT/smarthome_test" "$OUT/tests_unit_smarthome_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/http_test" "$OUT/tests_unit_http_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/timers_test" "$OUT/tests_unit_timers_test.o" $timer_objs -lpthread
+$WRAP $CXX -o "$OUT/tools_test" "$OUT/tests_unit_tools_test.o" "$(obj_of src/agent/calc.cpp)" "$(obj_of src/core/util.cpp)" \
+    "$(obj_of src/platform/proc.cpp)" -lpthread
 # The Fire TV driver's own tests; firetv_cli is what tests/firetv_e2e.py drives against its mock.
 $WRAP $CXX -o "$OUT/firetv_test" "$OUT/tests_unit_firetv_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/firetv_cli" "$OUT/tests_unit_firetv_cli.o" $objs -lcurl -lcrypto -lpthread
@@ -67,6 +73,9 @@ echo "=== Fire TV driver"
 "$OUT/firetv_test" tests/mocks/firetv || failed=1
 echo "=== HomeKit driver"
 "$OUT/homekit_test" || failed=1
+
+echo "=== tools: calculator, dates, time zones, helper programs"
+TZ=UTC "$OUT/tools_test" "$state" || failed=1
 
 echo "=== timers"
 # As someone would run the binary by hand: no XDG folders set, and a home that holds data of its
@@ -123,4 +132,7 @@ expect '{"action":"start","minutes":25}' '"label":"25 minute timer"'
 expect '{"action":"cancel","label":"twenty-five minute timer"}' '"cancelled":["25 minute timer"]'
 echo "timer tool: $passed passed, $tool_failed failed"
 [ "$tool_failed" -eq 0 ] || failed=1
+
+echo "=== the other tools that need no network, through the command-line build"
+python3 -I tests/tools_cli.py "$cli" || failed=1
 exit $failed

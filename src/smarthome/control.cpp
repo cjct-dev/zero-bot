@@ -912,7 +912,10 @@ std::string execute(const Command &cmd, bool dry_run) {
     if (std::find_if(std::begin(kActions), std::end(kActions), [&](const char *a) { return action == a; }) == std::end(kActions))
         return fail("action must be one of on, off, set, status, scene, play, pause, stop, next, previous, mute, unmute, press");
     if (action == "status") return status(net.id(), e, items, cmd.target, dry_run);
-    if (util::trim(cmd.target).empty()) return fail("say which device, room or group to " + action + " (target)");
+    if (util::trim(cmd.target).empty()) {
+        const std::string verb = action == "on" || action == "off" ? "switch " + action : action == "set" ? "change" : action;
+        return fail("say which device, room or group to " + verb + " (target)");
+    }
 
     Resolved r;
     std::string err;

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -19,6 +20,10 @@ public:
     // not while its first sentence is still being synthesized (which can take as long as the
     // service does).
     bool playing() const { return playing_; }
+    // Called on the speech thread when an answer cannot be spoken (the speech service failed, or
+    // the speaker could not be opened), at most once per answer, with the reason. The text stays
+    // on the screen; this says why it was not heard. Set once, before the first answer.
+    void set_on_failure(std::function<void(const std::string &reason)> cb) { on_failure_ = std::move(cb); }
 
     // Splits streamed text into speakable chunks.
     class Chunker {
@@ -44,4 +49,8 @@ private:
     std::atomic<bool> playing_{false};
     bool ended_ = true;
     bool stream_open_ = false;
+    std::function<void(const std::string &)> on_failure_;
+    int answer_ = 0;            // counts answers (guarded by mtx_)
+    int reported_ = -1;         // the answer whose failure was last reported (speech thread only)
+    void failed(int answer, const std::string &reason);
 };

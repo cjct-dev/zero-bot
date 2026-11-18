@@ -18,7 +18,20 @@ namespace {
 struct Parser {
     const std::string &s;
     size_t i = 0;
+    int depth = 0;
     explicit Parser(const std::string &text) : s(text) {}
+
+    // Each bracket, sign or power goes one level deeper into the parser's own stack. A deep enough
+    // pile (tens of thousands of brackets) would overflow it and end the whole app, so nesting
+    // beyond anything a real sum needs is refused.
+    struct Deeper {
+        Parser &p;
+        explicit Deeper(Parser &parser) : p(parser) {
+            if (++p.depth > kMaxDepth) p.fail("the expression is nested too deeply; split it into smaller steps");
+        }
+        ~Deeper() { --p.depth; }
+    };
+    static constexpr int kMaxDepth = 200;
 
     void skip() { while (i < s.size() && isspace(static_cast<unsigned char>(s[i]))) ++i; }
     bool eat(char c) { skip(); if (i < s.size() && s[i] == c) { ++i; return true; } return false; }
@@ -30,12 +43,52 @@ struct Parser {
     [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error(msg); }
 
     double expr() {
+        Deeper guard(*this);
+        skip();
+        const size_t start = i;
         double v = term();
         for (;;) {
-            if (eat('+')) v += term();
-            else if (eat('-')) v -= term();
-            else return v;
+            const bool plus = eat('+');
+            if (!plus && !eat('-')) return v;
+            const size_t from = i;
+            const double t = term();
+            // "200 + 10%" reads as adding ten percent, but is 200 + 0.1. Asked to work out a tip or
+            // a price rise, that is a wrong answer said with confidence; say how to write it.
+            if (ends_in_percent(from)) {
+                const std::string pct = trimmed(from, i), base = trimmed(start, from - 1);
+                const std::string factor = format(plus ? 1 + t : 1 - t);
+                const std::string b = base.find_first_of("+-") == std::string::npos || one_group(base) ? base : "(" + base + ")";
+                fail("'" + base + (plus ? " + " : " - ") + pct + "' is ambiguous: to " + (plus ? "add " : "take off ") + pct +
+                     " write " + b + "*" + factor + ", or for " + pct + " of it alone " + b + "*" + format(t));
+            }
+            v = plus ? v + t : v - t;
         }
+    }
+
+    // "(1 + 2)" is one bracketed group; "(1) + (2)" is not.
+    static bool one_group(const std::string &t) {
+        if (t.size() < 2 || t.front() != '(' || t.back() != ')') return false;
+        int depth = 0;
+        for (size_t k = 0; k < t.size(); ++k) {
+            depth += t[k] == '(' ? 1 : t[k] == ')' ? -1 : 0;
+            if (depth == 0 && k + 1 < t.size()) return false;
+        }
+        return true;
+    }
+
+    std::string trimmed(size_t from, size_t to) const {
+        while (from < to && isspace(static_cast<unsigned char>(s[from]))) ++from;
+        while (to > from && isspace(static_cast<unsigned char>(s[to - 1]))) --to;
+        return s.substr(from, to - from);
+    }
+
+    // The term just read, from `from` to here, is a bare percentage such as "10%" or "12.5 %".
+    bool ends_in_percent(size_t from) const {
+        const std::string t = trimmed(from, i);
+        if (t.size() < 2 || t.back() != '%') return false;
+        for (size_t k = 0; k + 1 < t.size(); ++k)
+            if (!isdigit(static_cast<unsigned char>(t[k])) && t[k] != '.' && t[k] != ' ') return false;
+        return true;
     }
 
     double term() {
@@ -66,6 +119,7 @@ struct Parser {
     }
 
     double unary() {
+        Deeper guard(*this);
         if (eat('-')) return -unary();
         if (eat('+')) return unary();
         return power();
@@ -104,7 +158,9 @@ struct Parser {
         if (isdigit(c) || c == '.') {
             size_t used = 0;
             double v;
-            try { v = std::stod(s.substr(i), &used); } catch (...) { fail("bad number"); }
+            try { v = std::stod(s.substr(i), &used); }
+            catch (const std::out_of_range &) { fail("a number is too large or too small to work with"); }
+            catch (...) { fail("bad number"); }
             i += used;
             return v;
         }
@@ -115,6 +171,8 @@ struct Parser {
             if (name == "pi") return M_PI;
             if (name == "e") return M_E;
             if (name == "tau") return 2 * M_PI;
+            if (name == "of")
+                fail("'of' is not arithmetic: write '15% of 80' as 0.15*80, or 15/100*80");
             if (!eat('(')) fail("unknown name '" + name + "'");
             std::vector<double> args;
             if (!eat(')')) {
@@ -123,7 +181,14 @@ struct Parser {
             }
             return call(name, args);
         }
-        fail(std::string("unexpected '") + s[i] + "'");
+        fail(unexpected(s[i]));
+    }
+
+    static std::string unexpected(char c) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (u < 0x20 || u == 0x7f) return "unexpected control character in the expression";
+        if (u >= 0x80) return "unexpected character in the expression; use plain digits and + - * / ^ ( )";
+        return std::string("unexpected '") + c + "'";
     }
 
     double call(const std::string &f, const std::vector<double> &a) {
@@ -191,7 +256,7 @@ bool evaluate(const std::string &expression, double &result, std::string &err) {
         Parser p(text);
         result = p.expr();
         p.skip();
-        if (p.i != text.size()) throw std::runtime_error(std::string("unexpected '") + text[p.i] + "'");
+        if (p.i != text.size()) throw std::runtime_error(Parser::unexpected(text[p.i]));
         if (std::isnan(result) || std::isinf(result)) throw std::runtime_error("result is not a finite number");
         return true;
     } catch (const std::exception &e) {

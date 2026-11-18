@@ -102,6 +102,10 @@ Agent &Agent::get() {
 
 void Agent::start(AgentEvents events) {
     ev_ = std::move(events);
+    // An answer that is shown but cannot be heard says why, once, beside it.
+    SpeechQueue::get().set_on_failure([this](const std::string &reason) {
+        if (ev_.error) ev_.error("Could not speak the answer: " + reason);
+    });
     thread_ = std::thread(&Agent::worker, this);
     thread_.detach();
 }
