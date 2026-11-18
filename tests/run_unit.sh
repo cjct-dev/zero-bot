@@ -9,8 +9,9 @@
 #   ZB_BUILD_WRAPPER=cmd tests/run_unit.sh     run each compile through cmd (e.g. a lock on a shared machine)
 #
 # When the command-line build exists (build/cli/zero_bot), the timer tool is also run through it,
-# zero_bot --tool timer '{...}', with a fresh, temporary state folder. CXX picks the compiler
-# (default g++). Exits non-zero when anything fails.
+# zero_bot --tool timer '{...}', with a fresh, temporary state folder, and the request loop is run
+# against a scripted chat service (tests/agent_loop_test.py). CXX picks the compiler (default g++).
+# Exits non-zero when anything fails.
 set -eu
 cd "$(dirname "$0")/.."
 OUT=build/unit
@@ -87,7 +88,7 @@ done
 
 cli=build/cli/zero_bot
 if [ ! -x "$cli" ]; then
-    echo "=== $cli not built: the timer tool checks through it were skipped"
+    echo "=== $cli not built: the timer tool and request loop checks through it were skipped"
     exit $failed
 fi
 
@@ -123,4 +124,7 @@ expect '{"action":"start","minutes":25}' '"label":"25 minute timer"'
 expect '{"action":"cancel","label":"twenty-five minute timer"}' '"cancelled":["25 minute timer"]'
 echo "timer tool: $passed passed, $tool_failed failed"
 [ "$tool_failed" -eq 0 ] || failed=1
+
+echo "=== the request loop against a scripted chat service"
+python3 -I tests/agent_loop_test.py -q "$cli" || failed=1
 exit $failed
