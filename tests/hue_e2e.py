@@ -717,6 +717,141 @@ def test_scene_with_plug(tmp):
         check(isinstance(r, str) and r.startswith("CONFIRM:") and m.log() == [], "the plug itself is still asked about first")
 
 
+def set_things(st, **changes):
+    """Edits saved things in a hue_cli state file: thing id -> dict of fields (ask_first, enabled, ref...)."""
+    j = load(st)
+    for t in j["things"]:
+        t.update(changes.get(t["id"], {}))
+    j["things"] = [t for t in j["things"] if not changes.get(t["id"], {}).get("_drop")]
+    with open(st, "w") as f:
+        json.dump(j, f)
+
+
+# A scene can be edited in the Hue app at any time, and the device list is read only when the user
+# asks for it. So a scene is read again right before it is recalled, and judged against the saved
+# things and the user's settings for them: a plug added to it since, a light set to "Ask before
+# switching on" or not to be used by the assistant, a light that is no thing, all stop the recall.
+def test_scene_changed(tmp):
+    with Mock() as m:
+        st, things = enumerated(m, tmp)
+        living, bright = rid("sc-relax-living"), rid("sc-bright-down")
+        check(living in things and bright in things, "the scenes are offered while they hold only lights")
+
+        m.set("plug-in-scene")   # the user adds the heater plug to the Living room's scene in the Hue app
+        m.reset_log()
+        r = cli(st, "apply", living, '{"on":true}')
+        log = m.log()
+        check(r.rc == 1 and "smart plug" in r.err and [(e["method"], e["path"]) for e in log] ==
+              [("GET", "/clip/v2/resource/scene/" + living)],
+              "a scene that has since been given a plug is read, then not recalled (%s)" % r.err)
+        r = cli(st, "read", rid("l-plug"))
+        check(r.rc == 0 and r.out[0]["things"][0]["state"].get("on") is False, "and the heater plug stays off")
+        m.clear("plug-in-scene")
+
+        m.reset_log()
+        r = cli(st, "apply", bright, '{"on":true}')
+        log = m.log()
+        check(r.rc == 0 and [(e["method"], e["path"]) for e in log] ==
+              [("GET", "/clip/v2/resource/scene/" + bright), ("PUT", "/clip/v2/resource/scene/" + bright)] and
+              log[1]["body"] == {"recall": {"action": "active"}} and r.ms[0] < 2500,
+              "a scene of usable lights: read, then recalled, within the deadline (%d ms)" % (r.ms[0] if r.ms else -1))
+        r = cli(st, "apply-many", '{"on":false}', rid("l-sofa"), rid("l-ceiling"), rid("l-strip"), rid("l-spots"))
+
+        set_things(st, **{rid("l-ceiling"): {"ask_first": True}})
+        m.reset_log()
+        r = cli(st, "apply", bright, '{"on":true}')
+        check(r.rc == 1 and "only after the user says yes" in r.err and not puts(m.log()),
+              "a scene that switches on a light set to ask first is not recalled (%s)" % r.err)
+        set_things(st, **{rid("l-ceiling"): {"ask_first": False}, rid("l-strip"): {"enabled": False}})
+        m.reset_log()
+        r = cli(st, "apply", bright, '{"on":true}')
+        check(r.rc == 1 and "may not use" in r.err and not puts(m.log()),
+              "nor one that changes a light the assistant may not use (%s)" % r.err)
+        set_things(st, **{rid("l-strip"): {"enabled": True}, rid("l-spots"): {"_drop": True}})
+        m.reset_log()
+        r = cli(st, "apply", bright, '{"on":true}')
+        check(r.rc == 1 and "refresh the device list" in r.err and not puts(m.log()),
+              "nor one holding a light that is not in the saved list (%s)" % r.err)
+        r = cli(st, "read", rid("l-ceiling"), rid("l-strip"), rid("l-sofa"))
+        check(r.rc == 0 and all(t["state"].get("on") is False for t in r.out[0]["things"]),
+              "and none of those lights went on")
+        set_things(st, **{bright: {"ref": {"kind": "scene", "rid": rid("no-such-scene")}}})
+        m.reset_log()
+        r = cli(st, "apply", bright, '{"on":true}')
+        check(r.rc == 1 and r.err == "the Hue Bridge no longer has this scene; refresh the device list in Settings, Smart home"
+              and not puts(m.log()), "a scene the bridge no longer has is reported, nothing recalled")
+
+        if not os.access(APP, os.X_OK):
+            print("info  %s is not built (repobuild cli): the app's part was skipped" % APP, flush=True)
+            return
+        # The app: the list read before the plug was added to the scene; the settings typed by the user.
+        app, network = app_with_bridge(m, tmp)
+        out = app.run("--home-refresh")
+        check("1 device ready." in out, "the app reads the bridge")
+        m.set("plug-in-scene")
+        m.reset_log()
+        r = app.tool({"action": "scene", "target": "Living room"})
+        check(isinstance(r, str) and r.startswith("ERROR:") and "smart plug" in r and not puts(m.log()),
+              "the app's scene with a plug added since the list was read: nothing recalled (%s)" % (r,))
+        check(cli(st, "read", rid("l-plug")).out[0]["things"][0]["state"].get("on") is False, "and the heater plug stays off")
+        m.clear("plug-in-scene")
+        root = app.load()
+        for t in root["networks"][network]["devices"][0]["things"]:
+            if t["name"] == "Ceiling":
+                t["ask_first"] = True
+        app.save(root)
+        m.reset_log()
+        r = app.tool({"action": "scene", "target": "Bright"})
+        check(isinstance(r, str) and r.startswith("ERROR:") and "only after the user says yes" in r and not puts(m.log()),
+              "a scene with a light the user set to ask first: nothing recalled (%s)" % (r,))
+        r = app.tool({"action": "on", "target": "Ceiling"})
+        check(isinstance(r, str) and r.startswith("CONFIRM:"), "and that light by itself is still asked about")
+
+
+# One bridge saved on two networks (two Wi-Fi names on one router) is paired twice, with a key for
+# each, and the app keeps one secrets file for both. Both keys removed in the Hue app: each is sent
+# once, and neither ever again, whichever was refused last; pairing one copy again leaves the
+# other's refusal standing.
+def test_two_networks(tmp):
+    def share(src, dst):   # what one secrets file for both saved copies amounts to
+        a, b = load(src), load(dst)
+        b["secrets"] = a["secrets"]
+        with open(dst, "w") as f:
+            json.dump(b, f)
+
+    with Mock() as m:
+        st1, _ = enumerated(m, tmp, "net1.json")
+        st2, _ = enumerated(m, tmp, "net2.json")
+        check(auth(st1)["key"] != auth(st2)["key"] and load(st1)["id"] == load(st2)["id"], "two keys for one bridge id")
+        m.set("revoke")
+        m.reset_log()
+        r1 = cli(st1, "apply", rid("l-sofa"), '{"on":true}')
+        share(st1, st2)
+        r2 = cli(st2, "apply", rid("l-sofa"), '{"on":true}')
+        share(st2, st1)
+        check(r1.err == ERR_REFUSED and r2.err == ERR_REFUSED and [e["key"] for e in m.log()] == ["wrong", "wrong"],
+              "each refused key was sent once")
+        refused = hue_secrets(st1).get("refused", {}).get(DEVICE_ID)
+        check(isinstance(refused, list) and len(refused) == 2, "both refusals are kept for the one bridge id")
+        m.reset_log()
+        r1 = cli(st1, "apply", rid("l-sofa"), '{"on":true}')
+        r2 = cli(st2, "enumerate")
+        check(r1.err == ERR_REFUSED and r2.err == ERR_REFUSED and m.log() == [], "neither key is sent again")
+        m.clear("revoke")
+        m.set("button")
+        r = cli(st1, "pair", "--pair-window-ms", "3000", "--pair-interval-ms", "200")
+        m.clear("button")
+        auth(st1)
+        share(st1, st2)
+        m.reset_log()
+        r2 = cli(st2, "apply", rid("l-sofa"), '{"on":true}')
+        check(r.rc == 0 and r2.err == ERR_REFUSED and m.log() == [] and
+              hue_secrets(st2).get("refused", {}).get(DEVICE_ID) not in (None, []),
+              "pairing one copy again leaves the other copy's refusal standing")
+        r1 = cli(st1, "apply", rid("l-sofa"), '{"on":true}')
+        check(r1.rc == 0, "and the copy paired again works")
+
+
 def test_app(tmp):
     if not os.access(APP, os.X_OK):
         print("info  %s is not built (repobuild cli): the app's part was skipped" % APP, flush=True)
@@ -803,7 +938,8 @@ def main():
     only = [t for t in os.environ.get("HUE_E2E_ONLY", "").split(",") if t]
     try:
         for test in (test_pairing, test_pairing_refusals, test_things, test_apply, test_groups, test_refused_key,
-                     test_certificate_change, test_unreachable, test_malformed, test_unpair, test_scene_with_plug, test_app):
+                     test_certificate_change, test_unreachable, test_malformed, test_unpair, test_scene_with_plug,
+                     test_scene_changed, test_two_networks, test_app):
             if only and test.__name__ not in only:
                 continue
             print("--- " + test.__name__, flush=True)
