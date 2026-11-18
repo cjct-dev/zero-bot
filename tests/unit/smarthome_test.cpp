@@ -22,6 +22,7 @@
 
 #include "core/util.h"
 #include "smarthome/color.h"
+#include "smarthome/drivers/firetv.h"
 #include "smarthome/drivers/homekit.h"
 #include "smarthome/drivers/hue.h"
 #include "smarthome/drivers/kasa.h"
@@ -2438,6 +2439,93 @@ void test_discovery_shelly() {
     CHECK(!drv->claims("shelly", {}));
 }
 
+// Every family's answers heard in one scan, as at home. Each branch above checks its own family
+// alone; this checks that the rules hold side by side (each family's answers are merged in a loop
+// of its own) and that every device found is claimed by exactly one driver, or by none when no
+// driver should touch it. Several addresses answer two ways, as real devices do.
+void test_discovery_every_family() {
+    Section s("discovery: every family heard in one scan; each device is one kind, claimed by one driver at most");
+    auto ip4 = [](int last) { return std::string("\xC0\x00\x02", 3) + static_cast<char>(last); };
+    const std::string hap = "_hap._tcp.local";
+    const std::string tapo_p110 = tplink_answer(R"J({"error_code":0,"result":{"device_id":"80225A0B","device_model":"P110(UK)",
+        "device_type":"SMART.TAPOPLUG","mac":"AA-BB-CC-00-00-0A","owner":"","mgt_encrypt_schm":{"encrypt_type":"KLAP","http_port":80}}})J");
+    const std::string kasa_hs100 = kasa_scrambled(R"J({"system":{"get_sysinfo":{"type":"IOT.SMARTPLUGSWITCH","model":"HS100(UK)",
+        "alias":"Desk","mac":"50:C7:BF:00:00:31","err_code":0}}})J");
+    const std::string kasa_ep25 = kasa_scrambled(R"J({"system":{"get_sysinfo":{"type":"IOT.SMARTPLUGSWITCH","model":"EP25(US)",
+        "alias":"Lamp","mac":"50:C7:BF:00:00:32","err_code":0}}})J");
+    const std::string hue_ssdp = "HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=100\r\nLOCATION: http://192.0.2.30:80/description.xml\r\n"
+                                 "SERVER: Hue/1.0 UPnP/1.0 IpBridge/1.71.0\r\nhue-bridgeid: 00005EFFFE005301\r\nST: upnp:rootdevice\r\n\r\n";
+    auto wiz = [](const std::string &mac) { return R"({"method":"registration","env":"pro","result":{"mac":")" + mac + R"(","success":true}})"; };
+    const std::vector<discovery::Packet> heard = {
+        {"tapo", "192.0.2.10", tapo_p110},
+        {"wiz", "192.0.2.10", wiz("a8bb50000010")},   // also answers WiZ's query: still Tapo
+        {"kasa", "192.0.2.11", kasa_hs100},
+        {"mdns", "192.0.2.12", service_answer(hap, "Plug 12", "plug12.local", ip4(12), {"id=AA:BB:CC:00:00:12", "ci=7", "sf=1"})},
+        {"kasa", "192.0.2.12", kasa_ep25},             // a Kasa plug that also offers HomeKit: Kasa
+        {"wiz", "192.0.2.20", wiz("a8bb50000020")},
+        {"mdns", "192.0.2.21", service_answer(hap, "WiZ RGB Bulb", "wiz21.local", ip4(21), {"id=AA:BB:CC:00:00:21", "ci=5", "sf=0", "md=WiZ"})},
+        {"wiz", "192.0.2.21", wiz("a8bb50000021")},    // a WiZ light that also offers HomeKit: WiZ
+        {"mdns", "192.0.2.30", service_answer(hap, "Philips hue - 005301", "hue-005301.local", ip4(30),
+                                              {"id=AA:BB:CC:00:53:01", "md=BSB002", "ci=2", "sf=0"})},
+        {"ssdp", "192.0.2.30", hue_ssdp},              // a Hue Bridge heard over SSDP and HomeKit: Hue
+        {"mdns", "192.0.2.40", service_answer("_shelly._tcp.local", "shellyplus1pm-a8032ab12340", "shellyplus1pm-a8032ab12340.local", ip4(40),
+                                              {"gen=2", "app=Plus1PM", "ver=1.4.4"})},
+        {"mdns", "192.0.2.40", service_answer("_http._tcp.local", "ShellyPlus1PM-A8032AB12340", "shellyplus1pm-a8032ab12340.local", ip4(40),
+                                              {"gen=2"})},
+        {"mdns", "192.0.2.41", service_answer("_http._tcp.local", "shelly-1pm-kitchen", "shelly-1pm-kitchen.local", ip4(41), {})},
+        {"mdns", "192.0.2.41", service_answer("_esphomelib._tcp.local", "shelly-1pm-kitchen", "shelly-1pm-kitchen.local", ip4(41),
+                                              {"platform=ESP8266"})},   // ESPHome with a Shelly's name: ESPHome
+        {"mdns", "192.0.2.50", service_answer(hap, "Hive Hub", "hub.local", ip4(50), {"id=AA:BB:CC:00:00:50", "ci=2", "sf=1", "md=Hub"})},
+        {"mdns", "192.0.2.60", fire_tv_answer("A1B2C3D4E5", "fire.local", ip4(60), {"n=Lounge TV"})},
+        {"mdns", "192.0.2.90", service_answer("_http._tcp.local", "Office Printer", "printer.local", ip4(90), {"path=/"})},
+    };
+    const std::map<std::string, std::pair<std::string, std::string>> want = {   // address -> (kind, the driver that claims it)
+        {"192.0.2.10", {"tapo", "tapo"}},          {"192.0.2.11", {"tplink", "kasa"}},     {"192.0.2.12", {"tplink", "kasa"}},
+        {"192.0.2.20", {"wiz", "wiz"}},            {"192.0.2.21", {"wiz", "wiz"}},         {"192.0.2.30", {"hue_bridge", "hue"}},
+        {"192.0.2.40", {"shelly", "shelly"}},      {"192.0.2.41", {"esphome", ""}},        {"192.0.2.50", {"homekit", "homekit"}},
+        {"192.0.2.60", {"fire_tv", "fire_tv"}},
+    };
+    std::vector<std::pair<std::string, std::unique_ptr<home::Driver>>> drivers;
+    drivers.emplace_back("tapo", make_tapo_driver());
+    drivers.emplace_back("kasa", make_kasa_driver());
+    drivers.emplace_back("hue", make_hue_driver());
+    drivers.emplace_back("homekit", make_homekit_driver());
+    drivers.emplace_back("wiz", make_wiz_driver());
+    drivers.emplace_back("shelly", make_shelly_driver());
+    drivers.emplace_back("fire_tv", make_firetv_driver());
+    // The answers in the order heard and reversed: the outcome must not depend on it.
+    std::vector<discovery::Packet> reversed(heard.rbegin(), heard.rend());
+    std::vector<std::vector<discovery::Device>> scans = {discovery::devices_from(heard), discovery::devices_from(reversed)};
+    for (size_t k = 0; k < scans.size(); ++k) {
+        const auto &found = scans[k];
+        const std::string order = k ? " (reversed)" : "";
+        CHECK_MSG(found.size() == want.size(), std::to_string(found.size()) + " devices" + order);
+        std::set<std::string> ids;
+        for (const auto &d : found) {
+            ids.insert(d.id);
+            const auto w = want.find(d.ip);
+            if (w == want.end()) { CHECK_MSG(false, "unexpected device at " + d.ip + order); continue; }
+            CHECK_MSG(d.kind == w->second.first, d.ip + " is " + d.kind + ", not " + w->second.first + order);
+            std::vector<std::string> by;
+            for (const auto &drv : drivers)
+                if (drv.second->claims(d.kind, d.info)) by.push_back(drv.first);
+            const std::vector<std::string> expected = w->second.second.empty() ? std::vector<std::string>{}
+                                                                                : std::vector<std::string>{w->second.second};
+            std::string got;
+            for (const auto &b : by) got += (got.empty() ? "" : ", ") + b;
+            CHECK_MSG(by == expected, d.ip + " (" + d.kind + ") claimed by: " + (got.empty() ? "none" : got) + order);
+        }
+        CHECK_MSG(ids.size() == found.size(), "one id per device" + order);
+        for (const auto &d : found) {
+            if (d.ip == "192.0.2.10") CHECK_MSG(d.id == "tapo:80225a0b" && d.port == 80, d.id + order);
+            if (d.ip == "192.0.2.12") CHECK_MSG(d.id == "tplink:50:c7:bf:00:00:32" && d.port == 9999, d.id + order);
+            if (d.ip == "192.0.2.21") CHECK_MSG(d.id == "wiz:a8bb50000021" && d.port == 0, d.id + order);
+            if (d.ip == "192.0.2.30") CHECK_MSG(d.id == "hue:00005efffe005301" && d.port == 0, d.id + " port " + std::to_string(d.port) + order);
+            if (d.ip == "192.0.2.40") CHECK_MSG(d.id == "shelly:shellyplus1pm-a8032ab12340", d.id + order);
+        }
+    }
+}
+
 // ---------------------------------------------------------------- names and colours
 void test_names_and_colours() {
     Section s("names and colours");
@@ -2715,6 +2803,7 @@ int main(int argc, char **argv) {
     test_found_again();
     test_wiz_discovery();
     test_discovery_shelly();
+    test_discovery_every_family();
     test_names_and_colours();
     test_moved_devices();
 
