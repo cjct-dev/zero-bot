@@ -108,7 +108,7 @@ Download `zero-bot_<version>_arm64.deb` from the Releases page, copy it to the C
 (over SSH, ADB or the microSD card) and install it on the device:
 
 ```sh
-sudo apt install ./zero-bot_0.4.5_arm64.deb
+sudo apt install ./zero-bot_0.4.6_arm64.deb
 ```
 
 "Zero Bot" then appears in the launcher within a few seconds. To build the package yourself
