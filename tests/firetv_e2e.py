@@ -876,6 +876,24 @@ def starting_tests(m, tv):
     rc, out, err, elapsed = tv.apply({"on": True}, deadline=2500)
     check("a DIAL wake that reached the TV and is never answered: read as starting up, so on=true is done (0.4.4)",
           rc == 0 and elapsed < 2.9, (rc, err, elapsed))
+    # Only a request that went out and was still unanswered, its connection open, when its time ran
+    # out reads as a wake taken late. One closed, reset or answered with something that is not HTTP
+    # was not taken: another service on that port at the TV's address does that with a plain HTTP
+    # request (review of 0.4.4: these read as done, and the next command as "starting"). As in
+    # 0.4.3: not serving, nothing woken, and the next command's silence is not "starting".
+    for mode in ("close", "reset", "garbage"):
+        m.reset(state="hung", caps="tv", faults={"POST /apps/FireTVRemote": mode})
+        first, rc, err, elapsed = tv.apply_twice({"on": True}, 200, then={"key": "home"})
+        st = m.stats()
+        check("a DIAL request answered '%s', not taken: on=true fails (not serving); the next command's silence is not 'starting'"
+              % mode, first == "not_serving" and rc == 1 and fault(err) == "not_serving" and
+              "may still have been carried out" in err and st["dial_posts"] >= 1 and st["wakes"] == 0,
+              (first, rc, err, st["dial_posts"], st["wakes"]))
+    m.reset(state="idle", caps="tv", faults={"POST /apps/FireTVRemote": "close"})
+    rc, out, err, elapsed = tv.apply({"on": True, "source": "Netflix"})
+    st = m.stats()
+    check("a DIAL request closed unanswered, on and an app at once: not serving (not 'starting'), no app opened",
+          rc == 1 and fault(err) == "not_serving" and st["launched"] == [] and st["wakes"] == 0, (rc, err, st["launched"]))
     nomac = Tv(m, info={"wakeup": None})
     nomac.set_auth({k: v for k, v in tv.auth().items() if k != "wake_mac"})
     m.reset(state="gone", caps="tv")

@@ -1647,7 +1647,10 @@ private:
     // some seconds later and may meanwhile accept connections without answering (the owner's TV
     // did so for longer than the app's 2.5 s), so power alone is done then, whatever the wait for
     // the API finds, except a key that changed and could not be accepted (detail::power_on_done).
-    // The rest of a change needs the API. (Departure: firehose waits for the API either way.)
+    // The rest of a change needs the API. (Departure: firehose waits for the API either way.) A
+    // DIAL request that went out and was still unanswered, its connection open, when its time ran
+    // out counts as taken too (the owner's TV from deep standby answered later than 2.5 s and came
+    // on); one closed, reset or answered with something that is not HTTP does not.
     //
     // When nothing answers, the verdict rests on the latest DIAL request, never on the clock
     // alone. A TV in deep standby comes on 6.5-7.4 s after the first magic packet (measured), so
@@ -1673,7 +1676,7 @@ private:
         const std::string mac = wake_mac_of(dev);
         std::optional<Clock::time_point> origin = remembered_wake(who);   // the first packet of this attempt to wake it
         std::optional<Clock::time_point> last, evidence;   // the latest request; the latest that fairly showed nothing
-        bool dial_ok = false, dial_refused_by_tv = false, connected = false;
+        bool dial_ok = false, dial_refused_by_tv = false, connected = false, dial_late = false;
         for (int k = 0;; k++) {
             auto at = started + milliseconds(k * kWakeEveryMs);
             bool final = false;
@@ -1706,11 +1709,16 @@ private:
                 dial_refused_by_tv = true;
                 break;
             }
+            // Went out, then the time ran out with the connection still open: a TV taking the wake
+            // slowly. A connection closed or reset without an answer, or answered with something
+            // that is not HTTP, is not that: whatever took it did not take the wake (another
+            // service on this port at the TV's address does so with a plain HTTP request).
+            if (d.connected && d.sent && d.rc == CURLE_OPERATION_TIMEDOUT) dial_late = true;
             if (budget >= kMinTryMs) evidence = begun;   // a request with almost no time proves nothing
             if (final) break;
         }
         if (dial_ok || dial_refused_by_tv || connected) wakes_.forget(who);   // it is on the network
-        if (!dial_ok && !dial_refused_by_tv && connected) {
+        if (!dial_ok && !dial_refused_by_tv && dial_late) {
             // The DIAL request reached the TV, whose answer did not come within the deadline. From
             // deep standby the owner's TV answered later than the 2.5 s a change has, and came on all
             // the same (twice on 2026-11-18); "not replying" then made the assistant offer an infrared
@@ -1725,7 +1733,7 @@ private:
         if (!dial_ok) {
             if (dial_refused_by_tv)
                 err = kNotServing;
-            else if (connected)   // accepted, then said nothing: while the TV is starting up, that is why
+            else if (connected)   // accepted, then closed, reset or not answered in HTTP (or never sent)
                 err = detail::woken_error(Woken::NotServing, s.starting());
             else if (!origin)
                 err = std::string(kNoAnswer) + " It may be off or unplugged.";
