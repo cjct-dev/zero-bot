@@ -100,6 +100,7 @@ void screen_on(int percent) {
         g_off = false;
         lv_display_t *disp = lv_display_get_default();
         lv_display_enable_invalidation(disp, true);
+        // LVGL's own refresh again (the fbdev, SDL and headless displays all use it unchanged).
         if (lv_timer_t *t = lv_display_get_refr_timer(disp)) lv_timer_set_cb(t, lv_display_refr_timer);
         if (g_cover) lv_obj_add_flag(g_cover, LV_OBJ_FLAG_HIDDEN);
         lv_obj_invalidate(lv_screen_active());        // whatever changed meanwhile was not marked
