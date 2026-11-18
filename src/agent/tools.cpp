@@ -197,8 +197,9 @@ bool geocode(const std::string &query, Place &out, std::string &err, Context &ct
         return false;
     }
     const json &r = j["results"][pick];
-    out.name = jget(r, "name", query);
-    out.country = jget(r, "country", std::string());
+    // Names from the network are data for the model: no control characters, and short.
+    out.name = util::truncate_utf8(clean_text(jget(r, "name", query)), 80);
+    out.country = util::truncate_utf8(clean_text(jget(r, "country", std::string())), 60);
     out.timezone = jget(r, "timezone", std::string());
     out.lat = jget(r, "latitude", 0.0);
     out.lon = jget(r, "longitude", 0.0);
@@ -656,8 +657,8 @@ std::string t_web_search(const json &a, Context &ctx) {
     json results = json::array();
     if (j.contains("results") && j["results"].is_array()) {
         for (const json &r : j["results"]) {
-            results.push_back({{"title", jget(r, "title", std::string())},
-                               {"source", jget(r, "url", std::string())},
+            results.push_back({{"title", util::truncate_utf8(clean_text(jget(r, "title", std::string())), 200)},
+                               {"source", util::truncate_utf8(jget(r, "url", std::string()), 300)},
                                {"text", util::truncate_utf8(jget(r, "content", std::string()), 500)}});
             if (results.size() >= 4) break;
         }
@@ -765,10 +766,10 @@ std::string t_stock(const json &a, Context &ctx) {
     const json &m = j["chart"]["result"][0]["meta"];
     const double price = jget(m, "regularMarketPrice", 0.0);
     const double prev = jget(m, "chartPreviousClose", jget(m, "previousClose", 0.0));
-    json out = {{"symbol", jget(m, "symbol", symbol)},
-                {"name", jget(m, "longName", jget(m, "shortName", name))},
+    json out = {{"symbol", util::truncate_utf8(clean_text(jget(m, "symbol", symbol)), 20)},
+                {"name", util::truncate_utf8(clean_text(jget(m, "longName", jget(m, "shortName", name))), 100)},
                 {"price", price}, {"currency", jget(m, "currency", std::string())},
-                {"exchange", jget(m, "fullExchangeName", jget(m, "exchangeName", std::string()))},
+                {"exchange", util::truncate_utf8(clean_text(jget(m, "fullExchangeName", jget(m, "exchangeName", std::string()))), 60)},
                 {"day_high", jget(m, "regularMarketDayHigh", 0.0)}, {"day_low", jget(m, "regularMarketDayLow", 0.0)},
                 {"year_high", jget(m, "fiftyTwoWeekHigh", 0.0)}, {"year_low", jget(m, "fiftyTwoWeekLow", 0.0)}};
     const long long when = jget<long long>(m, "regularMarketTime", 0);
