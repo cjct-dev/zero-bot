@@ -123,6 +123,18 @@ static void test_signing() {
     check("a file without the key", !parse_key("{\"homes\":[{\"name\":\"x\"}]}", k));
     check("a key of the wrong type in the file", !parse_key("{\"udp_signing_key\":12345}", k));
     check("deeply nested paste does not crash", !parse_key(std::string(5000, '[') + std::string(5000, ']'), k));
+    // An export of several homes: their keys differ, and the one try is not spent on a guess.
+    bool several = false;
+    check("two homes, two keys: refused, and said why",
+          !parse_key("{\"homes\":[{\"name\":\"Mine\",\"udp_signing_key\":\"00112233445566778899aabbccddeeff\"},"
+                     "{\"name\":\"Theirs\",\"udp_signing_key\":\"ffeeddccbbaa99887766554433221100\"}]}", k, &several) && several);
+    check("two homes with the same key (written differently): that key",
+          parse_key("{\"homes\":[{\"udp_signing_key\":\"00112233445566778899aabbccddeeff\"},"
+                    "{\"udp_signing_key\":\"0011 2233 4455 6677 8899 AABB CCDD EEFF\"}]}", k, &several) && k == key && !several);
+    check("a home without a key beside one with a key: that key",
+          parse_key("{\"homes\":[{\"name\":\"x\"},{\"udp_signing_key\":\"00112233445566778899aabbccddeeff\"}]}", k, &several) &&
+              k == key && !several);
+    check("a plain key is never 'several'", parse_key("00112233445566778899aabbccddeeff", k, &several) && !several);
 }
 
 static void test_models() {
