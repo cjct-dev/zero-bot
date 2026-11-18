@@ -166,7 +166,7 @@ What exists:
 - **WiZ end to end**: `tests/wiz_e2e.py` runs `build/unit/wiz_cli` (built by `run_unit.sh`) and the
   `cli` build against `tests/mocks/wiz/mock_wiz.py` (eleven models, lost datagrams, firmware that
   signs): exact setPilot params, resends, deadlines, and a refused signing key sent once only, all
-  checked from the simulated device's side. About 10 s.
+  checked from the simulated device's side. About 15 s.
 - **Code ported from other projects** keeps their notices in the source file and in
   `licenses/THIRD-PARTY-NOTICES.md`, which the package installs; add to it with any new port.
 - **The request loop, scripted**: `tests/home_chat_e2e.py` runs `build/cli/zero_bot --chat` against
