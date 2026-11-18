@@ -49,7 +49,8 @@ for src in $APP $TIMERS $RADIO $TOOLS tests/unit/smarthome_test.cpp tests/unit/h
            tests/unit/radio_test.cpp tests/unit/tools_test.cpp tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp \
            tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp tests/unit/hue_test.cpp tests/unit/hue_cli.cpp \
            tests/unit/kasa_test.cpp tests/unit/kasa_cli.cpp tests/unit/wiz_test.cpp tests/unit/wiz_cli.cpp \
-           tests/unit/shelly_test.cpp tests/unit/shelly_cli.cpp src/ui/key_guide.cpp tests/unit/key_guide_test.cpp; do
+           tests/unit/shelly_test.cpp tests/unit/shelly_cli.cpp src/ui/key_guide.cpp tests/unit/key_guide_test.cpp \
+           src/ui/screen_idle.cpp tests/unit/screen_idle_test.cpp; do
     obj=$(obj_of "$src")
     if [ ! -f "$obj" ] || [ "$src" -nt "$obj" ] || [ -n "$newest_header" ]; then
         echo "compiling $src"
@@ -89,6 +90,8 @@ $WRAP $CXX -o "$OUT/shelly_test" "$OUT/tests_unit_shelly_test.o" $objs -lcurl -l
 $WRAP $CXX -o "$OUT/shelly_cli" "$OUT/tests_unit_shelly_cli.o" $objs -lcurl -lcrypto -lpthread
 # What each key does on the chat screen, and the key guide that lists them (no screen needed).
 $WRAP $CXX -o "$OUT/key_guide_test" "$OUT/tests_unit_key_guide_test.o" "$(obj_of src/ui/key_guide.cpp)"
+# When the screen dims and goes off (no screen needed).
+$WRAP $CXX -o "$OUT/screen_idle_test" "$OUT/tests_unit_screen_idle_test.o" "$(obj_of src/ui/screen_idle.cpp)"
 
 failed=0
 echo "=== smart home"
@@ -109,6 +112,8 @@ echo "=== Shelly driver"
 "$OUT/shelly_test" || failed=1
 echo "=== keys"
 "$OUT/key_guide_test" || failed=1
+echo "=== screen off"
+"$OUT/screen_idle_test" || failed=1
 
 echo "=== radio"
 TMPDIR="$state" python3 -I tests/unit/radio_peer.py "$OUT/radio_test" || failed=1

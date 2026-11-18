@@ -122,6 +122,10 @@ void test_guide_matches_keys() {
         check(all.count(anywhere + ": " + k) == 1, std::string("the keys that work everywhere include ") + k);
     for (const char *k : {"F  X", "Z  C", "ENTER", "ESC  del", "SPACE  TAB"})
         check(all.count(settings + ": " + k) == 1, std::string("the keys in settings include ") + k);
+    // Any key wakes a screen that has gone off (and does nothing else), and the guide says so.
+    bool wakes = false;
+    for (const keyguide::Row &r : sections[1].rows) wakes = wakes || (r.keys == "any key" && r.action.find("screen") != std::string::npos);
+    check(wakes, "the keys that work everywhere say that any key turns the screen back on");
     // TAB twice still opens settings, and the guide says so beside SPACE.
     for (const keyguide::Row &r : sections.front().rows)
         if (r.keys == "SPACE") check(r.action.find("TAB twice") != std::string::npos, "SPACE's line mentions TAB twice");

@@ -26,6 +26,7 @@
 #include "platform/ir.h"
 #include "platform/proc.h"
 #include "ui/key_guide.h"
+#include "ui/screen_idle.h"
 
 namespace ui {
 
@@ -1127,6 +1128,11 @@ void open_settings(Menu &menu, const SettingsHooks &hooks) {
         items.push_back(MenuItem::val("Brightness", [] { return std::to_string(S().brightness) + "%"; }, nullptr, [](int dir) {
             S().brightness = clampi(S().brightness + dir * 10, 10, 100);
             display::set_brightness(S().brightness);
+            S().save();
+        }));
+        // Against burn-in: after this long unused the screen goes off; any key wakes it (screen_idle.h).
+        items.push_back(MenuItem::val("Screen off after", [] { return screen::off_label(S().screen_off_min); }, nullptr, [](int dir) {
+            S().screen_off_min = screen::step_off_choice(S().screen_off_min, dir);
             S().save();
         }));
         items.push_back(MenuItem::val("Microphone gain", [] { return std::to_string(S().mic_gain) + "%"; }, nullptr, [](int dir) {
