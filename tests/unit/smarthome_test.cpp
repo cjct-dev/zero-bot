@@ -1499,6 +1499,44 @@ void test_fanout() {
     if (code == 2) printf("      (thread limit not enforced here: the jobs ran on threads)\n");
 }
 
+// A device that stalls (it takes the time given and does not answer) is asked once for a command
+// on several of its things, not once per thing; one that fails at once is asked for each, as
+// before (a bridge can say one lamp is out of reach and switch the next).
+void test_stalled_device() {
+    Section s("a stalled device is asked once for all its things in one command");
+    g_fake->reset();
+    write_home(lights_home());
+    auto applies = [] {
+        std::lock_guard<std::mutex> lk(g_fake->mtx);
+        return std::count(g_fake->calls.begin(), g_fake->calls.end(), std::string("apply fake:bridge"));
+    };
+    g_fake->broken = {"fake:bridge"};
+    g_fake->call_ms = 1400;                       // most of the 2.5 s, then no answer
+    const auto t0 = std::chrono::steady_clock::now();
+    std::string r = run({{"action", "on"}, {"target", "all lights"}});
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    CHECK_MSG(applies() == 1, std::to_string(applies()));   // 5 lights on it: 7 s before
+    CHECK_MSG(secs < 2.5, std::to_string(secs));
+    CHECK_MSG(starts(r, "ERROR: none of \"all lights\" could be changed") && has(r, "did not answer"), r);
+    // Each thing on its own command is asked, as ever.
+    g_fake->calls.clear();
+    run({{"action", "on"}, {"target", "Floor lamp"}});
+    CHECK_MSG(applies() == 1, std::to_string(applies()));
+    // Failing at once: each thing is asked.
+    g_fake->calls.clear();
+    g_fake->call_ms = 0;
+    r = run({{"action", "on"}, {"target", "all lights"}});
+    CHECK_MSG(applies() == 5, std::to_string(applies()));
+    // An answer that is a refusal, however slow, is not "stalled": each thing is asked.
+    g_fake->broken.clear();
+    g_fake->refusing["fake:bridge"] = "the bridge said that lamp is switched off at the wall";
+    g_fake->calls.clear();
+    g_fake->call_ms = 1400;
+    run({{"action", "off"}, {"target", "Bedroom"}});
+    CHECK_MSG(applies() == 2, std::to_string(applies()));
+    g_fake->reset();
+}
+
 // ---------------------------------------------------------------- pairing
 void test_pairing() {
     Section s("pairing: steps from the driver, a refusal reported and not repeated, secrets kept out of results");
@@ -2971,6 +3009,7 @@ int main(int argc, char **argv) {
     test_question_words();
     test_rate_limits();
     test_fanout();
+    test_stalled_device();
     test_pairing();
     test_tapo_driver();
     test_stand_in();
