@@ -55,9 +55,9 @@ src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast); driver.h, the con
 src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
                     pages, the keys and their guide (key_guide), breathing screen, alarm banner, theme
 tests/              scored agent test set (needs a live service), device-free unit tests
-                    (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit, Hue, keys,
-                    radio, tools), Tapo, Fire TV, HomeKit and Hue end to end (tapo_e2e.py,
-                    firetv_e2e.py, homekit_e2e.py, hue_e2e.py),
+                    (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit, Hue, Kasa,
+                    keys, radio, tools), Tapo, Fire TV, HomeKit, Hue and Kasa end to end
+                    (tapo_e2e.py, firetv_e2e.py, homekit_e2e.py, hue_e2e.py, kasa_e2e.py),
                     the loop against a scripted chat service (home_chat_e2e.py, agent_loop_test.py,
                     and selfheal_chat_e2e.py for failures), the generated request set (suite/,
                     agent_suite.py), golden screenshots (shots_compare.py, golden/shots/),
@@ -175,8 +175,9 @@ What exists:
   `tests/unit/smarthome_test.cpp` (store and migration, names and rooms, schema snapshots in
   `tests/snapshots/`, the safety questions, rate limits, locking, pairing, the Tapo driver's
   refusals, colours, discovery from sample packets through `discovery::devices_from`; devices are
-  a fake driver), `tests/unit/firetv_test.cpp` and `tests/unit/homekit_test.cpp` (each driver's
-  known answers; Fire TV's test certificates are in `tests/mocks/firetv/`),
+  a fake driver), `tests/unit/firetv_test.cpp`, `tests/unit/homekit_test.cpp` and
+  `tests/unit/kasa_test.cpp` (each driver's known answers; Fire TV's test certificates are in
+  `tests/mocks/firetv/`),
   `tests/unit/hue_test.cpp` (the Hue driver's known answers: certificate pins, colours, resource
   shapes, refusals kept in the secrets; its test certificates are in `tests/mocks/hue/certs/`),
   `tests/unit/http_test.cpp` (the request
@@ -205,6 +206,11 @@ What exists:
   against a simulated Hue Bridge (`tests/mocks/hue/mock_hue.py`): link-button pairing, the pinned
   key, rooms as one call, refusals kept across runs, hostile answers; then the `cli` build against
   it on `ZB_TEST_NETWORK` (about two minutes; `HUE_E2E_ONLY=test_groups,...` runs some groups).
+- **Kasa end to end**: `tests/kasa_e2e.py` runs `build/unit/kasa_cli` against
+  `tests/mocks/kasa/mock_kasa.py` (plugs, a strip, a dimmer, bulbs, a camera and a plug moved to the
+  newer login): discovery answers, every kind of change, meters, hostile answers; then, when it is
+  built, `build/cli/zero_bot` on `ZB_TEST_NETWORK` against the same devices. Checked from the
+  devices' side.
 - **Code ported from other projects** keeps their notices in the source file and in
   `licenses/THIRD-PARTY-NOTICES.md`, which the package installs; add to it with any new port.
 - **The request loop, scripted**: `tests/home_chat_e2e.py` runs `build/cli/zero_bot --chat` against
@@ -410,6 +416,10 @@ key, real audio), say so plainly rather than implying it was.
 - Smart-home discovery uses only what the devices' own apps use (mDNS, SSDP, the vendor's
   broadcast). No address sweeps, no port scans, opt-in per network with a warning. "This
   network" is the SSID plus the router's hardware address, not the SSID alone.
+- A change to discovery's ranking can give a saved device a new id (a Kasa EP25 saved as a
+  HomeKit accessory now answers as Kasa). The new record must not reopen what the user closed on
+  the old one ("Assistant may use it" off, "Ask before switching on"): `remember_scan` adds a
+  record whose MAC another record already has with the assistant's use switched off.
 - Before promising a device can be controlled, check whether it has a local interface at all.
   Several popular products are cloud-only.
 - The keyboard's three lights (caps lock, fn, symbols) have no kernel interface: the keypad takes no

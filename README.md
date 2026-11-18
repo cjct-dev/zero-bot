@@ -320,8 +320,20 @@ device directly: nothing goes through the makers' cloud services. Supported so f
   button again to confirm. *Unpair* makes Zero Bot forget the bridge's key, but the bridge itself
   goes on accepting that key until it is removed in the Hue app; do that too if the handheld is
   lost. Tested so far only against a simulated bridge.
+- **TP-Link Kasa** plugs, power strips, wall switches, dimmers, bulbs and light strips that use
+  Kasa's older local protocol (models such as HS100, HS103, HS110, KP115, HS200, HS220, HS300,
+  KP303, KL130 and KL430). They need no account and no setting up: Zero Bot switches them on and
+  off (each socket of a strip on its own), dims dimmers and bulbs, sets a bulb's colour or shade of
+  white, and reads the power and today's energy on models that measure it. TP-Link has been moving
+  Kasa devices to the newer login that Tapo plugs use with firmware updates; Zero Bot cannot use
+  that login with these devices, and says so for one that has moved (the Kasa app still controls
+  it). Newer Kasa models made on Tapo's system are listed as Tapo devices (untested). The older
+  protocol has no password at all, so before each change Zero Bot asks the device at the saved
+  address which device it is: when the router has given that address to another Kasa device,
+  nothing is switched and the device is looked for again. TP-Link does not document the protocol.
+  Tested so far only against simulated devices.
 
-Other families (Shelly, WiZ, Kasa and more) are added one driver at a time.
+Other families (Shelly, WiZ and more) are added one driver at a time.
 
 1. On your home network, open *Your data → Smart home → Find devices on this network*. Only do
    this on a network you own. The scan only asks devices to identify themselves, the way the
@@ -341,14 +353,18 @@ Other families (Shelly, WiZ, Kasa and more) are added one driver at a time.
    too many wrong codes. A Hue Bridge says "Press the round button on the Hue Bridge, then confirm
    here. Zero Bot keeps trying to connect for 30 seconds."; press it, then choose *I have pressed
    it*. If the bridge later stops accepting Zero Bot (it was removed in the Hue app), nothing more
-   is sent to it, by any later run either, until you set it up again with the button.
+   is sent to it, by any later run either, until you set it up again with the button. Older Kasa
+   devices ask for nothing.
 3. What each device controls is then listed by room. On its page you can set the name you will
    say (*Called*), a *Room* (guessed from the name where it starts with one, such as "Bedroom
    lamp"), whether the *Assistant may use it*, and *Ask before switching on*. That last one is on
    by default for anything whose name suggests heat (heater, kettle, iron, …): the assistant then
    asks "Turn on Bed heater?" and switches it only if your very next words are a plain yes ("yes",
    "go ahead", "yes please"). Anything else, including a new request or "leave it off", counts as
-   no. Turn it off for something you use every day.
+   no. Turn it off for something you use every day. A device a scan finds again in another way
+   (a Kasa plug once set up here as a HomeKit accessory) is added as a second entry that the
+   assistant does not use until you turn *Assistant may use it* on for it, so that what you set
+   for the first entry is not bypassed through the second.
 
 A room's name means the lights in that room. Everything can be switched off at once, but not on.
 The assistant also asks first before changing more than eight things at once, before setting
@@ -451,11 +467,12 @@ were called, whether the answers hold up, and how long each took. See the notes 
 the file. `tests/run_unit.sh` builds and runs the tests that need neither a device nor an AI
 service (the smart-home layer, the timers: the timer tool, how timers are stored, the
 countdown and the alarm, the radio: the station file, the radio tool and the check of a stream
-against a pretend radio server, the keys and their guide, and the Fire TV, HomeKit and Hue
+against a pretend radio server, the keys and their guide, and the Fire TV, HomeKit, Hue and Kasa
 drivers), `tests/tapo_e2e.py` runs the
 command-line build against two simulated Tapo plugs, `tests/firetv_e2e.py` and
 `tests/homekit_e2e.py` run those drivers against a simulated TV and a simulated HomeKit bridge,
-`tests/hue_e2e.py` runs the Hue driver and the command-line build against a simulated Hue Bridge, and
+`tests/hue_e2e.py` runs the Hue driver and the command-line build against a simulated Hue Bridge,
+`tests/kasa_e2e.py` runs the Kasa driver and the command-line build against simulated Kasa devices, and
 `tests/home_chat_e2e.py` runs its conversation loop against a scripted chat
 service to check that a change needing your yes waits for one.
 
@@ -496,7 +513,7 @@ src/ui/         chat screen, menus, settings pages, alarm banner, app controller
 src/net/        HTTP client (libcurl)
 src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers
 scripts/        toolchain setup, packaging, deployment
-tests/          scored agent test set, unit tests (smart home, timers, radio, keys, Fire TV, HomeKit, Hue), end-to-end tests with simulated devices
+tests/          scored agent test set, unit tests (smart home, timers, radio, keys, Fire TV, HomeKit, Hue, Kasa), end-to-end tests with simulated devices
 licenses/       third-party notices and the Apache-2.0 text
 packaging/      launcher entry and icon
 extras/         device-tree overlay for the Wi-Fi channel fix

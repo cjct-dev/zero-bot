@@ -24,6 +24,7 @@
 #include "smarthome/color.h"
 #include "smarthome/drivers/homekit.h"
 #include "smarthome/drivers/hue.h"
+#include "smarthome/drivers/kasa.h"
 #include "smarthome/drivers/tapo_driver.h"
 #include "smarthome/home.h"
 #include "smarthome/internal.h"
@@ -2060,6 +2061,220 @@ void test_discovery_hue() {
     CHECK(homekit_driver->claims("homekit", {{"md", "Hub"}, {"ci", "2"}}) && !homekit_driver->claims("homekit", {{"md", "bsb003"}}));
 }
 
+// The older Kasa protocol's scrambling, written again here so that discovery is checked against
+// something other than its own code: each byte XORed with the previous scrambled byte, from 171.
+std::string kasa_scrambled(const std::string &plain) {
+    std::string out;
+    unsigned char key = 171;
+    for (const unsigned char c : plain) out += static_cast<char>(key = static_cast<unsigned char>(key ^ c));
+    return out;
+}
+
+// A 20002 answer: a 16-byte header, then JSON.
+std::string tplink_answer(const std::string &json_text) { return std::string("\x02\x00\x00\x01\x01\x2a\x11\x00", 8) + std::string(8, '\x01') + json_text; }
+
+void test_tplink_discovery() {
+    Section s("discovery: older Kasa answers on 9999, Kasa devices on the newer login, and which driver takes each");
+    auto sysinfo = [](const std::string &fields) { return kasa_scrambled(R"J({"system":{"get_sysinfo":{)J" + fields + R"J(,"err_code":0}}})J"); };
+    auto moved = [](const std::string &type, const std::string &mac) {
+        return tplink_answer(R"J({"error_code":0,"result":{"device_id":"00000000000000000000000000000000","device_model":"HS100(UK)",
+            "device_type":")J" + type + R"J(","mac":")J" + mac + R"J(","owner":"","mgt_encrypt_schm":{"encrypt_type":"KLAP","http_port":80,
+            "is_support_https":false,"lv":2}}})J");
+    };
+    const std::string hap = "_hap._tcp.local";
+    const std::vector<discovery::Packet> heard = {
+        {"kasa", "192.0.2.70", sysinfo(R"J("type":"IOT.SMARTPLUGSWITCH","model":"HS110(UK)","alias":"Kettle\u0007 \"plug\"",
+            "mac":"50:C7:BF:00:00:01","relay_state":1,"latitude_i":515000,"longitude_i":-1000)J")},
+        {"kasa", "192.0.2.71", sysinfo(R"J("mic_type":"IOT.SMARTBULB","model":"KL130(EU)","alias":"","mic_mac":"1C3BF3000006")J")},
+        {"kasa", "192.0.2.72", sysinfo(R"J("type":"IOT.IPCAMERA","model":"KC100(UK)","alias":"Garden","mac":"50:C7:BF:00:00:09")J")},
+        {"tapo", "192.0.2.73", moved("IOT.SMARTPLUGSWITCH", "CC-32-E5-00-00-0A")},
+        {"tapo", "192.0.2.74", moved("SMART.KASAPLUG", "CC-32-E5-00-00-0B")},
+        {"tapo", "192.0.2.76", moved("IOT.SMARTPLUGSWITCH", "CC-32-E5-00-00-0C")},
+        {"mdns", "192.0.2.76", service_answer(hap, "Plug 76", "plug76.local", std::string("\xC0\x00\x02\x4C", 4), {"id=AA:BB:CC:00:00:76", "ci=7", "sf=1"})},
+        {"mdns", "192.0.2.77", service_answer(hap, "Plug 77", "plug77.local", std::string("\xC0\x00\x02\x4D", 4), {"id=AA:BB:CC:00:00:77", "ci=7", "sf=1"})},
+        {"kasa", "192.0.2.77", sysinfo(R"J("type":"IOT.SMARTPLUGSWITCH","model":"EP25(US)","alias":"Lamp","mac":"50:C7:BF:00:00:77")J")},
+        {"tapo", "192.0.2.78", moved("IOT.SMARTPLUGSWITCH", "50-C7-BF-00-00-78")},
+        {"kasa", "192.0.2.78", sysinfo(R"J("type":"IOT.SMARTPLUGSWITCH","model":"HS100(UK)","alias":"Both","mac":"50:C7:BF:00:00:78")J")},
+        // Hostile or foreign datagrams on the Kasa port: none of them is a device.
+        {"kasa", "192.0.2.90", "\x01\x02\x03 not scrambled"},
+        {"kasa", "192.0.2.91", kasa_scrambled(R"J({"system":{"other":{}}})J")},
+        {"kasa", "192.0.2.92", kasa_scrambled(R"J({"system":{"get_sysinfo":)J" + std::string(5000, '[') + std::string(5000, ']') + "}}")},
+        {"kasa", "192.0.2.93", kasa_scrambled(R"J([{"system":{"get_sysinfo":{}}}])J")},
+        {"kasa", "192.0.2.94", ""},
+    };
+    const auto found = discovery::devices_from(heard);
+    auto at = [&](const std::string &ip) -> const discovery::Device * {
+        for (const auto &d : found) if (d.ip == ip) return &d;
+        return nullptr;
+    };
+    auto info = [](const discovery::Device *d, const char *key) {
+        if (!d) return std::string("(no device)");
+        const auto it = d->info.find(key);
+        return it == d->info.end() ? std::string() : it->second;
+    };
+    // What a driver would be handed: the saved form of a discovered device.
+    auto saved = [](const discovery::Device *d) {
+        home::Device dev;
+        if (!d) return dev;
+        dev.id = d->id; dev.kind = d->kind; dev.ip = d->ip; dev.port = d->port; dev.info = d->info;
+        return dev;
+    };
+    auto driver_kind = [&](const discovery::Device *d) {
+        const home::Driver *drv = home::driver_for(saved(d));
+        return std::string(drv ? drv->kind() : "none");
+    };
+    const auto *plug = at("192.0.2.70"), *bulb = at("192.0.2.71"), *camera = at("192.0.2.72"), *klap = at("192.0.2.73"),
+               *kasa_smart = at("192.0.2.74"), *hap_klap = at("192.0.2.76"), *hap_xor = at("192.0.2.77"), *both = at("192.0.2.78");
+    CHECK_MSG(plug && plug->kind == "tplink" && plug->id == "tplink:50:c7:bf:00:00:01" && plug->mac == "50:c7:bf:00:00:01",
+              plug ? plug->kind + " " + plug->id : "no plug");
+    // Discovery drops control characters; quotes go when the name is shown or given to the model.
+    CHECK_MSG(plug && plug->name == "Kettle \"plug\"" && plug->model == "HS110(UK)" && plug->port == 9999, plug ? plug->name : "");
+    CHECK(plug && info(plug, "device_type") == "IOT.SMARTPLUGSWITCH" && info(plug, "scheme") == "XOR");
+    CHECK_MSG(plug && plug->found_by == std::vector<std::string>{"kasa"}, "found by the Kasa query");
+    CHECK_MSG(plug && info(plug, "latitude_i").empty() && info(plug, "longitude_i").empty(), "where a plug is set up is not kept");
+    CHECK_MSG(bulb && bulb->kind == "tplink" && bulb->id == "tplink:1c:3b:f3:00:00:06" && bulb->name == "Kasa KL130(EU)",
+              bulb ? bulb->id + " " + bulb->name : "no bulb");
+    CHECK(camera && camera->kind == "tplink" && info(camera, "device_type") == "IOT.IPCAMERA");
+    CHECK_MSG(klap && klap->kind == "tplink" && info(klap, "scheme") == "KLAP" && klap->id == "tplink:cc:32:e5:00:00:0a" && klap->port == 0,
+              klap ? klap->kind + " " + klap->id + " " + info(klap, "scheme") : "no device");
+    CHECK_MSG(kasa_smart && kasa_smart->kind == "tapo" && info(kasa_smart, "device_type") == "SMART.KASAPLUG",
+              kasa_smart ? kasa_smart->kind : "no device");
+    CHECK_MSG(hap_klap && hap_klap->kind == "homekit", hap_klap ? hap_klap->kind : "no device");
+    CHECK_MSG(hap_xor && hap_xor->kind == "tplink" && hap_xor->name == "Lamp" && hap_xor->id == "tplink:50:c7:bf:00:00:77" &&
+                  hap_xor->port == 9999,
+              hap_xor ? hap_xor->kind + " " + hap_xor->name + " " + hap_xor->id : "no device");
+    CHECK_MSG(both && both->kind == "tplink" && info(both, "scheme") == "XOR" && both->port == 9999 && both->name == "Both",
+              both ? info(both, "scheme") : "no device");
+    for (const char *ip : {"192.0.2.90", "192.0.2.91", "192.0.2.92", "192.0.2.93", "192.0.2.94"}) CHECK_MSG(!at(ip), ip);
+    // An older Kasa answer that gives no MAC takes the address over as Kasa, but not the id of
+    // the HomeKit accessory announced there: a saved, paired HomeKit record would otherwise become
+    // the Kasa driver's (and its Unpair would forget the pairing without telling the accessory).
+    {
+        const auto mixed = discovery::devices_from(
+            {{"mdns", "192.0.2.95", service_answer(hap, "Plug 95", "plug95.local", std::string("\xC0\x00\x02\x5F", 4), {"id=AA:BB:CC:00:00:95", "ci=7", "sf=1"})},
+             {"kasa", "192.0.2.95", sysinfo(R"J("type":"IOT.SMARTPLUGSWITCH","model":"HS100(UK)","alias":"No MAC")J")}});
+        CHECK_MSG(mixed.size() == 1 && mixed[0].kind == "tplink" && mixed[0].id.compare(0, 7, "tplink:") == 0,
+                  mixed.empty() ? "nothing" : mixed[0].kind + " " + mixed[0].id);
+    }
+
+    // A flood of answers from made-up addresses, each padded to the largest datagram: at most 256
+    // are kept, and of each only the few fields used (it once kept every answer whole: 3000 of
+    // them took over 200 MB).
+    {
+        std::string pad;
+        while (pad.size() < 8000) pad += "0,";
+        const std::string padded = sysinfo(R"J("type":"IOT.SMARTPLUGSWITCH","alias":"Flood","mac":"50:C7:BF:00:00:99","pad":[)J" + pad + "0]");
+        std::vector<discovery::Packet> flood;
+        for (int i = 0; i < 300; ++i) flood.push_back({"kasa", "198.18." + std::to_string(i / 250) + "." + std::to_string(i % 250), padded});
+        const auto many = discovery::devices_from(flood);
+        CHECK_MSG(many.size() == 256 && many[0].name == "Flood" && many[0].kind == "tplink", std::to_string(many.size()));
+    }
+
+    // The same plug before and after a firmware update keeps its id, so a later scan updates it.
+    const auto before = discovery::devices_from({{"kasa", "192.0.2.80", sysinfo(R"J("type":"IOT.SMARTPLUGSWITCH","alias":"x","mac":"50:C7:BF:00:00:80")J")}});
+    const auto after = discovery::devices_from({{"tapo", "192.0.2.81", moved("IOT.SMARTPLUGSWITCH", "50-c7-bf-00-00-80")}});
+    CHECK(before.size() == 1 && after.size() == 1 && before[0].id == after[0].id && before[0].id == "tplink:50:c7:bf:00:00:80");
+
+    // Which driver takes each: Kasa the older devices and the moved ones (to say it cannot use
+    // the newer login), Tapo the SMART ones, nobody the camera.
+    CHECK_MSG(driver_kind(plug) == "tplink" && driver_kind(bulb) == "tplink" && driver_kind(klap) == "tplink" &&
+                  driver_kind(hap_xor) == "tplink" && driver_kind(both) == "tplink",
+              driver_kind(plug) + " " + driver_kind(klap));
+    CHECK_MSG(driver_kind(kasa_smart) == "tapo", driver_kind(kasa_smart));
+    CHECK_MSG(driver_kind(camera) == "none", driver_kind(camera));
+    CHECK(home::kind_label(saved(plug)) == "Kasa" && home::kind_label(saved(camera)) == "TP-Link");
+    home::Device old = saved(klap);
+    old.kind = "tapo";   // as a version that filed every 20002 answer under Tapo saved it
+    CHECK_MSG(driver_kind(nullptr) == "none" && std::string(home::driver_for(old) ? home::driver_for(old)->kind() : "none") == "tplink",
+              "a moved Kasa device saved under Tapo goes to the Kasa driver");
+    // The moved device is refused by the Kasa driver without anything being sent (its saved
+    // port, 9, has nothing listening: a driver that tried would report a refused connection).
+    home::Device dev = saved(klap);
+    dev.ip = "127.0.0.1";
+    dev.port = 9;
+    std::vector<home::Thing> things;
+    std::string err;
+    CHECK_MSG(!home::driver_for(dev)->enumerate(dev, things, err) && starts(err, kasa::kNewLogin), err);
+}
+
+// ---------------------------------------------------------------- one device, two records
+// A Kasa EP25 also offers HomeKit. A version without the Kasa driver saved it as a HomeKit
+// accessory, and its owner paired it, called it "Heater" and set it to ask before switching on;
+// the owner also keeps the fridge's plug away from the assistant. Now the plugs answer the older
+// Kasa query, which wins, so a scan finds them under new ids. What was decided about the first
+// records must not be bypassed through the new ones: those start unused by the assistant.
+void test_found_again() {
+    Section s("store: a device already saved under another id starts unused when found again (EP25: HomeKit, then Kasa)");
+    g_fake->reset();
+    // The fake family stands in for HomeKit: its records are controllable, nothing is contacted.
+    json heater = device("fake:hk-heater", {thing("1.9", "Bedroom plug", "plug", home::kPower, "Bedroom", json::object(), true)});
+    heater["mac"] = "AC-15-A2-00-00-01";   // any notation: the neighbour table's, a 20002 answer's
+    heater["things"][0]["alias"] = "Heater";
+    json fridge = device("fake:hk-fridge", {thing("1.9", "Kitchen plug", "plug", home::kPower, "Kitchen")});
+    fridge["mac"] = "ac:15:a2:00:00:02";
+    fridge["things"][0]["enabled"] = false;
+    write_home({heater, fridge});
+    const std::string heater_info = R"J({"mic_type":"IOT.SMARTPLUGSWITCH","model":"EP25(US)","alias":"Bedroom plug","mac":"AC:15:A2:00:00:01","relay_state":0,"err_code":0})J";
+    const std::string fridge_info = R"J({"mic_type":"IOT.SMARTPLUGSWITCH","model":"EP25(US)","alias":"Kitchen plug","mac":"AC:15:A2:00:00:02","relay_state":1,"err_code":0})J";
+    const std::string lamp_info = R"J({"mic_type":"IOT.SMARTPLUGSWITCH","model":"EP25(US)","alias":"Desk lamp","mac":"AC:15:A2:00:00:03","relay_state":0,"err_code":0})J";
+    auto answer = [](const std::string &info) { return kasa_scrambled(R"J({"system":{"get_sysinfo":)J" + info + "}}"); };
+    const std::string hap = "_hap._tcp.local";
+    const auto found = discovery::devices_from({
+        {"mdns", "192.0.2.61", service_answer(hap, "Bedroom plug", "ep25a.local", std::string("\xC0\x00\x02\x3D", 4), {"id=AA:BB:CC:00:00:61", "ci=7", "sf=0"})},
+        {"kasa", "192.0.2.61", answer(heater_info)},
+        {"kasa", "192.0.2.62", answer(fridge_info)},
+        {"kasa", "192.0.2.63", answer(lamp_info)}});
+    CHECK_MSG(found.size() == 3 && std::all_of(found.begin(), found.end(), [](const discovery::Device &d) { return d.kind == "tplink"; }),
+              std::to_string(found.size()));
+    CHECK(home::remember_scan(g_net, found) == 3);
+    // What reading each new record saves (refresh's merge, without contacting anything).
+    const std::map<std::string, std::string> infos = {{"tplink:ac:15:a2:00:00:01", heater_info},
+                                                      {"tplink:ac:15:a2:00:00:02", fridge_info},
+                                                      {"tplink:ac:15:a2:00:00:03", lamp_info}};
+    home::modify_entry(g_net.id(), [&](home::NetworkEntry &e) {
+        for (auto &d : e.devices) {
+            const auto it = infos.find(d.id);
+            if (it == infos.end()) continue;
+            std::vector<home::Thing> fresh;
+            std::string err;
+            kasa::detail::things_from(json::parse(it->second), fresh, err);
+            home::merge_things(d, fresh, time(nullptr));
+        }
+    });
+    const home::NetworkEntry e = home::entry(g_net.id());
+    auto saved = [&](const std::string &id) -> const home::Saved * {
+        for (const auto &d : e.devices) if (d.id == id) return &d;
+        return nullptr;
+    };
+    const home::Saved *kasa_heater = saved("tplink:ac:15:a2:00:00:01"), *kasa_fridge = saved("tplink:ac:15:a2:00:00:02"),
+                      *kasa_lamp = saved("tplink:ac:15:a2:00:00:03");
+    CHECK(kasa_heater && kasa_fridge && kasa_lamp);
+    if (!kasa_heater || !kasa_fridge || !kasa_lamp) return;
+    CHECK_MSG(!kasa_heater->enabled && !kasa_fridge->enabled, "the same plugs under new ids start unused");
+    CHECK_MSG(kasa_lamp->enabled, "a plug saved under no other id is used at once, as before");
+    CHECK_MSG(kasa_heater->things.size() == 1 && kasa_fridge->things.size() == 1, "their things are still read, for the settings page");
+    const auto items = home::catalog(e);
+    auto offered = [&](const std::string &device_id) {
+        return std::any_of(items.begin(), items.end(), [&](const home::Item &i) { return i.device_id == device_id; });
+    };
+    CHECK(!offered(kasa_heater->id) && !offered(kasa_fridge->id) && offered(kasa_lamp->id) && offered("fake:hk-heater"));
+    // The heater is still switched on only after a question, under any name the assistant knows.
+    for (const char *name : {"Heater", "Bedroom plug"}) {
+        const std::string r = home::tool_run({{"action", "on"}, {"target", name}}, true);
+        CHECK_MSG(starts(r, "CONFIRM") || starts(r, "ERROR"), std::string(name) + ": " + r);
+    }
+    // "Everything off" leaves alone the plug the assistant may not use: the heater and the lamp only.
+    const std::string r = home::tool_run({{"action", "off"}, {"target", "everything"}}, true);
+    const json off = json::parse(r, nullptr, false);
+    CHECK_MSG(off.is_object() && off.value("changed", 0) == 2, r);
+    // A scan that finds the same records again leaves them as the user set them.
+    home::set_enabled(g_net.id(), kasa_heater->id, true);
+    home::remember_scan(g_net, found);
+    const home::NetworkEntry again = home::entry(g_net.id());
+    for (const auto &d : again.devices)
+        if (d.id == "tplink:ac:15:a2:00:00:01") CHECK_MSG(d.enabled, "switched on by the user: stays on");
+}
+
 // ---------------------------------------------------------------- names and colours
 void test_names_and_colours() {
     Section s("names and colours");
@@ -2313,6 +2528,7 @@ int main(int argc, char **argv) {
     g_fake = new FakeDriver;
     home::register_driver(std::unique_ptr<home::Driver>(g_fake), "Pretend");
     home::register_driver(make_tapo_driver(), "Tapo");
+    home::register_driver(make_kasa_driver(), "Kasa");
 
     test_migration();
     test_survival();
@@ -2331,6 +2547,8 @@ int main(int argc, char **argv) {
     test_tv_keys();
     test_discovery();
     test_discovery_hue();
+    test_tplink_discovery();
+    test_found_again();
     test_names_and_colours();
     test_moved_devices();
 

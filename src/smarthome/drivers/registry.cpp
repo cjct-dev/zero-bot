@@ -12,6 +12,7 @@
     X(firetv, "Fire TV") \
     X(homekit, "HomeKit") \
     X(hue, "Hue Bridge") \
+    X(kasa, "Kasa") \
     /* end of the list */
 
 #define ZB_DECLARE(family, name) std::unique_ptr<home::Driver> make_##family##_driver();

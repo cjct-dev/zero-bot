@@ -48,6 +48,11 @@ const char *const kKindOrder[] = {"tapo",    "hue_bridge", "sonos",   "fire_tv",
 const unsigned char kTapoQuery[] = {0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
                                     0x00, 0x00, 0x00, 0x00, 0x46, 0x3c, 0xb5, 0xd3};
 
+// Kasa devices on the older protocol answer {"system":{"get_sysinfo":{}}} broadcast to UDP 9999,
+// scrambled with the autokey XOR its TCP form uses (drivers/kasa.h) but without the length.
+const char kKasaQuery[] = R"({"system":{"get_sysinfo":{}}})";
+constexpr int kKasaPort = 9999;
+
 constexpr size_t kMaxPacket = 9000;
 constexpr int kMaxRecords = 200;
 
@@ -62,6 +67,60 @@ std::string clean(const std::string &raw, size_t max = 40) {
 std::string lower_mac(std::string mac) {
     for (char &c : mac) c = c == '-' ? ':' : static_cast<char>(tolower(static_cast<unsigned char>(c)));
     return mac;
+}
+
+// "aa:bb:cc:dd:ee:ff" from six hex pairs written with ':', '-' or nothing between them; "" otherwise.
+std::string normal_mac(const std::string &raw) {
+    std::string hex;
+    for (const char c : raw) {
+        if (c == ':' || c == '-') continue;
+        if (!isxdigit(static_cast<unsigned char>(c)) || hex.size() >= 12) return "";
+        hex += static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    }
+    if (hex.size() != 12) return "";
+    std::string out;
+    for (size_t i = 0; i < 12; i += 2) out += (i ? ":" : "") + hex.substr(i, 2);
+    return out;
+}
+
+// The older Kasa protocol's scrambling: each byte is XORed with the previous scrambled byte,
+// the first with 171.
+std::string kasa_scramble(const std::string &plain) {
+    std::string out(plain.size(), '\0');
+    unsigned char key = 171;
+    for (size_t i = 0; i < plain.size(); ++i) out[i] = static_cast<char>(key ^= static_cast<unsigned char>(plain[i]));
+    return out;
+}
+
+std::string kasa_unscramble(const unsigned char *buf, size_t len) {
+    std::string out(len, '\0');
+    unsigned char key = 171;
+    for (size_t i = 0; i < len; ++i) { out[i] = static_cast<char>(buf[i] ^ key); key = buf[i]; }
+    return out;
+}
+
+// Whether a JSON text nests arrays and objects more than `max` deep (strings skipped): checked
+// before parsing a datagram, so that a hostile one cannot make copying it recurse without end.
+bool json_too_deep(const std::string &t, int max = 32) {
+    int depth = 0;
+    bool in_string = false, escaped = false;
+    for (const char c : t) {
+        if (in_string) {
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == '"') in_string = false;
+        } else if (c == '"') in_string = true;
+        else if (c == '[' || c == '{') { if (++depth > max) return true; }
+        else if (c == ']' || c == '}') --depth;
+    }
+    return false;
+}
+
+// The two families of older Kasa device the Kasa driver switches (plugs, strips, switches and
+// dimmers; bulbs and light strips). Cameras, range extenders and the like are listed, not claimed.
+bool kasa_switched(const std::string &device_type) {
+    const std::string t = util::lower(util::trim(device_type));
+    return t == "iot.smartplugswitch" || t == "iot.smartbulb";
 }
 
 uint64_t fnv1a(const std::string &s) {
@@ -125,6 +184,7 @@ struct Seen {
     std::map<std::string, std::string> a;                            // host -> IPv4
     std::map<std::string, std::string> from;                         // instance -> address the answer came from
     std::map<std::string, json> tapo;                                // address -> discovery result
+    std::map<std::string, json> kasa;                                // address -> get_sysinfo (older Kasa protocol)
     std::map<std::string, std::map<std::string, std::string>> ssdp;  // address -> headers
     std::map<std::string, std::map<std::string, std::string>> dial;  // address -> headers of its DIAL answer
 };
@@ -185,6 +245,28 @@ void parse_tapo(const unsigned char *buf, size_t len, const std::string &src, Se
     const json j = json::parse(buf + 16, buf + len, nullptr, false);
     if (!j.is_object() || !j.contains("result") || !j["result"].is_object()) return;
     seen.tapo[src] = j["result"];
+}
+
+// Addresses kept from 9999 answers during one scan: more than any home has. A flood of answers
+// from made-up addresses must not exhaust a small device's memory, nor its time in merge().
+constexpr size_t kMaxKasaAnswers = 256;
+
+void parse_kasa(const unsigned char *buf, size_t len, const std::string &src, Seen &seen) {
+    if (len == 0 || len > kMaxPacket) return;
+    if (seen.kasa.size() >= kMaxKasaAnswers && !seen.kasa.count(src)) return;
+    const std::string text = kasa_unscramble(buf, len);
+    if (json_too_deep(text)) return;
+    const json j = json::parse(text, nullptr, false);
+    if (!j.is_object() || !j.contains("system") || !j["system"].is_object()) return;
+    const json &sys = j["system"];
+    if (!sys.contains("get_sysinfo") || !sys["get_sysinfo"].is_object()) return;
+    // Only what merge() reads is kept (a whole answer parsed can take many times its size).
+    json keep = json::object();
+    for (const char *key : {"type", "mic_type", "model", "alias", "mac", "mic_mac"}) {
+        const auto it = sys["get_sysinfo"].find(key);
+        if (it != sys["get_sysinfo"].end() && it->is_string()) keep[key] = *it;
+    }
+    seen.kasa[src] = keep;
 }
 
 void parse_ssdp(const char *buf, size_t len, const std::string &src, Seen &seen) {
@@ -312,6 +394,24 @@ std::vector<Device> merge(const Seen &seen) {
 
     for (const auto &t : seen.tapo) {
         const json &r = t.second;
+        const std::string device_type = clean(util::jget(r, "device_type", std::string()));
+        if (util::lower(device_type).compare(0, 4, "iot.") == 0) {
+            // A Kasa device that moved to the newer login (KLAP) with a firmware update. Its
+            // commands are still the older protocol's, which the Tapo driver does not send: it
+            // is the Kasa driver's, which tells the user it cannot use that login. It ranks below
+            // HomeKit, so one that also announces HomeKit is offered as HomeKit, which can switch it.
+            Device &d = take(t.first, "tplink", "tapo");
+            if (d.kind != "tplink") continue;
+            d.model = clean(util::jget(r, "device_model", std::string()));
+            d.name = "Kasa " + d.model;
+            d.mac = normal_mac(util::jget(r, "mac", std::string()));
+            if (!d.mac.empty()) d.id = "tplink:" + d.mac;   // the same id as its 9999 answer gave
+            d.port = 0;
+            d.info["device_type"] = device_type;
+            if (r.contains("mgt_encrypt_schm") && r["mgt_encrypt_schm"].is_object())
+                d.info["scheme"] = clean(util::jget(r["mgt_encrypt_schm"], "encrypt_type", std::string()));
+            continue;
+        }
         Device &d = take(t.first, "tapo", "tapo");
         d.model = clean(util::jget(r, "device_model", std::string()));
         d.name = "Tapo " + d.model;
@@ -325,6 +425,29 @@ std::vector<Device> merge(const Seen &seen) {
             d.port = util::jget(enc, "http_port", 80);
         }
         if (r.contains("tpap") && r["tpap"].is_object()) d.info["tpap"] = r["tpap"].dump();
+    }
+
+    // Answers to the older Kasa query come last: a device that gives one speaks the open protocol,
+    // which needs no pairing, so it is a Kasa device whatever else it announced (some also offer
+    // HomeKit) and whatever its 20002 answer said. Kinds the Kasa driver does not switch keep the
+    // usual ranking.
+    for (const auto &k : seen.kasa) {
+        const json &s = k.second;
+        std::string device_type = clean(util::jget(s, "type", std::string()));
+        if (device_type.empty()) device_type = clean(util::jget(s, "mic_type", std::string()));
+        Device &d = take(k.first, "tplink", "kasa");
+        if (kasa_switched(device_type)) d.kind = "tplink";
+        if (d.kind != "tplink") continue;
+        d.model = clean(util::jget(s, "model", std::string()));
+        const std::string alias = clean(util::jget(s, "alias", std::string()));
+        d.name = alias.empty() ? "Kasa " + d.model : alias;
+        std::string mac = normal_mac(util::jget(s, "mac", std::string()));
+        if (mac.empty()) mac = normal_mac(util::jget(s, "mic_mac", std::string()));   // bulbs
+        if (!mac.empty()) { d.mac = mac; d.id = "tplink:" + mac; }
+        else if (d.id.compare(0, 7, "tplink:") != 0) d.id.clear();   // not another kind's id: made below from the address
+        d.port = kKasaPort;
+        d.info["device_type"] = device_type;
+        d.info["scheme"] = "XOR";   // it answered the older protocol, so that is what it speaks
     }
 
     for (const auto &s : seen.ssdp) {
@@ -393,6 +516,7 @@ std::vector<Device> devices_from(const std::vector<Packet> &packets) {
         if (p.proto == "mdns") parse_mdns(bytes, p.bytes.size(), p.src, seen);
         else if (p.proto == "ssdp") parse_ssdp(p.bytes.data(), p.bytes.size(), p.src, seen);
         else if (p.proto == "tapo") parse_tapo(bytes, p.bytes.size(), p.src, seen);
+        else if (p.proto == "kasa") parse_kasa(bytes, p.bytes.size(), p.src, seen);
     }
     return merge(seen);
 }
@@ -538,6 +662,7 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
     const int m_direct = udp_socket(local, 0, false);
     const int ssdp = udp_socket(local, 0, false);
     const int tapo = udp_socket(local, 0, false);
+    const int kasa = udp_socket(local, 0, false);
     if (m_direct < 0 && tapo < 0) { err = "Could not open a network socket."; return false; }
     if (m_group >= 0) {
         ip_mreq join{};
@@ -561,10 +686,13 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
         send_to(m_group, q_group.data(), q_group.size(), "224.0.0.251", 5353);
         send_to(m_direct, q_direct.data(), q_direct.size(), "224.0.0.251", 5353);
     };
+    const std::string kasa_query = kasa_scramble(kKasaQuery);
     auto ask_tapo = [&] {
         // Some access points pass only one of the two forms of broadcast.
         send_to(tapo, kTapoQuery, sizeof(kTapoQuery), "255.255.255.255", 20002);
         send_to(tapo, kTapoQuery, sizeof(kTapoQuery), net.broadcast.c_str(), 20002);
+        send_to(kasa, kasa_query.data(), kasa_query.size(), "255.255.255.255", kKasaPort);
+        send_to(kasa, kasa_query.data(), kasa_query.size(), net.broadcast.c_str(), kKasaPort);
     };
     auto ask_ssdp = [&] {
         send_to(ssdp, search.data(), search.size(), "239.255.255.250", 1900);
@@ -584,10 +712,10 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
         if (elapsed >= opt.listen_ms || (opt.cancel && *opt.cancel)) break;
         for (auto &s : steps)
             if (!s.done && elapsed >= s.at_ms) { s.run(); s.done = true; }
-        pollfd fds[4] = {{m_group, POLLIN, 0}, {m_direct, POLLIN, 0}, {ssdp, POLLIN, 0}, {tapo, POLLIN, 0}};
-        if (poll(fds, 4, 100) <= 0) continue;
+        pollfd fds[5] = {{m_group, POLLIN, 0}, {m_direct, POLLIN, 0}, {ssdp, POLLIN, 0}, {tapo, POLLIN, 0}, {kasa, POLLIN, 0}};
+        if (poll(fds, 5, 100) <= 0) continue;
         bool news = false;
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < 5; ++i) {
             if (fds[i].fd < 0 || !(fds[i].revents & POLLIN)) continue;
             for (int burst = 0; burst < 64; ++burst) {
                 sockaddr_in from{};
@@ -605,7 +733,8 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
                 const size_t len = static_cast<size_t>(n);
                 if (i <= 1) parse_mdns(buf.data(), len, src, seen);
                 else if (i == 2) parse_ssdp(reinterpret_cast<const char *>(buf.data()), len, src, seen);
-                else parse_tapo(buf.data(), len, src, seen);
+                else if (i == 3) parse_tapo(buf.data(), len, src, seen);
+                else parse_kasa(buf.data(), len, src, seen);
                 news = true;
             }
         }
@@ -613,7 +742,7 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
             for (const Device &d : merge(seen))
                 if (told.insert(d.id).second) opt.on_device(d);
     }
-    for (const int fd : {m_group, m_direct, ssdp, tapo})
+    for (const int fd : {m_group, m_direct, ssdp, tapo, kasa})
         if (fd >= 0) close(fd);
     out = merge(seen);
     return true;

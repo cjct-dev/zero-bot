@@ -1,11 +1,11 @@
 #!/bin/sh
 # Device-free unit tests: the smart-home layer (store, names, schema, safety rules, locking,
-# pairing, the Tapo driver's refusals, colours), the HTTP options for devices, the timers (the
-# timer tool, storage, the countdown, the alarm and its player), the radio (the station file,
-# the tool, the check of a stream, the player's live mode), the keys (what each does on the
-# chat screen, and the key guide) and what the other tools stand on (calculator, dates, time
-# zones, helper programs). Nothing but 127.0.0.1 is contacted, and no AI service, sound or screen
-# is needed.
+# pairing, the Tapo driver's refusals, colours), the drivers' own tests (Fire TV, HomeKit, Hue,
+# Kasa), the HTTP options for devices, the timers (the timer tool, storage, the countdown, the
+# alarm and its player), the radio (the station file, the tool, the check of a stream, the
+# player's live mode), the keys (what each does on the chat screen, and the key guide) and what
+# the other tools stand on (calculator, dates, time zones, helper programs). Nothing but
+# 127.0.0.1 is contacted, and no AI service, sound or screen is needed.
 #
 #   tests/run_unit.sh                   build into build/unit and run
 #   ZB_UPDATE_SNAPSHOTS=1 tests/run_unit.sh    rewrite tests/snapshots/*.json from the current schema
@@ -48,7 +48,7 @@ newest_header=$(find src -name '*.h' -newer "$OUT/.stamp" 2>/dev/null | head -n 
 for src in $APP $TIMERS $RADIO $TOOLS tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp \
            tests/unit/radio_test.cpp tests/unit/tools_test.cpp tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp \
            tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp tests/unit/hue_test.cpp tests/unit/hue_cli.cpp \
-           src/ui/key_guide.cpp tests/unit/key_guide_test.cpp; do
+           tests/unit/kasa_test.cpp tests/unit/kasa_cli.cpp src/ui/key_guide.cpp tests/unit/key_guide_test.cpp; do
     obj=$(obj_of "$src")
     if [ ! -f "$obj" ] || [ "$src" -nt "$obj" ] || [ -n "$newest_header" ]; then
         echo "compiling $src"
@@ -77,6 +77,9 @@ $WRAP $CXX -o "$OUT/homekit_cli" "$OUT/tests_unit_homekit_cli.o" $objs -lcurl -l
 # The same for the Hue driver (tests/hue_e2e.py drives hue_cli).
 $WRAP $CXX -o "$OUT/hue_test" "$OUT/tests_unit_hue_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/hue_cli" "$OUT/tests_unit_hue_cli.o" $objs -lcurl -lcrypto -lpthread
+# The same for the Kasa driver (tests/kasa_e2e.py drives kasa_cli).
+$WRAP $CXX -o "$OUT/kasa_test" "$OUT/tests_unit_kasa_test.o" $objs -lcurl -lcrypto -lpthread
+$WRAP $CXX -o "$OUT/kasa_cli" "$OUT/tests_unit_kasa_cli.o" $objs -lcurl -lcrypto -lpthread
 # What each key does on the chat screen, and the key guide that lists them (no screen needed).
 $WRAP $CXX -o "$OUT/key_guide_test" "$OUT/tests_unit_key_guide_test.o" "$(obj_of src/ui/key_guide.cpp)"
 
@@ -91,6 +94,8 @@ echo "=== HomeKit driver"
 "$OUT/homekit_test" || failed=1
 echo "=== Hue driver"
 "$OUT/hue_test" tests/mocks/hue || failed=1
+echo "=== Kasa driver"
+"$OUT/kasa_test" || failed=1
 echo "=== keys"
 "$OUT/key_guide_test" || failed=1
 
