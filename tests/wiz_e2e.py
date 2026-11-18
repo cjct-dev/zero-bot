@@ -330,6 +330,10 @@ def signed_tests():
               rc == 1 and "did not accept the signing key" in err and len(dev.requests("setPilot")) == 1, (err, len(dev.requests("setPilot"))))
     p = dev.stats()["pilot"]
     check("the device was not changed", p["state"] is False, p)
+    rc, out, err = st.run("read")
+    rc, out, err = st.run("enumerate")
+    check("nor is the refused key used for reads: one signed request in all, of any kind",
+          [r["method"] for r in dev.requests() if r["signed"]] == ["setPilot"], [r["method"] for r in dev.requests() if r["signed"]])
 
     export = json.dumps({"homes": [{"name": "Home", "udp_signing_key": KEY.upper()}]})
     rc, out, err = st.run("pair", export)
@@ -455,8 +459,8 @@ def app_tests():
     check("app: the refusal is kept in the file", app.load()["secrets"]["wiz"].get("refused") is True, app.load()["secrets"])
     app.tool({"action": "on", "target": "WiZ light 0001"})
     app.run("--home-refresh")
-    check("app: a later run sends the refused key neither for a change nor for a refresh", len(signed.requests("setPilot")) == 1,
-          len(signed.requests("setPilot")))
+    check("app: a later run sends the refused key neither for a change nor for a refresh", len(signed.requests("setPilot")) == 1 and
+          [r["method"] for r in signed.requests() if r["signed"]] == ["setPilot"], [r["method"] for r in signed.requests() if r["signed"]])
     root = app.load()
     root["secrets"]["wiz"] = {"signing_key": KEY}
     app.save(root)
@@ -473,10 +477,64 @@ def app_tests():
     check("no key appears in anything the app printed", not leaked, leaked)
 
 
+def moved_tests():
+    """The router gives a saved device's address to another WiZ device (it lost its leases when it
+    restarted): a command for the light must not switch the plug that now answers there."""
+    if not os.access(CLI, os.X_OK) or not os.access(APP, os.X_OK):
+        return
+    light, plug = Mock("rgb"), Mock("socket")
+    st = State(light)
+    root = st.load()
+    root["device"]["id"] = "wiz:a8bb5006033d"   # as discovery names it: by the MAC it reported
+    with open(st.path, "w") as f:
+        json.dump(root, f)
+    rc, out, err = st.run("enumerate")
+    check("moved: the light listed at its own address", rc == 0 and "light" in st.things(), (rc, err))
+    root = st.load()
+    root["device"]["port"] = plug.port
+    with open(st.path, "w") as f:
+        json.dump(root, f)
+    rc, out, err = st.run("apply", "light", '{"on":true}')
+    check("moved: a change for the light, at an address the plug now has, is not made", rc == 1 and unreachable(err), (rc, err))
+    check("moved: from the plug's side: asked who it is, no change sent, still off",
+          [r["method"] for r in plug.requests()] == ["getPilot"] and plug.stats()["pilot"]["state"] is False, plug.requests())
+    rc, out, err = st.run("enumerate")
+    check("moved: the plug's things are not listed as the light's", rc == 1 and set(st.things()) == {"light"}, (rc, err, st.things()))
+
+    # The same through the app, with devices saved under their MACs as discovery saves them.
+    app = App()
+    out = app.run("--home-refresh")
+    network = next((l.split(" id ")[1].strip() for l in out.splitlines() if l.startswith("network: Test network, id ")), "")
+    lamp, heater = Mock("rgb"), Mock("socket")
+    devices = [saved_device(lamp, "WiZ 033d"), saved_device(heater, "WiZ 06b7")]
+    devices[0]["id"], devices[1]["id"] = "wiz:a8bb5006033d", "wiz:d8a0119906b7"
+    app.save({"version": 2, "secrets": {},
+              "networks": {network: {"label": "Test network", "gateway_mac": "02:00:00:00:00:00", "allowed_at": 1, "last_scan": 1,
+                                     "devices": devices}}})
+    out = app.run("--home-refresh")
+    check("app moved: both read at their own addresses", "2 devices ready." in out, out)
+    root = app.load()
+    saved = root["networks"][network]["devices"]
+    saved[0]["port"], saved[1]["port"] = heater.port, lamp.port   # the two addresses swapped
+    app.save(root)
+    r = app.tool({"action": "on", "target": "WiZ light 033d"})
+    check("app moved: turning on the light does not switch the plug now at its address",
+          isinstance(r, str) and r.startswith("ERROR") and not heater.requests("setPilot") and heater.stats()["pilot"]["state"] is False,
+          (r, heater.requests("setPilot")))
+    r = app.tool({"action": "on", "target": "WiZ plug 06b7"})
+    check("app moved: nor does turning on the plug switch the light", isinstance(r, str) and r.startswith("ERROR") and
+          not lamp.requests("setPilot") and lamp.stats()["pilot"]["state"] is False, (r, lamp.requests("setPilot")))
+    out = app.run("--home-refresh")
+    things = {t["name"] for d in app.load()["networks"][network]["devices"] for t in d["things"]}
+    check("app moved: a refresh keeps each device's own things", things == {"WiZ light 033d", "WiZ plug 06b7"} and "0 ready" in out,
+          (out, things))
+
+
 def main():
     driver_tests()
     signed_tests()
     app_tests()
+    moved_tests()
     print("%d checks, %d failed" % (checks, failed))
     sys.exit(1 if failed else 0)
 

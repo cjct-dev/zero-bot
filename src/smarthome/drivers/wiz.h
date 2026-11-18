@@ -39,8 +39,13 @@
 //    earlier than 2025 (never set), nor in the first ten minutes after start while the kernel
 //    reports the clock as not synchronised (a board without a battery-backed clock starts from a
 //    time saved at the last shutdown until a time service sets it).
-//  - Errors are short sentences. Only the "did not answer" ones contain a word that control.cpp's
-//    unreachable() looks for, so only they lead to a search for the device at a new address.
+//  - The device at the saved address must be this one: its MAC (from the id discovery gave it,
+//    "wiz:<MAC>", or Device::mac) is checked against getSystemConfig when listing, against
+//    getPilot when reading, and against a getPilot sent before every setPilot. Routers hand an
+//    address to another device, and a WiZ device holds no key that would fail elsewhere.
+//  - Errors are short sentences. Only the "did not answer" ones, and the one for another device
+//    answering at the saved address, contain a word that control.cpp's unreachable() looks for, so
+//    only they lead to a search for the device at a new address.
 //
 // Depends on the C++ standard library, POSIX sockets, OpenSSL libcrypto and nlohmann/json.
 #pragma once
@@ -64,6 +69,7 @@ extern const char *const kNeedsKey;      // "This WiZ device only accepts signed
 extern const char *const kKeyRefused;    // "A WiZ device did not accept the signing key, ..."
 extern const char *const kClockNotSet;   // "The clock here is not set yet, ..."
 extern const char *const kRefused;       // "The WiZ device refused the command."
+extern const char *const kMoved;         // "Another WiZ device answered at this one's saved address, ..."
 
 // Building blocks, exposed for wiz_test.cpp. Nothing here touches the network.
 namespace detail {

@@ -541,8 +541,11 @@ static void test_driver() {
     {
         // Hostile and stray answers.
         std::string mode;
+        // Each is the answer to setPilot; the getPilot that checks who is at the address before it
+        // is answered as usual, except in "other method only".
         Peer odd([&](const json &req, const std::string &raw) -> std::vector<std::string> {
             const std::string m = req.is_object() ? req.value("method", "") : "";
+            if (m != "setPilot" && mode != "other method only") return rgb_bulb(req, raw);
             if (mode == "late first") return {reply("getPilot", {{"state", false}}), "\x01\x02garbage", reply(m, {{"success", true}})};
             if (mode == "garbage only") return {"{not json", "[1,2,3]", "\"text\""};
             if (mode == "too long") return {reply(m, {{"success", true}, {"pad", std::string(9000, 'x')}})};
@@ -597,9 +600,73 @@ static void test_driver() {
             return rgb_bulb(req, raw);
         });
         home::Device dev = at(camera.port());
+        dev.id = "wiz:a8bb50000009";
         std::vector<home::Thing> things;
         std::string err;
-        check("an unknown module yields nothing", !driver->enumerate(dev, things, err) && things.empty() && !err.empty(), err);
+        check("an unknown module yields nothing", !driver->enumerate(dev, things, err) && things.empty() &&
+                                                      err.find("cannot control this kind") != std::string::npos, err);
+    }
+
+    {
+        // The saved address now belongs to another WiZ device (a router that lost its leases when
+        // it restarted): a plug answers where the light was. Nothing may be switched there.
+        Peer plug([](const json &req, const std::string &raw) -> std::vector<std::string> {
+            const std::string m = req.is_object() ? req.value("method", "") : "";
+            if (m == "getSystemConfig") return {reply(m, {{"mac", "d8a0119906b7"}, {"moduleName", "ESP25_SOCKET_01"}})};
+            if (m == "getPilot") return {reply(m, {{"mac", "d8a0119906b7"}, {"rssi", -60}, {"state", false}})};
+            return rgb_bulb(req, raw);
+        });
+        Peer bulb(rgb_bulb);
+        home::Device dev = at(bulb.port());
+        std::vector<home::Thing> things;
+        std::string err;
+        check("moved: the light is listed at its address", driver->enumerate(dev, things, err) && things.size() == 1, err);
+        const home::Thing light = thing_of(things, "light");
+        dev.things = things;
+        dev.port = plug.port();
+        home::Change c;
+        c.on = true;
+        check("moved: a change for the light is not made on the device now at its address",
+              !driver->apply(dev, light, c, 2500, err) && err == kMoved, err);
+        check("moved: which was asked who it is and sent no change", plug.count("getPilot") == 1 && plug.count("setPilot") == 0,
+              std::to_string(plug.count("setPilot")) + " setPilot");
+        check("moved: the error leads the app to look for the light elsewhere", reads_as_unreachable(err), err);
+        std::vector<home::Thing> some = {light};
+        check("moved: its state is not read from the other device", !driver->read(dev, some, err) && err == kMoved, err);
+        std::vector<home::Thing> none;
+        check("moved: nor all of them", !driver->read(dev, none, err) && err == kMoved, err);
+        std::vector<home::Thing> listed;
+        check("moved: nor are the other device's things listed as the light's", !driver->enumerate(dev, listed, err) && err == kMoved &&
+                                                                                    listed.empty(), err);
+        home::Device by_mac = dev;   // a record whose id is not the MAC: Device::mac is used
+        by_mac.id = "wiz:somewhere";
+        by_mac.mac = "A8-BB-50-06-03-3D";
+        check("moved: the saved MAC counts as well as the id", !driver->apply(by_mac, light, c, 2500, err) && err == kMoved, err);
+        check("still nothing switched", plug.count("setPilot") == 0);
+        dev.port = bulb.port();
+        const int before = bulb.count("setPilot");
+        check("back at its own address it is switched", driver->apply(dev, light, c, 2500, err) && bulb.count("setPilot") == before + 1, err);
+
+        // A device that names no MAC cannot be told apart, and one whose MAC is nonsense is not this one.
+        std::string pilot_mac = "none";
+        Peer quiet([&](const json &req, const std::string &raw) -> std::vector<std::string> {
+            const std::string m = req.is_object() ? req.value("method", "") : "";
+            if (m == "getPilot" && pilot_mac == "none") return {reply(m, {{"state", false}})};
+            if (m == "getPilot") return {reply(m, {{"mac", pilot_mac}, {"state", false}})};
+            return rgb_bulb(req, raw);
+        });
+        dev.port = quiet.port();
+        check("a pilot without a MAC: the change is made", driver->apply(dev, light, c, 2500, err) && quiet.count("setPilot") == 1, err);
+        for (const char *mac : {"A8:BB:50:06:03:3D", "a8bb5006033d"}) {
+            pilot_mac = mac;
+            check(std::string("the same MAC written as ") + mac, driver->apply(dev, light, c, 2500, err), err);
+        }
+        for (const char *mac : {"", "a8bb5006033", "a8bb5006033dff", "a8bb5006033\"", "xxxxxxxxxxxx"}) {
+            pilot_mac = mac;
+            const int sent = quiet.count("setPilot");
+            check(std::string("a MAC of \"") + mac + "\" is not this device's", !driver->apply(dev, light, c, 2500, err) && err == kMoved &&
+                                                                                    quiet.count("setPilot") == sent, err);
+        }
     }
 
     {
@@ -710,6 +777,7 @@ static void test_driver() {
     for (const char *e : {kGarbled, kNeedsKey, kKeyRefused, kClockNotSet, kRefused})
         check(std::string("not read as unreachable: ") + e, !reads_as_unreachable(e));
     check("\"did not answer\" is read as unreachable", reads_as_unreachable(kNoAnswer));
+    check("another device at the address is read as unreachable (the app looks for this one)", reads_as_unreachable(kMoved));
 }
 
 int main() {

@@ -294,6 +294,12 @@ key, real audio), say so plainly rather than implying it was.
 - Smart-home discovery uses only what the devices' own apps use (mDNS, SSDP, the vendor's
   broadcast). No address sweeps, no port scans, opt-in per network with a warning. "This
   network" is the SSID plus the router's hardware address, not the SSID alone.
+- An address is not an identity. Routers hand a device's address to another one (a router that
+  loses its leases when it restarts, a bulb switched off at the wall for a week), and a device
+  with no key of its own (WiZ, and any family whose protocol has no login) answers whoever asks.
+  The first review of the WiZ driver found that a command for a light switched the plug that now
+  had its address. Such a driver checks the device's MAC (the one discovery saved it under)
+  before every change, and fails with a word `unreachable()` knows so the app looks for it.
 - Before promising a device can be controlled, check whether it has a local interface at all.
   Several popular products are cloud-only.
 - New device code is reviewed before it touches a real device: in this project the first

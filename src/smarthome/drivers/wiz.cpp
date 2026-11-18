@@ -4,7 +4,9 @@
 // licenses/THIRD-PARTY-NOTICES.md):
 //   bulblibrary.py  how a module name says what a device can do            -> classify()
 //   bulb.py         the methods, the pilot fields, the lowest dimming,
-//                   the resend schedule, getPower in milliwatts            -> pilot_for(), fill_state(), call()
+//                   resending (at most 6 datagrams), getPower in milliwatts -> pilot_for(), fill_state(), call()
+//                   (pywizlight waits 0.75 s before the first resend and up to 13 s in all; here the
+//                   first comes after 250 ms so that a lost datagram is resent within the app's 2.5 s)
 //   rgbcw.py        hue/saturation to and from the r, g, b and white LEDs  -> hs_to_rgbw(), rgbw_to_hs()
 //   utils.py        signed requests for firmware that demands them         -> datagram()
 #include "smarthome/drivers/wiz.h"
@@ -39,6 +41,7 @@ const char *const kKeyRefused =
     "on the device's page.";
 const char *const kClockNotSet = "The clock here is not set yet, so a signed command cannot be sent. Try again in a minute.";
 const char *const kRefused = "The WiZ device refused the command.";
+const char *const kMoved = "Another WiZ device answered at this one's saved address, so it was left alone.";
 
 using home::Change;
 using home::Device;
@@ -194,6 +197,32 @@ Got udp_exchange(const std::string &ip, int port, const std::string &method, con
     }
     close(fd);
     return got;
+}
+
+// A MAC as 12 lower-case hex digits ("A8:BB:50:06:03:3D" and "a8bb5006033d" alike); "" for anything else.
+std::string plain_mac(const std::string &text) {
+    std::string out;
+    for (const unsigned char c : text)
+        if (c != ':' && c != '-') out += static_cast<char>(std::tolower(c));
+    return out.size() == 12 && is_hex(out) ? out : std::string();
+}
+
+// The MAC this device was saved under: discovery names a WiZ device "wiz:<its MAC>". "" when the
+// saved record does not say.
+std::string saved_mac(const Device &dev) {
+    const std::string from_id = dev.id.rfind("wiz:", 0) == 0 ? plain_mac(dev.id.substr(4)) : std::string();
+    return from_id.empty() ? plain_mac(dev.mac) : from_id;
+}
+
+// Whether a getSystemConfig or getPilot result came from this device. Addresses are handed out
+// again (a router that loses its leases when it restarts, a bulb switched off at the wall for a
+// week), and WiZ devices have no key of their own that would fail at a different one: without this
+// a command for the bedroom lamp would switch whichever WiZ device now has its address, and a "yes"
+// asked for one thing would be spent on another. A result that names no MAC cannot be told apart.
+bool same_device(const std::string &expected, const json &result) {
+    if (expected.empty()) return true;
+    const std::string got = plain_mac(jstr(result, "mac"));
+    return got.empty() ? !(result.is_object() && result.contains("mac")) : got == expected;
 }
 
 // Devices that turned down an unsigned command in this run, by device id: they want a key even
@@ -625,6 +654,10 @@ public:
             err = o == Outcome::NoAnswer ? kNoAnswerSetup : sentence(o);
             return false;
         }
+        if (!same_device(saved_mac(dev), sys)) {
+            err = kMoved;
+            return false;
+        }
         const std::string module = jstr(sys, "moduleName"), mac = jstr(sys, "mac");
         detail::Model model;
         if (!detail::classify(module, jint(sys, "typeId", -1), model)) {
@@ -669,6 +702,10 @@ public:
             err = sentence(o);
             return false;
         }
+        if (!same_device(saved_mac(dev), pilot)) {
+            err = kMoved;
+            return false;
+        }
         const bool wants_power = detail && std::any_of(things.begin(), things.end(), [](const Thing &th) {
                                      return jstr(th.ref, "k") == "plug" && (th.caps & home::kSensor);
                                  });
@@ -684,8 +721,22 @@ public:
         if (!detail::pilot_for(thing, change, params, err)) return false;
         const long long deadline = now_ms() + std::clamp(deadline_ms <= 0 ? 2500 : deadline_ms, 100, 10000);
         Target t = target(dev);
-        const bool known_signed = jbool(thing.ref, "signed") || needs_key_now(dev);
         json result;
+        // First, that the device at the saved address is this one (same_device): a read, open on
+        // every firmware, with at most half the time.
+        const std::string expected = saved_mac(dev);
+        if (!expected.empty()) {
+            const Outcome seen = call(t, "getPilot", "{}", "", now_ms() + left(deadline, 1250), result);
+            if (seen != Outcome::Ok) {
+                err = sentence(seen);
+                return false;
+            }
+            if (!same_device(expected, result)) {
+                err = kMoved;
+                return false;
+            }
+        }
+        const bool known_signed = jbool(thing.ref, "signed") || needs_key_now(dev);
         Outcome o;
         if (known_signed) {
             o = signed_set(t, params, deadline, result);
