@@ -307,6 +307,13 @@ key, real audio), say so plainly rather than implying it was.
   network" is the SSID plus the router's hardware address, not the SSID alone.
 - Before promising a device can be controlled, check whether it has a local interface at all.
   Several popular products are cloud-only.
+- The keyboard's three lights (caps lock, fn, symbols) have no kernel interface: the keypad takes no
+  EV_LED events and they are not LED-class devices. The M5Stack keypad driver sets them by writing a
+  mode (0 off, 1 blink, 2 fast, 3 on) into registers 0xBD to 0xBF of the M5IOE1 expander, the
+  chip that also holds the power rails, RESET and the power-off timer. Writing those registers from
+  the app (over `/dev/i2c-1`, forcing the address the expander's driver holds) works, but the owner
+  ruled it out: the app does not animate the lights until the keypad driver offers an interface
+  for it.
 - New device code is reviewed before it touches a real device: in this project the first
   independent review of each driver and of the smart-home layer found blockers every time (a
   login that would lock out every plug of a second account, a confirmation the model could skip,
