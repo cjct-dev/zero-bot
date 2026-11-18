@@ -23,6 +23,7 @@
 #include "core/util.h"
 #include "smarthome/color.h"
 #include "smarthome/drivers/tapo_driver.h"
+#include "smarthome/drivers/wiz.h"
 #include "smarthome/home.h"
 #include "smarthome/internal.h"
 #include "smarthome/tapo.h"
@@ -1967,6 +1968,47 @@ void test_discovery() {
     CHECK_MSG(tv && tv->kind == "fire_tv", tv ? tv->kind : "no device at the TV's address");
 }
 
+// WiZ: answers to its broadcast (the registration query) become devices of kind "wiz", which the
+// WiZ driver claims; nothing else heard on its port does.
+void test_wiz_discovery() {
+    Section s("discovery: WiZ answers to the registration broadcast; a WiZ light that also speaks HomeKit stays WiZ");
+    const std::string answer = R"({"method":"registration","env":"pro","result":{"mac":"a8bb5006033d","success":true}})";
+    const auto found = discovery::devices_from({
+        {"wiz", "192.0.2.70", answer},
+        {"wiz", "192.0.2.70", answer},   // answers to the repeated query
+        {"wiz", "192.0.2.71", R"({"method":"registration","env":"pro","result":{"mac":"6C2990E493BC","success":true}})"},
+        {"mdns", "192.0.2.71", service_answer("_hap._tcp.local", "WiZ RGB Bulb", "wiz2.local", std::string("\xC0\x00\x02\x47", 4),
+                                              {"id=AA:BB:CC:00:00:07", "ci=5", "sf=0", "md=WiZ"})},
+        {"wiz", "192.0.2.72", R"({"method":"getSystemConfig","env":"pro","result":{"mac":"d8a0119906b7","moduleName":"ESP25_SOCKET_01\u0007"}})"},
+        // Not answers: another phone's query, a device's own broadcast, a bad MAC, junk.
+        {"wiz", "192.0.2.80", R"({"method":"registration","params":{"phoneMac":"AAAAAAAAAAAA","register":false,"phoneIp":"1.2.3.4","id":"1"}})"},
+        {"wiz", "192.0.2.81", R"({"method":"firstBeat","env":"pro","params":{"mac":"a8bb50000001","homeId":1}})"},
+        {"wiz", "192.0.2.82", R"({"method":"registration","result":{"mac":"a8bb5006033d00","success":true}})"},
+        {"wiz", "192.0.2.83", R"({"method":"registration","result":{"mac":"zzbb5006033d","success":true}})"},
+        {"wiz", "192.0.2.84", R"({"method":"registration","result":{"mac":12345678901,"success":true}})"},
+        {"wiz", "192.0.2.85", "not json at all"},
+        {"wiz", "192.0.2.86", R"([{"result":{"mac":"a8bb5006033d"}}])"},
+    });
+    auto at = [&](const std::string &ip) -> const discovery::Device * {
+        for (const auto &d : found) if (d.ip == ip) return &d;
+        return nullptr;
+    };
+    const auto *bulb = at("192.0.2.70"), *both = at("192.0.2.71"), *plug = at("192.0.2.72");
+    CHECK_MSG(found.size() == 3, std::to_string(found.size()) + " devices");
+    CHECK(bulb && bulb->kind == "wiz" && bulb->id == "wiz:a8bb5006033d" && bulb->mac == "a8:bb:50:06:03:3d");
+    CHECK(bulb && bulb->name == "WiZ 033d" && bulb->port == 0 && bulb->found_by == std::vector<std::string>{"wiz"});
+    CHECK_MSG(both && both->kind == "wiz", both ? both->kind : "no device at the bulb's address");
+    CHECK_MSG(both && both->port == 0, "the HomeKit port is not the WiZ port");
+    CHECK(both && both->id == "wiz:6c2990e493bc" && both->mac == "6c:29:90:e4:93:bc" && both->name == "WiZ RGB Bulb");
+    CHECK(both && std::find(both->found_by.begin(), both->found_by.end(), "mdns") != both->found_by.end());
+    CHECK(plug && plug->kind == "wiz" && plug->model == "ESP25_SOCKET_01");
+    for (const char *ip : {"192.0.2.80", "192.0.2.81", "192.0.2.82", "192.0.2.83", "192.0.2.84", "192.0.2.85", "192.0.2.86"})
+        CHECK_MSG(!at(ip), std::string(ip) + " is not a WiZ answer");
+    const auto wiz = make_wiz_driver();
+    CHECK(bulb && wiz->claims(bulb->kind, bulb->info) && both && wiz->claims(both->kind, both->info));
+    CHECK(!wiz->claims("tapo", {}) && !wiz->claims("homekit", {}));
+}
+
 // ---------------------------------------------------------------- names and colours
 void test_names_and_colours() {
     Section s("names and colours");
@@ -2102,6 +2144,7 @@ int main(int argc, char **argv) {
     test_link_kinds();
     test_tv_keys();
     test_discovery();
+    test_wiz_discovery();
     test_names_and_colours();
 
     const std::string rm = "rm -rf '" + dir + "'";
