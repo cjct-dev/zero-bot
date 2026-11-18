@@ -63,7 +63,8 @@ def kind(t, calls):
     """What a turn was: no tool, a tool confirmed with one call, a tool then an answer, or more."""
     if not t["tools"]:
         return "no tool"
-    n = len([c for c in calls if c.get("role", "main") == "main"]) if calls else None
+    # The parallel check (E3, ZB_EXP_DECIDE=parallel) runs beside the deciding call: not a step of the answer.
+    n = len([c for c in calls if c.get("role", "main") == "main" and c.get("purpose") != "parallel_check"]) if calls else None
     if n is None:
         return "tool (no trace)"
     return "tool, 1 call" if n == 1 else "tool, 2 calls" if n == 2 else "tool, 3+ calls"
@@ -250,7 +251,18 @@ def main():
         for g in q.get("guards", []):
             guards[g["guard"]] = guards.get(g["guard"], 0) + 1
     print("guards fired: " + (", ".join("%s %d" % kv for kv in sorted(guards.items())) or "none"))
-    print("requests steered: %d\n" % sum(1 for q in reqs if q.get("steered")))
+    print("requests steered: %d" % sum(1 for q in reqs if q.get("steered")))
+    checks = [q["parallel_check"] for q in reqs if q.get("parallel_check")]
+    if checks:   # E3: the check beside the deciding call, and what the loop did with its answer
+        count = lambda key: ", ".join("%s %d" % kv for kv in sorted(
+            {v: sum(1 for c in checks if c.get(key) == v) for v in {c.get(key) for c in checks}}.items(), key=lambda kv: -kv[1]))
+        held = [c for c in checks if c.get("used") != "main_tool"]
+        print("parallel checks: %d; verdicts: %s; used: %s" % (len(checks), count("verdict"), count("used")))
+        print("parallel check answered in: median %s s, 90th %s s; drafts cleared without the second look: %d of %d held"
+              % (fmt(med([c["ms"] / 1000.0 for c in checks if c.get("ms", -1) >= 0])),
+                 fmt(p90([c["ms"] / 1000.0 for c in checks if c.get("ms", -1) >= 0])),
+                 sum(1 for c in held if c.get("used") in ("stream", "after")), len(held)))
+    print()
     tools = [x for q in reqs for x in q.get("tools", [])]
     by_tool = {}
     for x in tools:
