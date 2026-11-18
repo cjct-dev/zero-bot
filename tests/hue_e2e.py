@@ -618,6 +618,12 @@ def test_malformed(tmp):
             check(r.rc == 1 and r.err == ERR_GARBLED, "read given %s: told so" % what)
             r = cli(st, "apply", sofa, '{"on":true}')
             check(r.rc == 1 and r.err == ERR_GARBLED, "apply given %s: told so" % what)
+        # A well-formed reply that is simply too big (over the driver's 4 MB limit) is refused too.
+        m.set("fault", "huge-valid /clip/v2/resource")
+        r = cli(st, "enumerate")
+        r2 = cli(st, "read", sofa)
+        check(r.rc == 1 and r.err == ERR_GARBLED and r2.rc == 1 and r2.err == ERR_GARBLED,
+              "a well-formed 5 MB reply is refused, not parsed (enumerate and read)")
         m.set("fault", "status-500 /clip/v2/resource/light")
         r = cli(st, "apply", sofa, '{"on":true}')
         check(r.rc == 1 and r.err == ERR_BUSY, "a 500 reads as busy")

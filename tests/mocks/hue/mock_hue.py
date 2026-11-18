@@ -65,6 +65,7 @@ FAULTS = {
     "garbage": "200 with a body that is not JSON",
     "deep": "200 with arrays nested 100000 deep",
     "huge": "200 with a 10 MB body",
+    "huge-valid": "resources served as usual, in a well-formed reply padded past 5 MB",
     "huge-length": "200 announcing a 100 GB body",
     "truncated": "Content-Length 1000, 100 bytes, then close",
     "wrong-types": "resources whose fields have the wrong JSON types",
@@ -580,6 +581,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             items.append(17)
             items.append(None)
         raw = json.dumps({"errors": [], "data": items}).encode()
+        if fault == "huge-valid":
+            raw = json.dumps({"errors": [], "data": items, "padding": "x" * (5 * 1024 * 1024)}).encode()
         if fault == "nonutf8":
             raw = raw.replace(b"Sofa lamp", b"Sofa \xff\xfe lamp").replace(b"Kitchen", b"Kit\xc0\x80chen")
         self.send_json(200, None, raw=raw)
