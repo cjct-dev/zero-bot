@@ -19,7 +19,9 @@ left out without ZB_SEARCH_KEY. Every case starts from an empty state with ZB_DR
 scored set. The summary gives the pass rate per tag and the slowest cases.
 
 Checks are declarative in cases.json ({"kind": ...}); KINDS below compiles each one. Expected
-dates, times, amounts and ages are worked out when the case runs.
+dates, times, amounts and ages are worked out when the case runs. A check looks at the last turn,
+or at the one its "turn" names (0 is the first, -1 the last; "/new" is not a turn); "long_ok" lists
+the turns whose answer may be longer than the usual cap (analytical follow-ups).
 """
 import argparse
 import concurrent.futures
@@ -290,6 +292,23 @@ def k_no_call(s):
     return lambda t: ["should not call %s" % s["tool"]] if ev.calls(t, s["tool"]) else []
 
 
+def k_max_calls(s):
+    """At most n calls to the tool (or to any of a|b) in the turn: a budget, as for searches in a row."""
+    names = s["tool"].split("|")
+    def check(t):
+        got = sum(1 for n, _ in t["tools"] if n in names)
+        return [] if got <= s["n"] else ["at most %d call%s to %s, got %d" % (s["n"], "" if s["n"] == 1 else "s", s["tool"], got)]
+    return check
+
+
+def k_max_words(s):
+    """An answer of at most n words: for simple factual turns only (never analytical ones)."""
+    def check(t):
+        got = len(re.findall(r"[^\W_]+(?:['’.,:-][^\W_]+)*", t["answer"]))
+        return [] if got <= s["n"] else ["answer should be at most %d words, got %d" % (s["n"], got)]
+    return check
+
+
 def k_all_day_on(s):
     """An all-day calendar_add on that day."""
     def check(t):
@@ -320,9 +339,18 @@ def k_home_step(s): return ev.home_step(s["sign"])
 KINDS = {name[2:]: f for name, f in globals().items() if name.startswith("k_") and callable(f)}
 
 
+def compile_check(s):
+    """One check; with "turn", it carries that turn's number for tests/agent_eval.py's score()."""
+    f = KINDS[s["kind"]](s)
+    if "turn" not in s: return f
+    def on_turn(t): return f(t)
+    on_turn.turn = s["turn"]
+    return on_turn
+
+
 def compile_case(c):
     """A case from cases.json in the form tests/agent_eval.py runs and scores."""
-    out = dict(c, checks=[KINDS[s["kind"]](s) for s in c["checks"]], home=HOMES[c["home"]] if c.get("home") else None)
+    out = dict(c, checks=[compile_check(s) for s in c["checks"]], home=HOMES[c["home"]] if c.get("home") else None)
     return out
 
 

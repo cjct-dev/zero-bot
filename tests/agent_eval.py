@@ -681,6 +681,8 @@ def run_case(binary, base_env, c):
 
 def score(c, turns):
     problems = []
+    # Turns whose answer may run long (analytical follow-ups; "long_ok" in the suite's cases).
+    long_ok = {i % len(turns) for i in c.get("long_ok", ())} if turns else set()
     for i, t in enumerate(turns):
         where = "" if len(turns) == 1 else "turn %d: " % (i + 1)
         a = t["answer"]
@@ -690,7 +692,7 @@ def score(c, turns):
         if re.search(r"</?think", a): problems.append(where + "reasoning marker in answer")
         if EMOJI_RE.search(a): problems.append(where + "emoji in answer")
         if re.search(r"https?://|www\.", a): problems.append(where + "web address in answer")
-        if len(a) > 420: problems.append(where + "answer too long (%d chars)" % len(a))
+        if len(a) > 420 and i not in long_ok: problems.append(where + "answer too long (%d chars)" % len(a))
         if not t["tools"] and CLAIM_RE.search(a): problems.append(where + "claims an action but called no tool")
     last = turns[-1]
     called = [n for n, _ in last["tools"]]
@@ -700,8 +702,14 @@ def score(c, turns):
         if bad == "*" and called: problems.append("called tools when none were needed: " + ",".join(called))
         elif bad in called: problems.append("should not call " + bad)
     for check in c["checks"]:
-        try: problems += check(last)
-        except Exception as e: problems.append("check could not run: %r" % e)
+        # A check looks at the last turn, or at the one it names (its "turn" attribute: 0 is the first).
+        n = getattr(check, "turn", None)
+        if n is not None and not -len(turns) <= n < len(turns):
+            problems.append("a check of turn %d, which did not happen" % (n + 1))
+            continue
+        where = "" if n is None else "turn %d: " % (n % len(turns) + 1)
+        try: problems += [where + p for p in check(last if n is None else turns[n])]
+        except Exception as e: problems.append(where + "check could not run: %r" % e)
     return problems
 
 def main():

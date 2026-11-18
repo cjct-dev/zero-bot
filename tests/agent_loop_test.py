@@ -636,6 +636,25 @@ def conversation_saved():
     check(n + ": the service key is blanked out", "test-key-0123" not in seen["text"] and "my key is [removed]" in seen["text"], "")
     check(n + ": what the app was set to", rec.get("fast_mode") is False and rec.get("app_version") and rec.get("format") == 1, rec.keys())
 
+    # tests/suite/from_conversation.py drafts a case from it: the user's words without what the app added.
+    folder = tempfile.mkdtemp(prefix="zb-conv-")
+    try:
+        path = os.path.join(folder, "saved.json")
+        open(path, "w", encoding="utf-8").write(seen["text"])
+        tool = os.path.join(HERE, "suite", "from_conversation.py")
+        out = subprocess.run([sys.executable, "-I", tool, path], capture_output=True, text=True, timeout=30)
+        js = subprocess.run([sys.executable, "-I", tool, path, "--json"], capture_output=True, text=True, timeout=30)
+        entry = json.loads(js.stdout) if js.returncode == 0 else {}
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    check(n + ": the converter drafts a case for generate.py", out.returncode == 0 and out.stdout.startswith("# Draft from saved.json") and
+          'case("dialogue", ["turn 1 hello", "turn 2 hello", "turn 3 timer"' in out.stdout and "EDIT BEFORE USE" in out.stdout,
+          out.stdout[:600] + out.stderr)
+    check(n + ": and an entry for cases.json: turns as said, the last turn's tools as must",
+          entry.get("turns", [""])[0] == "turn 1 hello" and len(entry.get("turns", [])) == 25 and
+          entry.get("turns", [""])[-1] == "my key is [removed]" and entry.get("must") == [] and "followup" in entry.get("tags", []),
+          entry)
+
 
 # ------------------------------------------------------------------ smart-home questions
 @scenario

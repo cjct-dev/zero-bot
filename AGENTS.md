@@ -254,8 +254,12 @@ What exists:
   `--sample N --seed S` (a few from every category), plus `--repeat`, `--fast`, `--json`. It
   prints pass rates per tag and the slowest cases. Checks are declarative (`"kind"` in the file,
   compiled by `KINDS` in the runner) and accept every right answer: a timer or a reminder for "in
-  20 minutes", several right tools, any of the right numbers. Run a sample or the tags you
-  touched, not the whole set, unless asked.
+  20 minutes", several right tools, any of the right numbers. A check looks at the last turn
+  unless it names another (`"turn"`); `long_ok` lists the turns that may answer at length, which
+  the owner wants for analytical follow-ups (so `max_words` is for simple factual turns only;
+  `max_calls` caps a tool, such as searches in a row). The `dialogue` category holds threads of
+  several turns generalised from saved conversations (`tests/suite/from_conversation.py` drafts
+  one). Run a sample or the tags you touched, not the whole set, unless asked.
 - **Environment switches**: `ZB_DRY_RUN=1` (tools do not play music, send infrared or switch
   devices), `ZB_NO_AUDIO=1`, `ZB_FAKE_CAMERA=file.jpg`, `ZB_FAST_MODE=0|1`, `ZB_DATE_ORDER=dmy|mdy`,
   `ZB_TEST_NETWORK=1` (a stand-in network, id `net-58678b031ae6e411`, instead of the real one:
