@@ -54,7 +54,7 @@ src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast); driver.h, the con
 src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
                     pages, the keys and their guide (key_guide), breathing screen, alarm banner, theme
 tests/              scored agent test set (needs a live service), device-free unit tests
-                    (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit), Tapo, Fire TV
+                    (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit, keys), Tapo, Fire TV
                     and HomeKit end to end (tapo_e2e.py, firetv_e2e.py, homekit_e2e.py),
                     the loop against a scripted chat service (home_chat_e2e.py), simulated devices
                     and service (mocks/)
@@ -147,7 +147,7 @@ What exists:
   a fake driver), `tests/unit/firetv_test.cpp` and `tests/unit/homekit_test.cpp` (each driver's
   known answers; Fire TV's test certificates are in `tests/mocks/firetv/`),
   `tests/unit/http_test.cpp` (the request
-  options for devices, against a local peer) and `tests/unit/timers_test.cpp` (the timer tool,
+  options for devices, against a local peer), `tests/unit/timers_test.cpp` (the timer tool,
   storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it keeps everything
   it writes in a temporary folder of its own, so running it by hand is safe too) and
   `tests/unit/key_guide_test.cpp` (what each key does on the chat screen, and that the key guide

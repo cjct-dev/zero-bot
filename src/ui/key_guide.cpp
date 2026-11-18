@@ -27,7 +27,7 @@ const std::vector<Section> &sections() {
          {{"F  X", "move up, down"},
           {"Z  C", "change a value"},
           {"ENTER", "choose"},
-          {"ESC", "go back"},
+          {"ESC  del", "go back"},
           {"SPACE  TAB", "close settings"}}},
     };
     return guide;

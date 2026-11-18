@@ -160,8 +160,8 @@ service's list. You can change every model under *Assistant* in settings.
 
 Press **SPACE** (or **TAB** twice). The first page lists the sections below and *Keys*; **ENTER**
 opens one. Move with **fn**+**F**/**X** (or plain **F**/**X**), change values with **Z**/**C**
-(left/right), select with **ENTER**, go back with **ESC**. **SPACE** or **TAB** closes settings
-from any page.
+(left/right), select with **ENTER**, go back with **ESC** (or **del**). **SPACE** or **TAB** closes
+settings from any page.
 
 | Section | What is there |
 |---|---|

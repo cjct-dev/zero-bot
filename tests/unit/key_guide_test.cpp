@@ -120,7 +120,7 @@ void test_guide_matches_keys() {
         check(all.count(chat + ": " + k) == 1, std::string("the chat screen's keys include ") + k);
     for (const char *k : {"fn+S  fn+D", "fn+A", "fn+U  fn+I", "fn+Q", "fn+W  fn+E", "any key"})
         check(all.count(anywhere + ": " + k) == 1, std::string("the keys that work everywhere include ") + k);
-    for (const char *k : {"F  X", "Z  C", "ENTER", "ESC", "SPACE  TAB"})
+    for (const char *k : {"F  X", "Z  C", "ENTER", "ESC  del", "SPACE  TAB"})
         check(all.count(settings + ": " + k) == 1, std::string("the keys in settings include ") + k);
     // TAB twice still opens settings, and the guide says so beside SPACE.
     for (const keyguide::Row &r : sections.front().rows)
