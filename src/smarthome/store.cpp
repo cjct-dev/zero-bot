@@ -495,7 +495,14 @@ void forget_network(const std::string &network_id) {
 }
 
 void set_thing_alias(const std::string &network_id, const std::string &device_id, const std::string &thing_id, const std::string &alias) {
-    edit_thing(network_id, device_id, thing_id, [&](Thing &t, ThingMeta &) { t.alias = clean_name(alias); });
+    edit_thing(network_id, device_id, thing_id, [&](Thing &t, ThingMeta &) {
+        const bool sounded_hot = suggests_heat(spoken(t));
+        t.alias = clean_name(alias);
+        // The name typed here can be the first that says what a plug feeds (a WiZ plug has none of
+        // its own): one that newly sounds like a heater asks first, as a maker's name does when the
+        // thing is first seen. A name that already did keeps whatever the user chose.
+        if ((t.type == "plug" || t.type == "switch") && !sounded_hot && suggests_heat(spoken(t))) t.ask_first = true;
+    });
 }
 
 void set_thing_room(const std::string &network_id, const std::string &device_id, const std::string &thing_id, const std::string &room) {

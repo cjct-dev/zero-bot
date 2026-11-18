@@ -26,6 +26,7 @@
 #include "smarthome/drivers/hue.h"
 #include "smarthome/drivers/kasa.h"
 #include "smarthome/drivers/tapo_driver.h"
+#include "smarthome/drivers/wiz.h"
 #include "smarthome/home.h"
 #include "smarthome/internal.h"
 #include "smarthome/tapo.h"
@@ -464,6 +465,38 @@ void test_survival() {
     CHECK(has(home::refresh(g_net.id()), "0 ready, 1 not: it did not answer"));
     e = home::entry(g_net.id());
     CHECK(e.devices[0].problem == "it did not answer" && find_thing(e, "fake:hub", "a") != nullptr);
+}
+
+void test_named_by_user() {
+    Section s("store: a plug the user names like a heater asks before it is switched on");
+    g_fake->reset();
+    // A plug whose maker gives it no name (a WiZ plug is "WiZ plug 06b7") is first named by the
+    // user: a name that sounds like a heater asks first, as a maker's name does when it is first
+    // seen. A plug whose name already sounded like one keeps what the user chose for it.
+    write_home({device("fake:wiz", {thing("plug", "WiZ plug 06b7", "plug", home::kPower, "", {{"on", false}}),
+                                    thing("lamp", "WiZ light 033d", "light", home::kPower, "", {{"on", false}}),
+                                    thing("used", "Fan heater", "plug", home::kPower, "", {{"on", false}})})});
+    home::set_thing_alias(g_net.id(), "fake:wiz", "plug", "Bed heater");
+    home::set_thing_alias(g_net.id(), "fake:wiz", "lamp", "Heat lamp");   // a light: the switch is the user's to set
+    home::set_thing_alias(g_net.id(), "fake:wiz", "used", "Bathroom heater");
+    const home::NetworkEntry e = home::entry(g_net.id());
+    CHECK(find_thing(e, "fake:wiz", "plug") && find_thing(e, "fake:wiz", "plug")->ask_first);
+    CHECK(find_thing(e, "fake:wiz", "lamp") && !find_thing(e, "fake:wiz", "lamp")->ask_first);
+    CHECK(find_thing(e, "fake:wiz", "used") && !find_thing(e, "fake:wiz", "used")->ask_first);
+    std::string r = run({{"action", "on"}, {"target", "Bed heater"}});
+    CHECK_MSG(starts(r, "CONFIRM: nothing has been changed yet, because \"Bed heater\" is set to be switched on only after"), r);
+    CHECK(g_fake->applied() == 0);
+    // Switched off by the user, it stays off when the name changes again, and a refresh keeps it.
+    home::set_thing_ask_first(g_net.id(), "fake:wiz", "plug", false);
+    home::set_thing_alias(g_net.id(), "fake:wiz", "plug", "Bedroom heater");
+    CHECK(!find_thing(home::entry(g_net.id()), "fake:wiz", "plug")->ask_first);
+    home::set_thing_ask_first(g_net.id(), "fake:wiz", "plug", true);
+    home::Thing wiz_plug;
+    wiz_plug.id = "plug"; wiz_plug.name = "WiZ plug 06b7"; wiz_plug.type = "plug"; wiz_plug.caps = home::kPower;
+    g_fake->listing["fake:wiz"] = {wiz_plug};
+    home::refresh(g_net.id(), "fake:wiz");
+    CHECK(find_thing(home::entry(g_net.id()), "fake:wiz", "plug")->ask_first);
+    g_fake->reset();
 }
 
 // ---------------------------------------------------------------- targets
@@ -2275,6 +2308,54 @@ void test_found_again() {
         if (d.id == "tplink:ac:15:a2:00:00:01") CHECK_MSG(d.enabled, "switched on by the user: stays on");
 }
 
+// WiZ: answers to its broadcast (the registration query) become devices of kind "wiz", which the
+// WiZ driver claims; nothing else heard on its port does.
+void test_wiz_discovery() {
+    Section s("discovery: WiZ answers to the registration broadcast; a WiZ light that also speaks HomeKit stays WiZ");
+    const std::string answer = R"({"method":"registration","env":"pro","result":{"mac":"a8bb5006033d","success":true}})";
+    const auto found = discovery::devices_from({
+        {"wiz", "192.0.2.70", answer},
+        {"wiz", "192.0.2.70", answer},   // answers to the repeated query
+        {"wiz", "192.0.2.71", R"({"method":"registration","env":"pro","result":{"mac":"6C2990E493BC","success":true}})"},
+        {"mdns", "192.0.2.71", service_answer("_hap._tcp.local", "WiZ RGB Bulb", "wiz2.local", std::string("\xC0\x00\x02\x47", 4),
+                                              {"id=AA:BB:CC:00:00:07", "ci=5", "sf=0", "md=WiZ"})},
+        {"wiz", "192.0.2.72", R"({"method":"getSystemConfig","env":"pro","result":{"mac":"d8a0119906b7","moduleName":"ESP25_SOCKET_01\u0007"}})"},
+        // Not answers: another phone's query, a device's own broadcast, a bad MAC, junk.
+        {"wiz", "192.0.2.80", R"({"method":"registration","params":{"phoneMac":"AAAAAAAAAAAA","register":false,"phoneIp":"1.2.3.4","id":"1"}})"},
+        {"wiz", "192.0.2.81", R"({"method":"firstBeat","env":"pro","params":{"mac":"a8bb50000001","homeId":1}})"},
+        {"wiz", "192.0.2.82", R"({"method":"registration","result":{"mac":"a8bb5006033d00","success":true}})"},
+        {"wiz", "192.0.2.83", R"({"method":"registration","result":{"mac":"zzbb5006033d","success":true}})"},
+        {"wiz", "192.0.2.84", R"({"method":"registration","result":{"mac":12345678901,"success":true}})"},
+        {"wiz", "192.0.2.85", "not json at all"},
+        {"wiz", "192.0.2.86", R"([{"result":{"mac":"a8bb5006033d"}}])"},
+    });
+    auto at = [&](const std::string &ip) -> const discovery::Device * {
+        for (const auto &d : found) if (d.ip == ip) return &d;
+        return nullptr;
+    };
+    const auto *bulb = at("192.0.2.70"), *both = at("192.0.2.71"), *plug = at("192.0.2.72");
+    CHECK_MSG(found.size() == 3, std::to_string(found.size()) + " devices");
+    CHECK(bulb && bulb->kind == "wiz" && bulb->id == "wiz:a8bb5006033d" && bulb->mac == "a8:bb:50:06:03:3d");
+    CHECK(bulb && bulb->name == "WiZ 033d" && bulb->port == 0 && bulb->found_by == std::vector<std::string>{"wiz"});
+    CHECK_MSG(both && both->kind == "wiz", both ? both->kind : "no device at the bulb's address");
+    CHECK_MSG(both && both->port == 0, "the HomeKit port is not the WiZ port");
+    CHECK(both && both->id == "wiz:6c2990e493bc" && both->mac == "6c:29:90:e4:93:bc" && both->name == "WiZ RGB Bulb");
+    CHECK(both && std::find(both->found_by.begin(), both->found_by.end(), "mdns") != both->found_by.end());
+    CHECK(plug && plug->kind == "wiz" && plug->model == "ESP25_SOCKET_01");
+    for (const char *ip : {"192.0.2.80", "192.0.2.81", "192.0.2.82", "192.0.2.83", "192.0.2.84", "192.0.2.85", "192.0.2.86"})
+        CHECK_MSG(!at(ip), std::string(ip) + " is not a WiZ answer");
+    // A device that answers TP-Link's query as well (Tapo ranks first) keeps its Tapo id and port.
+    const std::string tapo_answer = std::string(16, '\0') +
+        R"({"result":{"device_id":"80225A0B","device_model":"P110","mac":"AA-BB-CC-00-00-0A","mgt_encrypt_schm":{"encrypt_type":"KLAP","http_port":80}}})";
+    const auto mixed = discovery::devices_from({{"tapo", "192.0.2.90", tapo_answer}, {"wiz", "192.0.2.90", answer}});
+    CHECK_MSG(mixed.size() == 1 && mixed[0].kind == "tapo" && mixed[0].id == "tapo:80225a0b" && mixed[0].port == 80 &&
+                  mixed[0].mac == "aa:bb:cc:00:00:0a",
+              mixed.empty() ? std::string("nothing") : mixed[0].kind + " " + mixed[0].id + " port " + std::to_string(mixed[0].port));
+    const auto wiz = make_wiz_driver();
+    CHECK(bulb && wiz->claims(bulb->kind, bulb->info) && both && wiz->claims(both->kind, both->info));
+    CHECK(!wiz->claims("tapo", {}) && !wiz->claims("homekit", {}));
+}
+
 // ---------------------------------------------------------------- names and colours
 void test_names_and_colours() {
     Section s("names and colours");
@@ -2532,6 +2613,7 @@ int main(int argc, char **argv) {
 
     test_migration();
     test_survival();
+    test_named_by_user();
     test_targets();
     test_schema();
     test_commands();
@@ -2549,6 +2631,7 @@ int main(int argc, char **argv) {
     test_discovery_hue();
     test_tplink_discovery();
     test_found_again();
+    test_wiz_discovery();
     test_names_and_colours();
     test_moved_devices();
 

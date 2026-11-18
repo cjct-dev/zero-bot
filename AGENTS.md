@@ -46,7 +46,7 @@ src/core/           settings, calendar/reminder/timer/memory store, timers (the 
 src/net/            libcurl wrapper with a shared connection/DNS/TLS-session cache
 src/platform/       display, keyboard, audio (recorder, speaker, music), codecs, camera,
                     infrared, subprocess helpers
-src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast); driver.h, the contract every
+src/smarthome/      discovery (mDNS, SSDP, TP-Link and WiZ broadcasts); driver.h, the contract every
                     device family implements; home.h, the layer above it: store.cpp (the 0600
                     file, migration, the network gate), targets.cpp (names, rooms, groups),
                     control.cpp (commands, safety rules, locking, status, refresh, pairing),
@@ -56,8 +56,9 @@ src/ui/             app controller (keys, timers, state), chat screen, menu syst
                     pages, the keys and their guide (key_guide), breathing screen, alarm banner, theme
 tests/              scored agent test set (needs a live service), device-free unit tests
                     (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit, Hue, Kasa,
-                    keys, radio, tools), Tapo, Fire TV, HomeKit, Hue and Kasa end to end
-                    (tapo_e2e.py, firetv_e2e.py, homekit_e2e.py, hue_e2e.py, kasa_e2e.py),
+                    WiZ, keys, radio, tools), Tapo, Fire TV, HomeKit, Hue, Kasa and WiZ end to end
+                    (tapo_e2e.py, firetv_e2e.py, homekit_e2e.py, hue_e2e.py, kasa_e2e.py,
+                    wiz_e2e.py),
                     the loop against a scripted chat service (home_chat_e2e.py, agent_loop_test.py,
                     and selfheal_chat_e2e.py for failures), the generated request set (suite/,
                     agent_suite.py), golden screenshots (shots_compare.py, golden/shots/),
@@ -175,9 +176,10 @@ What exists:
   `tests/unit/smarthome_test.cpp` (store and migration, names and rooms, schema snapshots in
   `tests/snapshots/`, the safety questions, rate limits, locking, pairing, the Tapo driver's
   refusals, colours, discovery from sample packets through `discovery::devices_from`; devices are
-  a fake driver), `tests/unit/firetv_test.cpp`, `tests/unit/homekit_test.cpp` and
-  `tests/unit/kasa_test.cpp` (each driver's known answers; Fire TV's test certificates are in
-  `tests/mocks/firetv/`),
+  a fake driver), `tests/unit/firetv_test.cpp`, `tests/unit/homekit_test.cpp`,
+  `tests/unit/kasa_test.cpp` and `tests/unit/wiz_test.cpp` (each driver's known answers; Fire
+  TV's test certificates are in `tests/mocks/firetv/`; WiZ's hostile answers come from a UDP peer
+  on 127.0.0.1),
   `tests/unit/hue_test.cpp` (the Hue driver's known answers: certificate pins, colours, resource
   shapes, refusals kept in the secrets; its test certificates are in `tests/mocks/hue/certs/`),
   `tests/unit/http_test.cpp` (the request
@@ -211,6 +213,10 @@ What exists:
   newer login): discovery answers, every kind of change, meters, hostile answers; then, when it is
   built, `build/cli/zero_bot` on `ZB_TEST_NETWORK` against the same devices. Checked from the
   devices' side.
+- **WiZ end to end**: `tests/wiz_e2e.py` runs `build/unit/wiz_cli` (built by `run_unit.sh`) and the
+  `cli` build against `tests/mocks/wiz/mock_wiz.py` (eleven models, lost datagrams, firmware that
+  signs): exact setPilot params, resends, deadlines, and a refused signing key sent once only, all
+  checked from the simulated device's side. About 15 s.
 - **Code ported from other projects** keeps their notices in the source file and in
   `licenses/THIRD-PARTY-NOTICES.md`, which the package installs; add to it with any new port.
 - **The request loop, scripted**: `tests/home_chat_e2e.py` runs `build/cli/zero_bot --chat` against
@@ -420,6 +426,15 @@ key, real audio), say so plainly rather than implying it was.
   HomeKit accessory now answers as Kasa). The new record must not reopen what the user closed on
   the old one ("Assistant may use it" off, "Ask before switching on"): `remember_scan` adds a
   record whose MAC another record already has with the assistant's use switched off.
+- An address is not an identity. Routers hand a device's address to another one (a router that
+  loses its leases when it restarts, a bulb switched off at the wall for a week), and a device
+  with no key of its own (WiZ, and any family whose protocol has no login) answers whoever asks.
+  The first review of the WiZ driver found that a command for a light switched the plug that now
+  had its address. Such a driver checks the device's MAC (the one discovery saved it under)
+  before every change, and fails with a word `unreachable()` knows so the app looks for it.
+- A default that reads a device's name must also read the name the user types. WiZ devices keep
+  no name, so the heater question (on for a plug named like a heater) never applied to one until
+  `set_thing_alias` learnt to switch it on for a name that newly sounds like a heater.
 - Before promising a device can be controlled, check whether it has a local interface at all.
   Several popular products are cloud-only.
 - The keyboard's three lights (caps lock, fn, symbols) have no kernel interface: the keypad takes no

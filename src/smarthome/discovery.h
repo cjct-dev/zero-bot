@@ -1,5 +1,5 @@
 // Finds smart-home devices the way their own apps do: by asking the local network who is there.
-// Only discovery announcements are used (mDNS/DNS-SD, SSDP and TP-Link's broadcast queries); no
+// Only discovery announcements are used (mDNS/DNS-SD, SSDP, TP-Link's and WiZ's broadcast queries); no
 // address is contacted unless it answered one of those, and nothing is logged in to or changed.
 #pragma once
 #include <atomic>
@@ -46,7 +46,7 @@ struct Device {
     std::string name, model;
     std::string ip, mac, host;
     int port = 0;
-    std::vector<std::string> found_by;           // "mdns", "ssdp", "tapo", "kasa"
+    std::vector<std::string> found_by;           // "mdns", "ssdp", "tapo", "kasa", "wiz"
     std::map<std::string, std::string> info;     // protocol details (TXT keys, encryption scheme, ...)
 };
 
@@ -62,7 +62,8 @@ struct Options {
 bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *heard_self = nullptr);
 
 // What scan() would report had it heard these datagrams (proto "mdns", "ssdp", "tapo" for TP-Link's
-// 20002 answers or "kasa" for the older Kasa protocol's 9999 answers, still scrambled), for tests.
+// 20002 answers, "kasa" for the older Kasa protocol's 9999 answers, still scrambled, or "wiz" for
+// WiZ's 38899 answers), for tests.
 //
 // TP-Link devices are routed between two drivers here. A 20002 answer is kind "tapo" (the Tapo
 // driver) unless its device_type begins "IOT.": that is a Kasa device moved to the newer login,

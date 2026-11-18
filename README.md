@@ -332,8 +332,17 @@ device directly: nothing goes through the makers' cloud services. Supported so f
   address which device it is: when the router has given that address to another Kasa device,
   nothing is switched and the device is looked for again. TP-Link does not document the protocol.
   Tested so far only against simulated devices.
+- **WiZ** lights, plugs and ceiling fans (WiZ Connected, including Philips-branded ones): switch
+  them on and off, dim lights and change their shade of white or colour, and read a plug's power
+  where it measures it. *Allow local communication* must be on in the WiZ app's settings (it
+  is by default). WiZ devices keep no name of their own, so each is listed as "WiZ light" (or plug,
+  or fan) with the end of its hardware address: give it the name you will say on its page
+  (*Called*). The built-in scenes are not offered. Newer WiZ firmware takes changes only when they
+  are signed with your WiZ home's key; such a device asks for it once (see below). WiZ does not
+  document this protocol: Zero Bot follows the open-source pywizlight library, which Home Assistant
+  uses. Tested so far only against a simulated device.
 
-Other families (Shelly, WiZ and more) are added one driver at a time.
+Other families (Shelly and more) are added one driver at a time.
 
 1. On your home network, open *Your data → Smart home → Find devices on this network*. Only do
    this on a network you own. The scan only asks devices to identify themselves, the way the
@@ -354,11 +363,16 @@ Other families (Shelly, WiZ and more) are added one driver at a time.
    here. Zero Bot keeps trying to connect for 30 seconds."; press it, then choose *I have pressed
    it*. If the bridge later stops accepting Zero Bot (it was removed in the Hue app), nothing more
    is sent to it, by any later run either, until you set it up again with the button. Older Kasa
-   devices ask for nothing.
+   devices ask for nothing. A WiZ device on newer firmware asks for the `udp_signing_key` from the
+   WiZ app's export of your home for local integration (32 characters, 0 to 9 and a to f). One key
+   serves every WiZ device of the home; a key a device refuses is not sent again until you type it
+   again. Signed changes carry the time, so just after the handheld starts they wait until its
+   clock has been set from the internet.
 3. What each device controls is then listed by room. On its page you can set the name you will
    say (*Called*), a *Room* (guessed from the name where it starts with one, such as "Bedroom
    lamp"), whether the *Assistant may use it*, and *Ask before switching on*. That last one is on
-   by default for anything whose name suggests heat (heater, kettle, iron, …): the assistant then
+   by default for a plug whose name suggests heat (heater, kettle, iron, …), and is switched on
+   when you give a plug such a name under *Called*: the assistant then
    asks "Turn on Bed heater?" and switches it only if your very next words are a plain yes ("yes",
    "go ahead", "yes please"). Anything else, including a new request or "leave it off", counts as
    no. Turn it off for something you use every day. A device a scan finds again in another way
@@ -467,12 +481,13 @@ were called, whether the answers hold up, and how long each took. See the notes 
 the file. `tests/run_unit.sh` builds and runs the tests that need neither a device nor an AI
 service (the smart-home layer, the timers: the timer tool, how timers are stored, the
 countdown and the alarm, the radio: the station file, the radio tool and the check of a stream
-against a pretend radio server, the keys and their guide, and the Fire TV, HomeKit, Hue and Kasa
-drivers), `tests/tapo_e2e.py` runs the
+against a pretend radio server, the keys and their guide, and the Fire TV, HomeKit, Hue, Kasa and
+WiZ drivers), `tests/tapo_e2e.py` runs the
 command-line build against two simulated Tapo plugs, `tests/firetv_e2e.py` and
 `tests/homekit_e2e.py` run those drivers against a simulated TV and a simulated HomeKit bridge,
 `tests/hue_e2e.py` runs the Hue driver and the command-line build against a simulated Hue Bridge,
-`tests/kasa_e2e.py` runs the Kasa driver and the command-line build against simulated Kasa devices, and
+`tests/kasa_e2e.py` runs the Kasa driver and the command-line build against simulated Kasa devices,
+`tests/wiz_e2e.py` runs the WiZ driver and the app against simulated WiZ lights and plugs, and
 `tests/home_chat_e2e.py` runs its conversation loop against a scripted chat
 service to check that a change needing your yes waits for one.
 
@@ -513,7 +528,7 @@ src/ui/         chat screen, menus, settings pages, alarm banner, app controller
 src/net/        HTTP client (libcurl)
 src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers
 scripts/        toolchain setup, packaging, deployment
-tests/          scored agent test set, unit tests (smart home, timers, radio, keys, Fire TV, HomeKit, Hue, Kasa), end-to-end tests with simulated devices
+tests/          scored agent test set, unit tests (smart home, timers, radio, keys, Fire TV, HomeKit, Hue, Kasa, WiZ), end-to-end tests with simulated devices
 licenses/       third-party notices and the Apache-2.0 text
 packaging/      launcher entry and icon
 extras/         device-tree overlay for the Wi-Fi channel fix
@@ -526,7 +541,7 @@ MIT. See [LICENSE](LICENSE). Bundled: [nlohmann/json](https://github.com/nlohman
 Built with [LVGL](https://lvgl.io) (MIT). The Fire TV driver follows parts of firehose-remote and
 hms-firetv (both MIT); the HomeKit driver follows parts of aiohomekit and Apple's HomeKit ADK (both
 Apache-2.0); the Hue driver follows parts of aiohue and the openhue-api description (both
-Apache-2.0). Their notices are in [licenses/THIRD-PARTY-NOTICES.md](licenses/THIRD-PARTY-NOTICES.md),
-and the package installs them with the Apache-2.0 text in `/usr/share/doc/zero-bot/`. "HomeKit" is
-a trademark of Apple Inc.; Zero Bot is not made or endorsed by Apple, Amazon or Signify (the maker
-of Philips Hue).
+Apache-2.0); the WiZ driver follows parts of pywizlight (MIT). Their notices are in
+[licenses/THIRD-PARTY-NOTICES.md](licenses/THIRD-PARTY-NOTICES.md), and the package installs them
+with the Apache-2.0 text in `/usr/share/doc/zero-bot/`. "HomeKit" is a trademark of Apple Inc.;
+Zero Bot is not made or endorsed by Apple, Amazon or Signify (the maker of Philips Hue).

@@ -40,9 +40,10 @@ const ServiceKind kServices[] = {
 // and Apple Home): the HomeKit driver refuses those categories, and pairing one over HomeKit
 // would use up its only HomeKit pairing for nothing. Nanoleaf stays after HomeKit while there is
 // no Nanoleaf driver.
-const char *const kKindOrder[] = {"tapo",    "hue_bridge", "sonos",   "fire_tv", "android_tv", "roku",   "cast",
-                                  "homekit", "shelly",     "wled",    "esphome", "elgato",     "nanoleaf", "wemo",
-                                  "matter",  "tplink",     "airplay"};
+// WiZ comes before Matter and HomeKit, which newer WiZ lights also announce.
+const char *const kKindOrder[] = {"tapo",    "wiz",     "hue_bridge", "sonos",   "fire_tv", "android_tv", "roku",
+                                  "cast",    "homekit", "shelly",     "wled",    "esphome", "elgato",     "nanoleaf",
+                                  "wemo",    "matter",  "tplink",     "airplay"};
 
 // TP-Link's own discovery query (what the Tapo app broadcasts): a 16-byte header with no body.
 const unsigned char kTapoQuery[] = {0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
@@ -52,6 +53,13 @@ const unsigned char kTapoQuery[] = {0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x
 // scrambled with the autokey XOR its TCP form uses (drivers/kasa.h) but without the length.
 const char kKasaQuery[] = R"({"system":{"get_sysinfo":{}}})";
 constexpr int kKasaPort = 9999;
+
+// WiZ's discovery query (pywizlight discovery.py, which Home Assistant uses): a registration that
+// registers nothing ("register": false, a made-up phone), broadcast to UDP 38899. Each WiZ device
+// answers {"method":"registration","result":{"mac":"...","success":true}}.
+const char kWizQuery[] = "{\"method\":\"registration\",\"params\":{\"phoneMac\":\"AAAAAAAAAAAA\",\"register\":false,"
+                         "\"phoneIp\":\"1.2.3.4\",\"id\":\"1\"}}";
+constexpr int kWizPort = 38899;
 
 constexpr size_t kMaxPacket = 9000;
 constexpr int kMaxRecords = 200;
@@ -185,6 +193,7 @@ struct Seen {
     std::map<std::string, std::string> from;                         // instance -> address the answer came from
     std::map<std::string, json> tapo;                                // address -> discovery result
     std::map<std::string, json> kasa;                                // address -> get_sysinfo (older Kasa protocol)
+    std::map<std::string, json> wiz;                                 // address -> WiZ answer's result
     std::map<std::string, std::map<std::string, std::string>> ssdp;  // address -> headers
     std::map<std::string, std::map<std::string, std::string>> dial;  // address -> headers of its DIAL answer
 };
@@ -267,6 +276,21 @@ void parse_kasa(const unsigned char *buf, size_t len, const std::string &src, Se
         if (it != sys["get_sysinfo"].end() && it->is_string()) keep[key] = *it;
     }
     seen.kasa[src] = keep;
+}
+
+// A WiZ device's answer: a JSON object whose "result" holds its MAC (12 hex digits). Anything else
+// heard on the port (another phone's registration, a device's own broadcast) is not an answer.
+std::string wiz_mac(const json &result) {
+    std::string mac = util::jget(result, "mac", std::string());
+    if (mac.size() != 12 || !std::all_of(mac.begin(), mac.end(), [](unsigned char c) { return isxdigit(c) != 0; })) return "";
+    return util::lower(mac);
+}
+
+void parse_wiz(const unsigned char *buf, size_t len, const std::string &src, Seen &seen) {
+    if (len < 2 || len > kMaxPacket) return;
+    const json j = json::parse(buf, buf + len, nullptr, false);
+    if (!j.is_object() || !j.contains("result") || !j["result"].is_object() || wiz_mac(j["result"]).empty()) return;
+    if (!seen.wiz.count(src)) seen.wiz[src] = j["result"];
 }
 
 void parse_ssdp(const char *buf, size_t len, const std::string &src, Seen &seen) {
@@ -427,6 +451,21 @@ std::vector<Device> merge(const Seen &seen) {
         if (r.contains("tpap") && r["tpap"].is_object()) d.info["tpap"] = r["tpap"].dump();
     }
 
+    for (const auto &w : seen.wiz) {
+        // Only the MAC is in the answer. The device's UDP port is the usual one, whatever another
+        // protocol announced from the same address (a HomeKit or Matter port is not it).
+        const std::string mac = wiz_mac(w.second);
+        Device &d = take(w.first, "wiz", "wiz");
+        if (d.kind != "wiz") continue;   // a Tapo device that also answered keeps its own id and port
+        d.id = "wiz:" + mac;
+        d.port = 0;
+        d.mac = lower_mac(mac.substr(0, 2) + ":" + mac.substr(2, 2) + ":" + mac.substr(4, 2) + ":" + mac.substr(6, 2) + ":" +
+                          mac.substr(8, 2) + ":" + mac.substr(10, 2));
+        if (d.name.empty()) d.name = "WiZ " + mac.substr(8);
+        const std::string module = clean(util::jget(w.second, "moduleName", std::string()));
+        if (!module.empty()) d.model = module;
+    }
+
     // Answers to the older Kasa query come last: a device that gives one speaks the open protocol,
     // which needs no pairing, so it is a Kasa device whatever else it announced (some also offer
     // HomeKit) and whatever its 20002 answer said. Kinds the Kasa driver does not switch keep the
@@ -517,6 +556,7 @@ std::vector<Device> devices_from(const std::vector<Packet> &packets) {
         else if (p.proto == "ssdp") parse_ssdp(p.bytes.data(), p.bytes.size(), p.src, seen);
         else if (p.proto == "tapo") parse_tapo(bytes, p.bytes.size(), p.src, seen);
         else if (p.proto == "kasa") parse_kasa(bytes, p.bytes.size(), p.src, seen);
+        else if (p.proto == "wiz") parse_wiz(bytes, p.bytes.size(), p.src, seen);
     }
     return merge(seen);
 }
@@ -663,7 +703,17 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
     const int ssdp = udp_socket(local, 0, false);
     const int tapo = udp_socket(local, 0, false);
     const int kasa = udp_socket(local, 0, false);
-    if (m_direct < 0 && tapo < 0) { err = "Could not open a network socket."; return false; }
+    // WiZ: sent from port 38899 of this device's address, as pywizlight does, so that an answer
+    // sent to that port is heard as well as one sent back to the asking port; any free port when
+    // 38899 is taken.
+    int wiz = udp_socket(local, kWizPort, false);
+    if (wiz < 0) wiz = udp_socket(local, 0, false);
+    if (m_direct < 0 && tapo < 0) {
+        for (const int fd : {m_group, m_direct, ssdp, tapo, kasa, wiz})
+            if (fd >= 0) close(fd);
+        err = "Could not open a network socket.";
+        return false;
+    }
     if (m_group >= 0) {
         ip_mreq join{};
         inet_pton(AF_INET, "224.0.0.251", &join.imr_multiaddr);
@@ -694,14 +744,18 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
         send_to(kasa, kasa_query.data(), kasa_query.size(), "255.255.255.255", kKasaPort);
         send_to(kasa, kasa_query.data(), kasa_query.size(), net.broadcast.c_str(), kKasaPort);
     };
+    auto ask_wiz = [&] {
+        send_to(wiz, kWizQuery, sizeof(kWizQuery) - 1, "255.255.255.255", kWizPort);
+        send_to(wiz, kWizQuery, sizeof(kWizQuery) - 1, net.broadcast.c_str(), kWizPort);
+    };
     auto ask_ssdp = [&] {
         send_to(ssdp, search.data(), search.size(), "239.255.255.250", 1900);
         send_to(ssdp, dial_search.data(), dial_search.size(), "239.255.255.250", 1900);
     };
     struct Step { int at_ms; std::function<void()> run; bool done; };
-    std::vector<Step> steps = {{0, ask_mdns, false},    {0, ask_tapo, false},    {0, ask_ssdp, false},
-                               {1000, ask_mdns, false}, {1000, ask_tapo, false}, {1500, ask_ssdp, false},
-                               {3000, ask_mdns, false}, {3000, ask_tapo, false}};
+    std::vector<Step> steps = {{0, ask_mdns, false},    {0, ask_tapo, false},    {0, ask_ssdp, false},    {0, ask_wiz, false},
+                               {1000, ask_mdns, false}, {1000, ask_tapo, false}, {1500, ask_ssdp, false}, {1000, ask_wiz, false},
+                               {3000, ask_mdns, false}, {3000, ask_tapo, false}, {3000, ask_wiz, false}};
 
     Seen seen;
     std::set<std::string> told;
@@ -712,10 +766,11 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
         if (elapsed >= opt.listen_ms || (opt.cancel && *opt.cancel)) break;
         for (auto &s : steps)
             if (!s.done && elapsed >= s.at_ms) { s.run(); s.done = true; }
-        pollfd fds[5] = {{m_group, POLLIN, 0}, {m_direct, POLLIN, 0}, {ssdp, POLLIN, 0}, {tapo, POLLIN, 0}, {kasa, POLLIN, 0}};
-        if (poll(fds, 5, 100) <= 0) continue;
+        pollfd fds[6] = {{m_group, POLLIN, 0}, {m_direct, POLLIN, 0}, {ssdp, POLLIN, 0}, {tapo, POLLIN, 0}, {kasa, POLLIN, 0},
+                         {wiz, POLLIN, 0}};
+        if (poll(fds, 6, 100) <= 0) continue;
         bool news = false;
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < 6; ++i) {
             if (fds[i].fd < 0 || !(fds[i].revents & POLLIN)) continue;
             for (int burst = 0; burst < 64; ++burst) {
                 sockaddr_in from{};
@@ -734,7 +789,8 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
                 if (i <= 1) parse_mdns(buf.data(), len, src, seen);
                 else if (i == 2) parse_ssdp(reinterpret_cast<const char *>(buf.data()), len, src, seen);
                 else if (i == 3) parse_tapo(buf.data(), len, src, seen);
-                else parse_kasa(buf.data(), len, src, seen);
+                else if (i == 4) parse_kasa(buf.data(), len, src, seen);
+                else parse_wiz(buf.data(), len, src, seen);
                 news = true;
             }
         }
@@ -742,7 +798,7 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
             for (const Device &d : merge(seen))
                 if (told.insert(d.id).second) opt.on_device(d);
     }
-    for (const int fd : {m_group, m_direct, ssdp, tapo, kasa})
+    for (const int fd : {m_group, m_direct, ssdp, tapo, kasa, wiz})
         if (fd >= 0) close(fd);
     out = merge(seen);
     return true;

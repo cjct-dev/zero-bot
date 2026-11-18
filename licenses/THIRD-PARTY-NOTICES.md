@@ -60,3 +60,11 @@ Version 2.0 (full text in `Apache-2.0.txt` beside this file). Neither has a NOTI
 
 The C++ code in `hue.cpp` is a re-write; nothing was copied, and the file lists what each part
 follows. Zero Bot is not made or endorsed by Signify, the maker of Philips Hue.
+
+### WiZ driver (`src/smarthome/drivers/wiz.cpp`)
+
+The protocol handling (the methods, how a module name says what a device can do, the colour
+conversion to the red, green, blue and white LEDs, signed requests) follows pywizlight,
+github.com/sbidy/pywizlight: MIT License, Copyright (c) 2020 Stephan Traub. The simulated device in
+`tests/mocks/wiz/` follows the answers recorded in its tests. The MIT permission notice and
+disclaimer are as quoted above for the Fire TV driver.
