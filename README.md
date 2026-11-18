@@ -33,6 +33,7 @@ is built in.
 | Share prices | "How's the Apple share price doing?" |
 | Time zones | "What time is it in Tokyo?", "I've just landed in New York." |
 | Your music | "Play a random rock song.", "Play something by ABBA." |
+| Internet radio, from your own list of stations | "Play Radio 2.", "Put on the jazz station.", "Stop the radio." |
 | A TV | "Turn on the TV.", "Volume up a bit.", "Channel down." |
 | Smart-home devices on your own network | "Turn on the bed heater.", "Is the kettle on?", "Switch everything off." |
 | The device itself | "Turn your volume down to 40 percent." |
@@ -53,7 +54,7 @@ needs a [Tavily](https://tavily.com) key.
 | **F** / **X** (or **fn**+**F** / **fn**+**X**) | Scroll the conversation up and down. While typing, use **fn**+**F** / **fn**+**X**. |
 | **fn**+**S** / **fn**+**D** | Volume down / up. **fn**+**A** mutes and unmutes. |
 | **fn**+**U** / **fn**+**I** | Screen brightness down / up. |
-| **fn**+**Q** / **fn**+**W** / **fn**+**E** | Music: pause or resume / previous track / next track. |
+| **fn**+**Q** / **fn**+**W** / **fn**+**E** | Music: pause or resume / previous track / next track. With a radio station on: pause or resume / previous station in your list / next station. |
 
 You do not have to wait for it to finish:
 
@@ -141,6 +142,8 @@ service's list. You can change every model under *Assistant* in settings.
 - **Web search:** add a Tavily key under *AI service → Web search key*.
 - **Music:** copy your music into `~/Music` on the device, then choose *Music library* in
   settings to rescan. MP3 tags (title, artist, album, genre) are read automatically.
+- **Radio:** list the stations you listen to in `~/.config/zero-bot/radio.json` (see
+  [Radio](#radio) below). The app comes with none.
 - **Home city and country, your name, time zone:** under *Device* in settings, or just tell the
   assistant. The country tells apart cities that share a name (London, Canada).
 - **Internet through your phone:** pair the phone with the device once in the system Bluetooth
@@ -160,7 +163,7 @@ Press **TAB** twice. Move with **fn**+**F**/**X** (or plain **F**/**X**), change
 |---|---|
 | Assistant | Language, vision, speech-to-text and text-to-speech models; voice; spoken replies on/off; fast replies; the assistant's name |
 | Device | Volume, brightness, microphone gain, time zone, start at power-on, internet via phone, microphone, flip camera image, home city and country, your name, date order, units |
-| Your data | Calendar (edit, add, delete, delete all), reminders and timers (cancel one or all), memory (edit, add, delete, forget everything), TV remote, smart home (devices by room, setting up, the Tapo account), music library, start a new conversation |
+| Your data | Calendar (edit, add, delete, delete all), reminders and timers (cancel one or all), memory (edit, add, delete, forget everything), TV remote, smart home (devices by room, setting up, the Tapo account), music library, radio stations (what was read from your list, play one to try it), start a new conversation |
 | AI service | Address, API key, web search key, compress audio |
 | About | Status and connection test, exit to launcher |
 
@@ -210,6 +213,51 @@ no pointing: its volume, menu keys, apps and power.
 For anything else, *Your data → TV remote → Learn a button* records a button from the real
 remote. Give it a standard name (`power`, `volume_up`, `mute`, `input`, …) to replace the
 built-in code, or any name of your own.
+
+### Radio
+
+Zero Bot plays live internet radio from your own list of stations. It comes with none, and while
+the list is empty the assistant is not offered radio at all. Put your stations in
+`~/.config/zero-bot/radio.json`:
+
+```json
+{
+  "stations": [
+    {"name": "Harbour FM", "nicknames": ["Harbour"], "url": "https://stream.example.org/harbour.mp3"},
+    {"name": "Night Jazz", "nicknames": ["the jazz station"],
+     "url": "https://stream.example.org/jazz-128.aac",
+     "low_data_url": "https://stream.example.org/jazz-48.aac"}
+  ]
+}
+```
+
+- `name` is what the assistant and the status bar call the station. `nicknames` are other names
+  you use for it ("Radio 2" for a longer name); numbers said as words match too ("radio two").
+- `url` is the stream itself: an MP3 or AAC stream, an HLS playlist (`.m3u8`), or a `.pls` or
+  `.m3u` playlist file that names one. A web page with a player on it is not a stream, and the
+  assistant says so.
+- `low_data_url` (optional) is used when the internet comes through your phone, where data may
+  cost money. Without one, the assistant mentions that radio uses about 30 to 70 MB an hour.
+- A change to the file is used from the next request; no restart is needed. *Your data → Radio
+  stations* shows what the app made of the file (with anything it could not use, and why), and
+  plays a station so you can try it.
+- **Finding addresses:** [radio-browser.info](https://www.radio-browser.info) is a free directory
+  of stations' stream addresses: search for the station and copy its stream address. Where a
+  station offers several qualities, 96 to 128 kbit/s suits the speaker and 48 kbit/s the phone.
+  For HLS, use a playlist of one quality, not the list of all of them, and prefer a live-only one:
+  the player reads the playlist again every few seconds, and a long one with hours of rewind can
+  cost more data than the sound.
+- **Abroad:** many stations play only in their home country, and some take programmes off their
+  worldwide stream for rights reasons (sport especially). When a station refuses to play, the
+  assistant says it may not be available in this country. Broadcasters that have a worldwide
+  stream of their own are the better choice for a traveller.
+
+Say "play Harbour FM" or "put on the jazz station"; "stop the radio" or **ESC** stops it. The
+radio pauses while you talk and while the assistant answers, then rejoins the live broadcast.
+**fn**+**Q** pauses and resumes, **fn**+**W** and **fn**+**E** move to the previous and next
+station in your list, and the status bar shows the station's name. If a stream stops and cannot
+be joined again (the station is off the air, the Wi-Fi has gone), a note on the screen says so. A
+stream does not say what is on; with web search, the assistant can look the schedule up.
 
 ### Smart home
 
@@ -296,6 +344,9 @@ devices, with or without this app.
   password.
 - Calendar, reminders, memories and learned remote buttons are plain JSON files in
   `~/.local/share/zero-bot/`. Delete a file to reset that part.
+- Your radio stations are in `~/.config/zero-bot/radio.json`. Their names are sent to your AI
+  service with each request so that it can play them; the stream addresses never are. A station
+  is played straight from its own server.
 - Smart-home devices are kept per network in `~/.local/share/zero-bot/smarthome.json`, readable
   only by your user, with what a device needs to be talked to (for Tapo, the account e-mail and a
   SHA-1 of its password). While the assistant may use devices, their names and states are sent
@@ -360,14 +411,18 @@ build/cli/zero_bot --tool weather '{"location":"Lisbon"}'
 Model names come from `~/.config/zero-bot/settings.json` (`llm_model`, `stt_model`,
 `tts_model`). Set `ZB_DRY_RUN=1` to stop tools from playing music, sending infrared or switching
 smart-home devices. `--home-refresh` reads the smart-home devices saved for the current network.
+`--prompt` and `--schema` print the system prompt and the tools a request would be given right
+now (radio, web search and the smart home appear only once they are set up).
+`ZB_TEST_TETHER=1` makes the radio behave as on a phone's connection.
 `ZB_TEST_NETWORK=1` replaces the real network with a stand-in "Test network" on which only
 devices at a 127.x address are ever contacted and nothing is scanned; the tests use it.
 
 `tests/agent_eval.py` runs a scored set of requests through this build and reports which tools
 were called, whether the answers hold up, and how long each took. See the notes at the top of
 the file. `tests/run_unit.sh` builds and runs the tests that need neither a device nor an AI
-service (the smart-home layer, and the timers: the timer tool, how timers are stored, the
-countdown and the alarm, and the Fire TV and HomeKit drivers), `tests/tapo_e2e.py` runs the
+service (the smart-home layer, the timers: the timer tool, how timers are stored, the
+countdown and the alarm, the radio: the station file, the radio tool and the check of a stream
+against a pretend radio server, and the Fire TV and HomeKit drivers), `tests/tapo_e2e.py` runs the
 command-line build against two simulated Tapo plugs, `tests/firetv_e2e.py` and
 `tests/homekit_e2e.py` run those drivers against a simulated TV and a simulated HomeKit bridge, and
 `tests/home_chat_e2e.py` runs its conversation loop against a scripted chat
@@ -404,13 +459,13 @@ service to check that a change needing your yes waits for one.
 
 ```
 src/agent/      the conversation loop, prompt, tools, speech queue and service client
-src/core/       settings, calendar/reminder/timer/memory store, timers, music library, utilities
+src/core/       settings, calendar/reminder/timer/memory store, timers, music library, radio stations, utilities
 src/platform/   display, keyboard, audio, camera, infrared, subprocess helpers
 src/ui/         chat screen, menus, settings pages, alarm banner, app controller
 src/net/        HTTP client (libcurl)
 src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers
 scripts/        toolchain setup, packaging, deployment
-tests/          scored agent test set, unit tests (smart home, timers, Fire TV, HomeKit), end-to-end tests with simulated devices
+tests/          scored agent test set, unit tests (smart home, timers, radio, Fire TV, HomeKit), end-to-end tests with simulated devices
 licenses/       third-party notices and the Apache-2.0 text
 packaging/      launcher entry and icon
 extras/         device-tree overlay for the Wi-Fi channel fix

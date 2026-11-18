@@ -46,6 +46,7 @@ struct Response {
     std::string body;
     std::string error;                       // transport-level failure, empty if none
     std::string peer_cert_pem;               // with want_peer_cert: the peer's own certificate
+    std::string content_type;                // the answer's Content-Type header, as sent ("" if none)
     bool ok() const { return error.empty() && status >= 200 && status < 300; }
     std::string describe() const;            // short human-readable failure reason
 };

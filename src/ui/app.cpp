@@ -15,6 +15,7 @@
 #include "ui/breath_view.h"
 #include "agent/llm.h"
 #include "core/music_lib.h"
+#include "core/radio.h"
 #include "core/settings.h"
 #include "core/store.h"
 #include "core/tether.h"
@@ -340,12 +341,14 @@ struct App {
             case Key::MediaPlay:
                 if (ev.state != 1) return true;
                 if (!music.playing()) show_level("No music playing. Ask for some.");
+                else if (music.live()) { music.pause(!music.paused()); show_level(music.paused() ? "Radio paused" : "Radio on"); }
                 else { music.pause(!music.paused()); show_level(music.paused() ? "Music paused" : "Music playing"); }
                 return true;
             case Key::MediaNext:
             case Key::MediaPrevious:
                 if (ev.state != 1) return true;
                 if (!music.playing()) { show_level("No music playing. Ask for some."); return true; }
+                if (music.live()) { change_station(ev.key == Key::MediaNext ? 1 : -1); return true; }
                 if (music.paused()) music.pause(false);
                 if (ev.key == Key::MediaNext) music.next(); else music.previous();
                 show_level(ev.key == Key::MediaNext ? "Next track" : "Previous track");
@@ -353,6 +356,21 @@ struct App {
             default:
                 return false;
         }
+    }
+
+    // fn+E and fn+W while a station plays: the next or previous station in the user's list. No
+    // check of the stream here (that would wait on the network on this thread); a station that
+    // will not play is given up by the player, and update_indicators() reports it.
+    void change_station(int step) {
+        const std::vector<radio::Station> list = radio::stations();
+        audio::Music &music = audio::Music::get();
+        if (list.size() < 2) { show_level(list.empty() ? "No radio stations set up" : "No other station"); return; }
+        const int at = radio::find(list, music.title());
+        const int n = static_cast<int>(list.size());
+        const radio::Station &next = list[static_cast<size_t>(((at < 0 ? 0 : at + step) % n + n) % n)];
+        music.play_live(radio::stream_for(next, radio::metered_link()), next.name);
+        show_level(next.name);
+        last_indicators = 0;   // the status bar shows the new name at the next tick
     }
 
     void handle_key(const KeyEvent &ev) {
@@ -520,8 +538,16 @@ struct App {
         charging = status == "Charging";
 #endif
         chat.set_indicators(online, phone, battery, charging, util::format_time(time(nullptr), "%H:%M"));
-        const std::string current = audio::Music::get().current();
-        if (current.empty()) chat.set_now_playing("");
+        audio::Music &music = audio::Music::get();
+        const std::string current = music.current();
+        // A live station has a name and no track; one that has ended by itself says why, once.
+        const std::string ended = music.take_problem();
+        if (!ended.empty()) {
+            chat.add_note(ended, theme::kListen);
+            Agent::get().add_context(ended);
+        }
+        if (music.live()) chat.set_now_playing(music.title());
+        else if (current.empty()) chat.set_now_playing("");
         else {
             const Track t = MusicLibrary::get().lookup(current);
             chat.set_now_playing(t.artist.empty() ? t.title : t.title + " · " + t.artist);
@@ -683,6 +709,9 @@ struct App {
         chat.set_status(s.agent_name, theme::kAccent);
         chat.set_now_playing("Dancing Queen · ABBA");
         snap("speaking");
+        chat.set_now_playing("Harbour Classic FM");      // a radio station shows its name, as the player gives it
+        snap("radio-playing");
+        chat.set_now_playing("Dancing Queen · ABBA");
 
         for (int i = 0; i < 40; ++i) {
             const float lvl = 0.15f + 0.75f * static_cast<float>((i * 37 % 17)) / 17.0f * (i % 9 < 6 ? 1.f : 0.25f);
@@ -856,6 +885,14 @@ struct App {
             menu.close();
         }
 
+        // Made-up stations for the radio page, one entry of them without its address.
+        util::make_dirs(util::config_dir());
+        util::write_file_atomic(radio::path(), R"({"stations": [
+            {"name": "Harbour Classic FM", "nicknames": ["Harbour"], "url": "https://stream.example.org/harbour.mp3"},
+            {"name": "Valley Radio", "url": "https://stream.example.org/valley.aac",
+             "low_data_url": "https://stream.example.org/valley-low.aac"},
+            {"name": "Night Jazz", "url": "https://stream.example.org/jazz/live.m3u8"},
+            {"name": "Coast News"}]})");
         open_menu();
         snap("settings");
         KeyEvent down; down.key = Key::Down; down.state = 1;
@@ -927,7 +964,11 @@ struct App {
         menu.key(enter);
         snap("tapo-account");
         menu.key(esc); menu.key(esc);
-        for (int i = 0; i < 10; ++i) menu.key(down);
+        menu.key(down); menu.key(down);                // "Radio stations"
+        menu.key(enter);
+        snap("radio-stations");
+        menu.key(esc);
+        for (int i = 0; i < 9; ++i) menu.key(down);
         snap("settings-service");
         (void)flight; (void)birthday;
         menu.close();

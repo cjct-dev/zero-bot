@@ -11,6 +11,7 @@
 #include "agent/calc.h"
 #include "agent/llm.h"
 #include "core/music_lib.h"
+#include "core/radio.h"
 #include "core/settings.h"
 #include "core/store.h"
 #include "core/tether.h"
@@ -673,6 +674,19 @@ std::string t_set_timezone(const json &a, Context &ctx) {
 }
 
 // ---------------------------------------------------------------- music
+// A request for music that names a radio station ("play Radio 2") when the music library is what
+// the model reached for: say how radio stands, so that the reply can say so too.
+void radio_hint(const json &a, json &out) {
+    std::string asked = util::lower(str_arg(a, "query") + " " + str_arg(a, "title") + " " + str_arg(a, "artist") + " " + str_arg(a, "album"));
+    for (char &c : asked)
+        if (!isalnum(static_cast<unsigned char>(c))) c = ' ';
+    const auto words = util::split(asked, ' ');
+    if (std::find(words.begin(), words.end(), "radio") == words.end() && std::find(words.begin(), words.end(), "fm") == words.end()) return;
+    out["radio"] = radio::stations().empty()
+                       ? "No radio stations are set up, so radio cannot play: the user can list their own stations (the README explains how)."
+                       : "A radio station is played with the radio tool, not from the music library.";
+}
+
 std::string t_music(const json &a, Context &ctx) {
     const std::string action = util::lower(str_arg(a, "action"));
     audio::Music &player = audio::Music::get();
@@ -680,10 +694,14 @@ std::string t_music(const json &a, Context &ctx) {
     if (action == "stop") { if (!dry_run()) player.stop(); return "music stopped"; }
     if (action == "next") {
         if (!player.playing()) return fail("nothing is playing");
+        if (player.live()) return fail("a radio station is playing, not a list of songs; another station is started with radio");
         player.next();
         return "skipped to the next track";
     }
     if (action == "now_playing") {
+        if (player.live())
+            return json{{"radio_station", player.title()},
+                        {"note", "a live station: the stream does not say which programme or song is on"}}.dump();
         const std::string cur = player.current();
         if (cur.empty()) return "nothing is playing";
         const Track t = lib.lookup(cur);
@@ -700,15 +718,22 @@ std::string t_music(const json &a, Context &ctx) {
     }
     if (action != "play" && action != "search") return fail("action must be play, search, stop, next, now_playing or library");
 
-    if (lib.size() == 0) return fail("the music library is empty; songs go in " + Settings::get().eff_music_dir());
+    if (lib.size() == 0) {
+        json hint = json::object();
+        radio_hint(a, hint);
+        return fail("the music library is empty; songs go in " + Settings::get().eff_music_dir() +
+                    (hint.contains("radio") ? ". " + hint["radio"].get<std::string>() : std::string()));
+    }
     std::vector<Track> found = lib.find(str_arg(a, "query"), str_arg(a, "artist"), str_arg(a, "genre"),
                                         str_arg(a, "title"), str_arg(a, "album"));
     if (found.empty()) {
         json g = json::array();
         for (auto &x : lib.genres()) { g.push_back(x); if (g.size() >= 20) break; }
-        return json{{"error", "nothing in the library matches, so nothing was started"},
+        json out = {{"error", "nothing in the library matches, so nothing was started"},
                     {"hint", "tell the user it is not in their library; these genres are"},
-                    {"genres", g}}.dump(-1, ' ', false, json::error_handler_t::replace);
+                    {"genres", g}};
+        radio_hint(a, out);
+        return out.dump(-1, ' ', false, json::error_handler_t::replace);
     }
     if (action == "search") {
         json arr = json::array();
@@ -735,6 +760,16 @@ std::string t_music(const json &a, Context &ctx) {
     const Track &first = found[0];
     return json{{"now_playing", first.title + (first.artist.empty() ? "" : " by " + first.artist)},
                 {"queued_tracks", found.size()}}.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+// ---------------------------------------------------------------- radio
+// The stations, the check of a stream and the tool's wording are in core/radio.
+std::string t_radio(const json &a, Context &ctx) {
+    radio::ToolEnv env;
+    env.dry_run = dry_run();
+    env.in_conversation = ctx.in_conversation;
+    env.cancel = ctx.cancel;
+    return radio::run_tool(a, env);
 }
 
 // ---------------------------------------------------------------- TV remote
@@ -830,7 +865,7 @@ json E(const std::string &desc, std::vector<std::string> values) {
 // model supplies the confirmation up front in "say", and when the tool succeeds that is spoken
 // straight away instead of paying for a second model call just to say "done".
 const char *const kConfirmable[] = {"calendar_add", "calendar_update", "calendar_delete", "timer", "reminder_set", "reminder_cancel",
-                                    "memory_save", "memory_delete", "music", "tv_remote", "device", "smart_home", "breathe"};
+                                    "memory_save", "memory_delete", "music", "radio", "tv_remote", "device", "smart_home", "breathe"};
 
 std::vector<Tool> build() {
     std::vector<Tool> list = {
@@ -974,6 +1009,8 @@ std::vector<Tool> build() {
               {"query", S("Loose words matched against title, artist, album and genre together")},
               {"shuffle", B("Shuffle the matches (default true unless one specific song was asked for)")}},
              {"action"}), t_music},
+        // Description and parameters are made from the user's station list (radio::tool_spec).
+        {"radio", "Tuning in", "", obj({}), t_radio},
         {"tv_remote", "Using the remote",
          "Press a button on a TV using the device's infrared transmitter (the user points the top edge of the "
          "device at the TV). Send one key per call; use repeat for several presses, e.g. volume_up with repeat 5. "
@@ -1015,7 +1052,7 @@ std::vector<Tool> build() {
         if (t.name == "music") desc += " Only for stop and next; omit for the other actions.";
         if (t.name == "timer") desc += " Only for start, cancel and add_time; omit for list.";
         if (t.name == "device") desc += " Omit for status.";
-        if (t.name == "smart_home") continue;   // its "say" comes with home::tool_spec()
+        if (t.name == "smart_home" || t.name == "radio") continue;   // their "say" comes with their tool_spec()
         t.parameters["properties"]["say"] = S(desc);
     }
     return list;
@@ -1035,13 +1072,16 @@ json schema() {
     // The smart-home tool exists only on a network the user has scanned, and names exactly the
     // things saved for it. The names are passed as allowed values, as data, never as instructions.
     const json home_spec = home::tool_spec();
+    // Radio exists only once the user has listed stations; the file is read again when it changes.
+    const json radio_spec = radio::tool_spec(!no_search);
     for (auto &t : all()) {
         if (no_search && t.name == "web_search") continue;
         json description = t.description, parameters = t.parameters;
-        if (t.name == "smart_home") {
-            if (home_spec.is_null()) continue;
-            description = home_spec["description"];
-            parameters = home_spec["parameters"];
+        if (t.name == "smart_home" || t.name == "radio") {
+            const json &spec = t.name == "radio" ? radio_spec : home_spec;
+            if (spec.is_null()) continue;
+            description = spec["description"];
+            parameters = spec["parameters"];
         }
         arr.push_back({{"type", "function"},
                        {"function", {{"name", t.name}, {"description", description}, {"parameters", parameters}}}});
@@ -1070,6 +1110,8 @@ std::string confirmation(const std::string &name, const std::string &raw_args, c
     }
     // A question to put to the user first, a status, or a group where something failed.
     if (name == "smart_home" && !home::tool_say_ok(args, result)) return "";
+    // A warning about mobile data has to be passed on in the model's own words.
+    if (name == "radio" && result.find("\"note\"") != std::string::npos) return "";
     if (name == "timer") {   // list: the time left is in the result, not known up front
         const std::string action = util::lower(str_arg(args, "action"));
         if (action != "start" && action != "cancel" && action != "add_time") return "";

@@ -40,7 +40,8 @@ src/main.cpp        entry point and the command-line test modes (section 6)
 src/agent/          the request loop (agent), service client (llm), system prompt (prompt),
                     tools, sentence queue for speech (speech), arithmetic (calc)
 src/core/           settings, calendar/reminder/timer/memory store, timers (the timer tool, which
-                    timer words mean, the alarm's logic), music library, breathing timing,
+                    timer words mean, the alarm's logic), music library, radio (the user's station
+                    file, the radio tool, the check of a stream), breathing timing,
                     start-at-power-on, phone tethering, utilities (dates, files, strings)
 src/net/            libcurl wrapper with a shared connection/DNS/TLS-session cache
 src/platform/       display, keyboard, audio (recorder, speaker, music), codecs, camera,
@@ -68,7 +69,8 @@ from another thread. Slow work started from a menu uses `background(work, done)`
 `settings_pages.cpp`.
 
 State on disk (all under the user's home, mode 0600 where they hold secrets):
-`~/.config/zero-bot/settings.json`, and in `~/.local/share/zero-bot/`: `calendar.json`,
+`~/.config/zero-bot/settings.json`, `~/.config/zero-bot/radio.json` (the user's own stations,
+written by hand; the app ships none and never writes it), and in `~/.local/share/zero-bot/`: `calendar.json`,
 `reminders.json` (running timers too, as records with `"kind": "timer"`), `memory.json`,
 `ir_learned.json`, `music_index.json`, `smarthome.json`.
 
@@ -149,8 +151,11 @@ What exists:
   `tests/unit/http_test.cpp` (the request
   options for devices, against a local peer) and `tests/unit/timers_test.cpp` (the timer tool,
   storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it keeps everything
-  it writes in a temporary folder of its own, so running it by hand is safe too), then runs the
-  timer tool through `build/cli/zero_bot --tool timer` if that is built. `ZB_UPDATE_SNAPSHOTS=1`
+  it writes in a temporary folder of its own, so running it by hand is safe too) and
+  `tests/unit/radio_test.cpp` (the station file, names and nicknames, the tool absent without
+  stations, the check of a stream against `tests/unit/radio_peer.py`, the player's live mode
+  against a stand-in `ffplay`), then runs the timer and radio tools through `build/cli/zero_bot
+  --tool` and checks `--prompt`/`--schema` say nothing of radio without stations, if that is built. `ZB_UPDATE_SNAPSHOTS=1`
   rewrites the snapshots: read the diff before committing it. `ZB_BUILD_WRAPPER=cmd` runs each
   compile through `cmd`.
 - **Tapo end to end**: `tests/tapo_e2e.py` runs `build/cli/zero_bot` against two simulated plugs
@@ -175,6 +180,7 @@ What exists:
   first tool), `--talk-over MS[:text]` (hold the microphone open during a request),
   `--follow-ups "a|b|c"` (chain requests inside one run), `--stt FILE.wav`, `--tts "text" OUT.raw`,
   `--discover` (smart-home scan), `--home-refresh` (read saved smart-home devices),
+  `--prompt` / `--schema` (the system prompt and tools a request would get now),
   `--shots DIR` (render every screen to PNG; `sim` build), `--keydump`, `--version`.
 - **Scored agent set**: `tests/agent_eval.py` runs spoken-style requests through the `cli`
   build against a live service and checks tool calls, arguments and answers. It needs
@@ -186,7 +192,8 @@ What exists:
   devices), `ZB_NO_AUDIO=1`, `ZB_FAKE_CAMERA=file.jpg`, `ZB_FAST_MODE=0|1`, `ZB_DATE_ORDER=dmy|mdy`,
   `ZB_TEST_NETWORK=1` (a stand-in network, id `net-58678b031ae6e411`, instead of the real one:
   only devices at 127.x addresses are contacted and nothing is scanned; use it for any smart-home
-  test on a PC, never `--discover`).
+  test on a PC, never `--discover`), `ZB_TEST_TETHER=1` (the radio acts as on a phone's
+  connection).
 - **Screens**: `build/sim/zero_bot --shots out/` and look at the PNGs. Every UI change should
   be checked this way before it goes to the device. The script in `App::render_shots` walks
   the menus by counting key presses, so adding a settings row shifts later screenshots: fix
@@ -254,6 +261,15 @@ key, real audio), say so plainly rather than implying it was.
 - Music must not start before the spoken reply, nor resume between a question and its answer.
   That is what the hold flags are for.
 - `pw-cat` raw input counts underruns while its source is slow to start; that is not a fault.
+- Radio: an HLS master playlist can point at variants that carry hours of rewind. One public
+  broadcaster's was a ~200 KB playlist that a player re-reads every 6.4 s segment, more data than
+  the sound itself; its live-only variant of one quality was 600 bytes. The README tells users to
+  pick such an address. A live stream is never suspended under a hold, it is ended and joined
+  again (`Music::play_live`): a stalled connection is dropped by the server, and resuming would
+  play stale audio. ffplay refuses to start on an option nothing consumed, so add player options
+  only after checking them with `ffprobe` (`-rw_timeout` is safe for any http(s) address).
+- ICY `StreamTitle` on the stations tried was empty or carried advert markers, so "what's on" is
+  left to web search rather than read from the stream.
 
 **The model**
 - Turning reasoning off made requests about 2 s faster and wrong about a fifth of the time
