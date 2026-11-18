@@ -58,9 +58,10 @@ tests/              scored agent test set (needs a live service), device-free un
                     (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit, Hue, keys,
                     radio, tools), Tapo, Fire TV, HomeKit and Hue end to end (tapo_e2e.py,
                     firetv_e2e.py, homekit_e2e.py, hue_e2e.py),
-                    the loop against a scripted chat service (home_chat_e2e.py, and
-                    selfheal_chat_e2e.py for failures), simulated devices
-                    and service (mocks/)
+                    the loop against a scripted chat service (home_chat_e2e.py, agent_loop_test.py,
+                    and selfheal_chat_e2e.py for failures), the generated request set (suite/,
+                    agent_suite.py), golden screenshots (shots_compare.py, golden/shots/),
+                    simulated devices and service (mocks/)
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
 ```
 
@@ -216,6 +217,17 @@ What exists:
   tools ran (the script can answer with an HTTP status, an error inside the stream, raw arguments
   or several calls; a pretend plug can refuse to switch, `{"refuse_set": true}`). Use the scripted
   service for any change to the loop that a live model cannot be trusted to test.
+- **The loop without a live service**: `tests/agent_loop_test.py` (run by `run_unit.sh` when the
+  `cli` build exists; about 15 s; `--only NAME`, `-v` prints every run) drives `--ask`/`--chat`
+  against `tests/mocks/fake_model.py`, whose rules match the newest user message, tool results,
+  the results since the user spoke, whether tools are offered and the reasoning field, and whose
+  replies can be split, delayed, failed (any HTTP status, an error in the stream) or carry several
+  calls. It checks what the app printed and what it sent: the held draft and second look, the
+  claim guards (a table of phrasings that must and must not trip them), `say` confirmations, tool
+  errors, steering, talk-over, the round budget and its apology, retries and service errors, think
+  markers, spelt-out dates, history trimming, smart-home questions, a byte-identical system prompt
+  and the first request's size (a tripwire at 32,000 bytes: raise it knowingly). Add a scenario
+  here with any change to `agent.cpp` or `llm.cpp`.
 
 - **Command-line modes** in `src/main.cpp` (work in the `cli` build):
   `--ask "text"`, `--chat`, `--tool NAME 'JSON'`, `--steer "text"` (inject input during the
@@ -230,6 +242,17 @@ What exists:
   etc. Use `--only`, `--repeat N` (models are not deterministic: repeat a changed case 5 to 8
   times) and `--fast 0|1`. Expect one or two flaky cases; compare against a run of the
   previous code before blaming a change.
+- **Generated request set**: `tests/suite/generate.py` (fixed seed) writes `tests/suite/cases.json`,
+  about 570 requests in categories (timer, reminder, calendar, weather, home, route, ...) with
+  feature tags (`asr`, `lang-xx`, `uk`, `us`, `followup`, `compound`, `notool`, `clarify`,
+  `search`, `camera`). Edit the templates, regenerate, read the diff; `--check` says whether the
+  file is current. `tests/agent_suite.py` runs it with the scored set's machinery and the same
+  environment: `--list`, `--tags a,b+c` (`+` means both), `--skip-tags`, `--only`,
+  `--sample N --seed S` (a few from every category), plus `--repeat`, `--fast`, `--json`. It
+  prints pass rates per tag and the slowest cases. Checks are declarative (`"kind"` in the file,
+  compiled by `KINDS` in the runner) and accept every right answer: a timer or a reminder for "in
+  20 minutes", several right tools, any of the right numbers. Run a sample or the tags you
+  touched, not the whole set, unless asked.
 - **Environment switches**: `ZB_DRY_RUN=1` (tools do not play music, send infrared or switch
   devices), `ZB_NO_AUDIO=1`, `ZB_FAKE_CAMERA=file.jpg`, `ZB_FAST_MODE=0|1`, `ZB_DATE_ORDER=dmy|mdy`,
   `ZB_TEST_NETWORK=1` (a stand-in network, id `net-58678b031ae6e411`, instead of the real one:
@@ -239,7 +262,15 @@ What exists:
 - **Screens**: `build/sim/zero_bot --shots out/` and look at the PNGs. Every UI change should
   be checked this way before it goes to the device. The script in `App::render_shots` walks
   the menus by counting key presses, so adding a settings row shifts later screenshots: fix
-  the counts in the same change.
+  the counts in the same change. `tests/shots_compare.py` renders them into a temporary folder
+  and compares each with `tests/golden/shots/` (small tolerance; differences drawn to
+  `build/shots-diff/`), with the wall clock pinned (`tests/shots/fixclock.c`, built with `cc` and
+  preloaded) and stand-ins on `PATH` for the audio, volume and network helpers, so it plays no
+  sound and changes nothing on the PC (plain `--shots` plays a chime and sets the system volume).
+  After an intended change, `ZB_UPDATE_SHOTS=1 tests/shots_compare.py` and look at every changed
+  image before committing. The images depend on the installed fonts: refresh them on a new
+  machine first. `tests/golden/shots/masks.json` hides the strip where the now-playing title
+  scrolls with real time.
 - **A fresh state per test**: point `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` at
   a temporary folder. Do the same on the device so the user's calendar and data are untouched.
 

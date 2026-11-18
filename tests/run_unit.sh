@@ -13,10 +13,10 @@
 #
 # When the command-line build exists (build/cli/zero_bot), the timer and radio tools are also run
 # through it, zero_bot --tool timer '{...}', with a fresh, temporary state folder, the system
-# prompt and tool list are checked to say nothing of radio until stations are listed, and so are
-# the other tools that need no network (tests/tools_cli.py: good, wrong and hostile arguments).
-# CXX picks the compiler
-# (default g++). Exits non-zero when anything fails.
+# prompt and tool list are checked to say nothing of radio until stations are listed, the other
+# tools that need no network are run too (tests/tools_cli.py: good, wrong and hostile arguments),
+# and the request loop is run against a scripted chat service (tests/agent_loop_test.py). CXX
+# picks the compiler (default g++). Exits non-zero when anything fails.
 set -eu
 cd "$(dirname "$0")/.."
 OUT=build/unit
@@ -119,7 +119,7 @@ done
 
 cli=build/cli/zero_bot
 if [ ! -x "$cli" ]; then
-    echo "=== $cli not built: the timer tool checks through it were skipped"
+    echo "=== $cli not built: the timer tool and request loop checks through it were skipped"
     exit $failed
 fi
 
@@ -209,4 +209,7 @@ echo "radio through the command-line build: $passed passed, $radio_failed failed
 
 echo "=== the other tools that need no network, through the command-line build"
 python3 -I tests/tools_cli.py "$cli" || failed=1
+
+echo "=== the request loop against a scripted chat service"
+python3 -I tests/agent_loop_test.py -q "$cli" || failed=1
 exit $failed
