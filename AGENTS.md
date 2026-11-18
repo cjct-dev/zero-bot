@@ -149,8 +149,11 @@ What exists:
   `tests/unit/http_test.cpp` (the request
   options for devices, against a local peer) and `tests/unit/timers_test.cpp` (the timer tool,
   storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it keeps everything
-  it writes in a temporary folder of its own, so running it by hand is safe too), then runs the
-  timer tool through `build/cli/zero_bot --tool timer` if that is built. `ZB_UPDATE_SNAPSHOTS=1`
+  it writes in a temporary folder of its own, so running it by hand is safe too) and
+  `tests/unit/tools_test.cpp` (the calculator, dates and zones that do not exist, helper programs:
+  cancelling, time limits, no inherited descriptors), then runs the timer tool through
+  `build/cli/zero_bot --tool timer` and the other offline tools through `tests/tools_cli.py` (good,
+  wrong and hostile arguments, each in a fresh state folder) if that is built. `ZB_UPDATE_SNAPSHOTS=1`
   rewrites the snapshots: read the diff before committing it. `ZB_BUILD_WRAPPER=cmd` runs each
   compile through `cmd`.
 - **Tapo end to end**: `tests/tapo_e2e.py` runs `build/cli/zero_bot` against two simulated plugs
@@ -268,6 +271,14 @@ key, real audio), say so plainly rather than implying it was.
 - Give tools the allowed names as an `enum` (smart-home devices) rather than describing them.
 - Text that came from the network or a device (names, descriptions) is untrusted: strip
   control characters, cap the length, pass it as data.
+- Models send `1e300`, `"nan"` and numbers where text was meant. Converting a double that is not
+  finite or not in range to an int is undefined (it crashed `date_info`), so the tools' `num_arg`
+  takes finite values only and `clamp_int` brings them into range first; text arguments accept a
+  number as its digits. Nested brackets overflowed the calculator's stack: recursive parsers need
+  a depth limit.
+- `mktime` makes 31 February into 3 March without a word, and the zone database holds folders
+  named like countries ("Australia") that the C library reads as UTC: `parse_local` and
+  `timezone_exists` refuse both. Check that a date, time or zone exists before using it.
 - nlohmann::json: a function taking `const json &` called with `{x}`, where `x` is already a
   json value, gets a copy of `x`, not a one-element array (nested lists do become arrays). Build
   lists as `std::vector<json>` or `json::array({...})`. It also sorts object keys when dumping.
@@ -324,6 +335,10 @@ key, real audio), say so plainly rather than implying it was.
 - A multi-agent workflow resumed after an interruption reuses finished steps only when it makes
   the same calls in the same order. To continue with a changed plan, save the finished results to
   a file and start a new run from there.
+- A sandbox does not close what it inherits: `bwrap` handed the app's open descriptors (the
+  framebuffer among them, which LVGL opens without close-on-exec) to the sandboxed Python.
+  `proc::spawn` closes everything above stderr in the child; keep it. Anything slow that a tool
+  starts takes `ctx.cancel` (`proc::run`'s last argument), so ESC stops it.
 
 ## 9. Adding things
 
