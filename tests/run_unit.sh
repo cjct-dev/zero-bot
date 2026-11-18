@@ -1,7 +1,8 @@
 #!/bin/sh
 # Device-free unit tests: the smart-home layer (store, names, schema, safety rules, locking,
-# pairing, the Tapo driver's refusals, colours), the HTTP options for devices, and the timers (the
-# timer tool, storage, the countdown, the alarm and its player). Nothing but 127.0.0.1 is
+# pairing, the Tapo driver's refusals, colours), the HTTP options for devices, the timers (the
+# timer tool, storage, the countdown, the alarm and its player) and the keys (what each does on the
+# chat screen, and the key guide). Nothing but 127.0.0.1 is
 # contacted, and no AI service, sound or screen is needed.
 #
 #   tests/run_unit.sh                   build into build/unit and run
@@ -36,7 +37,8 @@ obj_of() { echo "$OUT/$(echo "$1" | tr '/' '_' | sed 's/\.cpp$/.o/')"; }
 # Objects are rebuilt only when their source or a header in src/ is newer.
 newest_header=$(find src -name '*.h' -newer "$OUT/.stamp" 2>/dev/null | head -n 1 || true)
 for src in $APP $TIMERS tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp \
-           tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp; do
+           tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp \
+           src/ui/key_guide.cpp tests/unit/key_guide_test.cpp; do
     obj=$(obj_of "$src")
     if [ ! -f "$obj" ] || [ "$src" -nt "$obj" ] || [ -n "$newest_header" ]; then
         echo "compiling $src"
@@ -57,6 +59,8 @@ $WRAP $CXX -o "$OUT/firetv_cli" "$OUT/tests_unit_firetv_cli.o" $objs -lcurl -lcr
 # The same for the HomeKit driver (tests/homekit_e2e.py drives homekit_cli).
 $WRAP $CXX -o "$OUT/homekit_test" "$OUT/tests_unit_homekit_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/homekit_cli" "$OUT/tests_unit_homekit_cli.o" $objs -lcurl -lcrypto -lpthread
+# What each key does on the chat screen, and the key guide that lists them (no screen needed).
+$WRAP $CXX -o "$OUT/key_guide_test" "$OUT/tests_unit_key_guide_test.o" "$(obj_of src/ui/key_guide.cpp)"
 
 failed=0
 echo "=== smart home"
@@ -67,6 +71,8 @@ echo "=== Fire TV driver"
 "$OUT/firetv_test" tests/mocks/firetv || failed=1
 echo "=== HomeKit driver"
 "$OUT/homekit_test" || failed=1
+echo "=== keys"
+"$OUT/key_guide_test" || failed=1
 
 echo "=== timers"
 # As someone would run the binary by hand: no XDG folders set, and a home that holds data of its

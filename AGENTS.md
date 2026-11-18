@@ -52,7 +52,7 @@ src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast); driver.h, the con
                     tool.cpp (the smart_home tool); color.h (colour names and conversions);
                     drivers/ (one per family; registry.cpp lists them); Tapo transport (tapo)
 src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
-                    pages, breathing screen, alarm banner, theme
+                    pages, the keys and their guide (key_guide), breathing screen, alarm banner, theme
 tests/              scored agent test set (needs a live service), device-free unit tests
                     (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit), Tapo, Fire TV
                     and HomeKit end to end (tapo_e2e.py, firetv_e2e.py, homekit_e2e.py),
@@ -149,7 +149,9 @@ What exists:
   `tests/unit/http_test.cpp` (the request
   options for devices, against a local peer) and `tests/unit/timers_test.cpp` (the timer tool,
   storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it keeps everything
-  it writes in a temporary folder of its own, so running it by hand is safe too), then runs the
+  it writes in a temporary folder of its own, so running it by hand is safe too) and
+  `tests/unit/key_guide_test.cpp` (what each key does on the chat screen, and that the key guide
+  says so), then runs the
   timer tool through `build/cli/zero_bot --tool timer` if that is built. `ZB_UPDATE_SNAPSHOTS=1`
   rewrites the snapshots: read the diff before committing it. `ZB_BUILD_WRAPPER=cmd` runs each
   compile through `cmd`.
@@ -337,8 +339,13 @@ Add cases to `tests/agent_eval.py`, including a neighbour that must not trigger 
 it in `README.md`.
 
 **A setting.** Add the field to `Settings` (`src/core/settings.{h,cpp}`: member, `to_json`,
-`from_json`), a row in `open_settings` (and the setup guide if a new user needs it), and a line
-in the README's settings table. Fix the screenshot key-press counts.
+`from_json`), a row under its section's header in `open_settings` (each header is a page of its
+own, opened from the top page; a new header is a new section), the setup guide if a new user
+needs it, and a line in the README's settings table. Fix the screenshot key-press counts.
+
+**A key.** Chat-screen keys outside the input line are decided in `keyguide::chat_key`
+(`src/ui/key_guide.cpp`); add the key's line to the guide there too (`H` shows it), and keep the
+bottom row's hint short: it names only the keys wanted most.
 
 **A screen.** Follow `breath_view` or `chat_view`: create objects once, update only what
 changed, drive it from `App::periodic`, route keys in `App::handle_key`, add a `--shots` frame.

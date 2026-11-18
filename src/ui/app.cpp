@@ -28,6 +28,7 @@
 #include "platform/proc.h"
 #include "smarthome/home.h"
 #include "ui/chat_view.h"
+#include "ui/key_guide.h"
 #include "ui/menu.h"
 #include "ui/settings_pages.h"
 #include "ui/theme.h"
@@ -171,7 +172,7 @@ struct App {
                 st.save();
                 if ((st.stt_model.empty() || st.tts_model.empty()) && !warned_models) {
                     warned_models = true;
-                    chat.add_note("Choose speech models in settings (TAB twice) to use voice.", theme::kThink);
+                    chat.add_note("Choose speech models in settings (SPACE) to use voice.", theme::kThink);
                 }
             });
         }).detach();
@@ -180,7 +181,7 @@ struct App {
     void welcome() {
         const Settings &s = Settings::get();
         if (!s.configured())
-            chat.add_note("No AI service is set up yet. Press TAB twice and enter an address and key under AI service.",
+            chat.add_note("No AI service is set up yet. Press SPACE for settings and enter an address and key under AI service.",
                           theme::kThink);
         else
             chat.add_note("Press TAB to talk, press it again when you have finished. Or press ENTER and type.",
@@ -408,6 +409,9 @@ struct App {
 
         if (menu.open()) {
             if (ev.key == Key::Tab) { if (ev.state == 1) menu.close(); return; }
+            // Outside a text field, SPACE closes settings as it opened them, and H shows the keys.
+            if (!menu.editing() && keyguide::is_settings_key(ev)) { menu.close(); return; }
+            if (!menu.editing() && keyguide::is_guide_key(ev)) { open_key_guide(menu, true); return; }
             menu.key(ev);
             return;
         }
@@ -437,28 +441,22 @@ struct App {
             }
             return;
         }
-        switch (ev.key) {
-            // Two taps of the delete key (not a held key, and not while typing, where it deletes
-            // text) start a new conversation.
-            case Key::Backspace:
-            case Key::Delete:
-                if (ev.state != 1) break;
+        using keyguide::ChatKey;
+        switch (keyguide::chat_key(ev)) {
+            // Two taps of the delete key (not while typing, where it deletes text) start a new conversation.
+            case ChatKey::DeleteTap:
                 if (last_delete && now - last_delete < kDoubleTapMs) { last_delete = 0; new_conversation(); }
                 else last_delete = now;
                 break;
-            case Key::Enter: if (ev.state == 1) chat.typing_begin(""); break;
-            // Typing starts only with ENTER, so plain letters are free for reading: F and X scroll
-            // like fn+F and fn+X, and any other letter just says how to start typing.
-            case Key::Char:
-                if (ev.text == "f" || ev.text == "F") chat.scroll(34);
-                else if (ev.text == "x" || ev.text == "X") chat.scroll(-34);
-                else if (ev.state == 1 && ev.text != " ") show_level("Press ENTER to type");
-                break;
-            case Key::Up: chat.scroll(34); break;
-            case Key::Down: chat.scroll(-34); break;
-            case Key::PgUp: chat.scroll(110); break;
-            case Key::PgDn: chat.scroll(-110); break;
-            default: break;
+            case ChatKey::Type: chat.typing_begin(""); break;
+            case ChatKey::Settings: open_menu(); break;            // SPACE; TAB twice also works
+            case ChatKey::Guide: open_key_guide(menu, false); break;
+            case ChatKey::ScrollUp: chat.scroll(34); break;
+            case ChatKey::ScrollDown: chat.scroll(-34); break;
+            case ChatKey::PageUp: chat.scroll(110); break;
+            case ChatKey::PageDown: chat.scroll(-110); break;
+            case ChatKey::TypeHint: show_level("Press ENTER to type"); break;
+            case ChatKey::None: break;
         }
     }
 
@@ -500,8 +498,7 @@ struct App {
                 chat.set_status(s.agent_name, theme::kAccent);
                 break;
             case AgentState::Idle:
-                chat.footer_hints(s.configured() ? "TAB talk   ·   ENTER type   ·   TAB TAB settings"
-                                                 : "TAB TAB settings   ·   hold ESC to exit");
+                chat.footer_hints(keyguide::idle_hint(s.configured()));
                 chat.set_status(s.agent_name, theme::kFaint);
                 break;
         }
@@ -657,9 +654,22 @@ struct App {
         s.agent_name = "Zero";
         chat.set_status(s.agent_name, theme::kFaint);
         chat.set_indicators(true, false, 68, false, "18:42");
-        chat.footer_hints("TAB talk   ·   ENTER type   ·   TAB TAB settings");
+        chat.footer_hints(keyguide::idle_hint(true));
         chat.add_note("Press TAB to talk, press it again when you have finished. Or press ENTER and type.", theme::kDim);
         snap("welcome");
+        {
+            // Before an AI service is set up, the note and the bottom row say how to reach settings.
+            const std::string base = s.api_base, key = s.api_key;
+            s.api_base.clear();
+            s.api_key.clear();
+            chat.clear();
+            welcome();
+            update_footer();
+            snap("not-set-up");
+            s.api_base = base;
+            s.api_key = key;
+            chat.footer_hints(keyguide::idle_hint(true));   // as a set-up device shows it, for the frames to come
+        }
 
         chat.clear();
         chat.add_user("What's the weather like in Lisbon tomorrow?", false);
@@ -699,7 +709,7 @@ struct App {
 
         chat.add_alert("Check the oven");
         chat.add_user("こんにちは、元気ですか？", false);
-        chat.footer_hints("TAB talk   ·   ENTER type   ·   TAB TAB settings");
+        chat.footer_hints(keyguide::idle_hint(true));
         snap("alert");
         {
             // The double tap goes through the real key handler, so this also checks the shortcut.
@@ -709,7 +719,7 @@ struct App {
             handle_key(del);
             snap("new-conversation");
             // A letter key does not start typing (ENTER does); it says how to.
-            KeyEvent letter; letter.key = Key::Char; letter.text = "h"; letter.state = 1;
+            KeyEvent letter; letter.key = Key::Char; letter.text = "w"; letter.state = 1;
             handle_key(letter);
             update_footer();
             snap("letter-hint");
@@ -718,6 +728,53 @@ struct App {
                 failed = true;
             }
             level_until = 0;
+            {
+                // SPACE opens settings and closes them again. H shows every key, as a page that
+                // scrolls; ESC (pressed and let go) goes back to the chat.
+                KeyEvent space; space.key = Key::Char; space.text = " "; space.state = 1;
+                handle_key(space);
+                const bool opened = menu.open() && menu.depth() == 1 && menu.title() == "Settings" && menu.selected() == "Assistant";
+                handle_key(space);
+                const bool closed = !menu.open();
+                KeyEvent h; h.key = Key::Char; h.text = "h"; h.state = 1;
+                handle_key(h);
+                const bool guide = menu.open() && menu.title() == kKeyGuideTitle && menu.first_shown() == 0;
+                snap("keys");
+                KeyEvent down; down.key = Key::Down; down.state = 1;
+                for (int i = 0; i < 8; ++i) handle_key(down);
+                snap("keys-more");
+                for (int i = 0; i < 30; ++i) handle_key(down);   // stops at the end
+                snap("keys-end");
+                const bool scrolled = menu.first_shown() > 8;
+                handle_key(h);                                   // already showing: nothing more
+                const bool once = menu.depth() == 1;
+                KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
+                handle_key(esc);
+                esc.state = 0;
+                handle_key(esc);
+                const bool back = !menu.open() && !chat.typing();
+                if (!opened || !closed || !guide || !scrolled || !once || !back) {
+                    fprintf(stderr, "SPACE or H did not open and close settings or the key guide as they should\n");
+                    failed = true;
+                }
+                // Every line of the guide, and the hints on the bottom row, fit their room in the real fonts.
+                auto width = [](const std::string &text, const lv_font_t *font) {
+                    lv_point_t size;
+                    lv_text_get_size(&size, text.c_str(), font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+                    return static_cast<int>(size.x);
+                };
+                for (const keyguide::Section &sec : keyguide::sections())
+                    for (const keyguide::Row &row : sec.rows)
+                        if (width(row.keys, theme::bold()) > Menu::kPairKeyW - 4 || width(row.action, theme::body()) > Menu::pair_text_width()) {
+                            fprintf(stderr, "the key guide's line for %s does not fit the screen\n", row.keys.c_str());
+                            failed = true;
+                        }
+                for (const bool configured : {true, false})
+                    if (width(keyguide::idle_hint(configured), theme::small()) > theme::kScreenW - 12) {
+                        fprintf(stderr, "the hints on the bottom row do not fit: %s\n", keyguide::idle_hint(configured).c_str());
+                        failed = true;
+                    }
+            }
             KeyEvent vol; vol.key = Key::VolumeUp; vol.state = 1;
             handle_key(vol);
             update_footer();
@@ -745,7 +802,7 @@ struct App {
             chat.begin_answer();
             chat.append_answer("Your 5 minute timer for the food is running.");
             chat.end_answer("", false);
-            chat.footer_hints("TAB talk   ·   ENTER type   ·   TAB TAB settings");
+            chat.footer_hints(keyguide::idle_hint(true));
             chat.set_status(s.agent_name, theme::kFaint);
             chat.set_now_playing("So What");                       // short enough not to scroll
             chat.set_timer(timers::badge({t0 + 300}, t0 + 1));
@@ -857,14 +914,24 @@ struct App {
         }
 
         open_menu();
-        snap("settings");
+        snap("settings");                              // the top page: a row for each section
         KeyEvent down; down.key = Key::Down; down.state = 1;
         KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
         KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
-        for (int i = 0; i < 8; ++i) menu.key(down);    // first row of "Device"
+        menu.key(enter);                               // "Assistant"
+        snap("settings-assistant");
+        menu.key(esc);
+        menu.key(down);                                // "Device"
+        menu.key(enter);
         snap("settings-device");
-        for (int i = 0; i < 13; ++i) menu.key(down);   // "Calendar", first row of "Your data"
+        menu.key(esc);
+        menu.key(down);                                // "Your data", whose first row is "Calendar"
+        menu.key(enter);
         snap("settings-data");
+        if (menu.title() != "Your data" || menu.selected() != "Calendar") {
+            fprintf(stderr, "the settings section did not open on its first row\n");
+            failed = true;
+        }
         menu.key(enter);
         snap("calendar");
         menu.key(enter);
@@ -926,9 +993,23 @@ struct App {
         for (int i = 0; i < 4; ++i) menu.key(down);    // "Tapo account", past the strip that listed nothing
         menu.key(enter);
         snap("tapo-account");
-        menu.key(esc); menu.key(esc);
-        for (int i = 0; i < 10; ++i) menu.key(down);
+        menu.key(esc); menu.key(esc);                  // back to "Your data"
+        menu.key(esc);                                 // the top page, still on "Your data"
+        menu.key(down);                                // "AI service"
+        menu.key(enter);
         snap("settings-service");
+        menu.key(esc);
+        menu.key(down);                                // "About"
+        menu.key(enter);
+        snap("settings-about");
+        menu.key(esc);
+        menu.key(down);                                // "Keys": from settings, it opens at the keys for settings
+        menu.key(enter);
+        snap("keys-settings");
+        if (menu.title() != kKeyGuideTitle || menu.first_shown() == 0) {
+            fprintf(stderr, "the key guide did not open at the keys for settings\n");
+            failed = true;
+        }
         (void)flight; (void)birthday;
         menu.close();
         timers::fix_clock(0);
