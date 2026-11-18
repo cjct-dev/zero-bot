@@ -560,6 +560,10 @@ key, real audio), say so plainly rather than implying it was.
 - A multi-agent workflow resumed after an interruption reuses finished steps only when it makes
   the same calls in the same order. To continue with a changed plan, save the finished results to
   a file and start a new run from there.
+- Make release builds in the main checkout. A worktree reaches LVGL through a link to the main
+  checkout's `.cache`, which lies outside the worktree's `-ffile-prefix-map`, so a device binary built
+  in a worktree contains a path of the build machine (with the user's name). The `strings` scan
+  before a release catches it.
 - A sandbox does not close what it inherits: `bwrap` handed the app's open descriptors (the
   framebuffer among them, which LVGL opens without close-on-exec) to the sandboxed Python.
   `proc::spawn` closes everything above stderr in the child; keep it. Anything slow that a tool
