@@ -1095,6 +1095,74 @@ def exp_check_only_when_held():
     check(n + ": switch off: no check", not _check_requests(r) and len(r.requests) == 2, r)
 
 
+# ------------------------------------------------------------------ E3b: answers through a reply tool (ZB_EXP_DECIDE=required)
+REQUIRED = {"ZB_EXP_DECIDE": "required"}
+
+
+def reply_call(*chunks, text=None):
+    """A call of the reply tool, its arguments in these pieces (or made from text)."""
+    if text is not None:
+        chunks = [json.dumps({"text": text}, ensure_ascii=False)]
+    return {"name": "reply", "args": "".join(chunks), "args_chunks": list(chunks)}
+
+
+@scenario
+def exp_reply_streams():
+    # Escapes split across pieces: a quote, a new line, an accent and a character beyond the first plane.
+    chunks = ['{"te', 'xt": "Lisbon is the capital ', 'of Portugal. Try a \\"pastel de nata\\" at a caf', '\\u00e9', '. ',
+              'Enjoy \\ud83d', '\\ude00!"}']
+    script = {"rules": [{"when": {"said": "thanks"}, "reply": {"calls": [reply_call(text="You're welcome.")]}}],
+              "default": {"calls": [reply_call(*chunks)]}}
+    r = run(script, said=["what is the capital of portugal", "thanks"], fast=True, env=REQUIRED, trace=True)
+    n = "E3b a reply streamed in pieces"
+    want = "Lisbon is the capital of Portugal. Try a \"pastel de nata\" at a café. Enjoy \U0001F600!"
+    check(n + ": the reply's text is the answer, decoded", r.turns[0]["answer"] == want and r.turns[1]["answer"] == "You're welcome.", r)
+    check(n + ": one call a turn, no second look", len(r.requests) == 2 and SECOND_LOOK not in json.dumps(r.bodies()), r)
+    if len(r.requests) == 2:
+        b = r.requests[0]["body"]
+        check(n + ": the deciding call sends tool_choice required, the reply tool last, and the decide note",
+              b.get("tool_choice") == "required" and b["tools"][-1]["function"]["name"] == "reply" and
+              DECIDE_NOTE in text_of(b["messages"][-1]), (b.get("tool_choice"), [t["function"]["name"] for t in b["tools"]][-2:]))
+        hist = r.messages(2)
+        check(n + ": the conversation keeps the answer as plain text, never a reply call",
+              hist[-2] == {"role": "assistant", "content": want} and "tool_calls" not in json.dumps(hist), hist[-3:])
+        check(n + ": the same tool list in every call (the cached prefix)", r.requests[0]["body"]["tools"] == r.requests[1]["body"]["tools"], "")
+    cs = events(r, "call")
+    check(n + ": traced as text, with the reply call counted", [(c["outcome"], c["reply_calls"], c["tool_choice"]) for c in cs] ==
+          [("text", 1, "required")] * 2 and cs[0]["first_text_ms"] >= 0, cs)
+    check(n + ": no reply tool is ever run", not any(t == "reply" for t, _ in r.tools()), r.tools())
+
+
+@scenario
+def exp_reply_with_tool_and_after():
+    n = "E3b reply beside a real tool call"
+    script = {"default": {"calls": [reply_call(text="Starting it now."), {"name": TIMER_12[0], "args": TIMER_12[1]}]}}
+    r = run(script, ask="set a timer for 12 minutes", fast=True, env=REQUIRED)
+    check(n + ": the tool runs, its confirmation is spoken, reply is never run", [t for t, _ in r.tools()] == ["timer"] and
+          "Your timer is set for 12 minutes." in r.out, r)
+    n = "E3b after a tool"
+    script = {"rules": [{"when": {"result": "{"}, "reply": {"text": "Christmas is in 37 days."}}], "default": calls(XMAS)}
+    r = run(script, ask="how many days until christmas", fast=True, env=REQUIRED)
+    check(n + ": required only while deciding, auto after a tool", [b.get("tool_choice") for b in r.bodies()] == ["required", "auto"] and
+          r.answer == "Christmas is in 37 days.", ([b.get("tool_choice") for b in r.bodies()], r))
+    n = "E3b a reply that claims an action"
+    script = {"rules": [{"when": {"said": CORRECTION}, "reply": calls(TIMER_12)}],
+              "default": {"calls": [reply_call(text="Done, your timer is set for 12 minutes.")]}}
+    r = run(script, ask="set a timer for 12 minutes", fast=True, env=REQUIRED, trace=True)
+    reqs = events(r, "request")
+    check(n + ": the claim guard withdraws it and the tool is called", [t for t, _ in r.tools()] == ["timer"] and
+          reqs and [g["guard"] for g in reqs[0]["guards"]] == ["claims_action"] and
+          [b.get("tool_choice") for b in r.bodies()] == ["required", "auto"], (r, reqs))
+    n = "E3b a service that ignores required"
+    r = run({"default": {"text": "Lisbon is the capital of Portugal."}}, ask="what is the capital of portugal", fast=True, env=REQUIRED)
+    check(n + ": plain text is the answer, with no second look", r.answer == "Lisbon is the capital of Portugal." and len(r.requests) == 1, r)
+    n = "E3b without fast mode"
+    r = run({"default": {"calls": [reply_call(text="Lisbon.")]}}, ask="what is the capital of portugal", env=REQUIRED)
+    check(n + ": tool_choice auto, the reply tool offered, its text the answer", len(r.requests) == 1 and
+          r.requests[0]["body"].get("tool_choice") == "auto" and r.requests[0]["body"]["tools"][-1]["function"]["name"] == "reply" and
+          r.answer == "Lisbon.", r)
+
+
 def main():
     if not os.access(APP, os.X_OK):
         sys.exit("no app at %s (build the cli preset first)" % APP)

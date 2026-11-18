@@ -71,7 +71,7 @@ const Switches &get() {
         r.cache_bust = env_on("ZB_EXP_CACHE_BUST");
         r.tts_probe = env_on("ZB_EXP_TTS_PROBE");
         r.tools = variant("ZB_EXP_TOOLS", "full", {"full", "say1", "lean"});
-        r.decide = variant("ZB_EXP_DECIDE", "second_look", {"second_look", "parallel"});
+        r.decide = variant("ZB_EXP_DECIDE", "second_look", {"second_look", "parallel", "required"});
         if (const char *m = getenv("ZB_EXP_CHECK_MODEL")) r.check_model = m;
         return r;
     }();
@@ -283,6 +283,21 @@ const std::vector<Lean> &lean_table() {
 }  // namespace
 
 void shape_tools(json &schema) {
+    if (decide_required() && schema.is_array())   // E3b: last, so the other tools' text is as it always is
+        schema.push_back(
+            {{"type", "function"},
+             {"function",
+              {{"name", "reply"},
+               {"description",
+                "Say something to the user in words: conversation, settled general knowledge, translations, the current "
+                "local time, facts you remember about the user, a question asking for a missing detail, or saying plainly "
+                "that you cannot do something none of your tools does. Never to say that something was done, saved, set, "
+                "played or changed (call the tool that does it), nor for live or changeable information, date or number "
+                "work, or what is in the calendar, reminders, timers or music library: those have their own tools."},
+               {"parameters",
+                {{"type", "object"},
+                 {"properties", {{"text", {{"type", "string"}, {"description", "What to say, as it will be read aloud"}}}}},
+                 {"required", json::array({"text"})}}}}}});
     const std::string &v = get().tools;
     if ((v != "say1" && v != "lean") || !schema.is_array()) return;
     for (json &t : schema) {
@@ -309,6 +324,98 @@ std::string say_rule(const std::string &standard) {
     if (get().tools != "say1" && get().tools != "lean") return standard;
     return "- Some tools take 'say': the one short sentence to speak to the user once the call has worked, with the detail "
            "that matters (\"Your timer is set for 12 minutes.\"). ";
+}
+
+// ---------------------------------------------------------------- E3b: answers through the reply tool
+
+namespace {
+
+int hex4(const std::string &s, size_t at) {
+    int v = 0;
+    for (size_t i = at; i < at + 4; ++i) {
+        const char c = s[i];
+        v = v * 16 + (c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -100000);
+    }
+    return v < 0 ? -1 : v;
+}
+
+void append_utf8(std::string &out, unsigned cp) {
+    if (cp < 0x80) out += static_cast<char>(cp);
+    else if (cp < 0x800) { out += static_cast<char>(0xC0 | (cp >> 6)); out += static_cast<char>(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) {
+        out += static_cast<char>(0xE0 | (cp >> 12)); out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else {
+        out += static_cast<char>(0xF0 | (cp >> 18)); out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); out += static_cast<char>(0x80 | (cp & 0x3F));
+    }
+}
+
+}  // namespace
+
+std::string ReplyCalls::feed(size_t idx, const std::string &name, const std::string &piece) {
+    if (!decide_required() || name != "reply" || idx > 64) return "";
+    if (calls_.size() <= idx) calls_.resize(idx + 1);
+    One &c = calls_[idx];
+    c.raw += piece;
+    if (c.done) return "";
+    const std::string &s = c.raw;
+    if (c.at == std::string::npos) {   // the start of the "text" value: "text" : "
+        const size_t k = s.find("\"text\"");
+        if (k == std::string::npos) return "";
+        size_t i = k + 6;
+        while (i < s.size() && isspace(static_cast<unsigned char>(s[i]))) ++i;
+        if (i >= s.size()) return "";
+        if (s[i] != ':') { c.done = true; return ""; }
+        ++i;
+        while (i < s.size() && isspace(static_cast<unsigned char>(s[i]))) ++i;
+        if (i >= s.size()) return "";
+        if (s[i] != '"') { c.done = true; return ""; }
+        c.at = c.cursor = i + 1;
+    }
+    std::string out;
+    while (c.cursor < s.size()) {
+        const char ch = s[c.cursor];
+        if (ch == '"') { c.done = true; break; }
+        if (ch != '\\') { out += ch; ++c.cursor; continue; }
+        if (c.cursor + 1 >= s.size()) break;   // the escape's other half is still to come
+        const char e = s[c.cursor + 1];
+        if (e != 'u') {
+            out += e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? '\r' : e == 'b' || e == 'f' ? ' ' : e;
+            c.cursor += 2;
+            continue;
+        }
+        if (c.cursor + 6 > s.size()) break;
+        int cp = hex4(s, c.cursor + 2);
+        size_t used = 6;
+        if (cp >= 0xD800 && cp <= 0xDBFF) {   // a pair of escapes for one character beyond the first plane
+            if (c.cursor + 12 > s.size()) break;
+            const int lo = s[c.cursor + 6] == '\\' && s[c.cursor + 7] == 'u' ? hex4(s, c.cursor + 8) : -1;
+            if (lo >= 0xDC00 && lo <= 0xDFFF) { cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); used = 12; }
+        }
+        if (cp >= 0) append_utf8(out, static_cast<unsigned>(cp));
+        c.cursor += used;
+    }
+    c.text += out;
+    return out;
+}
+
+int ReplyCalls::finish(std::vector<llm::ToolCall> &calls, std::string &unstreamed) {
+    if (!decide_required()) return 0;
+    int n = 0;
+    std::vector<llm::ToolCall> kept;
+    for (size_t i = 0; i < calls.size(); ++i) {
+        if (calls[i].name != "reply") { kept.push_back(calls[i]); continue; }
+        ++n;
+        const std::string streamed = i < calls_.size() ? calls_[i].text : "";
+        // The whole value from the complete arguments, for whatever the streaming decoder could not read.
+        const json a = json::parse(util::trim(calls[i].args).empty() ? "{}" : calls[i].args, nullptr, false);
+        const std::string full = a.is_object() && a.contains("text") && a["text"].is_string() ? a["text"].get<std::string>() : streamed;
+        if (full.size() > streamed.size() && full.compare(0, streamed.size(), streamed) == 0) unstreamed += full.substr(streamed.size());
+        else if (streamed.empty()) unstreamed += full;
+    }
+    calls.swap(kept);
+    return n;
 }
 
 // ---------------------------------------------------------------- E3: the parallel check

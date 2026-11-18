@@ -23,14 +23,20 @@
 //   ZB_EXP_DECIDE=V        E3, how a reply drafted without a tool is judged in fast mode:
 //                          second_look (default, as the app has it), parallel (a short check call
 //                          started beside the deciding call; when it says no tool is needed the draft
-//                          is spoken as it streams, otherwise the second look runs as before)
+//                          is spoken as it streams, otherwise the second look runs as before),
+//                          required (a "reply" tool in every round; deciding rounds send tool_choice
+//                          "required", so the model answers in words only through reply, whose text
+//                          streams out as the answer; no held draft and no second look)
 //   ZB_EXP_CHECK_MODEL=ID  the model the parallel check asks (default: the main model)
 #pragma once
 #include <atomic>
 #include <chrono>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
+#include "agent/llm.h"
 #include "core/util.h"
 
 #ifndef ZB_EXPERIMENTS
@@ -44,7 +50,7 @@ struct Switches {
     bool cache_bust = false;    // ZB_EXP_CACHE_BUST
     bool tts_probe = false;     // ZB_EXP_TTS_PROBE
     std::string tools = "full";             // ZB_EXP_TOOLS: full, say1, lean
-    std::string decide = "second_look";     // ZB_EXP_DECIDE: second_look, parallel
+    std::string decide = "second_look";     // ZB_EXP_DECIDE: second_look, parallel, required
     std::string check_model;                // ZB_EXP_CHECK_MODEL ("" = the main model)
 };
 
@@ -60,10 +66,25 @@ json numbers_only(const json &v);               // a copy keeping only numbers, 
 void wait_probes(int max_ms);                   // lets speech probes still running finish (command line)
 
 // E2: the tool list as it is about to be sent (tools::schema), in the variant ZB_EXP_TOOLS asks for.
-// Only "description" texts change.
+// Only "description" texts change. E3b (ZB_EXP_DECIDE=required) adds the reply tool at the end.
 void shape_tools(json &schema);
 // E2: the system prompt's opening of its rule about "say", in that variant.
 std::string say_rule(const std::string &standard);
+
+// E3b (ZB_EXP_DECIDE=required): the model must call a tool in deciding rounds, and answers in words
+// through the reply tool. llm::chat turns reply calls back into answer text as they stream
+// (ReplyCalls), so the loop and the conversation see plain text, never a reply call.
+inline bool decide_required() { return get().decide == "required"; }
+class ReplyCalls {
+public:
+    // A piece of call idx's arguments: returns the newly decoded text of its "text" value, if reply.
+    std::string feed(size_t idx, const std::string &name, const std::string &piece);
+    // Removes the reply calls; `unstreamed` gets any reply text feed() has not returned. Returns how many.
+    int finish(std::vector<llm::ToolCall> &calls, std::string &unstreamed);
+private:
+    struct One { std::string raw; size_t at = std::string::npos, cursor = 0; bool done = false; std::string text; };
+    std::vector<One> calls_;
+};
 
 // E3 (ZB_EXP_DECIDE=parallel): a short check call beside the deciding call, on its own thread, asking
 // whether the request needs a tool at all. It never acts: a tool call it makes only counts as "a tool
@@ -123,6 +144,12 @@ inline void wait_probes(int) {}
 inline void shape_tools(json &) {}
 inline std::string say_rule(const std::string &standard) { return standard; }
 inline bool parallel_check() { return false; }
+inline bool decide_required() { return false; }
+class ReplyCalls {
+public:
+    std::string feed(size_t, const std::string &, const std::string &) { return ""; }
+    int finish(std::vector<llm::ToolCall> &, std::string &) { return 0; }
+};
 
 class ParallelCheck {
 public:

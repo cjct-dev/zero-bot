@@ -32,7 +32,8 @@ REPLY:
 
   {"text": "..."}                       one piece of text
   {"chunks": ["..", ".."]}              text in several pieces (each its own event)
-  {"calls": [{"name": "..", "args": {..} or "raw text"}], "text": ".."}   tool calls (text optional)
+  {"calls": [{"name": "..", "args": {..} or "raw text"}], "text": ".."}   tool calls (text optional); a call
+                                        with "args_chunks": ["..", ".."] sends its arguments in those pieces
   {"status": 500, "body": "..."}        an HTTP error instead of a stream
   {"stream_error": "message"}           an error event inside a 200 stream
   "delay_ms": N                         wait this long before answering (any reply)
@@ -122,11 +123,13 @@ def events(reply, body):
     for k, call in enumerate(calls):
         COUNT[1] += 1
         args = call.get("args", {})
-        tc = {"index": k, "type": "function",
-              "function": {"name": call["name"], "arguments": args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)}}
+        pieces_of_args = call.get("args_chunks") or [args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)]
+        tc = {"index": k, "type": "function", "function": {"name": call["name"], "arguments": pieces_of_args[0]}}
         if not reply.get("no_ids"):
             tc["id"] = "call_%d" % COUNT[1]
         out.append({"choices": [{"index": 0, "delta": {"tool_calls": [tc]}}]})
+        for more in pieces_of_args[1:]:
+            out.append({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": k, "function": {"arguments": more}}]}}]})
     if reply.get("stream_error"):
         out.append({"error": {"message": reply["stream_error"]}})
     out.append({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if calls else "stop"}]})

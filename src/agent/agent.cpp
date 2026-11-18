@@ -447,14 +447,18 @@ void Agent::run_turn() {
         // In fast mode the model's commonest mistake is to answer in words when it should have
         // used a tool: "done" with nothing done, or a price or opening time from memory. So a reply
         // that arrives with no tool call is held back and checked before a word of it is spoken.
-        const bool hold = deciding && !acted && !guarded && opt.fast;
+        const bool fast_decision = deciding && !acted && !guarded && opt.fast;
+        // Experiments only (E3b, ZB_EXP_DECIDE=required): the decision is forced into a tool call, words
+        // come through the reply tool and stream as they are written; nothing is held for a second look.
+        if (fast_decision && experiment::decide_required()) opt.tool_choice = "required";
+        const bool hold = fast_decision && !experiment::decide_required();
         // Experiments only (E3, ZB_EXP_DECIDE=parallel): a short check beside this call says whether a
         // tool is needed at all. A draft it clears is spoken as it streams, without the second look.
         experiment::ParallelCheck pcheck;
         if (hold && experiment::parallel_check()) pcheck.start(messages, tool_schema, opt.model);
         bool released = false;     // E3: the held draft is being spoken as it streams
         std::string held_text;     // E3: the draft so far, while the check has not cleared it
-        if (hold) add_note(messages, kDecideNote);
+        if (fast_decision) add_note(messages, kDecideNote);
         opt.purpose = round == kMaxRounds - 1 ? "last_round" : corrected ? "correction" : deciding ? "decide" : "after_tool";
         opt.cancel = &round_cancel_;
         opt.on_text = [&](const std::string &piece) {
