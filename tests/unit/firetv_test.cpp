@@ -15,6 +15,7 @@
 #include "smarthome/drivers/firetv.h"
 
 #include <arpa/inet.h>
+#include <curl/curl.h>
 
 #include <chrono>
 #include <climits>
@@ -193,6 +194,21 @@ int main(int argc, char **argv) {
         for (const Woken w : {Woken::NotServing, Woken::Waking, Woken::KeyChanged, Woken::NoTime, Woken::NoAnswer})
             check("on with more, API not up (" + std::to_string(static_cast<int>(w)) + "): not done", !power_on_done(w, false));
 
+        // A DIAL request with no HTTP answer that counts as a wake taken late (on=true's and a
+        // command's wake alike, ZB-070): only one that connected, went out and was still waiting
+        // when its time ran out. What libcurl reports for each, measured in the review of 0.4.4
+        // with this PC's libcurl and the device's: refused 7, closed 52, reset 56, not HTTP 1.
+        check("DIAL unanswered, connected, sent, timed out: a wake taken late",
+              wake_taken_late(true, true, CURLE_OPERATION_TIMEDOUT));
+        check("DIAL refused: not taken", !wake_taken_late(false, false, CURLE_COULDNT_CONNECT));
+        check("DIAL connection never made before the time ran out: not taken",
+              !wake_taken_late(false, false, CURLE_OPERATION_TIMEDOUT));
+        check("DIAL connected, the request not sent when the time ran out: not taken",
+              !wake_taken_late(true, false, CURLE_OPERATION_TIMEDOUT));
+        check("DIAL closed without an answer: not taken", !wake_taken_late(true, true, CURLE_GOT_NOTHING));
+        check("DIAL reset: not taken", !wake_taken_late(true, true, CURLE_RECV_ERROR));
+        check("DIAL answered in something that is not HTTP: not taken", !wake_taken_late(true, true, CURLE_UNSUPPORTED_PROTOCOL));
+
         // A silent API reads as "still starting up" only while the TV is starting.
         eq("silent API, not starting: not serving, as before", woken_error(Woken::NotServing, false), kNotServing);
         const std::string s = woken_error(Woken::NotServing, true);
@@ -238,6 +254,20 @@ int main(int argc, char **argv) {
         r.forget("tv1");
         check("memory: forgotten when told (its API answered), the other device's kept",
               !r.get("tv1", t0 + seconds(62)) && r.get("tv2", t0 + seconds(62)) == t0 + seconds(61));
+
+        // The memory of the TV seen on (ZB-069: on=false may wake only a TV on lately): the latest
+        // answer counts, and is kept for a minute from it.
+        Recall seen(60000);
+        seen.renew("tv1", t0, t0);
+        seen.renew("tv1", t0 + seconds(40), t0 + seconds(40));
+        check("seen on: a later answer replaces the earlier one", seen.get("tv1", t0 + seconds(41)) == t0 + seconds(40));
+        check("seen on: kept a minute from the latest answer, not the first",
+              seen.get("tv1", t0 + seconds(99)) == t0 + seconds(40) && !seen.get("tv1", t0 + seconds(100) + milliseconds(1)));
+        seen.renew("tv1", t0 + seconds(200), t0 + seconds(200));
+        seen.renew("tv2", t0 + seconds(200), t0 + seconds(200));
+        seen.forget("tv1");
+        check("seen on: forgotten when told (it was asked to switch off), the other device's kept",
+              !seen.get("tv1", t0 + seconds(201)) && seen.get("tv2", t0 + seconds(201)) == t0 + seconds(200));
     }
 
     // ---- untrusted text
@@ -688,6 +718,12 @@ int main(int argc, char **argv) {
         c.on = false;
         check("apply: off with nothing listening is already_off, never no_answer (an infrared toggle would switch it on)",
               !driver->apply(d, tv, c, 800, err) && fault_of(err) == Fault::AlreadyOff, err);
+        // ZB-069 review: not on lately and its API port refused (the address answered, with that port
+        // closed): nothing that could wake the TV went out, and the words do not read as "did not
+        // answer", so the app does not spend 2.5 s searching the network for a TV that has not moved.
+        eq("apply: off, not on lately, API port refused: 'service is closed', not read as unreachable", err,
+           std::string(kAlreadyOff) + " Its remote control service is closed.");
+        check("... not read as unreachable", !reads_as_unreachable(err), err);
         c.on = true;   // no wake address known: no packet is sent
         check("apply: on with nothing listening and no wake address is no_answer (infrared may switch it on)",
               !driver->apply(d, tv, c, 800, err) && fault_of(err) == Fault::NoAnswer, err);

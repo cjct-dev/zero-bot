@@ -503,6 +503,13 @@ key, real audio), say so plainly rather than implying it was.
   that worked into "not replying", and the assistant offered the infrared remote (a power toggle).
   Power-on alone is now judged by the DIAL answer, and a command in the minute after a wake says
   the TV is still starting up (`firetv.cpp`, `detail::power_on_done`, the `starting_` memory).
+  A wake sent to deliver a command can be the opposite of what was asked: "off" used to wake a TV
+  whose API refused so as to send it the sleep key, and from deep standby that wake switched it on.
+  By the owner's rule "off" now wakes only a TV heard from or woken in the last minute
+  (`FireTvDriver::apply` and `press`, `on_lately`), for every part of the change. Its "off already"
+  first said "did not answer", so the app searched the network for 2.5 s for a TV in standby; a
+  refused port is the device there with the port closed (`Reply::refused`, errno ECONNREFUSED),
+  and only an attempt that timed out reads as "did not answer".
 - The keyboard's three lights (caps lock, fn, symbols) have no kernel interface: the keypad takes no
   EV_LED events and they are not LED-class devices. The M5Stack keypad driver sets them by writing a
   mode (0 off, 1 blink, 2 fast, 3 on) into registers 0xBD to 0xBF of the M5IOE1 expander, the

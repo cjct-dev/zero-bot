@@ -41,6 +41,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <climits>
 #include <cstring>
@@ -713,6 +714,8 @@ const char kRefused[] = "The TV refused that command.";
 const char kNoTime[] = "There was no time left to finish that. Try again in a moment.";
 // on=false while a wake-up signal from here may still be bringing the TV up (after kWaking).
 const char kNotSwitchedOff[] = " A wake-up signal was sent a moment ago, so it was not switched off. Ask again in a few seconds.";
+// on=false when the TV has not been on lately and its API port is closed (after kAlreadyOff).
+const char kServiceClosed[] = " Its remote control service is closed.";
 const char kInternal[] = "Something went wrong while talking to the TV.";
 const char kCannotPin[] = "This system cannot check the TV's security key, so nothing was sent.";
 
@@ -795,6 +798,9 @@ struct Reply {
     std::string body;
     CURLcode rc = CURLE_OK;
     bool connected = false;    // a TCP connection was made
+    bool refused = false;      // the connection was refused (ECONNREFUSED): something at the address said that nothing
+                               // listens on the port (a dropped attempt times out instead: rc 28, no errno; measured
+                               // with this PC's libcurl 8.23 and the device's 8.14.1)
     bool sent = false;         // the request went out (TLS completed and it was written): the TV may have
                                // acted on it even when no answer came. 0 bytes when refused or TLS never
                                // completed (measured with this libcurl: CURLINFO_REQUEST_SIZE)
@@ -903,6 +909,8 @@ Reply perform(const Request &r) {
     // finished; the number of connections made says it either way.
     long connects = 0;
     if (curl_easy_getinfo(h, CURLINFO_NUM_CONNECTS, &connects) == CURLE_OK && connects > 0) out.connected = true;
+    long os_errno = 0;
+    out.refused = !out.connected && curl_easy_getinfo(h, CURLINFO_OS_ERRNO, &os_errno) == CURLE_OK && os_errno == ECONNREFUSED;
     long request_bytes = 0;
     // When the size cannot be read, assume the request went out: then it is never sent twice.
     out.sent = curl_easy_getinfo(h, CURLINFO_REQUEST_SIZE, &request_bytes) != CURLE_OK || request_bytes > 0;
@@ -1032,6 +1040,7 @@ struct What {
     const char *name = nullptr;             // for kUnsupported when the TV does not know it ("the home key")
     bool bad_request_unsupported = false;   // a 400 means the TV does not know this key or media action
     bool acts = true;                       // it makes the TV do something (a list read does not)
+    bool may_wake = true;                   // when its API port takes no connection, the TV may be woken to take it
 };
 
 class Session {
@@ -1047,6 +1056,11 @@ public:
     void set_woken_up() { woken_up_ = true; }
     // The API answered something (any HTTP status) in this session: it is up.
     bool api_answered() const { return api_answered_; }
+    // The latest request to the API was refused (Reply::refused): the TV's address answered with
+    // its API port closed.
+    bool api_refused() const { return api_refused_; }
+    // A request whose API port took no connection was not followed by a wake (What::may_wake).
+    bool held_back() const { return held_back_; }
     // The TV accepted a DIAL wake in this session that counts as switching it on (on=true's, or
     // one sent while the API refused connections): when, the first time.
     void wake_accepted(Clock::time_point at) {
@@ -1145,7 +1159,17 @@ public:
     Woken wake(bool silent) {
         if (dl_.left() < kMinTryMs) return Woken::NoTime;
         const Reply d = dial(std::min(1500L, dl_.left()));
-        if (!d.answered()) return silent || d.connected ? Woken::NotServing : Woken::NoAnswer;
+        if (!d.answered()) {
+            // Taken late, as the owner's TV takes a wake from deep standby (power_on's rule): with
+            // its API refusing, the TV is coming on. It is starting, so the command says "still
+            // starting up" (Woken::NotServing then reads so), and nothing more is sent: the API is
+            // not up. Not after an API that accepted without answering (stuck, not asleep).
+            if (!silent && detail::wake_taken_late(d.connected, d.sent, d.rc)) {
+                wake_accepted(Clock::now());
+                return Woken::NotServing;
+            }
+            return silent || d.connected ? Woken::NotServing : Woken::NoAnswer;
+        }
         if (!d.ok()) return Woken::NotServing;
         // An API that refused connections was asleep, and the TV took the wake: it is starting.
         // One that accepted them without answering was not asleep, so this wake starts nothing
@@ -1174,6 +1198,13 @@ public:
         Reply r = send();
         if (!r.answered() && !r.blocked() && !r.sent) {
             if (woke_) return no_answer(r, err);
+            // Not to be woken for (on=false on a TV that has not been on lately: FireTvDriver::apply),
+            // and its API took no connection: nothing that could wake it is sent. A request that had a
+            // fair window to connect shows that nothing answered; one with less proves nothing.
+            if (!what.may_wake && !r.connected) {
+                held_back_ = true;
+                return window >= kMinTryMs ? woken(Woken::NoAnswer, err) : starved(err);
+            }
             woke_ = true;
             const Woken w = wake(r.connected);
             if (w == Woken::NoTime) {
@@ -1278,6 +1309,7 @@ private:
         used_ = true;
         if (r.answered() || r.connected) heard_ = true;
         if (api && r.answered()) api_answered_ = true;
+        if (api) api_refused_ = r.refused;
         return r;
     }
 
@@ -1288,10 +1320,12 @@ private:
     mutable Reply rekey_reply_;               // its answer when the TV refused the pairing
     mutable std::string new_pin_;             // the TV's new key, once accepted
     bool woke_ = false;               // a wake was tried for a command (once per session)
+    bool held_back_ = false;          // a wake was held back (What::may_wake)
     bool woken_up_ = false;           // a wake in this session brought the API up
     mutable bool used_ = false;       // a request went to the TV in this session
     mutable bool heard_ = false;      // the TV answered, or accepted a connection, in this session
     mutable bool api_answered_ = false;           // the API answered something in this session
+    mutable bool api_refused_ = false;            // the latest request to the API was refused
     std::optional<Clock::time_point> accepted_;   // when the TV took a wake that switches it on, in this session
     bool was_starting_ = false;                   // the driver remembers such a wake from an earlier call
 };
@@ -1501,8 +1535,14 @@ public:
             std::vector<detail::Action> actions;
             if (!detail::plan(thing, change, actions, err)) return false;   // nothing has been sent
             const std::string who = device_key(dev);   // the key of the wake memories
+            const auto asked = Clock::now();
             Session s(t, p, dl);
             if (starting_.get(who)) s.starting_before();
+            // "Off" must not switch the TV on (ZB-069, press explains why): a change that asks for
+            // it wakes the TV for none of its parts while the TV has not been on lately (the sleep
+            // key, always last, asks again then: an earlier part may have found the API up).
+            const bool switching_off = change.on && !*change.on;
+            const bool hold = switching_off && !on_lately(s, who);
             bool ok = true;
             for (size_t i = 0; ok && i < actions.size(); i++) {
                 const detail::Action &a = actions[i];
@@ -1510,11 +1550,12 @@ public:
                 case detail::Action::Wake:   // first; keeps time back when more of the change follows it
                     ok = power_on(s, dev, who, actions.size() == 1, err);
                     break;
-                case detail::Action::Key: ok = press(s, a, who, err); break;
-                case detail::Action::Media: ok = media(s, a, err); break;
-                case detail::Action::Launch: ok = launch(s, thing, a.what, err); break;
+                case detail::Action::Key: ok = press(s, a, who, hold, err); break;
+                case detail::Action::Media: ok = media(s, a, !hold, err); break;
+                case detail::Action::Launch: ok = launch(s, thing, a.what, !hold, err); break;
                 }
             }
+            if (!ok && switching_off && fault_of(err) == Fault::NoAnswer) err = off_answer(s, who, asked);
             // The TV answered something: it is on, so an earlier unanswered wake-up signal no
             // longer says anything about it.
             if (s.heard()) wakes_.forget(who);
@@ -1522,6 +1563,11 @@ public:
             // minute in which a silent API means "still starting up" (an earlier start is kept).
             if (s.api_answered()) starting_.forget(who);
             else if (s.accepted()) starting_.note(who, *s.accepted());
+            // Whether the TV has been on lately, for a later on=false (press): its API answered a
+            // change that did not ask for it to be switched off. Asking that ends it, whatever came
+            // of it: a sleep the TV took, or may have taken, leaves it off.
+            if (change.on && !*change.on) seen_on_.forget(who);
+            else if (s.api_answered()) seen_on_.renew(who, Clock::now());
             if (!s.new_pin().empty()) remember_new_key(dev, auth_string(dev.auth, "key_pin"), s.new_pin());
             return ok;
         } catch (...) {
@@ -1714,7 +1760,7 @@ private:
             // slowly. A connection closed or reset without an answer, or answered with something
             // that is not HTTP, is not that: whatever took it did not take the wake (another
             // service on this port at the TV's address does so with a plain HTTP request).
-            if (d.connected && d.sent && d.rc == CURLE_OPERATION_TIMEDOUT) dial_late = true;
+            if (detail::wake_taken_late(d.connected, d.sent, d.rc)) dial_late = true;
             if (budget >= kMinTryMs) evidence = begun;   // a request with almost no time proves nothing
             if (final) break;
         }
@@ -1757,9 +1803,19 @@ private:
     // out, so that a repeated on=true, or an on=false soon after, counts from that packet; dropped
     // as soon as the TV answers anything. starting_: when the TV first accepted a DIAL wake that
     // switches it on (Session::accepted), dropped as soon as its API answers anything; until then
-    // a silent API means the TV is still starting up.
+    // a silent API means the TV is still starting up. seen_on_: when the TV's API last answered a
+    // change that did not ask for it to be switched off, so that on=false soon after may still
+    // wake it to take the sleep key; dropped by any on=false. read() and enumerate() leave it
+    // alone: the API answers them after a sleep too, with the screen off.
     std::optional<Clock::time_point> remembered_wake(const std::string &who) { return wakes_.get(who); }
     Clock::time_point remember_wake(const std::string &who, Clock::time_point first) { return wakes_.note(who, first); }
+
+    // Whether the TV has been on, or coming on, in the last minute: its API answered in this call
+    // or a change that left it on (seen_on_), it took a wake and is starting, or this driver sent
+    // it a wake-up signal and has heard nothing since.
+    bool on_lately(const Session &s, const std::string &who) {
+        return s.api_answered() || s.starting() || remembered_wake(who) || seen_on_.get(who);
+    }
 
     // What a key is called in a message when the TV turns out not to offer it.
     static const char *key_name(const std::string &action) {
@@ -1773,11 +1829,37 @@ private:
         return it == names.end() ? "that key" : it->second;
     }
 
-    bool press(Session &s, const detail::Action &a, const std::string &who, std::string &err) {
+    // What on=false answers when the change got no answer (Fault::NoAnswer): the TV is most likely
+    // off already, and an infrared power toggle would switch it on. Unless a wake-up signal from
+    // here went out less than kDeepResumeMs before this was asked and nothing has answered since,
+    // or the TV took a wake under a minute ago and its API has not answered since (starting): then
+    // the TV may be coming on right now, and "off already" would be wrong.
+    std::string off_answer(const Session &s, const std::string &who, Clock::time_point asked) {
+        const auto origin = remembered_wake(who);
+        if ((origin && asked < *origin + std::chrono::milliseconds(kDeepResumeMs)) || s.starting())
+            return std::string(kWaking) + kNotSwitchedOff;
+        // Not woken (not on lately), and something at the TV's address refused the API port: the
+        // TV there with that port closed, as a TV in standby has it. Worded without the words the
+        // app reads as "unreachable": its search for the TV at another address (2.5 s) cannot help
+        // a TV that has not moved.
+        if (s.held_back() && s.api_refused()) return std::string(kAlreadyOff) + kServiceClosed;
+        // Nothing at the address answered at all (the attempt timed out), or nothing answered on
+        // either port after a wake: the TV may have moved, and the app may look for it elsewhere.
+        return std::string(kAlreadyOff) + " It did not answer.";
+    }
+
+    // `hold`: the change asks for off and the TV has not been on lately (apply).
+    bool press(Session &s, const detail::Action &a, const std::string &who, bool hold, std::string &err) {
         const bool switching_off = a.what == "sleep";
-        const auto asked = Clock::now();
         const std::string path = "/v1/FireTV?action=" + a.what;   // a.what is one of plan()'s literals
-        const What what{key_name(a.what), true, true};
+        // "Off" must not switch the TV on (the owner's rule, ZB-069). A TV in deep standby refuses
+        // its API port, and the DIAL request that would wake it to take the sleep key brings it on:
+        // the owner's TV comes on from one even when it answers late. Telling deep standby from an
+        // idle TV that is on (its API asleep after a while unused, DIAL answering) would take that
+        // same request. So the TV is woken for the sleep key only when it has been on lately;
+        // otherwise its silence means it is off already (apply: off_answer). The cost: a TV left on
+        // until its API went idle cannot be switched off over the network.
+        const What what{key_name(a.what), true, true, switching_off ? on_lately(s, who) : !hold};
         // Part of a run of presses got to the TV: not a reason to send them all again another
         // way. Worded without the words the app reads as "unreachable" (the TV was there).
         const auto partial = [&](int done, const char *why) {
@@ -1795,43 +1877,30 @@ private:
                 if (s.deadline().left() < 200) return partial(i, "There was no time for the rest.");
             }
             // Body-less, one complete press: nothing can be left held down (see STATUS.md).
-            if (!s.command([&] { return s.api(true, path, "", kJson, kSmallBody, s.deadline().left()); }, what, err)) {
-                if (i) return partial(i, "Then it stopped taking them.");
-                // Nothing answered on either port: the TV is most likely off already, and an
-                // infrared power toggle would switch it on. Unless a wake-up signal from here went
-                // out less than kDeepResumeMs before this was asked and nothing has answered since,
-                // or the TV took a wake under a minute ago and its API has not answered since
-                // (starting): then the TV may be coming on right now, and "off already" would be wrong.
-                if (switching_off && fault_of(err) == Fault::NoAnswer) {
-                    const auto origin = remembered_wake(who);
-                    if ((origin && asked < *origin + std::chrono::milliseconds(kDeepResumeMs)) || s.starting())
-                        err = std::string(kWaking) + kNotSwitchedOff;
-                    else
-                        err = std::string(kAlreadyOff) + " It did not answer.";
-                }
-                return false;
-            }
+            if (!s.command([&] { return s.api(true, path, "", kJson, kSmallBody, s.deadline().left()); }, what, err))
+                return i ? partial(i, "Then it stopped taking them.") : false;
             last = Clock::now();
         }
         return true;
     }
 
-    bool media(Session &s, const detail::Action &a, std::string &err) {
+    // `may_wake`: false in a change that asks for off while the TV has not been on lately (apply).
+    bool media(Session &s, const detail::Action &a, bool may_wake, std::string &err) {
         const std::string path = "/v1/media?action=" + a.what;
         const char *type = a.body.empty() ? kJson : kJsonUtf8;
         const char *name = a.what == "play" ? "play and pause" : a.body.find("\"back\"") != std::string::npos ? "rewind" : "fast-forward";
         return s.command([&] { return s.api(true, path, a.body, type, kSmallBody, s.deadline().left()); },
-                         What{name, true, true}, err);
+                         What{name, true, true, may_wake}, err);
     }
 
-    bool launch(Session &s, const home::Thing &thing, const std::string &wanted, std::string &err) {
+    bool launch(Session &s, const home::Thing &thing, const std::string &wanted, bool may_wake, std::string &err) {
         std::vector<App> apps = apps_of(thing.ref);
         std::vector<std::string> candidates;
         int at = detail::match_app(apps, wanted, candidates);
         if (at < 0 && candidates.empty()) {   // perhaps installed since the list was read
             Reply list;
             if (!s.command([&] { return list = s.api(false, "/v1/FireTV/appsV2", "", kJson, kAppsBody, 2000); },
-                           What{"opening apps", false, false}, err))
+                           What{"opening apps", false, false, may_wake}, err))
                 return false;
             if (list.complete() && detail::parse_apps(list.body, apps)) at = detail::match_app(apps, wanted, candidates);
         }
@@ -1844,11 +1913,12 @@ private:
         const std::string path = "/v1/FireTV/app/" + apps[static_cast<size_t>(at)].id;   // checked by valid_package
         // A 400 here is not "unsupported": the TV may not have that package (any longer).
         return s.command([&] { return s.api(true, path, "", kJson, kSmallBody, s.deadline().left()); },
-                         What{"opening apps", false, true}, err);
+                         What{"opening apps", false, true, may_wake}, err);
     }
 
     detail::Recall wakes_{kWakeMemoryMs};
     detail::Recall starting_{kWakeMemoryMs};
+    detail::Recall seen_on_{kWakeMemoryMs};
 
     // A key the TV presented in place of the pinned one and that a check accepted (Session::rekey).
     // read() and apply() cannot change Device::auth, so it is kept here and, to survive a restart,
@@ -1934,6 +2004,10 @@ std::string unconfirmed_error(bool acts, bool starting) {
 
 bool power_on_done(Woken api, bool alone) { return api == Woken::Up || (alone && api != Woken::KeyChanged); }
 
+bool wake_taken_late(bool connected, bool sent, int curl_code) {
+    return connected && sent && curl_code == CURLE_OPERATION_TIMEDOUT;
+}
+
 std::optional<Recall::Clock::time_point> Recall::get(const std::string &who, Clock::time_point now) {
     std::lock_guard<std::mutex> lock(mutex_);
     prune(now);
@@ -1946,6 +2020,12 @@ Recall::Clock::time_point Recall::note(const std::string &who, Clock::time_point
     std::lock_guard<std::mutex> lock(mutex_);
     prune(now);
     return at_.emplace(who, at).first->second;   // an earlier time is kept
+}
+
+void Recall::renew(const std::string &who, Clock::time_point at, Clock::time_point now) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    prune(now);
+    at_[who] = at;
 }
 
 void Recall::forget(const std::string &who) {
