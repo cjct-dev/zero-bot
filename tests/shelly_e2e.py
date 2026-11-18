@@ -33,7 +33,7 @@ TMP = tempfile.mkdtemp(prefix="shelly-e2e-")
 NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 ENV = dict(os.environ, ZB_TEST_NETWORK="1", ZB_NO_AUDIO="1")
 ENV.pop("ZB_DRY_RUN", None)
-PASSWORDS = ["hunter2-Gen2", "wrong-Gen2", "changed-Gen2", "S3cret:Gen1", "wrong-Gen1"]
+PASSWORDS = ["hunter2-Gen2", "wrong-Gen2", "changed-Gen2", "S3cret:Gen1", "wrong-Gen1", "changed-Gen1"]
 # The state keys the app shows (src/smarthome/home.h).
 APP_KEYS = {"on", "brightness", "kelvin", "hue", "saturation", "mode", "target_c", "current_c", "humidity", "position",
             "fan", "volume", "muted", "playing", "source", "title", "power_w", "energy_today_wh", "motion", "contact"}
@@ -425,7 +425,13 @@ def sensors_and_exclusions():
     check("sensor: a Gen1 H&T", ok and things_of(out).get("sensor", {}).get("state") == {"current_c": 12.4, "humidity": 81}, out)
     m.stop()
     for model, dev_id, why in (("plus1-garage", "shelly:shellyplus1pm-a8032ab12345", "a relay named Garage door"),
+                               ("plus1-garage-dev", "shelly:shellyplus1pm-a8032ab12345", "a Plus 1 named Garage door, its relay unnamed"),
+                               ("plus1-pulse", "shelly:shellyplus1pm-a8032ab12345", "a relay that switches itself off after a second"),
+                               ("plus2pm-cover-garage", "shelly:shellyplus2pm-a8032ab12345", "an unnamed blind in a device named Garage"),
                                ("1", "shelly:shelly1-a4cf12f45378", "a Gen1 Shelly 1 named Garage door"),
+                               ("1-garage-dev", "shelly:shelly1-a4cf12f45378", "a Gen1 Shelly 1 named Garage door, its relay unnamed"),
+                               ("1-pulse", "shelly:shelly1-a4cf12f45378", "a Gen1 relay with auto-off after a second"),
+                               ("25-roller-garage", "shelly:shelly25-a4cf12f45378", "a Gen1 2.5 blind (no name of its own) named Garage door"),
                                ("gas1", "shelly:shellygas1-a4cf12f45378", "a gas alarm")):
         m = Mock(model)
         st = new_state(model, m, dev_id)
@@ -471,6 +477,47 @@ def identity_and_hostile():
     check("identity gen1: another device (by MAC) is not switched", not ok and kind == "other_device" and paths(b.log()) == ["/shelly"], (kind, paths(b.log())))
     a.stop()
     b.stop()
+    # review: both have passwords of their own. Reading or typing the password again must not send
+    # this device's login to the other (in the clear, for Gen1), nor keep its refusal against this one.
+    for gen, model, dev_id, extra_b, user in (
+            (1, "1pm", "shelly:shelly1pm-a4cf12f45378", ["--mac", "A4CF12000000"], "owner"),
+            (2, "plus1pm", "shelly:shellyplus1pm-a8032ab12345", ["--id", "shellyplus1pm-ffffffffffff", "--mac", "FFFFFFFFFFFF"], None)):
+        pw_a, pw_b = ("S3cret:Gen1", "wrong-Gen1") if gen == 1 else ("hunter2-Gen2", "wrong-Gen2")
+        a = Mock(model, "--password", pw_a, *(["--user", user] if user else []))
+        b = Mock(model, "--password", pw_b, *(["--user", user] if user else []), *extra_b)
+        st = new_state("ident-pw%d" % gen, a, dev_id)
+        cli(st, "enumerate")
+        if user:
+            cli(st, "pair", user)
+        ok, *_ = cli(st, "pair", pw_a)
+        ok2, *_ = cli(st, "enumerate")
+        point_at(st, b)
+        b.reset()
+        ok3, out, kind, err, ms = cli(st, "read")
+        refused = load(st).get("secrets", {}).get("shelly", {}).get("refused", {})
+        check("identity gen%d pw: another Shelly at the address is not read with this one's password" % gen,
+              ok and ok2 and not ok3 and kind == "other_device" and logins(b.log()) == [] and paths(b.log()) == ["/shelly"], (kind, err, b.log()))
+        check("identity gen%d pw: and no refusal is kept against this one" % gen, refused == {}, refused)
+        # The owner changes this device's password, it is refused once; then the router moves it and
+        # the other Shelly gets its address before the new password is typed.
+        new_pw = "changed-Gen%d" % gen
+        point_at(st, a)
+        a.config(password=new_pw)
+        ok3, out, kind, err, ms = cli(st, "read")
+        point_at(st, b)
+        b.reset()
+        if user:
+            cli(st, "pair", user)
+        ok4, out, kind4, err4, ms = cli(st, "pair", new_pw)
+        check("identity gen%d pw: a password typed again goes only to its own device" % gen,
+              kind == "refused" and not ok4 and "Another device" in err4 and logins(b.log()) == [] and
+              load(st)["device"]["auth"].get("password") == new_pw, (kind, err4, b.log()))
+        point_at(st, a)
+        a.reset()
+        ok3, out, kind, err, ms = cli(st, "read")
+        check("identity gen%d pw: back at its own address it is read with one login" % gen, ok3 and logins(a.log()) == ["ok"], (err, a.log()))
+        a.stop()
+        b.stop()
     # Something that is not a Shelly at all (a printer's web page) now has the address.
     asked = []
 

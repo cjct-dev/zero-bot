@@ -50,10 +50,11 @@ HOSTILE = {
     "redirect": "answers everything but /shelly with a redirect to another host",
 }
 
-GEN1_MODELS = {"1pm", "1", "25", "25-roller", "25-roller-uncal", "plugs1", "dimmer2", "rgbw2-color", "rgbw2-white",
-               "duo1", "ht1", "gas1"}
-GEN2_MODELS = {"plus1pm", "plus1-lights", "plus1-garage", "plugs", "plus2pm", "plus2pm-cover", "plus2pm-cover-uncal",
-               "rgbw", "dimmer", "duo", "plusht", "wall-thermostat"}
+GEN1_MODELS = {"1pm", "1", "1-garage-dev", "1-pulse", "25", "25-roller", "25-roller-uncal", "25-roller-garage", "plugs1",
+               "dimmer2", "rgbw2-color", "rgbw2-white", "duo1", "ht1", "gas1"}
+GEN2_MODELS = {"plus1pm", "plus1-lights", "plus1-garage", "plus1-garage-dev", "plus1-pulse", "plugs", "plus2pm",
+               "plus2pm-cover", "plus2pm-cover-uncal", "plus2pm-cover-garage", "rgbw", "dimmer", "duo", "plusht",
+               "wall-thermostat"}
 
 SETUP_METHODS = {"Cover.Calibrate", "Light.Calibrate", "Shelly.Reboot", "Shelly.FactoryReset", "Shelly.Update",
                  "Shelly.SetAuth", "Shelly.SetProfile", "Shelly.ResetWiFiConfig", "Sys.SetConfig", "WiFi.SetConfig",
@@ -85,7 +86,8 @@ def selftest():
 def gen2_model(model):
     """(device info, config, status) for a Gen2+ model."""
     def sw(i, name=None, power=None):
-        cfg = {"id": i, "name": name, "in_mode": "follow", "initial_state": "match_input"}
+        cfg = {"id": i, "name": name, "in_mode": "follow", "initial_state": "match_input", "auto_on": False,
+               "auto_on_delay": 60.0, "auto_off": False, "auto_off_delay": 60.0}
         st = {"id": i, "source": "init", "output": False, "temperature": {"tC": 41.2, "tF": 106.2}}
         if power is not None:
             st.update({"apower": power, "voltage": 230.1, "current": 0.0, "aenergy": {"total": 11.679, "by_minute": [0, 0, 0], "minute_ts": 1}})
@@ -104,13 +106,18 @@ def gen2_model(model):
         config[key] = cfg
         status[key] = st
 
-    if model in ("plus1pm", "plus1-lights", "plus1-garage"):
+    if model in ("plus1pm", "plus1-lights", "plus1-garage", "plus1-garage-dev", "plus1-pulse"):
         info.update(id="shellyplus1pm-a8032ab12345", model="SNSW-001P16EU", app="Plus1PM")
-        name = {"plus1pm": "Desk lamp", "plus1-lights": None, "plus1-garage": "Garage door"}[model]
+        name = {"plus1pm": "Desk lamp", "plus1-lights": None, "plus1-garage": "Garage door", "plus1-garage-dev": None,
+                "plus1-pulse": "Opener"}[model]
         put("switch:0", *sw(0, name, 12.5))
         if model == "plus1-lights":
             config["sys"]["ui_data"]["consumption_types"] = ["lights"]
             config["sys"]["device"]["name"] = "Hall"
+        if model == "plus1-garage-dev":   # named in the Shelly app as a device; its relay left unnamed
+            config["sys"]["device"]["name"] = "Garage door"
+        if model == "plus1-pulse":        # wired as an opener: switches itself off a second after it is switched on
+            config["switch:0"].update(auto_off=True, auto_off_delay=1.0)
     elif model == "plugs":
         info.update(id="shellyplusplugs-a8032ab12345", model="SNPL-00112EU", app="PlugS")
         put("switch:0", *sw(0, "Kettle", 0.0))
@@ -120,14 +127,16 @@ def gen2_model(model):
         put("switch:0", *sw(0, None, 5.0))
         put("switch:1", *sw(1, "Cooker hood light", 0.0))
         config["sys"]["ui_data"]["consumption_types"] = ["", "light"]
-    elif model in ("plus2pm-cover", "plus2pm-cover-uncal"):
+    elif model in ("plus2pm-cover", "plus2pm-cover-uncal", "plus2pm-cover-garage"):
         info.update(id="shellyplus2pm-a8032ab12345", model="SNSW-102P16EU", app="Plus2PM", profile="cover")
         cal = model == "plus2pm-cover"
         st = {"id": 0, "source": "init", "state": "stopped", "apower": 0, "voltage": 230, "current": 0,
               "pos_control": cal, "last_direction": "open"}
         if cal:
             st["current_pos"] = 40
-        put("cover:0", {"id": 0, "name": "Lounge blind", "maxtime_open": 60}, st)
+        put("cover:0", {"id": 0, "name": None if model == "plus2pm-cover-garage" else "Lounge blind", "maxtime_open": 60}, st)
+        if model == "plus2pm-cover-garage":
+            config["sys"]["device"]["name"] = "Garage"
     elif model == "rgbw":
         info.update(id="shellyplusrgbwpm-a8032ab12345", model="SNDC-0D4P10WW", app="PlusRGBWPM", profile="rgb")
         put("rgb:0", {"id": 0, "name": "Shelf strip"},
@@ -167,7 +176,8 @@ def gen1_model(model):
               "mac": mac, "uptime": 1000, "has_update": False}
 
     def relay(name, appliance="General"):
-        return {"name": name, "appliance_type": appliance, "ison": False, "has_timer": False, "default_state": "off"}
+        return {"name": name, "appliance_type": appliance, "ison": False, "has_timer": False, "default_state": "off",
+                "btn_type": "toggle", "auto_on": 0.0, "auto_off": 0.0}
 
     def relay_status():
         return {"ison": False, "has_timer": False, "timer_started": 0, "timer_duration": 0, "timer_remaining": 0,
@@ -180,13 +190,17 @@ def gen1_model(model):
         shelly["type"] = "SHSW-PM"
         settings["relays"] = [relay("Porch light", "lights")]
         status.update(relays=[relay_status()], meters=[meter(7.5)], tmp={"tC": 40.1, "tF": 104.2, "is_valid": True})
-    elif model == "1":
+    elif model in ("1", "1-garage-dev", "1-pulse"):
         shelly["type"] = "SHSW-1"
-        settings["relays"] = [relay("Garage door")]
+        settings["relays"] = [relay({"1": "Garage door", "1-garage-dev": None, "1-pulse": "Opener"}[model])]
+        if model == "1-garage-dev":
+            settings["name"] = "Garage door"
+        if model == "1-pulse":
+            settings["relays"][0].update(btn_type="detached", auto_off=1.0)
         status.update(relays=[relay_status()], meters=[meter(0)])
-    elif model in ("25", "25-roller", "25-roller-uncal"):
+    elif model in ("25", "25-roller", "25-roller-uncal", "25-roller-garage"):
         shelly["type"] = "SHSW-25"
-        settings["name"] = "Landing"
+        settings["name"] = "Garage door" if model == "25-roller-garage" else "Landing"
         if model == "25":
             settings["mode"] = "relay"
             settings["relays"] = [relay("Landing light"), relay(None)]
@@ -199,6 +213,7 @@ def gen1_model(model):
                           rollers=[{"state": "stop", "power": 0, "is_valid": True, "safety_switch": False,
                                     "overtemperature": False, "stop_reason": "normal", "last_direction": "open",
                                     "current_pos": 70, "calibrating": False, "positioning": model == "25-roller"}])
+            # Gen1 blinds have no name of their own (the documentation lists none for /settings/roller).
     elif model == "plugs1":
         shelly["type"] = "SHPLG-S"
         settings["relays"] = [relay("Fan heater")]

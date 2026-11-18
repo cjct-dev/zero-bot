@@ -21,18 +21,22 @@
 //    "light:N", "roller:N", and "sensor" for an H&T. A 2PM is two switches or one blind,
 //    depending on its profile; a Gen1 2.5 likewise by its mode. At most 32 things a device.
 //  - Never offered: inputs, energy meters, thermostats, smoke, gas, flood and door sensors, and
-//    any relay whose name or appliance type reads as a garage door, gate, door, lock, valve,
-//    alarm or siren (a Shelly 1 is a common garage-door retrofit), unless the name also says it
-//    is a light ("Front door light").
+//    any relay or blind whose name (its own, or the device's when its own does not say it is a
+//    light) or appliance type reads as a garage door, gate, door, lock, valve, alarm or siren (a
+//    Shelly 1 is a common garage-door retrofit), unless the name also says it is a light ("Front
+//    door light"); nor a relay set to switch itself off within seconds (a pulse, as a door or gate
+//    opener is wired), whatever it is called.
 //  - Changes: on/off; brightness, colour (Change::hs) and white (Change::kelvin) where the thing
 //    has them; for a blind position 100 opens it, 0 closes it, a value between moves it there
 //    (only when the blind has been calibrated in the Shelly app: Cover pos_control, Gen1
 //    positioning), and Change::transport "stop" stops it. A brightness, colour or white without
 //    Change::on also switches the light on; brightness 0 switches it off. Calibration, setup,
 //    firmware and every other call that changes how a device is set up are never sent.
-//  - Before every change the device is asked who it is (GET /shelly): when another Shelly
-//    answers at the saved address, nothing is sent (kOtherDevice, whose wording counts as "did
-//    not answer" for the app's re-discovery). read() checks the MAC in the status it reads.
+//  - Before every change, and before anything that carries a password (read() with one, pair()),
+//    the device is asked who it is (GET /shelly): when another device answers at the saved
+//    address, nothing is sent (kOtherDevice, whose wording counts as "did not answer" for the
+//    app's re-discovery), so a password never reaches another device and its refusal is never
+//    kept against this one. read() without a password checks the MAC in the status it reads.
 //  - Pairing: none, unless the device asks for a password. The driver learns that from GET
 //    /shelly or a 401, and keeps it in the family's secrets (secrets.shelly.locked[device] =
 //    generation), because read() and apply() cannot change Device::auth. next_step() then asks:
@@ -118,7 +122,15 @@ std::string fingerprint(const std::string &user, const std::string &password);  
 bool too_deep(const std::string &text, int max = 32);
 bool valid_ipv4(const std::string &ip);
 // Whether a relay with this name or appliance type must not be offered (garage doors, locks, ...).
+// A word that contains "garage" counts ("GarageDoor", "Garagentor").
 bool banned(const std::string &name, const std::string &appliance_type);
+// Whether a relay or blind is left out: banned() on its own name or appliance type; the device's
+// name when the channel's own name does not say it is a light (a Shelly 1 named "Garage door" in
+// the Shelly app with its relay unnamed, a Gen1 2.5's blind, which has no name of its own); or a
+// relay that switches itself off within kPulseSeconds of being switched on (auto-off: how a
+// garage door, gate or door opener, or a bell, is wired, whatever it is called).
+constexpr double kPulseSeconds = 10;
+bool left_out(const std::string &name, const std::string &device_name, const std::string &appliance_type, double auto_off_s = 0);
 
 }  // namespace detail
 }  // namespace shelly

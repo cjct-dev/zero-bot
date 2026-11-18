@@ -186,6 +186,30 @@ static void test_gen2_things() {
     things = things_gen2(gen2_who(), json::parse(R"({"sys":{"ui_data":{"consumption_types":["Garage door opener"]}},"switch:0":{"name":"Big one"}})"),
                          json::parse(R"({"switch:0":{"output":false}})"), name);
     CHECK(things.empty());
+    // review: the name a garage door goes by is often the device's, its relay left unnamed (it is
+    // then called by the device's name); a compound word; a relay that switches itself off a
+    // second after it is switched on (how an opener is wired, whatever it is called).
+    const json one_off = json::parse(R"({"switch:0":{"output":false}})");
+    things = things_gen2(gen2_who("Plus1"), json::parse(R"({"sys":{"device":{"name":"Garage door"}},"switch:0":{"name":null}})"), one_off, name);
+    CHECK_MSG(things.empty(), things.empty() ? "" : things[0].name);
+    things = things_gen2(gen2_who("Plus2PM"), json::parse(R"({"sys":{"device":{"name":"Garage"}},"cover:0":{"name":null}})"),
+                         json::parse(R"({"cover:0":{"state":"closed","pos_control":true,"current_pos":0}})"), name);
+    CHECK_MSG(things.empty(), things.empty() ? "" : things[0].name);
+    things = things_gen2(gen2_who("Plus1"), json::parse(R"({"switch:0":{"name":"GarageDoor"}})"), one_off, name);
+    CHECK(things.empty());
+    things = things_gen2(gen2_who("Plus1"), json::parse(R"({"switch:0":{"name":"Opener","auto_off":true,"auto_off_delay":1.0}})"), one_off, name);
+    CHECK(things.empty());
+    // ... but lights in a garage, a relay that switches off after minutes, an auto-off left unused,
+    // and a device named for its lights are offered.
+    things = things_gen2(gen2_who("Plus2PM"),
+                         json::parse(R"({"sys":{"device":{"name":"Garage"}},"switch:0":{"name":"Garage lights","auto_off":true,"auto_off_delay":120},
+                                         "switch:1":{"name":"Strip light","auto_off":false,"auto_off_delay":1}})"),
+                         json::parse(R"({"switch:0":{"output":false},"switch:1":{"output":false}})"), name);
+    CHECK(things.size() == 2);
+    things = things_gen2(gen2_who("Plus1"), json::parse(R"({"sys":{"device":{"name":"Garage lights"}},"switch:0":{"name":null}})"), one_off, name);
+    CHECK(things.size() == 1 && things[0].name == "Garage lights");
+    things = things_gen2(gen2_who("Plus1"), json::parse(R"({"switch:0":{"name":"Fan","auto_off":true,"auto_off_delay":"1"}})"), one_off, name);
+    CHECK(things.size() == 1);   // a delay that is not a number is no delay
 
     // Hostile names and values: cleaned, capped, dropped.
     const std::string evil = "Lamp\x01\x1b[31m \"quoted\" \xe2\x80\x9ctypeset\xe2\x80\x9d <b>{x}</b> " + std::string(300, 'y');
@@ -227,6 +251,14 @@ static void test_gen1_things() {
     CHECK(things.size() == 1 && things[0].type == "switch" && things[0].caps == home::kPower && things[0].state == json({{"on", true}}));
     CHECK(things_gen1(gen1_who("SHSW-1"), json::parse(R"({"relays":[{"name":"Garage door"}]})"), status, name).empty());
     CHECK(things_gen1(gen1_who("SHSW-1"), json::parse(R"({"relays":[{"name":"x","appliance_type":"Lock"}]})"), status, name).empty());
+    // review: the device's name when the relay has none; a pulse relay (auto_off in seconds); a
+    // 2.5's blind, which has no name of its own, in a device named for the garage door.
+    CHECK(things_gen1(gen1_who("SHSW-1"), json::parse(R"({"name":"Garage door","relays":[{"name":null,"auto_off":0.0}]})"), status, name).empty());
+    CHECK(things_gen1(gen1_who("SHSW-1"), json::parse(R"({"relays":[{"name":"Opener","auto_off":1.5}]})"), status, name).empty());
+    CHECK(things_gen1(gen1_who("SHSW-25"), json::parse(R"({"name":"Garage door","mode":"roller","relays":[{},{}],"rollers":[{"maxtime":20}]})"),
+                      json::parse(R"({"rollers":[{"state":"stop","positioning":false}]})"), name).empty());
+    things = things_gen1(gen1_who("SHSW-1"), json::parse(R"({"name":"Garage","relays":[{"name":"Garage light","auto_off":300}]})"), status, name);
+    CHECK(things.size() == 1 && things[0].name == "Garage light");
     // A plug; a 2.5 in relay mode, with the device's name for an unnamed channel.
     things = things_gen1(gen1_who("SHPLG-S"), json::parse(R"({"relays":[{"name":"Fan heater"}]})"),
                          json::parse(R"({"relays":[{"ison":false}],"meters":[{"power":1500,"is_valid":true}]})"), name);
@@ -469,6 +501,12 @@ static void test_frames() {
     CHECK(banned("Garage door", "") && banned("Front gate", "") && banned("Water valve", "") && banned("x", "Door lock"));
     CHECK(banned("Burglar alarm", "") && banned("GARAGE", ""));
     CHECK(!banned("Front door light", "") && !banned("Desk lamp", "") && !banned("Doorbell", "") && !banned("Heater", "lights"));
+    CHECK(banned("GarageDoor", "") && banned("Garagentor", "") && banned("garage-door", "") && !banned("Garage lights", ""));
+    CHECK(left_out("", "Garage door", "") && left_out("Socket", "Garage", "") && left_out("Relay", "Front gate", ""));
+    CHECK(!left_out("", "Garage lights", "") && !left_out("Porch light", "Front door", "") && !left_out("", "", "") &&
+          !left_out("Kettle", "Kitchen", ""));
+    CHECK(left_out("Pump", "", "", 1) && left_out("Pump", "", "", kPulseSeconds) && !left_out("Pump", "", "", kPulseSeconds + 1) &&
+          !left_out("Pump", "", "", 0));
 }
 
 // ---------------------------------------------------------------- the driver, without a device
