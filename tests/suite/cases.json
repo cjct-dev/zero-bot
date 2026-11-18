@@ -14690,8 +14690,24 @@
   "checks": [
    {
     "kind": "not_answer",
-    "re": "what do you mean|could you clarify|can you clarify|not sure what you mean|which company|what is (an? )?o\\.?p\\.?o",
+    "re": "what do you mean|(could|can) you (clarify|say (it|that) again|spell|repeat|give me (a bit )?more|tell me (what|where|which|more))|not sure what (you mean|.{0,40}(refers? to|stands? for|means?))|what (it|that|.{0,30}) stands? for|couldn'?t find (an? |any )?(event|thing) called|which company|what is (an? )?o\\.?p\\.?o",
     "what": "ask what was meant instead of looking it up"
+   },
+   {
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "ipo",
+     "initial public offering",
+     "public offering",
+     "listing",
+     "go public",
+     "going public",
+     "flotation",
+     "float",
+     "debut"
+    ]
    }
   ],
   "env": {},
@@ -14716,8 +14732,24 @@
   "checks": [
    {
     "kind": "not_answer",
-    "re": "what do you mean|could you clarify|can you clarify|not sure what you mean|which company|what is (an? )?o\\.?p\\.?o",
+    "re": "what do you mean|(could|can) you (clarify|say (it|that) again|spell|repeat|give me (a bit )?more|tell me (what|where|which|more))|not sure what (you mean|.{0,40}(refers? to|stands? for|means?))|what (it|that|.{0,30}) stands? for|couldn'?t find (an? |any )?(event|thing) called|which company|what is (an? )?o\\.?p\\.?o",
     "what": "ask what was meant instead of looking it up"
+   },
+   {
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "ipo",
+     "initial public offering",
+     "public offering",
+     "listing",
+     "go public",
+     "going public",
+     "flotation",
+     "float",
+     "debut"
+    ]
    }
   ],
   "env": {},
@@ -14742,8 +14774,24 @@
   "checks": [
    {
     "kind": "not_answer",
-    "re": "what do you mean|could you clarify|can you clarify|not sure what you mean|which company|what is (an? )?o\\.?p\\.?o",
+    "re": "what do you mean|(could|can) you (clarify|say (it|that) again|spell|repeat|give me (a bit )?more|tell me (what|where|which|more))|not sure what (you mean|.{0,40}(refers? to|stands? for|means?))|what (it|that|.{0,30}) stands? for|couldn'?t find (an? |any )?(event|thing) called|which company|what is (an? )?o\\.?p\\.?o",
     "what": "ask what was meant instead of looking it up"
+   },
+   {
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "ipo",
+     "initial public offering",
+     "public offering",
+     "listing",
+     "go public",
+     "going public",
+     "flotation",
+     "float",
+     "debut"
+    ]
    }
   ],
   "env": {},
@@ -14767,8 +14815,24 @@
   "checks": [
    {
     "kind": "not_answer",
-    "re": "what do you mean|could you clarify|can you clarify|not sure what you mean|which company|what is (an? )?o\\.?p\\.?o",
+    "re": "what do you mean|(could|can) you (clarify|say (it|that) again|spell|repeat|give me (a bit )?more|tell me (what|where|which|more))|not sure what (you mean|.{0,40}(refers? to|stands? for|means?))|what (it|that|.{0,30}) stands? for|couldn'?t find (an? |any )?(event|thing) called|which company|what is (an? )?o\\.?p\\.?o",
     "what": "ask what was meant instead of looking it up"
+   },
+   {
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "ipo",
+     "initial public offering",
+     "public offering",
+     "listing",
+     "go public",
+     "going public",
+     "flotation",
+     "float",
+     "debut"
+    ]
    }
   ],
   "env": {},
@@ -14861,6 +14925,12 @@
     "kind": "max_calls",
     "tool": "web_search",
     "n": 2
+   },
+   {
+    "kind": "max_calls",
+    "tool": "web_search",
+    "n": 2,
+    "turn": 0
    }
   ],
   "env": {},

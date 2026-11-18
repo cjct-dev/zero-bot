@@ -111,6 +111,14 @@ void test_secrets() {
           "the keys are blanked out everywhere");
     check(text.find("my key is [removed] and the other is [removed]") != std::string::npos, "and the rest of the words kept");
     check(text.find("harbour") != std::string::npos, "short or empty secrets blank nothing");
+
+    // A key found inside "[removed]" itself: replaced once, never in a loop (this hung before; the
+    // alarm set in main ends the test should it come back).
+    json odd = json::array({user("Wed 18 Nov 2026, 11:14", "the key removed, removed again, and [removed]")});
+    const json q = activity::conversation_record(odd, 0, 1795003200, {"removed", "[removed]", "emoved"});
+    const std::string said = q["messages"][0]["content"];
+    check(said.find("the key [removed], [removed] again, and [removed]") != std::string::npos,
+          "a key that \"[removed]\" contains is blanked once: " + said);
 }
 
 void test_file_cap() {
@@ -194,16 +202,37 @@ void test_saving(const std::string &root) {
     check(n < 25 && total <= activity::kMaxSavedBytes + static_cast<size_t>(st.st_size) && exists(last),
           "together they stay under the size limit: " + std::to_string(n) + " files of " + std::to_string(st.st_size) + " bytes");
 
+    // Pruning and deleting touch only what the saver wrote: another file in the folder stays.
+    util::write_file_atomic(dir + "/notes.json", "{}");
+    util::write_file_atomic(dir + "/2026-11-18-120000-copy.json", "{}");
+    util::write_file_atomic(dir + "/notes.json.tmp", "{");
+    for (size_t i = 0; i < activity::kMaxSaved + 2; ++i) last = activity::save_conversation(msgs, 0).path;
+    check(exists(dir + "/notes.json") && exists(dir + "/2026-11-18-120000-copy.json") && exists(dir + "/notes.json.tmp"),
+          "pruning leaves files it did not write alone");
+    check(activity::saved_count() == activity::kMaxSaved, "and does not count them");
+    const size_t saves = activity::saved_count();
+    util::write_file_atomic(dir + "/2026-11-18-120000.json.tmp", "{");   // a save cut short
+    const size_t deleted_with_others = activity::delete_saved();
+    check(deleted_with_others == saves && activity::saved_count() == 0 && exists(dir + "/notes.json") &&
+              exists(dir + "/2026-11-18-120000-copy.json") && exists(dir + "/notes.json.tmp") &&
+              !exists(dir + "/2026-11-18-120000.json.tmp"),
+          "delete removes every save and half-written save, and nothing else");
+    unlink((dir + "/notes.json").c_str());
+    unlink((dir + "/2026-11-18-120000-copy.json").c_str());
+    unlink((dir + "/notes.json.tmp").c_str());
+
     // Deleting them all removes the folder too.
-    util::write_file_atomic(dir + "/half.json.tmp", "{");
+    for (int i = 0; i < 3; ++i) last = activity::save_conversation(msgs, 0).path;
+    util::write_file_atomic(last + ".tmp", "{");
     const size_t deleted = activity::delete_saved();
-    check(deleted == n && activity::saved_count() == 0 && !exists(dir), "delete removes every save and the folder");
+    check(deleted == 3 && activity::saved_count() == 0 && !exists(dir), "delete removes every save and the folder");
 }
 
 }  // namespace
 
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: activity_test STATE_FOLDER\n"); return 2; }
+    alarm(120);   // a save that loops (it once did, on a key inside "[removed]") fails the run instead of hanging it
     const std::string root = argv[1];
     util::make_dirs(root);
     setenv("HOME", root.c_str(), 1);

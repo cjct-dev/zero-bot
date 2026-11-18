@@ -289,10 +289,11 @@ struct App {
 
     // DIAGNOSTICS (temporary): one SPACE opens settings once the time for a second has passed,
     // unless something else has taken the screen meanwhile.
+    bool settings_may_open() {
+        return !menu.open() && !recorder.active() && !chat.typing() && !breath.active() && !alarm.ringing();
+    }
     void settle_keys(unsigned long now) {
-        if (space_tap.single_due(now) && !menu.open() && !recorder.active() && !chat.typing() && !breath.active() &&
-            !alarm.ringing())
-            open_menu();
+        if (space_tap.single_due(now) && settings_may_open()) open_menu();
     }
 
     // Forgets what has been said so far. Calendar, reminders and saved memories are untouched.
@@ -392,8 +393,10 @@ struct App {
             last_activity = now;
             if (dimmed) { display::set_brightness(Settings::get().brightness); dimmed = false; }
         }
-        // DIAGNOSTICS (temporary): a SPACE waiting to open settings gives way to any other key.
-        if (ev.state == 1 && !keyguide::is_settings_key(ev)) space_tap.cancel();
+        // DIAGNOSTICS (temporary): a SPACE waiting to open settings is a single press once another
+        // key comes, so settings open now and the key goes to them, as both did before SPACE SPACE
+        // existed ("SPACE, Down, ENTER" still works however quickly it is typed).
+        if (ev.state == 1 && !keyguide::is_settings_key(ev) && space_tap.cancel() && settings_may_open()) open_menu();
 
         // A ringing alarm takes the next key press, whatever the key and whatever is on screen (the
         // chat, a menu, the breathing exercise), and the press goes no further. TAB also starts
@@ -1128,6 +1131,22 @@ struct App {
             failed = true;
         }
         level_until = 0;
+        // SPACE and then another key at once: SPACE was a single press, so settings open and the key
+        // goes to them (Down moves to the second section), as it did before SPACE SPACE existed.
+        {
+            KeyEvent down; down.key = Key::Down; down.state = 1;
+            handle_key(space);
+            handle_key(down);
+            const bool quick = menu.open() && menu.depth() == 1 && menu.title() == "Settings" && menu.selected() == "Device" &&
+                               !space_tap.pending();
+            menu.close();
+            settle_keys(display::now_ms() + kDoubleTapMs);
+            if (!quick || menu.open()) {
+                fprintf(stderr, "SPACE then Down at once did not open settings on their second section\n");
+                failed = true;
+            }
+            menu.close();
+        }
         // One saved conversation (written by the real writer, into this run's own state folder), shown
         // in Settings > Your data and deleted from there.
         const json sample = json::array({

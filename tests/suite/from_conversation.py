@@ -109,7 +109,8 @@ def summary_lines(record, turns, source):
         for name, _ in t["tools"]: counts[name] = counts.get(name, 0) + 1
         tools = ", ".join(name + (" x%d" % n if n > 1 else "") for name, n in counts.items()) or "no tool"
         answer = ("answer %d words%s" % (words(t["answer"]), ", ends with a question" if t["answer"].rstrip().endswith("?") else "")
-                  if t["answer"] else "no answer before the next message (said while it was working?)")
+                  if t["answer"] else "no answer before the next message (said while it was working?)" if i < len(turns) - 1
+                  else "no answer yet (saved while it was working?)")
         out.append("  turn %d%s: %s; %s" % (i + 1, " (%s)" % t["time"][11:] if t["time"] else "", tools, answer))
     return out
 

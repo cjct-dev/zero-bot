@@ -29,8 +29,9 @@ bool is_guide_key(const KeyEvent &ev);      // H or ?, pressed (in settings too,
 bool is_settings_key(const KeyEvent &ev);   // SPACE, pressed: opens settings, and closes them again
 
 // DIAGNOSTICS (temporary, ZB-051; see core/activity.h): on the chat screen SPACE once opens
-// settings and SPACE twice saves the conversation. The single press is acted on only once the
-// window has passed without a second, so a double tap never opens settings on the way. The times
+// settings and SPACE twice saves the conversation. The single press is acted on once the window
+// has passed without a second, or at once when another key comes first (cancel), so a double tap
+// never opens settings on the way and "SPACE, Down" still reaches the settings. The times
 // are given (milliseconds from any steady clock), so this is tested without a screen.
 class DoubleTap {
 public:
@@ -39,8 +40,13 @@ public:
     bool press(unsigned long now);
     // True, once, when a single press has waited out the window by `now`.
     bool single_due(unsigned long now);
-    // Another key came first: the single press waiting is forgotten.
-    void cancel() { pending_ = false; }
+    // Another key came first: no second press can follow now. True when a single press was
+    // waiting (it is then the caller's to act on at once); either way nothing waits after this.
+    bool cancel() {
+        const bool was = pending_;
+        pending_ = false;
+        return was;
+    }
     bool pending() const { return pending_; }
 
 private:

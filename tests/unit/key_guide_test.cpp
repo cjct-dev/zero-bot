@@ -149,8 +149,9 @@ void test_double_tap() {
     check(tap.single_due(12200 + w), "as a single press");
 
     tap.press(15000);
-    tap.cancel();   // another key came first
-    check(!tap.pending() && !tap.single_due(15000 + w), "a press given way to does nothing");
+    check(tap.cancel(), "another key first: the waiting press is handed back, to open settings at once");
+    check(!tap.cancel(), "and only once");
+    check(!tap.pending() && !tap.single_due(15000 + w), "nothing is left to act on when the window ends");
     check(!tap.press(15100), "and the next press is a first press, not a double tap");
 
     keyguide::DoubleTap held(w);

@@ -69,7 +69,7 @@ public:
     std::string selected() const;   // is on ("" with no page): for the checks in --shots
     int first_shown() const;        // the row at the top of the screen (for --shots)
     // The width a Pair row gives its key (the rest is for what it does): for the checks in --shots.
-    static constexpr int kPairKeyW = 96;
+    static constexpr int kPairKeyW = 96;   // DIAGNOSTICS (temporary): 84 without the guide's "SPACE SPACE" line
     static int pair_text_width();
     // Splits a paragraph into Text rows that fit the screen width.
     static void add_paragraph(std::vector<MenuItem> &items, const std::string &paragraph);

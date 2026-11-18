@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -89,20 +90,47 @@ std::string stamp_time(const std::string &content) {
     return "";
 }
 
-// Every text in `j` with each secret replaced.
+// Every text in `j` with each secret replaced by "[removed]". One pass over the original text (the
+// longest secret first where several start at one place): what has been put in is never searched
+// again, so a secret found inside "[removed]" itself (a key "removed") can neither loop for ever
+// nor be blanked twice.
 void blank_out(json &j, const std::vector<std::string> &secrets) {
     if (j.is_string()) {
-        std::string s = j.get<std::string>();
-        bool changed = false;
-        for (const std::string &secret : secrets)
-            for (size_t at; (at = s.find(secret)) != std::string::npos; changed = true) s.replace(at, secret.size(), "[removed]");
-        if (changed) j = s;
+        const std::string &s = j.get_ref<const std::string &>();
+        if (std::none_of(secrets.begin(), secrets.end(),
+                         [&](const std::string &x) { return !x.empty() && s.find(x) != std::string::npos; }))
+            return;
+        std::string out;
+        for (size_t i = 0; i < s.size();) {
+            size_t hit = 0;
+            for (const std::string &secret : secrets)
+                if (secret.size() > hit && s.compare(i, secret.size(), secret) == 0) hit = secret.size();
+            if (hit) { out += "[removed]"; i += hit; }
+            else out += s[i++];
+        }
+        j = out;
     } else if (j.is_structured()) {
         for (json &v : j) blank_out(v, secrets);
     }
 }
 
 struct SavedFile { std::string name; off_t bytes; };
+
+// A name save_conversation gives a file: 2026-11-18-121314.json, or 2026-11-18-121314_02.json for
+// another save in the same second. Pruning and deleting touch nothing else in the folder.
+bool is_save_name(const std::string &name) {
+    static const char kShape[] = "dddd-dd-dd-dddddd";
+    const size_t n = sizeof(kShape) - 1;
+    if (name.size() < n + 5 || name.compare(name.size() - 5, 5, ".json") != 0) return false;
+    for (size_t i = 0; i < n; ++i)
+        if (kShape[i] == 'd' ? !isdigit(static_cast<unsigned char>(name[i])) : name[i] != kShape[i]) return false;
+    const std::string rest = name.substr(n, name.size() - 5 - n);
+    if (rest.empty()) return true;
+    if (rest.size() < 3 || rest[0] != '_') return false;
+    for (size_t i = 1; i < rest.size(); ++i)
+        if (!isdigit(static_cast<unsigned char>(rest[i]))) return false;
+    return true;
+}
 
 // The saves in the folder, oldest first (their names are the times they were made).
 std::vector<SavedFile> saved_files(const std::string &dir) {
@@ -111,7 +139,7 @@ std::vector<SavedFile> saved_files(const std::string &dir) {
     if (!d) return out;
     while (const dirent *e = readdir(d)) {
         const std::string name = e->d_name;
-        if (name.size() < 6 || name.compare(name.size() - 5, 5, ".json") != 0) continue;
+        if (!is_save_name(name)) continue;
         struct stat st{};
         if (lstat((dir + "/" + name).c_str(), &st) == 0 && S_ISREG(st.st_mode)) out.push_back({name, st.st_size});
     }
@@ -286,12 +314,13 @@ size_t delete_saved() {
     const std::string dir = conversations_dir();
     size_t n = 0;
     for (const SavedFile &f : saved_files(dir)) n += unlink((dir + "/" + f.name).c_str()) == 0;
-    // Half-written files from a save that was cut short, too.
+    // Half-written files from a save that was cut short, too (write_file_atomic's NAME.tmp).
     if (DIR *d = opendir(dir.c_str())) {
         std::vector<std::string> rest;
         while (const dirent *e = readdir(d)) {
             const std::string name = e->d_name;
-            if (name.size() > 4 && name.compare(name.size() - 4, 4, ".tmp") == 0) rest.push_back(name);
+            if (name.size() > 4 && name.compare(name.size() - 4, 4, ".tmp") == 0 && is_save_name(name.substr(0, name.size() - 4)))
+                rest.push_back(name);
         }
         closedir(d);
         for (const std::string &name : rest) unlink((dir + "/" + name).c_str());

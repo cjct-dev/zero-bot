@@ -609,8 +609,15 @@ for text, must, checks in [
 # no seeded choices, so that adding to it leaves the cases above unchanged. Simple factual turns are
 # held to a few words (max_words); analytical and deeper follow-ups are not: a long answer is
 # wanted there (long_ok).
-NOT_CLARIFY = nans(r"what do you mean|could you clarify|can you clarify|not sure what you mean|which company|what is (an? )?o\.?p\.?o",
+# Asking back takes many shapes ("not sure what X refers to", "could you say it again", "couldn't
+# find an event called X"); each of these came from a live run that the first, narrower pattern let pass.
+NOT_CLARIFY = nans(r"what do you mean|(could|can) you (clarify|say (it|that) again|spell|repeat|give me (a bit )?more|tell me (what|where|which|more))|"
+                   r"not sure what (you mean|.{0,40}(refers? to|stands? for|means?))|what (it|that|.{0,30}) stands? for|"
+                   r"couldn'?t find (an? |any )?(event|thing) called|which company|what is (an? )?o\.?p\.?o",
                    "ask what was meant instead of looking it up")
+# ... and the search must be for the listing: a live run searched "Stripe Open Platform" and passed.
+IPO_QUERY = arg_has("web_search", "query", "ipo", "initial public offering", "public offering", "listing", "go public", "going public",
+                    "flotation", "float", "debut")
 SAYS_TIME = ans(r"\b\d{1,2}(:\d\d)?\s*(am|pm|a\.m\.|p\.m\.)|\b\d{1,2}:\d\d\b|o'?clock|\b(noon|midday)\b|in the (morning|afternoon|evening)",
                 "a time of day")
 # A misheard "IPO": with a company and "what time", the likely reading is the listing. Look it up
@@ -619,15 +626,16 @@ for text, tags in [("what time uk time is the stripe o.p.o.", ["asr"]),
                    ("when is the revolut eye pee oh happening in uk time", ["asr"]),
                    ("what time does the monzo i.p.o. start in uk time", ["asr"]),
                    ("whats the date of the canva ipo and what time is that uk time", [])]:
-    case("dialogue", text, tags=tags + ["uk", "search"], must=["web_search"], checks=[NOT_CLARIFY])
+    case("dialogue", text, tags=tags + ["uk", "search"], must=["web_search"], checks=[NOT_CLARIFY, IPO_QUERY])
 # A follow-up that leans on the turn before: the subject is known, and the time is converted.
 case("dialogue", ["when is discord's ipo", "and what time would trading start uk time"], tags=["uk", "search"],
      must=["web_search|world_time"], checks=[SAYS_TIME, nans(r"which company|what company", "ask which company")])
 case("dialogue", ["when is the next apple product launch event", "what time is that in uk time"], tags=["uk", "search"],
      must=["web_search|world_time"], checks=[SAYS_TIME, nans(r"which event|what event", "ask which event")])
-# The search budget: a clarified question is looked up once or twice, not four times in a row.
+# The search budget: a clarified question is looked up once or twice, not four times in a row; nor
+# is the misheard one before it (a live run made seven searches there, 55 s, and passed).
 case("dialogue", ["what time uk time is the stripe o.p.o.", "sorry, i meant the stripe i-p-o, the stock market listing. when does it price"],
-     tags=["asr", "uk", "search"], must=["web_search"], checks=[max_calls("web_search", 2)])
+     tags=["asr", "uk", "search"], must=["web_search"], checks=[max_calls("web_search", 2), on_turn(0, max_calls("web_search", 2))])
 case("dialogue", "when does the revolut i-p-o price, the initial public offering i mean", tags=["asr", "search"],
      must=["web_search"], checks=[max_calls("web_search", 2)])
 # Two questions in one, both answered, within the same budget, at whatever length they need.

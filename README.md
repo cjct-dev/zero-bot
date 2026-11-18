@@ -47,7 +47,7 @@ needs a [Tavily](https://tavily.com) key.
 |---|---|
 | **TAB** | Start talking. Press **TAB** again when you have finished. |
 | **SPACE** | Open settings (**TAB** twice quickly does the same). **SPACE** or **TAB** closes them again. |
-| **SPACE** twice quickly | Save this conversation, to help diagnose and improve the assistant (see [Diagnostics (temporary)](#diagnostics-temporary)). Because of this, one **SPACE** opens settings a moment later, once no second press has come. |
+| **SPACE** twice quickly | Save this conversation, to help diagnose and improve the assistant (see [Diagnostics (temporary)](#diagnostics-temporary)). Because of this, one **SPACE** opens settings a moment later, once no second press has come (at once if another key follows it). |
 | **ENTER** | Start typing a message; **ENTER** again sends it. |
 | **del** twice quickly | Start a new conversation: what was said so far is forgotten. Calendar, timers, reminders and saved memories are kept. |
 | **ESC** | Cancel what is happening: recording, typing, a running request, music. |
