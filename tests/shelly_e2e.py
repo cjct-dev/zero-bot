@@ -259,6 +259,13 @@ def gen2_password():
     # Unpair forgets the password.
     ok, out, *_ = cli(st, "unpair")
     check("gen2 pw: unpair forgets the password", ok and load(st)["device"]["auth"] == {} and "shelly" not in load(st).get("secrets", {}))
+    # A check that the device answers with an error is not a success.
+    ok, out, kind, err, ms = cli(st, "enumerate")
+    check("gen2 pw: after unpairing, the password is asked for again", not ok and kind == "needs_password", (kind, err))
+    m.config(hostile="error500")
+    ok, out, kind, err, ms = cli(st, "pair", "changed-Gen2")
+    check("gen2 pw: a password check the device answers with an error is not taken as accepted", not ok and "reported an error" in err, err)
+    m.config(hostile="")
     m.stop()
 
 
@@ -554,7 +561,7 @@ def app_part():
               [t["id"] for t in devs["shelly:shellyplus2pm-a8032ab12345"]["things"]] == ["cover:0"], devs)
         check("app: with no name from its owner, a device keeps the name it announced",
               devs["shelly:shellyplus1pm-a8032ab12345"]["name"] == "shellyplus1pm-a8032ab12345", devs["shelly:shellyplus1pm-a8032ab12345"]["name"])
-        check("app: the blind's device takes the name its owner gave nothing; its blind is named as in the app",
+        check("app: the blind is named as in the Shelly app",
               devs["shelly:shellyplus2pm-a8032ab12345"]["things"][0]["name"] == "Lounge blind", devs["shelly:shellyplus2pm-a8032ab12345"]["things"])
         check("app: the password-protected plug was asked only /shelly", paths(kettle.log()) == ["/shelly"] and logins(kettle.log()) == [], paths(kettle.log()))
         check("app: and is remembered as needing one", root.get("secrets", {}).get("shelly", {}).get("locked", {}).get("shelly:shellyplusplugs-a8032ab12345") == 2,

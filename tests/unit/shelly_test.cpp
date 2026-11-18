@@ -532,12 +532,13 @@ static void test_driver() {
     // Another password: no longer refused (the fingerprint is of the old one).
     dev.auth["password"] = "other";
     CHECK(drv->next_step(dev).kind == home::Pairing::None);
-    // Typing one: the refusal is forgotten, the check goes out (and here finds nothing).
+    // Typing it again, even the same one: the refusal is forgotten, the check goes out (and here
+    // finds nothing).
     dev.auth["password"] = "wrong";
     CHECK(drv->next_step(dev).kind == home::Pairing::Password);
     CHECK(!drv->pair(dev, "", err));
-    CHECK(!drv->pair(dev, "typed", err) && err.find("did not answer") != std::string::npos && err.find("typed") == std::string::npos);
-    CHECK(dev.auth.value("password", "") == "typed" && !sec.all["shelly"].contains("refused"));
+    CHECK(!drv->pair(dev, "wrong", err) && err.find("did not answer") != std::string::npos && err.find("wrong") == std::string::npos);
+    CHECK(dev.auth.value("password", "") == "wrong" && !sec.all["shelly"].contains("refused") && drv->next_step(dev).kind == home::Pairing::None);
     // Unpair forgets the password and what was learnt of the device.
     drv->unpair(dev);
     CHECK(dev.auth.empty() && !sec.all.contains("shelly") && drv->next_step(dev).kind == home::Pairing::None);
