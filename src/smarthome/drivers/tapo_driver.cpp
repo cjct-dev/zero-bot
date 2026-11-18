@@ -66,9 +66,12 @@ std::string upper(std::string s) {
 }
 
 // The kinds of Tapo device switched here, by the device type TP-Link reports ("SMART.TAPOPLUG").
-// Hubs, cameras, doorbells and robot cleaners are not exposed at all.
+// Hubs, cameras, doorbells and robot cleaners are not exposed at all. Nor are "IOT." types: those
+// are Kasa devices that moved to the newer login, which still take the older protocol's commands
+// inside it rather than this transport's; the Kasa driver claims them (drivers/kasa.h).
 std::string type_for(const std::string &device_type) {
     const std::string t = upper(device_type);
+    if (t.compare(0, 4, "IOT.") == 0) return "";
     if (t.empty() || t.find("PLUG") != std::string::npos) return "plug";
     if (t.find("SWITCH") != std::string::npos) return "switch";
     if (t.find("BULB") != std::string::npos) return "light";

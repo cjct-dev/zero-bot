@@ -22,6 +22,7 @@
 
 #include "core/util.h"
 #include "smarthome/color.h"
+#include "smarthome/drivers/kasa.h"
 #include "smarthome/drivers/tapo_driver.h"
 #include "smarthome/home.h"
 #include "smarthome/internal.h"
@@ -1967,6 +1968,119 @@ void test_discovery() {
     CHECK_MSG(tv && tv->kind == "fire_tv", tv ? tv->kind : "no device at the TV's address");
 }
 
+// The older Kasa protocol's scrambling, written again here so that discovery is checked against
+// something other than its own code: each byte XORed with the previous scrambled byte, from 171.
+std::string kasa_scrambled(const std::string &plain) {
+    std::string out;
+    unsigned char key = 171;
+    for (const unsigned char c : plain) out += static_cast<char>(key = static_cast<unsigned char>(key ^ c));
+    return out;
+}
+
+// A 20002 answer: a 16-byte header, then JSON.
+std::string tplink_answer(const std::string &json_text) { return std::string("\x02\x00\x00\x01\x01\x2a\x11\x00", 8) + std::string(8, '\x01') + json_text; }
+
+void test_tplink_discovery() {
+    Section s("discovery: older Kasa answers on 9999, Kasa devices on the newer login, and which driver takes each");
+    auto sysinfo = [](const std::string &fields) { return kasa_scrambled(R"J({"system":{"get_sysinfo":{)J" + fields + R"J(,"err_code":0}}})J"); };
+    auto moved = [](const std::string &type, const std::string &mac) {
+        return tplink_answer(R"J({"error_code":0,"result":{"device_id":"00000000000000000000000000000000","device_model":"HS100(UK)",
+            "device_type":")J" + type + R"J(","mac":")J" + mac + R"J(","owner":"","mgt_encrypt_schm":{"encrypt_type":"KLAP","http_port":80,
+            "is_support_https":false,"lv":2}}})J");
+    };
+    const std::string hap = "_hap._tcp.local";
+    const std::vector<discovery::Packet> heard = {
+        {"kasa", "192.0.2.70", sysinfo(R"J("type":"IOT.SMARTPLUGSWITCH","model":"HS110(UK)","alias":"Kettle\u0007 \"plug\"",
+            "mac":"50:C7:BF:00:00:01","relay_state":1,"latitude_i":515000,"longitude_i":-1000)J")},
+        {"kasa", "192.0.2.71", sysinfo(R"J("mic_type":"IOT.SMARTBULB","model":"KL130(EU)","alias":"","mic_mac":"1C3BF3000006")J")},
+        {"kasa", "192.0.2.72", sysinfo(R"J("type":"IOT.IPCAMERA","model":"KC100(UK)","alias":"Garden","mac":"50:C7:BF:00:00:09")J")},
+        {"tapo", "192.0.2.73", moved("IOT.SMARTPLUGSWITCH", "CC-32-E5-00-00-0A")},
+        {"tapo", "192.0.2.74", moved("SMART.KASAPLUG", "CC-32-E5-00-00-0B")},
+        {"tapo", "192.0.2.76", moved("IOT.SMARTPLUGSWITCH", "CC-32-E5-00-00-0C")},
+        {"mdns", "192.0.2.76", service_answer(hap, "Plug 76", "plug76.local", std::string("\xC0\x00\x02\x4C", 4), {"id=AA:BB:CC:00:00:76", "ci=7", "sf=1"})},
+        {"mdns", "192.0.2.77", service_answer(hap, "Plug 77", "plug77.local", std::string("\xC0\x00\x02\x4D", 4), {"id=AA:BB:CC:00:00:77", "ci=7", "sf=1"})},
+        {"kasa", "192.0.2.77", sysinfo(R"J("type":"IOT.SMARTPLUGSWITCH","model":"EP25(US)","alias":"Lamp","mac":"50:C7:BF:00:00:77")J")},
+        {"tapo", "192.0.2.78", moved("IOT.SMARTPLUGSWITCH", "50-C7-BF-00-00-78")},
+        {"kasa", "192.0.2.78", sysinfo(R"J("type":"IOT.SMARTPLUGSWITCH","model":"HS100(UK)","alias":"Both","mac":"50:C7:BF:00:00:78")J")},
+        // Hostile or foreign datagrams on the Kasa port: none of them is a device.
+        {"kasa", "192.0.2.90", "\x01\x02\x03 not scrambled"},
+        {"kasa", "192.0.2.91", kasa_scrambled(R"J({"system":{"other":{}}})J")},
+        {"kasa", "192.0.2.92", kasa_scrambled(R"J({"system":{"get_sysinfo":)J" + std::string(5000, '[') + std::string(5000, ']') + "}}")},
+        {"kasa", "192.0.2.93", kasa_scrambled(R"J([{"system":{"get_sysinfo":{}}}])J")},
+        {"kasa", "192.0.2.94", ""},
+    };
+    const auto found = discovery::devices_from(heard);
+    auto at = [&](const std::string &ip) -> const discovery::Device * {
+        for (const auto &d : found) if (d.ip == ip) return &d;
+        return nullptr;
+    };
+    auto info = [](const discovery::Device *d, const char *key) {
+        if (!d) return std::string("(no device)");
+        const auto it = d->info.find(key);
+        return it == d->info.end() ? std::string() : it->second;
+    };
+    // What a driver would be handed: the saved form of a discovered device.
+    auto saved = [](const discovery::Device *d) {
+        home::Device dev;
+        if (!d) return dev;
+        dev.id = d->id; dev.kind = d->kind; dev.ip = d->ip; dev.port = d->port; dev.info = d->info;
+        return dev;
+    };
+    auto driver_kind = [&](const discovery::Device *d) {
+        const home::Driver *drv = home::driver_for(saved(d));
+        return std::string(drv ? drv->kind() : "none");
+    };
+    const auto *plug = at("192.0.2.70"), *bulb = at("192.0.2.71"), *camera = at("192.0.2.72"), *klap = at("192.0.2.73"),
+               *kasa_smart = at("192.0.2.74"), *hap_klap = at("192.0.2.76"), *hap_xor = at("192.0.2.77"), *both = at("192.0.2.78");
+    CHECK_MSG(plug && plug->kind == "tplink" && plug->id == "tplink:50:c7:bf:00:00:01" && plug->mac == "50:c7:bf:00:00:01",
+              plug ? plug->kind + " " + plug->id : "no plug");
+    // Discovery drops control characters; quotes go when the name is shown or given to the model.
+    CHECK_MSG(plug && plug->name == "Kettle \"plug\"" && plug->model == "HS110(UK)" && plug->port == 9999, plug ? plug->name : "");
+    CHECK(plug && info(plug, "device_type") == "IOT.SMARTPLUGSWITCH" && info(plug, "scheme") == "XOR");
+    CHECK_MSG(plug && plug->found_by == std::vector<std::string>{"kasa"}, "found by the Kasa query");
+    CHECK_MSG(plug && info(plug, "latitude_i").empty() && info(plug, "longitude_i").empty(), "where a plug is set up is not kept");
+    CHECK_MSG(bulb && bulb->kind == "tplink" && bulb->id == "tplink:1c:3b:f3:00:00:06" && bulb->name == "Kasa KL130(EU)",
+              bulb ? bulb->id + " " + bulb->name : "no bulb");
+    CHECK(camera && camera->kind == "tplink" && info(camera, "device_type") == "IOT.IPCAMERA");
+    CHECK_MSG(klap && klap->kind == "tplink" && info(klap, "scheme") == "KLAP" && klap->id == "tplink:cc:32:e5:00:00:0a" && klap->port == 0,
+              klap ? klap->kind + " " + klap->id + " " + info(klap, "scheme") : "no device");
+    CHECK_MSG(kasa_smart && kasa_smart->kind == "tapo" && info(kasa_smart, "device_type") == "SMART.KASAPLUG",
+              kasa_smart ? kasa_smart->kind : "no device");
+    CHECK_MSG(hap_klap && hap_klap->kind == "homekit", hap_klap ? hap_klap->kind : "no device");
+    CHECK_MSG(hap_xor && hap_xor->kind == "tplink" && hap_xor->name == "Lamp" && hap_xor->id == "tplink:50:c7:bf:00:00:77" &&
+                  hap_xor->port == 9999,
+              hap_xor ? hap_xor->kind + " " + hap_xor->name + " " + hap_xor->id : "no device");
+    CHECK_MSG(both && both->kind == "tplink" && info(both, "scheme") == "XOR" && both->port == 9999 && both->name == "Both",
+              both ? info(both, "scheme") : "no device");
+    for (const char *ip : {"192.0.2.90", "192.0.2.91", "192.0.2.92", "192.0.2.93", "192.0.2.94"}) CHECK_MSG(!at(ip), ip);
+
+    // The same plug before and after a firmware update keeps its id, so a later scan updates it.
+    const auto before = discovery::devices_from({{"kasa", "192.0.2.80", sysinfo(R"J("type":"IOT.SMARTPLUGSWITCH","alias":"x","mac":"50:C7:BF:00:00:80")J")}});
+    const auto after = discovery::devices_from({{"tapo", "192.0.2.81", moved("IOT.SMARTPLUGSWITCH", "50-c7-bf-00-00-80")}});
+    CHECK(before.size() == 1 && after.size() == 1 && before[0].id == after[0].id && before[0].id == "tplink:50:c7:bf:00:00:80");
+
+    // Which driver takes each: Kasa the older devices and the moved ones (to say it cannot use
+    // the newer login), Tapo the SMART ones, nobody the camera.
+    CHECK_MSG(driver_kind(plug) == "tplink" && driver_kind(bulb) == "tplink" && driver_kind(klap) == "tplink" &&
+                  driver_kind(hap_xor) == "tplink" && driver_kind(both) == "tplink",
+              driver_kind(plug) + " " + driver_kind(klap));
+    CHECK_MSG(driver_kind(kasa_smart) == "tapo", driver_kind(kasa_smart));
+    CHECK_MSG(driver_kind(camera) == "none", driver_kind(camera));
+    CHECK(home::kind_label(saved(plug)) == "Kasa" && home::kind_label(saved(camera)) == "TP-Link");
+    home::Device old = saved(klap);
+    old.kind = "tapo";   // as a version that filed every 20002 answer under Tapo saved it
+    CHECK_MSG(driver_kind(nullptr) == "none" && std::string(home::driver_for(old) ? home::driver_for(old)->kind() : "none") == "tplink",
+              "a moved Kasa device saved under Tapo goes to the Kasa driver");
+    // The moved device is refused by the Kasa driver without anything being sent (its saved
+    // port, 9, has nothing listening: a driver that tried would report a refused connection).
+    home::Device dev = saved(klap);
+    dev.ip = "127.0.0.1";
+    dev.port = 9;
+    std::vector<home::Thing> things;
+    std::string err;
+    CHECK_MSG(!home::driver_for(dev)->enumerate(dev, things, err) && starts(err, kasa::kNewLogin), err);
+}
+
 // ---------------------------------------------------------------- names and colours
 void test_names_and_colours() {
     Section s("names and colours");
@@ -2085,6 +2199,7 @@ int main(int argc, char **argv) {
     g_fake = new FakeDriver;
     home::register_driver(std::unique_ptr<home::Driver>(g_fake), "Pretend");
     home::register_driver(make_tapo_driver(), "Tapo");
+    home::register_driver(make_kasa_driver(), "Kasa");
 
     test_migration();
     test_survival();
@@ -2102,6 +2217,7 @@ int main(int argc, char **argv) {
     test_link_kinds();
     test_tv_keys();
     test_discovery();
+    test_tplink_discovery();
     test_names_and_colours();
 
     const std::string rm = "rm -rf '" + dir + "'";
