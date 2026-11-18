@@ -253,11 +253,14 @@ device directly: nothing goes through the makers' cloud services. Supported so f
   dim and colour them, open and close blinds and move them to a position (a position between open
   and closed only once the blind has been calibrated in the Shelly app), and read power use,
   temperature and humidity; battery sensors such as the H&T can only be read while they are awake.
-  It never starts a calibration or changes any of the device's settings. A relay named like a
-  garage door, gate, door, lock, valve, alarm or siren is never offered (a Shelly 1 is often fitted
-  to a garage door), unless its name says it is a light ("Front door light"); nor are thermostats,
-  or smoke, gas, flood and door sensors. Before every change Zero Bot checks that the device at the
-  saved address is still the same Shelly. Tested so far only against simulated devices.
+  It never starts a calibration or changes any of the device's settings. A relay or blind named
+  like a garage door, gate, door, lock, valve, alarm or siren is never offered (a Shelly 1 is often
+  fitted to a garage door), unless its name says it is a light ("Front door light"); an unnamed
+  relay or blind goes by the device's name, so a Shelly named "Garage door" is left out too. Nor is
+  a relay set in the Shelly app to switch itself off within ten seconds (that is how a door or gate
+  opener is wired, whatever it is called), nor thermostats, or smoke, gas, flood and door sensors.
+  Before every change, and before a password is sent, Zero Bot checks that the device at the saved
+  address is still the same Shelly. Tested so far only against simulated devices.
 
 Other families (Hue, WiZ, Kasa and more) are added one driver at a time.
 
