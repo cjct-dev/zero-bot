@@ -71,7 +71,7 @@ const Switches &get() {
         r.cache_bust = env_on("ZB_EXP_CACHE_BUST");
         r.tts_probe = env_on("ZB_EXP_TTS_PROBE");
         r.tools = variant("ZB_EXP_TOOLS", "full", {"full", "say1", "lean"});
-        r.decide = variant("ZB_EXP_DECIDE", "second_look", {"second_look", "parallel", "required"});
+        r.decide = variant("ZB_EXP_DECIDE", "second_look", {"second_look", "parallel", "required", "required_held"});
         if (const char *m = getenv("ZB_EXP_CHECK_MODEL")) r.check_model = m;
         return r;
     }();

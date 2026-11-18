@@ -26,7 +26,10 @@
 //                          is spoken as it streams, otherwise the second look runs as before),
 //                          required (a "reply" tool in every round; deciding rounds send tool_choice
 //                          "required", so the model answers in words only through reply, whose text
-//                          streams out as the answer; no held draft and no second look)
+//                          streams out as the answer; no held draft and no second look),
+//                          required_held (the same, but words written before a call are held until the
+//                          call begins: spoken if it is reply, never if it is a real tool; with no call at
+//                          all the second look runs as before)
 //   ZB_EXP_CHECK_MODEL=ID  the model the parallel check asks (default: the main model)
 #pragma once
 #include <atomic>
@@ -50,7 +53,7 @@ struct Switches {
     bool cache_bust = false;    // ZB_EXP_CACHE_BUST
     bool tts_probe = false;     // ZB_EXP_TTS_PROBE
     std::string tools = "full";             // ZB_EXP_TOOLS: full, say1, lean
-    std::string decide = "second_look";     // ZB_EXP_DECIDE: second_look, parallel, required
+    std::string decide = "second_look";     // ZB_EXP_DECIDE: second_look, parallel, required, required_held
     std::string check_model;                // ZB_EXP_CHECK_MODEL ("" = the main model)
 };
 
@@ -74,7 +77,8 @@ std::string say_rule(const std::string &standard);
 // E3b (ZB_EXP_DECIDE=required): the model must call a tool in deciding rounds, and answers in words
 // through the reply tool. llm::chat turns reply calls back into answer text as they stream
 // (ReplyCalls), so the loop and the conversation see plain text, never a reply call.
-inline bool decide_required() { return get().decide == "required"; }
+inline bool decide_required() { return get().decide == "required" || get().decide == "required_held"; }
+inline bool reply_held() { return get().decide == "required_held"; }
 class ReplyCalls {
 public:
     // A piece of call idx's arguments: returns the newly decoded text of its "text" value, if reply.
@@ -145,6 +149,7 @@ inline void shape_tools(json &) {}
 inline std::string say_rule(const std::string &standard) { return standard; }
 inline bool parallel_check() { return false; }
 inline bool decide_required() { return false; }
+inline bool reply_held() { return false; }
 class ReplyCalls {
 public:
     std::string feed(size_t, const std::string &, const std::string &) { return ""; }

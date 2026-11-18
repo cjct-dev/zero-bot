@@ -209,7 +209,9 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
                 if (tc.contains("function") && tc["function"].is_object()) {
                     const json &fn = tc["function"];
                     const std::string name = util::jget(fn, "name", std::string());
+                    const bool begins = call.name.empty() && !name.empty();
                     if (!name.empty()) call.name = name;
+                    if (begins && opt.on_call) opt.on_call(name);
                     if (fn.contains("arguments") && fn["arguments"].is_string()) {
                         call.args += fn["arguments"].get<std::string>();
                         const std::string said = replies.feed(idx, call.name, fn["arguments"].get<std::string>());

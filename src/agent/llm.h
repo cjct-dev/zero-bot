@@ -32,6 +32,7 @@ struct ChatOptions {
     // that is sent. role: "main" if empty, "vision"...; purpose: "decide", "second_look"...
     std::string role, purpose;
     std::string tool_choice;   // "" sends "auto"; experiments only (E3b, ZB_EXP_DECIDE=required) send "required"
+    std::function<void(const std::string &name)> on_call;   // a tool call has begun (experiments only, E3c)
 };
 
 ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt);

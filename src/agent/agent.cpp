@@ -451,7 +451,7 @@ void Agent::run_turn() {
         // Experiments only (E3b, ZB_EXP_DECIDE=required): the decision is forced into a tool call, words
         // come through the reply tool and stream as they are written; nothing is held for a second look.
         if (fast_decision && experiment::decide_required()) opt.tool_choice = "required";
-        const bool hold = fast_decision && !experiment::decide_required();
+        const bool hold = fast_decision && (!experiment::decide_required() || experiment::reply_held());
         // Experiments only (E3, ZB_EXP_DECIDE=parallel): a short check beside this call says whether a
         // tool is needed at all. A draft it clears is spoken as it streams, without the second look.
         experiment::ParallelCheck pcheck;
@@ -465,9 +465,9 @@ void Agent::run_turn() {
             if (steered || unbacked) return;
             std::string text = piece;
             if (hold && !released) {
-                if (!pcheck.active()) return;   // held whole, and checked once it is complete
+                if (!pcheck.active() && !experiment::reply_held()) return;   // held whole, checked once complete
                 held_text += piece;
-                if (!pcheck.said_none()) return;
+                if (!pcheck.said_none()) return;   // E3c: released by on_call when the reply tool begins
                 released = true;                // E3: cleared while it is still being written
                 pcheck.used("stream");
                 text = held_text;
@@ -494,6 +494,14 @@ void Agent::run_turn() {
                 to_speech(sentence);
             }
         };
+        // Experiments only (E3c): words written before the reply tool begins are its answer; before a real tool
+        // they are never spoken.
+        if (hold && experiment::reply_held())
+            opt.on_call = [&](const std::string &name) {
+                if (released || name != "reply") return;
+                released = true;
+                if (!held_text.empty()) opt.on_text(held_text);
+            };
         llm::ChatResult res = llm::chat(messages, round == kMaxRounds - 1 ? json::array() : tool_schema, opt);
         // The user was talking when this step was decided. Nothing has been said or done yet, so
         // what they add is taken into account first: a correction should land before the action.

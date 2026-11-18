@@ -1169,6 +1169,32 @@ def exp_reply_with_tool_and_after():
           r.answer == "Lisbon.", r)
 
 
+@scenario
+def exp_reply_held():
+    held = {"ZB_EXP_DECIDE": "required_held"}
+    n = "E3c words, then the reply call repeating them"
+    r = run({"default": {"text": "Lisbon is the capital of Portugal.", "calls": [reply_call(text="Lisbon is the capital of Portugal.")]}},
+            ask="what is the capital of portugal", fast=True, env=held, trace=True)
+    reqs = events(r, "request")
+    check(n + ": spoken once, one call, no second look", r.answer == "Lisbon is the capital of Portugal." and len(r.requests) == 1 and
+          r.requests[0]["body"].get("tool_choice") == "required" and reqs and reqs[0]["sentences"] == 1, (r, reqs))
+    n = "E3c a reply streamed in pieces"
+    r = run({"default": {"calls": [reply_call('{"text": "Lisbon is ', 'the capital of Portugal."}')]}}, ask="capital of portugal",
+            fast=True, env=held)
+    check(n + ": its text is the answer", r.answer == "Lisbon is the capital of Portugal." and len(r.requests) == 1, r)
+    n = "E3c words, then a real tool"
+    r = run({"default": {"text": "Your timer is set for 12 minutes.", "calls": [{"name": TIMER_12[0], "args": TIMER_12[1]}]}},
+            ask="set a timer for 12 minutes", fast=True, env=held, trace=True)
+    reqs = events(r, "request")
+    check(n + ": the words are never spoken (no guard needed); the tool runs and confirms", [t for t, _ in r.tools()] == ["timer"] and
+          r.answer == "Your timer is set for 12 minutes." and reqs and reqs[0]["guards"] == [] and reqs[0]["sentences"] == 1, (r, reqs))
+    n = "E3c words and no call at all"
+    r = run({"rules": [{"when": {"said": SECOND_LOOK}, "reply": {"text": "OK"}}], "default": {"text": "Lisbon is the capital of Portugal."}},
+            ask="capital of portugal", fast=True, env=held)
+    check(n + ": the second look runs as before", r.answer == "Lisbon is the capital of Portugal." and len(r.requests) == 2 and
+          SECOND_LOOK in json.dumps(r.requests[1]["body"]), r)
+
+
 def main():
     if not os.access(APP, os.X_OK):
         sys.exit("no app at %s (build the cli preset first)" % APP)
