@@ -12,11 +12,13 @@
 //    never sent to a peer that presents another public key.
 //  - Device::auth holds {"key", "pin", "bridgeid"} once paired. What a later call learns that must
 //    survive a restart is kept in the family's secrets, `secrets()["hue_bridge"]`:
-//      "refused":      {<device id>: SHA-256 (hex) of a key the bridge rejected (401 or 403)}
+//      "refused":      {<device id>: SHA-256 (hex) of a key the bridge rejected (401 or 403), or a
+//                       list of them: one bridge saved on two networks has a key for each}
 //      "cert_changed": {<device id>: the pin the bridge's certificate no longer matched}
 //    Either makes next_step() ask for the button again and every other call fail at once, sending
-//    nothing, until pair() succeeds (which clears both) or unpair() is used. A rejected key is
-//    therefore never sent again, not even by a later run.
+//    nothing, until pair() succeeds or unpair() is used (each forgets what was recorded about the
+//    key and pin it replaces or drops, and nothing else). A rejected key is therefore never sent
+//    again, not even by a later run.
 //  - Things: one per light (type "light", or "plug" for a light whose archetype is "plug"), with
 //    kPower and, as the light offers them, kBrightness, kColorTemp, kColor; one per scene (type
 //    "scene", kScene, room = its room or zone); one per sensor device with a temperature or motion
@@ -24,7 +26,10 @@
 //    name). Devices with a camera, siren, chime, doorbell button or contact/tamper service are
 //    never exposed, nor is any scene that includes one of their lights, nor a scene that switches
 //    on a smart plug (or does not say it stays off): a plug may feed a heater, which the app asks
-//    about before switching it on, and a scene would switch it on without that question.
+//    about before switching it on, and a scene would switch it on without that question. Since a
+//    scene can be edited in the Hue app at any time, apply() reads it again before every recall
+//    and refuses it (scene_allowed) unless every light it holds is a thing the assistant may use,
+//    and every light it switches on is a light (not a plug) not set to "Ask before switching on".
 //  - Thing::state: lights {"on", "brightness" 0..100, "kelvin" (white mode) or "hue" 0..360 and
 //    "saturation" 0..100 (colour mode)}; sensors {"current_c", "motion"}; scenes {}.
 //  - Thing::ref (driver-private): lights {"kind":"light","rid","device","mirek":[min,max],
@@ -152,6 +157,14 @@ std::string group_fingerprint(const json &group);
 bool light_body(const home::Thing &t, const home::Change &c, json &body, std::string &why);
 // The scene recall body, or false with a reason.
 bool scene_body(const home::Thing &t, const home::Change &c, json &body, std::string &why);
+// Whether a scene, as the bridge holds it now (the resource from GET /clip/v2/resource/scene/<id>),
+// may be recalled, judged against the device's saved things (Device::things, with the user's own
+// settings): every light it changes must be a thing of this bridge the assistant may use (a light
+// of a device that is never exposed is no thing), and every light it switches on (an action that
+// does not say "off") must be a light, not a plug, that is not set to ask before switching on.
+// False with a lower-case reason otherwise. A scene can be changed in the Hue app at any time, so
+// this is asked right before every recall, not only when the list is read.
+bool scene_allowed(const json &scene, const std::vector<home::Thing> &things, std::string &why);
 
 struct Group {
     std::string rtype, rid, gl, fp;   // the room/zone/bridge_home, its grouped_light, its fingerprint

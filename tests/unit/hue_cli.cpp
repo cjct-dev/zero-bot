@@ -57,8 +57,8 @@ struct FileSecrets : home::Secrets {
 static FileSecrets g_secrets;
 
 static json thing_json(const home::Thing &t) {
-    return {{"id", t.id},     {"name", t.name},   {"room", t.room}, {"type", t.type},
-            {"caps", t.caps}, {"ref", t.ref},     {"state", t.state}, {"enabled", t.enabled}};
+    return {{"id", t.id},     {"name", t.name}, {"room", t.room},       {"type", t.type},          {"caps", t.caps},
+            {"ref", t.ref},   {"state", t.state}, {"enabled", t.enabled}, {"ask_first", t.ask_first}};
 }
 
 static home::Thing thing_from(const json &j) {
@@ -70,6 +70,9 @@ static home::Thing thing_from(const json &j) {
     t.caps = j.value("caps", 0u);
     t.ref = j.contains("ref") ? j["ref"] : json::object();
     t.state = j.contains("state") ? j["state"] : json::object();
+    // The user's own settings, which the app keeps beside each thing (a scene is judged against them).
+    t.enabled = j.value("enabled", true);
+    t.ask_first = j.value("ask_first", false);
     return t;
 }
 

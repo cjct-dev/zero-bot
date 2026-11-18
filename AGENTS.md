@@ -403,7 +403,10 @@ key, real audio), say so plainly rather than implying it was.
 - A scene switches everything it holds, and the shared layer sees only the scene. The Hue app puts
   a room's smart plugs in the room's scenes, so starting one switched on a plug marked *Ask before
   switching on* (a heater) without the question. A driver offers no scene that switches on a plug
-  or socket.
+  or socket, and reads the scene again right before recalling it: the list is read only when the
+  user asks, and a scene edited in the maker's app since (a plug added) was recalled unchecked. It
+  also judges the scene against `Device::things`, which carry the user's *Ask before switching on*
+  and *enabled* settings, so a scene never switches on what the user has asked to be asked about.
 - Smart-home discovery uses only what the devices' own apps use (mDNS, SSDP, the vendor's
   broadcast). No address sweeps, no port scans, opt-in per network with a warning. "This
   network" is the SSID plus the router's hardware address, not the SSID alone.

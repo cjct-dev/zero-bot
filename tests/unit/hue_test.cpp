@@ -577,6 +577,50 @@ static void test_changes() {
     c.brightness = 20;
     check(!scene_body(scene, c, body, why), "a scene takes nothing but on");
 
+    // A scene as the bridge holds it at the moment it is to be recalled, judged against the saved
+    // things and the user's settings for them (it may have been edited in the Hue app since).
+    {
+        auto action = [](const char *rid, const char *on) {
+            json a = {{"target", {{"rid", rid}, {"rtype", "light"}}}, {"action", {{"dimming", {{"brightness", 40.0}}}}}};
+            if (std::string(on) != "unsaid") a["action"]["on"] = {{"on", std::string(on) == "on"}};
+            return a;
+        };
+        auto scene_of = [](std::vector<json> actions) { return json{{"id", "s1"}, {"type", "scene"}, {"actions", actions}}; };
+        home::Thing asks = light("l-asks", home::kPower | home::kBrightness);
+        asks.ask_first = true;
+        home::Thing barred = light("l-barred", home::kPower | home::kBrightness);
+        barred.enabled = false;
+        const std::vector<home::Thing> saved = {colour, white, plug, asks, barred, scene};
+        why.clear();
+        check(scene_allowed(scene_of({action("l1", "on"), action("l2", "unsaid")}), saved, why) && why.empty(),
+              "a scene of lights the assistant may use is recalled");
+        check(scene_allowed(scene_of({}), saved, why), "and so is a scene that changes nothing");
+        check(scene_allowed(scene_of({action("l1", "on"), action("p1", "off")}), saved, why),
+              "a scene that switches a plug off is recalled");
+        check(!scene_allowed(scene_of({action("l1", "on"), action("p1", "on")}), saved, why) &&
+                  why.find("smart plug") != std::string::npos,
+              "one that now switches a plug on is refused, whatever the plug's settings");
+        check(!scene_allowed(scene_of({action("p1", "unsaid")}), saved, why), "as is one that does not say the plug stays off");
+        check(!scene_allowed(scene_of({action("l1", "on"), action("l-asks", "on")}), saved, why) &&
+                  why.find("only after the user says yes") != std::string::npos,
+              "one that switches on a light set to ask first is refused");
+        check(scene_allowed(scene_of({action("l1", "on"), action("l-asks", "off")}), saved, why),
+              "switching that light off is no question");
+        check(!scene_allowed(scene_of({action("l1", "on"), action("l-barred", "off")}), saved, why) &&
+                  why.find("may not use") != std::string::npos,
+              "one that changes a light the assistant may not use is refused, even to switch it off");
+        check(!scene_allowed(scene_of({action("l1", "on"), action("l-new", "on")}), saved, why) &&
+                  why.find("refresh the device list") != std::string::npos,
+              "one holding a light that is no thing (new, or a camera's floodlight) is refused until the list is read again");
+        json grouped = scene_of({action("l1", "on")});
+        grouped["actions"][0]["target"]["rtype"] = "grouped_light";
+        check(!scene_allowed(grouped, saved, why), "one that targets anything but a light is refused");
+        check(!scene_allowed(scene_of({action("s1", "on")}), saved, why), "a scene's own id is no light");
+        check(!scene_allowed(json{{"id", "s1"}, {"actions", "all"}}, saved, why) && !scene_allowed(json::array(), saved, why),
+              "one whose actions cannot be read is refused");
+        check(!scene_allowed(scene_of({action("l1", "on")}), {}, why), "with no saved things, nothing is recalled");
+    }
+
     // Groups.
     const json room2 = json::array({{{"rtype", "room"}, {"rid", "r1"}, {"gl", "g1"}, {"n", 2}, {"fp", "0123456789abcdef"}}});
     const json room3 = json::array({{{"rtype", "room"}, {"rid", "r2"}, {"gl", "g2"}, {"n", 3}, {"fp", "0123456789abcdee"}}});
@@ -677,6 +721,21 @@ static void test_driver() {
     check(d->next_step(dev).kind == home::Pairing::None, "a refusal of another key does not count against this one");
     secrets.all["hue_bridge"] = {{"refused", {{"hue:somewhere-else", key_sha256}}}};
     check(d->next_step(dev).kind == home::Pairing::None, "nor does a refusal recorded for another bridge");
+    // The same bridge saved on two networks has a key for each; both refusals are kept.
+    const std::string other_sha256(64, 'a');
+    secrets.all["hue_bridge"] = {{"refused", {{"hue:00005efffe005301", json::array({other_sha256, key_sha256})}}}};
+    check(d->next_step(dev).kind == home::Pairing::PressButton, "a key in a list of refused keys counts as refused");
+    secrets.all["hue_bridge"] = {{"refused", {{"hue:00005efffe005301", json::array({other_sha256})}}}};
+    check(d->next_step(dev).kind == home::Pairing::None, "a list without this key does not count against it");
+    secrets.all["hue_bridge"] = {{"refused", {{"hue:00005efffe005301", json::array({other_sha256, key_sha256})}}}};
+    {
+        home::Device copy = dev;
+        d->unpair(copy);
+        check(secrets.all["hue_bridge"]["refused"]["hue:00005efffe005301"] == other_sha256,
+              "unpair forgets this key's refusal, not the other saved copy's");
+    }
+    secrets.all["hue_bridge"] = {{"refused", {{"hue:00005efffe005301", 7}}}};
+    check(d->next_step(dev).kind == home::Pairing::None, "a refusal of the wrong shape is ignored");
     secrets.all["hue_bridge"] = {{"cert_changed", {{"hue:00005efffe005301", pin}}}};
     s = d->next_step(dev);
     check(s.kind == home::Pairing::PressButton && s.prompt.find("certificate has changed") != std::string::npos,

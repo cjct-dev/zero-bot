@@ -786,6 +786,57 @@ bool scene_body(const home::Thing &t, const home::Change &c, json &body, std::st
     return true;
 }
 
+namespace {
+const char *const kSceneChanged =
+    "this scene has changed on the Hue Bridge since the device list was read; refresh the device list in Settings, Smart home";
+const char *const kSceneDisabled =
+    "this scene also changes a light the assistant may not use; allow that light in Settings, Smart home, or switch the "
+    "lights by name instead";
+const char *const kScenePlug =
+    "this scene also switches on a smart plug, and a plug is only switched on by name; switch the lights on by name instead";
+const char *const kSceneAskFirst =
+    "this scene also switches on a light that is set to be switched on only after the user says yes; switch it on by name "
+    "instead";
+}  // namespace
+
+bool scene_allowed(const json &scene, const std::vector<home::Thing> &things, std::string &why) {
+    const json &actions = field(scene, "actions");
+    if (!actions.is_array() || actions.size() > kMaxResources) {
+        why = kSceneChanged;
+        return false;
+    }
+    std::map<std::string, const home::Thing *> lights;   // by light id
+    for (const auto &t : things)
+        if (str(t.ref, "kind") == "light" && (t.type == "light" || t.type == "plug") && safe_id(str(t.ref, "rid")))
+            lights.emplace(str(t.ref, "rid"), &t);
+    for (const auto &a : actions) {
+        const json &target = field(a, "target");
+        const auto it = lights.find(str(target, "rid"));
+        // A light that is no thing: one added since the list was read, or one of a device that is
+        // never exposed (a camera's floodlight). Either way the list must be read again.
+        if (str(target, "rtype") != "light" || it == lights.end()) {
+            why = kSceneChanged;
+            return false;
+        }
+        const home::Thing &t = *it->second;
+        if (!t.enabled) {
+            why = kSceneDisabled;
+            return false;
+        }
+        bool on = true;
+        if (boolean(field(field(a, "action"), "on"), "on", on) && !on) continue;   // switched off: safe
+        if (t.type == "plug") {
+            why = kScenePlug;
+            return false;
+        }
+        if (t.ask_first) {
+            why = kSceneAskFirst;
+            return false;
+        }
+    }
+    return true;
+}
+
 bool pick_group(const std::vector<const home::Thing *> &things, const home::Change &c, Group &out) {
     if (things.size() < 2) return false;
     std::set<std::string> rids;
@@ -1160,8 +1211,8 @@ private:
     // ---- what is remembered about a bridge: a rejected key, a changed certificate (both also in
     // the family's secrets, so that a later run knows them), when the next command may go
     struct Memo {
-        std::string refused_key;   // key_hash() of a key the bridge rejected
-        std::string bad_pin;       // a pin the bridge's certificate no longer matched
+        std::set<std::string> refused_keys;   // key_hash() of keys the bridge rejected
+        std::string bad_pin;                  // a pin the bridge's certificate no longer matched
         Clock::time_point next_send{};
         Clock::time_point used{};
     };
@@ -1194,6 +1245,30 @@ private:
         if (s[what].empty()) s.erase(what);
         secrets_->set(kKind, s);
     }
+    // The keys refused for one device id, as hashes. One bridge can be saved on two networks (two
+    // Wi-Fi names on one router), each saved copy paired with a key of its own, and one secrets file
+    // serves both: so an entry is one hash (as first written) or a list, and recording or forgetting
+    // one key's refusal leaves the other's alone.
+    static std::vector<std::string> saved_refusals(const json &s, const std::string &id) {
+        std::vector<std::string> out;
+        const json &v = field(field(s, "refused"), id.c_str());
+        if (v.is_string()) out.push_back(v.get<std::string>());
+        else if (v.is_array())
+            for (const auto &x : v)
+                if (x.is_string()) out.push_back(x.get<std::string>());
+        return out;
+    }
+    // Writes them (none removes the entry). The caller holds mu_.
+    void save_refusals(const std::string &id, const std::vector<std::string> &hashes) {
+        if (!secrets_) return;
+        json s = saved();
+        if (!s.contains("refused") || !s["refused"].is_object()) s["refused"] = json::object();
+        if (hashes.empty()) s["refused"].erase(id);
+        else if (hashes.size() == 1) s["refused"][id] = hashes[0];
+        else s["refused"][id] = hashes;
+        if (s["refused"].empty()) s.erase("refused");
+        secrets_->set(kKind, s);
+    }
 
     template <typename F>
     void with_memo(const home::Device &dev, F f) {
@@ -1217,21 +1292,29 @@ private:
         std::lock_guard<std::mutex> lk(mu_);
         const auto it = memo_.find(id);
         if (it != memo_.end()) {
-            f.refused = !hash.empty() && it->second.refused_key == hash;
+            f.refused = !hash.empty() && it->second.refused_keys.count(hash) > 0;
             f.cert_changed = !a.pin.empty() && it->second.bad_pin == a.pin;
         }
         if (!f.refused || !f.cert_changed) {
             const json s = saved();
-            f.refused = f.refused || (!hash.empty() && saved_entry(s, "refused", id) == hash);
+            if (!f.refused && !hash.empty()) {
+                const std::vector<std::string> refused = saved_refusals(s, id);
+                f.refused = std::find(refused.begin(), refused.end(), hash) != refused.end();
+            }
             f.cert_changed = f.cert_changed || (!a.pin.empty() && saved_entry(s, "cert_changed", id) == a.pin);
         }
         return f;
     }
     void note_refused(const home::Device &dev, const Auth &a) {
         const std::string hash = key_hash(a.key);
+        if (hash.empty()) return;
         with_memo(dev, [&](Memo &m) {
-            m.refused_key = hash;
-            save_entry("refused", memo_key(dev), hash);
+            m.refused_keys.insert(hash);
+            std::vector<std::string> refused = saved_refusals(saved(), memo_key(dev));
+            if (std::find(refused.begin(), refused.end(), hash) != refused.end()) return;
+            refused.push_back(hash);
+            if (refused.size() > 8) refused.erase(refused.begin());   // a bridge is not paired eight times over
+            save_refusals(memo_key(dev), refused);
         });
     }
     void note_cert_changed(const home::Device &dev, const Auth &a) {
@@ -1240,13 +1323,26 @@ private:
             save_entry("cert_changed", memo_key(dev), a.pin);
         });
     }
+    // Forgets what was recorded about this saved pairing (its key, its pin), before it is replaced
+    // or dropped. Only this pairing's: a copy of the bridge saved on another network keeps the
+    // refusal of its own key.
     void forget(const home::Device &dev) {
-        const std::string id = memo_key(dev);
+        const Auth a = read_auth(dev.auth);
+        const std::string id = memo_key(dev), hash = key_hash(a.key);
         std::lock_guard<std::mutex> lk(mu_);
-        memo_.erase(id);
+        const auto it = memo_.find(id);
+        if (it != memo_.end()) {
+            it->second.refused_keys.erase(hash);
+            if (!a.pin.empty() && it->second.bad_pin == a.pin) it->second.bad_pin.clear();
+        }
         const json s = saved();
-        if (!saved_entry(s, "refused", id).empty()) save_entry("refused", id, "");
-        if (!saved_entry(s, "cert_changed", id).empty()) save_entry("cert_changed", id, "");
+        std::vector<std::string> refused = saved_refusals(s, id);
+        const auto kept = std::remove(refused.begin(), refused.end(), hash);
+        if (!hash.empty() && kept != refused.end()) {
+            refused.erase(kept, refused.end());
+            save_refusals(id, refused);
+        }
+        if (!a.pin.empty() && saved_entry(s, "cert_changed", id) == a.pin) save_entry("cert_changed", id, "");
     }
 
     // Waits, within the deadline, until the bridge may take another command (Signify asks for
@@ -1511,7 +1607,27 @@ private:
         Target t;
         if (!ready(dev, a, t, err)) return false;
         const auto deadline = Clock::now() + milliseconds(deadline_ms > 0 ? deadline_ms : kDefaultApplyMs);
+        if (kind == "scene" && !scene_still_allowed(dev, a, t, path, str(thing.ref, "rid"), deadline, err)) return false;
         return send(dev, a, t, path, body, false, kind == "scene", deadline, err);
+    }
+
+    // A scene is read again right before it is recalled: it may have been changed in the Hue app
+    // since the list was read (a smart plug added to it, a light of the room the user has since
+    // marked "Ask before switching on"), and recalling it switches everything it now holds.
+    bool scene_still_allowed(const home::Device &dev, const Auth &a, const Target &t, const std::string &path,
+                             const std::string &rid, Clock::time_point deadline, std::string &err) {
+        const Reply r = request(t, a, "GET", path, nullptr, deadline);
+        if (r.ok() && r.status == 404) {
+            err = kErrGoneScene;
+            return false;
+        }
+        if (failed(dev, a, t, r, deadline, err)) return false;
+        json data;
+        if (!v2_data(r.body, data) || data.size() != 1 || str(data[0], "id") != rid) {
+            err = kErrGarbled;
+            return false;
+        }
+        return scene_allowed(data[0], dev.things, err);
     }
 
     bool apply_many_inner(const home::Device &dev, const std::vector<const home::Thing *> &things, const home::Change &change,
@@ -1556,8 +1672,9 @@ private:
 namespace hue {
 namespace detail {
 std::vector<std::string> error_texts() {
-    return {kErrNotPaired, kErrRefused, kErrCertChanged, kErrAddress, kErrNoAnswer, kErrTimeout, kErrMoved, kErrGarbled,
-            kErrBusy,      kErrRejected, kErrGoneLight,  kErrGoneScene, kErrSensor, kErrUnknown, kErrInternal};
+    return {kErrNotPaired, kErrRefused,   kErrCertChanged, kErrAddress,    kErrNoAnswer, kErrTimeout,   kErrMoved,
+            kErrGarbled,   kErrBusy,      kErrRejected,    kErrGoneLight,  kErrGoneScene, kErrSensor,   kErrUnknown,
+            kErrInternal,  kSceneChanged, kSceneDisabled,  kScenePlug,     kSceneAskFirst};
 }
 }  // namespace detail
 }  // namespace hue
