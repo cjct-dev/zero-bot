@@ -47,3 +47,11 @@ License, Version 2.0 (full text in `Apache-2.0.txt` beside this file). Neither h
 The C++ code in `homekit.cpp` is a re-write over libcrypto; the file lists what each part
 follows. "HomeKit" is a trademark of Apple Inc. Zero Bot is not made or endorsed by Apple or
 Amazon.
+
+### WiZ driver (`src/smarthome/drivers/wiz.cpp`)
+
+The protocol handling (the methods, how a module name says what a device can do, the colour
+conversion to the red, green, blue and white LEDs, signed requests) follows pywizlight,
+github.com/sbidy/pywizlight: MIT License, Copyright (c) 2020 Stephan Traub. The simulated device in
+`tests/mocks/wiz/` follows the answers recorded in its tests. The MIT permission notice and
+disclaimer are as quoted above for the Fire TV driver.

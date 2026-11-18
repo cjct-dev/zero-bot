@@ -44,6 +44,17 @@ def check(name, ok, detail=""):
     print("%s  %s%s" % ("ok  " if ok else "FAIL", name, "" if ok else "  -> %s" % (detail,)), flush=True)
 
 
+def first_state(out):
+    """The state of the first thing in a wiz_cli listing, {} when there is none."""
+    things = out.get("things") or [{}]
+    return things[0].get("state", {})
+
+
+def params_of(sent, i=0):
+    """The params of the i-th request in `sent`, None when there is no such request."""
+    return sent[i]["params"] if -len(sent) <= i < len(sent) else None
+
+
 def unreachable(text):
     return any(w in text.lower() for w in UNREACHABLE_WORDS)
 
@@ -112,15 +123,16 @@ class State:
                        "things": [], "secrets": secrets or {}}, f)
 
     def run(self, *args, timeout=30):
+        """(exit status, the JSON printed or {} when none, stderr)."""
         t0 = time.monotonic()
         p = subprocess.run([CLI, self.path, *args], capture_output=True, text=True, timeout=timeout)
         self.seconds = time.monotonic() - t0
         outputs.append(p.stdout + p.stderr)
         try:
-            out = json.loads(p.stdout) if p.stdout.strip() else None
+            out = json.loads(p.stdout) if p.stdout.strip() else {}
         except ValueError:
-            out = p.stdout
-        return p.returncode, out, p.stderr.strip()
+            out = {"unparsed": p.stdout}
+        return p.returncode, out if isinstance(out, dict) else {"unparsed": out}, p.stderr.strip()
 
     def load(self):
         with open(self.path) as f:
@@ -128,6 +140,10 @@ class State:
 
     def things(self):
         return {t["id"]: t for t in self.load()["things"]}
+
+    def ref(self, thing_id):
+        """The driver's private addressing of one thing, {} when there is no such thing."""
+        return self.things().get(thing_id, {}).get("ref", {})
 
     def secrets(self):
         return self.load()["secrets"]
@@ -154,15 +170,15 @@ def driver_tests():
     # ---- what each kind of device yields
     rgb, rgb_st = enumerate_case("rgb", {"light": ("light", ["power", "brightness", "color_temp", "color"],
                                                    {"on": False, "brightness": 13, "hue": 30, "saturation": 100})})
-    check("rgb: the white range from getModelConfig", rgb_st.things()["light"]["ref"].get("kmin") == 2200 and
-          rgb_st.things()["light"]["ref"].get("kmax") == 6500, rgb_st.things())
-    check("rgb: named after the end of its MAC", rgb_st.things()["light"]["name"] == "WiZ light 033d", rgb_st.things())
+    check("rgb: the white range from getModelConfig", rgb_st.ref("light").get("kmin") == 2200 and
+          rgb_st.ref("light").get("kmax") == 6500, rgb_st.things())
+    check("rgb: named after the end of its MAC", rgb_st.things().get("light", {}).get("name") == "WiZ light 033d", rgb_st.things())
     enumerate_case("tw", {"light": ("light", ["power", "brightness", "color_temp"], {"on": False, "brightness": 60, "kelvin": 4000})})
     enumerate_case("dw", {"light": ("light", ["power", "brightness"], {"on": False, "brightness": 40})})
     old, old_st = enumerate_case("old", {"light": ("light", ["power", "brightness", "color_temp", "color"],
                                                    {"on": False, "brightness": 13, "hue": 30, "saturation": 100})})
     check("old firmware: getModelConfig refused, getUserConfig asked, its extRange used",
-          [r["method"] for r in old.requests()].count("getUserConfig") == 1 and old_st.things()["light"]["ref"].get("kmin") == 2200,
+          [r["method"] for r in old.requests()].count("getUserConfig") == 1 and old_st.ref("light").get("kmin") == 2200,
           old_st.things())
     enumerate_case("typeid", {"light": ("light", ["power", "brightness"], {"on": False, "brightness": 40})})
     sock, sock_st = enumerate_case("socket", {"plug": ("plug", ["power", "sensor"], {"on": False, "power_w": 23.5})})
@@ -196,7 +212,7 @@ def driver_tests():
     ]
     for name, change, want in cases:
         rc, err, sent = apply(rgb_st, "light", change)
-        check("rgb %s: sent once, exactly %s" % (name, json.dumps(want)), rc == 0 and len(sent) == 1 and sent[0]["params"] == want,
+        check("rgb %s: sent once, exactly %s" % (name, json.dumps(want)), rc == 0 and len(sent) == 1 and params_of(sent) == want,
               (rc, err, [s["raw"] for s in sent]))
     p = rgb.stats()["pilot"]
     check("the device is now off, in the colour last set", p["state"] is False and p["g"] == 153 and p["temp"] == 0, p)
@@ -222,25 +238,25 @@ def driver_tests():
     rc, err, sent = apply(sock_st, "plug", {"on": True, "brightness": 50})
     check("a plug is not dimmed: refused, nothing sent", rc == 1 and not sent and not unreachable(err), (rc, err))
     rc, err, sent = apply(sock_st, "plug", {"on": True})
-    check("plug on", rc == 0 and len(sent) == 1 and sent[0]["params"] == {"state": True} and sock.stats()["pilot"]["state"] is True,
+    check("plug on", rc == 0 and params_of(sent) == {"state": True} and len(sent) == 1 and sock.stats()["pilot"]["state"] is True,
           (rc, err))
     sock.reset()
     rc, out, err = sock_st.run("read")
-    check("reading the plug by name: on, and its power", rc == 0 and out["things"][0]["state"] == {"on": True, "power_w": 23.5}, (rc, out, err))
+    check("reading the plug by name: on, and its power", rc == 0 and first_state(out) == {"on": True, "power_w": 23.5}, (rc, out, err))
     check("which asked for the pilot and the power", sorted(r["method"] for r in sock.requests()) == ["getPilot", "getPower"],
           sock.requests())
     sock.reset()
     rc, out, err = sock_st.run("read", "--brief")
     check("reading everything briefly: the pilot only", rc == 0 and [r["method"] for r in sock.requests()] == ["getPilot"] and
-          out["things"][0]["state"] == {"on": True}, (rc, out, err, sock.requests()))
+          first_state(out) == {"on": True}, (rc, out, err, sock.requests()))
 
     rc, err, sent = apply(fan_st, "fan", {"on": True})
-    check("fan on: fanState 1, its light untouched", rc == 0 and sent[0]["params"] == {"fanState": 1} and
+    check("fan on: fanState 1, its light untouched", rc == 0 and params_of(sent) == {"fanState": 1} and
           fan.stats()["pilot"]["state"] is False, (rc, err))
     rc, err, sent = apply(fan_st, "fan", {"fan": 50})
-    check("fan at 50 %: speed 3 of 6", rc == 0 and sent[0]["params"] == {"fanState": 1, "fanSpeed": 3}, (rc, err))
+    check("fan at 50 %: speed 3 of 6", rc == 0 and params_of(sent) == {"fanState": 1, "fanSpeed": 3}, (rc, err))
     rc, err, sent = apply(fan_st, "light", {"on": True, "brightness": 70})
-    check("the fan's light on at 70 %", rc == 0 and sent[0]["params"] == {"state": True, "dimming": 70}, (rc, err))
+    check("the fan's light on at 70 %", rc == 0 and params_of(sent) == {"state": True, "dimming": 70}, (rc, err))
     rc, err, sent = apply(fan_st, "fan", {"on": False})
     p = fan.stats()["pilot"]
     check("fan off; its light stays on", rc == 0 and p["fanState"] == 0 and p["state"] is True, p)
@@ -253,7 +269,7 @@ def driver_tests():
     rgb.config(drop="alternate")
     rgb.reset()
     rc, out, err = rgb_st.run("enumerate")
-    check("every other datagram lost: enumerate still works", rc == 0 and len(out["things"]) == 1, (rc, err))
+    check("every other datagram lost: enumerate still works", rc == 0 and len(out.get("things", [])) == 1, (rc, err))
     sent = [r for r in rgb.requests() if r["method"] == "getSystemConfig"]
     check("each lost request was sent again", len(sent) == 2 and sent[0]["dropped"] and not sent[1]["dropped"], sent)
     check("from one socket per request (the resend comes from the same port)", len({r["port"] for r in sent}) == 1, sent)
@@ -273,6 +289,9 @@ def driver_tests():
     check("nothing answers: a change gives up by its deadline", rc == 1 and unreachable(err) and rgb_st.seconds < 3.2,
           (err, rgb_st.seconds))
     check("after a few resends, not a flood (at most 6 datagrams)", 2 <= len(sent) <= 6, len(sent))
+    rc, err, sent = apply(rgb_st, "light", {"on": True}, deadline=6000)
+    check("nothing answers for 6 s: still at most 6 datagrams, and given up by the deadline",
+          rc == 1 and len(sent) == 6 and rgb_st.seconds < 6.7, (len(sent), rgb_st.seconds))
     rgb.config(drop="none")
 
 
@@ -282,11 +301,11 @@ def signed_tests():
     dev = Mock("signed", key=KEY)
     st = State(dev)
     rc, out, err = st.run("enumerate")
-    check("signed firmware: enumerated without a key (reads are open)", rc == 0 and len(out["things"]) == 1, (rc, err))
-    check("its thing is marked signed", st.things()["light"]["ref"].get("signed") is True, st.things())
+    check("signed firmware: enumerated without a key (reads are open)", rc == 0 and len(out.get("things", [])) == 1, (rc, err))
+    check("its thing is marked signed", st.ref("light").get("signed") is True, st.things())
     rc, step, err = st.run("step")
-    check("the signing key is asked for (a token step)", step["kind"] == "token" and step["field"] == "WiZ signing key" and
-          "udp_signing_key" in step["prompt"], step)
+    check("the signing key is asked for (a token step)", step.get("kind") == "token" and step.get("field") == "WiZ signing key" and
+          "udp_signing_key" in step.get("prompt", ""), step)
     rc, out, err = st.run("apply", "light", '{"on":true}')
     check("without a key nothing is sent", rc == 1 and "only accepts signed commands" in err and not dev.requests("setPilot"), err)
     rc, out, err = st.run("pair", "not a key")
@@ -296,7 +315,7 @@ def signed_tests():
     check("a wrong key is saved; nothing is sent when it is typed", rc == 0 and st.secrets().get("wiz") == {"signing_key": WRONG} and
           not dev.requests("setPilot"), (rc, err, st.secrets()))
     rc, step, err = st.run("step")
-    check("then no step is asked", step["kind"] == "none", step)
+    check("then no step is asked", step.get("kind") == "none", step)
     rc, out, err = st.run("apply", "light", '{"on":true,"brightness":50}')
     sent = dev.requests("setPilot")
     check("the device refuses the wrong key", rc == 1 and "did not accept the signing key" in err and not unreachable(err), err)
@@ -304,7 +323,7 @@ def signed_tests():
           sent[0]["sig_ok"] is False, sent)
     check("the refusal is kept in the file", st.secrets().get("wiz", {}).get("refused") is True, st.secrets())
     rc, step, err = st.run("step")
-    check("the key is asked for again, saying why", step["kind"] == "token" and "did not accept" in step["prompt"], step)
+    check("the key is asked for again, saying why", step.get("kind") == "token" and "did not accept" in step.get("prompt", ""), step)
     for attempt in range(2):
         rc, out, err = st.run("apply", "light", '{"on":true}')
         check("a later run does not send the refused key (run %d)" % (attempt + 1),
@@ -323,7 +342,7 @@ def signed_tests():
           {"state": True, "dimming": 50} and json.loads(sent[-1]["raw"]).get("env") == "pro", sent[-1:])
     check("and it did it", dev.stats()["pilot"]["state"] is True and dev.stats()["pilot"]["dimming"] == 50, dev.stats()["pilot"])
     rc, out, err = st.run("read")
-    check("read after signing", rc == 0 and out["things"][0]["state"]["on"] is True, (rc, err))
+    check("read after signing", rc == 0 and first_state(out).get("on") is True, (rc, err))
 
     # A device not yet known to sign (never read since its firmware changed): unsigned, then the key once.
     fresh = State(dev, secrets={"wiz": {"signing_key": KEY}})
@@ -445,7 +464,7 @@ def app_tests():
     r = app.tool({"action": "on", "target": "WiZ light 0001"})
     sent = signed.requests("setPilot")
     check("app: with the right key typed, the signed light switches", r == {"now": "on", "target": "WiZ light 0001"} and
-          sent[-1]["sig_ok"] is True and signed.stats()["pilot"]["state"] is True, (r, sent[-1:]))
+          bool(sent) and sent[-1]["sig_ok"] is True and signed.stats()["pilot"]["state"] is True, (r, sent[-1:]))
 
     r = app.tool({"action": "off", "target": "all"})
     check("app: everything off", isinstance(r, dict) and r.get("changed") == 3 and not light.stats()["pilot"]["state"] and

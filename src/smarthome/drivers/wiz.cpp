@@ -12,6 +12,7 @@
 #include <netdb.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/timex.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -52,6 +53,9 @@ constexpr size_t kMaxDatagram = 8192;
 // 2025-01-01: a clock earlier than this has not been set since the board started, and a request
 // signed with it would be refused as stale.
 constexpr long long kEarliestSigningTime = 1735689600;
+// How long after start an unsynchronised clock is distrusted: long enough for a time service to
+// set it on any working connection, short enough not to block a board that has none for good.
+constexpr long long kClockSettleS = 600;
 const char *const kFamily = "wiz";
 // Said when nothing answers the first request to a device, which is also how a device with "Allow
 // local communication" switched off behaves.
@@ -62,6 +66,23 @@ const char *const kNoAnswerSetup =
 long long now_ms() {
     using namespace std::chrono;
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+long long system_unix_time() { return static_cast<long long>(time(nullptr)); }
+long long (*g_unix_clock)() = system_unix_time;
+long long unix_now() { return g_unix_clock(); }
+
+// Whether the kernel holds the wall clock as set by a time service (what timedatectl calls
+// "System clock synchronized"). Only read, never changed.
+bool kernel_clock_synced() {
+    timex tx{};
+    const int state = ntp_adjtime(&tx);
+    return state >= 0 && state != TIME_ERROR && !(tx.status & STA_UNSYNC);
+}
+
+long long uptime_s() {
+    timespec t{};
+    return clock_gettime(CLOCK_BOOTTIME, &t) == 0 ? static_cast<long long>(t.tv_sec) : 0;
 }
 
 // Values from a device are whatever it sent: read them without ever throwing.
@@ -210,7 +231,7 @@ Outcome call(Target &t, const std::string &method, const std::string &params, co
              json &result) {
     result = json::object();
     json reply;
-    const Got got = udp_exchange(t.ip, t.port, method, detail::datagram(method, params, key, time(nullptr)), deadline, reply);
+    const Got got = udp_exchange(t.ip, t.port, method, detail::datagram(method, params, key, unix_now()), deadline, reply);
     if (got == Got::Nothing) return Outcome::NoAnswer;
     if (got == Got::Garbage) return Outcome::Garbled;
     if (reply.contains("hmac")) t.signed_firmware = true;
@@ -253,6 +274,13 @@ std::string find_key_in(const json &j, int depth = 0) {
 // Building blocks (no network)
 // ---------------------------------------------------------------------------------------------
 namespace detail {
+
+void set_unix_clock(long long (*clock)()) { g_unix_clock = clock ? clock : system_unix_time; }
+
+bool signing_clock_ok(long long unix_time, bool synced, long long uptime_s) {
+    if (unix_time < kEarliestSigningTime) return false;
+    return synced || uptime_s >= kClockSettleS;
+}
 
 uint32_t Model::light_caps() const {
     if (!has_light()) return 0;
@@ -692,7 +720,9 @@ private:
         const Key k = family_key();
         if (k.bytes.empty()) return Outcome::NeedsKey;
         if (k.refused) return Outcome::KeyRefused;
-        if (time(nullptr) < kEarliestSigningTime) return Outcome::ClockNotSet;
+        // A test's own clock counts as set.
+        const bool synced = g_unix_clock != system_unix_time || kernel_clock_synced();
+        if (!detail::signing_clock_ok(unix_now(), synced, uptime_s())) return Outcome::ClockNotSet;
         const Outcome o = call(t, "setPilot", params, k.bytes, deadline, result);
         if (o == Outcome::KeyRefused) {
             // Only the key that was sent is marked: one typed meanwhile gets its own try.

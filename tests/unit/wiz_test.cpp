@@ -103,6 +103,14 @@ static void test_signing() {
     check("empty params signed: only the time", datagram("setPilot", "{}", key, 5).find("\"params\":{\"sigTs\":5}") != std::string::npos,
           datagram("setPilot", "{}", key, 5));
 
+    // When a request may be signed: a set clock, synchronised or long after start.
+    check("clock: synchronised, 2026", signing_clock_ok(1790441723, true, 5));
+    check("clock: 1970 (never set), even if called synchronised", !signing_clock_ok(86400, true, 5000));
+    check("clock: 2024, not set", !signing_clock_ok(1704067200, true, 5000));
+    check("clock: not synchronised one minute after start (a saved time)", !signing_clock_ok(1790441723, false, 60));
+    check("clock: not synchronised 9 minutes 59 after start", !signing_clock_ok(1790441723, false, 599));
+    check("clock: not synchronised ten minutes after start: taken as it is", signing_clock_ok(1790441723, false, 600));
+
     std::string k;
     check("a key: 32 hex characters", parse_key("00112233445566778899aabbccddeeff", k) && k == key);
     check("capitals and spaces are fine", parse_key("  0011 2233 4455 6677 8899 AABB CCDD EEFF\n", k) && k == key);
@@ -175,6 +183,8 @@ static void test_scales() {
     eqi("fan: 0 % is stopped", fan_speed_from_percent(0, 6), 0);
     eqi("fan: 1 % is the slowest", fan_speed_from_percent(1, 6), 1);
     eqi("fan: 50 % of six speeds is 3", fan_speed_from_percent(50, 6), 3);
+    eqi("fan: 60 % of six speeds rounds up to 4", fan_speed_from_percent(60, 6), 4);
+    eqi("fan: 99 % is the fastest", fan_speed_from_percent(99, 6), 6);
     eqi("fan: 100 % is the fastest", fan_speed_from_percent(100, 6), 6);
     eqi("fan: 250 % is the fastest", fan_speed_from_percent(250, 6), 6);
     eqi("fan: no speeds reported", fan_speed_from_percent(50, 0), 1);
@@ -536,6 +546,7 @@ static void test_driver() {
             if (mode == "late first") return {reply("getPilot", {{"state", false}}), "\x01\x02garbage", reply(m, {{"success", true}})};
             if (mode == "garbage only") return {"{not json", "[1,2,3]", "\"text\""};
             if (mode == "too long") return {reply(m, {{"success", true}, {"pad", std::string(9000, 'x')}})};
+            if (mode == "padded") return {reply(m, {{"success", true}}) + std::string(9000, ' ')};
             if (mode == "other method only") return {reply(m == "getPilot" ? "setPilot" : "getPilot", {{"success", true}})};
             if (mode == "error") return {R"({"method":"setPilot","env":"pro","error":{"code":-32600,"message":"Invalid Request"}})"};
             if (mode == "no success") return {reply(m, {{"success", false}})};
@@ -555,6 +566,7 @@ static void test_driver() {
             {"late first", true, ""},
             {"garbage only", false, kGarbled},
             {"too long", false, kGarbled},
+            {"padded", false, kGarbled},   // a whole answer, but longer than any answer is
             {"other method only", false, kNoAnswer},
             {"error", false, kRefused},
             {"no success", false, kRefused},
@@ -644,6 +656,13 @@ static void test_driver() {
         check("errors never hold a key", err.find(wrong_hex) == std::string::npos && err.find(key_hex) == std::string::npos);
 
         check("the right key typed (the exported file pasted)", driver->pair(dev, "{\"udp_signing_key\":\"" + key_hex + "\"}", err), err);
+        // A board without a battery-backed clock reads 1970 until it is set: nothing is signed then.
+        set_unix_clock([]() -> long long { return 86400; });
+        sent = signed_bulb.count("setPilot");
+        check("a clock that is not set yet: nothing signed, nothing sent", !driver->apply(dev, light, c, 800, err) && err == kClockNotSet &&
+                                                                            signed_bulb.count("setPilot") == sent, err);
+        check("and the key is not marked as refused", !secrets.get("wiz").contains("refused"));
+        set_unix_clock(nullptr);
         check("no refusal kept for it", !secrets.get("wiz").contains("refused") && secrets.get("wiz").value("signing_key", "") == key_hex);
         sent = signed_bulb.count("setPilot");
         check("a signed change goes through", driver->apply(dev, light, c, 1500, err), err);
@@ -678,6 +697,10 @@ static void test_driver() {
         c.on = true;
         check("-32602 from firmware that does not sign is a plain refusal", !driver->apply(dev, thing_of(things, "light"), c, 800, err) &&
                                                                               err == kRefused, err);
+        bool any_signed = false;
+        for (const std::string &raw : old.received()) any_signed = any_signed || raw.find("\"hmac\"") != std::string::npos;
+        check("sent once, and the saved key was not tried on it", old.count("setPilot") == 1 && !any_signed);
+        secrets.all.erase("wiz");
         check("and asks for no key", driver->next_step(dev).kind == home::Pairing::None);
     }
 

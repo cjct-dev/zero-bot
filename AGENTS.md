@@ -45,7 +45,7 @@ src/core/           settings, calendar/reminder/timer/memory store, timers (the 
 src/net/            libcurl wrapper with a shared connection/DNS/TLS-session cache
 src/platform/       display, keyboard, audio (recorder, speaker, music), codecs, camera,
                     infrared, subprocess helpers
-src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast); driver.h, the contract every
+src/smarthome/      discovery (mDNS, SSDP, TP-Link and WiZ broadcasts); driver.h, the contract every
                     device family implements; home.h, the layer above it: store.cpp (the 0600
                     file, migration, the network gate), targets.cpp (names, rooms, groups),
                     control.cpp (commands, safety rules, locking, status, refresh, pairing),
@@ -54,8 +54,9 @@ src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast); driver.h, the con
 src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
                     pages, breathing screen, alarm banner, theme
 tests/              scored agent test set (needs a live service), device-free unit tests
-                    (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit), Tapo, Fire TV
-                    and HomeKit end to end (tapo_e2e.py, firetv_e2e.py, homekit_e2e.py),
+                    (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit, WiZ), Tapo,
+                    Fire TV, HomeKit and WiZ end to end (tapo_e2e.py, firetv_e2e.py,
+                    homekit_e2e.py, wiz_e2e.py),
                     the loop against a scripted chat service (home_chat_e2e.py), simulated devices
                     and service (mocks/)
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
@@ -144,8 +145,9 @@ What exists:
   `tests/unit/smarthome_test.cpp` (store and migration, names and rooms, schema snapshots in
   `tests/snapshots/`, the safety questions, rate limits, locking, pairing, the Tapo driver's
   refusals, colours, discovery from sample packets through `discovery::devices_from`; devices are
-  a fake driver), `tests/unit/firetv_test.cpp` and `tests/unit/homekit_test.cpp` (each driver's
-  known answers; Fire TV's test certificates are in `tests/mocks/firetv/`),
+  a fake driver), `tests/unit/firetv_test.cpp`, `tests/unit/homekit_test.cpp` and
+  `tests/unit/wiz_test.cpp` (each driver's known answers; Fire TV's test certificates are in
+  `tests/mocks/firetv/`; WiZ's hostile answers come from a UDP peer on 127.0.0.1),
   `tests/unit/http_test.cpp` (the request
   options for devices, against a local peer) and `tests/unit/timers_test.cpp` (the timer tool,
   storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it keeps everything
@@ -161,6 +163,10 @@ What exists:
   times). `tests/homekit_e2e.py` does the same for `build/unit/homekit_cli` against a simulated
   HomeKit bridge (`tests/mocks/homekit/mock_homekit.py`): pairing, refused codes, bridged
   accessories switched off, changed databases, Unpair.
+- **WiZ end to end**: `tests/wiz_e2e.py` runs `build/unit/wiz_cli` (built by `run_unit.sh`) and the
+  `cli` build against `tests/mocks/wiz/mock_wiz.py` (eleven models, lost datagrams, firmware that
+  signs): exact setPilot params, resends, deadlines, and a refused signing key sent once only, all
+  checked from the simulated device's side. About 10 s.
 - **Code ported from other projects** keeps their notices in the source file and in
   `licenses/THIRD-PARTY-NOTICES.md`, which the package installs; add to it with any new port.
 - **The request loop, scripted**: `tests/home_chat_e2e.py` runs `build/cli/zero_bot --chat` against

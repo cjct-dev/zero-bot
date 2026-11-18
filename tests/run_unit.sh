@@ -1,8 +1,8 @@
 #!/bin/sh
 # Device-free unit tests: the smart-home layer (store, names, schema, safety rules, locking,
-# pairing, the Tapo driver's refusals, colours), the HTTP options for devices, and the timers (the
-# timer tool, storage, the countdown, the alarm and its player). Nothing but 127.0.0.1 is
-# contacted, and no AI service, sound or screen is needed.
+# pairing, the Tapo driver's refusals, colours), the Fire TV, HomeKit and WiZ drivers, the HTTP
+# options for devices, and the timers (the timer tool, storage, the countdown, the alarm and its
+# player). Nothing but 127.0.0.1 is contacted, and no AI service, sound or screen is needed.
 #
 #   tests/run_unit.sh                   build into build/unit and run
 #   ZB_UPDATE_SNAPSHOTS=1 tests/run_unit.sh    rewrite tests/snapshots/*.json from the current schema

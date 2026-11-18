@@ -34,8 +34,11 @@
 //    the key (Pairing::Token) while there is none or the saved one was refused. pair() stores what
 //    was typed (the hex, or the whole exported file pasted) and sends nothing: only a change shows
 //    whether a key is right, and none is made up. A key a device refused (-32605) is never sent
-//    again, by this run or a later one, until a key is typed again. Nothing is signed while the
-//    clock reads earlier than 2025 (not set yet): a stale time is refused like a wrong key.
+//    again, by this run or a later one, until a key is typed again. A signed request carries the
+//    time, and a stale one is refused like a wrong key, so nothing is signed while the clock reads
+//    earlier than 2025 (never set), nor in the first ten minutes after start while the kernel
+//    reports the clock as not synchronised (a board without a battery-backed clock starts from a
+//    time saved at the last shutdown until a time service sets it).
 //  - Errors are short sentences. Only the "did not answer" ones contain a word that control.cpp's
 //    unreachable() looks for, so only they lead to a search for the device at a new address.
 //
@@ -64,6 +67,13 @@ extern const char *const kRefused;       // "The WiZ device refused the command.
 
 // Building blocks, exposed for wiz_test.cpp. Nothing here touches the network.
 namespace detail {
+
+// The wall clock signed requests are stamped with (seconds since 1970). Tests set their own; the
+// app never calls this. nullptr restores the system clock.
+void set_unix_clock(long long (*clock)());
+// Whether a signed request may be stamped with this time: not before 2025, and not while the clock
+// is not synchronised (`synced`) during the first ten minutes after start (`uptime_s`).
+bool signing_clock_ok(long long unix_time, bool synced, long long uptime_s);
 
 // What a module is, read from its name ("ESP01_SHRGB_03": the middle part says what it can do).
 struct Model {
