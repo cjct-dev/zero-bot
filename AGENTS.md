@@ -296,6 +296,10 @@ key, real audio), say so plainly rather than implying it was.
   must survive a restart (a key the device rejected) goes in the family's secrets, keyed by device
   id, as the Hue driver does (`refused`, `cert_changed`); its first version kept it in `auth`,
   where it was lost.
+- A scene switches everything it holds, and the shared layer sees only the scene. The Hue app puts
+  a room's smart plugs in the room's scenes, so starting one switched on a plug marked *Ask before
+  switching on* (a heater) without the question. A driver offers no scene that switches on a plug
+  or socket.
 - Smart-home discovery uses only what the devices' own apps use (mDNS, SSDP, the vendor's
   broadcast). No address sweeps, no port scans, opt-in per network with a warning. "This
   network" is the SSID plus the router's hardware address, not the SSID alone.

@@ -256,7 +256,9 @@ device directly: nothing goes through the makers' cloud services. Supported so f
   so that its *Ask before switching on* question is never skipped. Zero Bot remembers the
   bridge's security key from pairing and sends nothing to a device that presents another; a
   bridge software update can change the key, and Zero Bot then asks you to press the bridge's
-  button again to confirm. Tested so far only against a simulated bridge.
+  button again to confirm. *Unpair* makes Zero Bot forget the bridge's key, but the bridge itself
+  goes on accepting that key until it is removed in the Hue app; do that too if the handheld is
+  lost. Tested so far only against a simulated bridge.
 
 Other families (Shelly, WiZ, Kasa and more) are added one driver at a time.
 
