@@ -119,10 +119,12 @@ class Tv:
     def apply(self, change, deadline=2500):
         return self.cli("apply", json.dumps(change), deadline=deadline)
 
-    def apply_twice(self, change, gap_ms, deadline=2500, then=None, first_device=None):
+    def apply_twice(self, change, gap_ms, deadline=2500, then=None, first_device=None, between=None):
         """Two calls from one driver object, gap_ms apart (as the app would make them): `change`,
         then `then` (by default the same change again). With first_device (another Tv), the first
-        call goes to that device instead. Returns (first fault, second rc, second error, total s)."""
+        call goes to that device instead. With `between` (a config for Mock.set), the mock is set to
+        it as soon as the first call has returned, before the second starts. Returns (first fault,
+        second rc, second error, total s)."""
         cmd = [CLI, self.path, "apply", json.dumps(change), "--wake-port", str(self.mock.wol), "--deadline", str(deadline),
                "--again-after", str(gap_ms)]
         if then is not None:
@@ -130,13 +132,21 @@ class Tv:
         if first_device is not None:
             cmd += ["--first-device", first_device.path]
         t0 = time.time()
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        seen_output.append(p.stdout + p.stderr)
+        if between is None:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            stdout, stderr = p.stdout, p.stderr
+        else:
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            head = p.stdout.readline()   # the first call's {"first": ...} line, printed before the gap
+            self.mock.set(**between)
+            rest, stderr = p.communicate(timeout=60)
+            stdout = head + rest
+        seen_output.append(stdout + stderr)
         first = {}
-        for line in p.stdout.splitlines():
+        for line in stdout.splitlines():
             if line.startswith('{"first"'):
                 first = json.loads(line)["first"]
-        return first.get("fault"), p.returncode, p.stderr.strip(), time.time() - t0
+        return first.get("fault"), p.returncode, stderr.strip(), time.time() - t0
 
     def apply_seq(self, changes, gap_ms, deadline=2500):
         """Several calls from one driver object, gap_ms apart. Returns ([{"ok", "fault", "error"}
@@ -835,14 +845,14 @@ def starting_tests(m, tv):
     check("on=true + a key, the API up after the wake and then silent to the key: not serving, not 'starting'",
           rc == 1 and fault(err) == "not_serving" and "may still have been carried out" in err, (rc, err))
 
-    # on=true again while the TV is starting, its DIAL request accepted and not answered: still
-    # starting up, not "not replying" (the sentence after which the assistant offered an infrared
-    # power toggle). Without an accepted wake before, that stays not serving (tested below).
+    # on=true again while the TV is starting, its DIAL request reaching the TV and not answered: the
+    # TV is coming on, so switching on is done (0.4.4; 0.4.1 said "still starting up", and before it
+    # "not replying", the sentence after which the assistant offered an infrared power toggle).
     m.reset(state="idle", caps="tv", wake_delay=0.3, starting_s=8.0, faults={"POST /apps/FireTVRemote": "silent"},
             fault_after={"POST /apps/FireTVRemote": 1})
     first, rc, err, elapsed = tv.apply_twice({"on": True}, 300)
-    check("starting: on=true again while the TV starts, its DIAL request accepted and unanswered: 'still starting up'",
-          first == "none" and rc == 1 and fault(err) == "starting" and not reads_as_unreachable(err), (first, rc, err))
+    check("starting: on=true again while the TV starts, its DIAL request reaching the TV unanswered: done, never 'not replying'",
+          first == "none" and rc == 0 and fault(err) != "not_serving", (first, rc, err))
 
     # A TV that did not take the wake fails as before, and is not "starting" afterwards.
     m.reset(state="hung", caps="tv", faults={"POST /apps/FireTVRemote": "500"})
@@ -851,18 +861,68 @@ def starting_tests(m, tv):
     check("a DIAL wake answered 500: on=true fails as before (not serving); the next command's silence is not 'starting'",
           first == "not_serving" and rc == 1 and fault(err) == "not_serving" and st["dial_posts"] == 1 and keys(st) == [],
           (first, rc, err, st["dial_posts"]))
-    m.reset(state="idle", caps="tv", faults={"POST /apps/FireTVRemote": "silent"})
+    # A DIAL request that reached the TV and was not answered in time: the owner's TV from deep
+    # standby answered later than the deadline and came on all the same (2026-11-18, twice), so
+    # switching on alone is done and the TV is taken to be starting up (0.4.4). The cost, accepted:
+    # a DIAL server that takes requests and never acts on them reads as on.
+    m.reset(state="idle", caps="tv", wake_delay=0.3, starting_s=3.0, dial_late=3.0)
     rc, out, err, elapsed = tv.apply({"on": True}, deadline=2500)
     st = m.stats()
-    check("a DIAL wake that is never answered: on=true fails as before (not serving), the TV stays idle",
-          rc == 1 and fault(err) == "not_serving" and st["wakes"] == 0 and st["state"] == "idle" and elapsed < 2.9,
-          (rc, err, st["wakes"], elapsed))
+    check("deep standby: the DIAL wake taken but answered after the deadline: on=true is done, the TV wakes",
+          rc == 0 and st["dial_posts"] >= 1 and st["wakes"] == 1 and elapsed < 2.9, (rc, err, st["dial_posts"], st["wakes"], elapsed))
+    m.reset(state="idle", caps="tv", wake_delay=0.3, starting_s=8.0, dial_late=3.0)
+    first, rc, err, elapsed = tv.apply_twice({"on": True}, 300, then={"key": "home"})
+    st = m.stats()
+    check("deep standby: on=true done; a key right after finds the API silent: 'still starting up', nothing sent",
+          first == "none" and rc == 1 and fault(err) == "starting" and not reads_as_unreachable(err) and keys(st) == [],
+          (first, rc, err, keys(st)))
+    m.reset(state="idle", caps="tv", wake_delay=0.3, starting_s=8.0, dial_late=3.0)
+    rc, out, err, elapsed = tv.apply({"on": True, "source": "Netflix"}, deadline=2500)
+    st = m.stats()
+    check("deep standby: on and an app at once: the app needs the API, so 'still starting up', no app opened",
+          rc == 1 and fault(err) == "starting" and st.get("launched", []) in ([], None) and elapsed < 2.9,
+          (rc, err, st.get("launched"), elapsed))
+    m.reset(state="idle", caps="tv", faults={"POST /apps/FireTVRemote": "silent"})
+    rc, out, err, elapsed = tv.apply({"on": True}, deadline=2500)
+    check("a DIAL wake that reached the TV and is never answered: read as starting up, so on=true is done (0.4.4)",
+          rc == 0 and elapsed < 2.9, (rc, err, elapsed))
+    # Only a request that went out and was still unanswered, its connection open, when its time ran
+    # out reads as a wake taken late. One closed, reset or answered with something that is not HTTP
+    # was not taken: another service on that port at the TV's address does that with a plain HTTP
+    # request (review of 0.4.4: these read as done, and the next command as "starting"). As in
+    # 0.4.3: not serving, nothing woken, and the next command's silence is not "starting".
+    for mode in ("close", "reset", "garbage"):
+        m.reset(state="hung", caps="tv", faults={"POST /apps/FireTVRemote": mode})
+        first, rc, err, elapsed = tv.apply_twice({"on": True}, 200, then={"key": "home"})
+        st = m.stats()
+        check("a DIAL request answered '%s', not taken: on=true fails (not serving); the next command's silence is not 'starting'"
+              % mode, first == "not_serving" and rc == 1 and fault(err) == "not_serving" and
+              "may still have been carried out" in err and st["dial_posts"] >= 1 and st["wakes"] == 0,
+              (first, rc, err, st["dial_posts"], st["wakes"]))
+    m.reset(state="idle", caps="tv", faults={"POST /apps/FireTVRemote": "close"})
+    rc, out, err, elapsed = tv.apply({"on": True, "source": "Netflix"})
+    st = m.stats()
+    check("a DIAL request closed unanswered, on and an app at once: not serving (not 'starting'), no app opened",
+          rc == 1 and fault(err) == "not_serving" and st["launched"] == [] and st["wakes"] == 0, (rc, err, st["launched"]))
     nomac = Tv(m, info={"wakeup": None})
     nomac.set_auth({k: v for k, v in tv.auth().items() if k != "wake_mac"})
     m.reset(state="gone", caps="tv")
     rc, out, err, elapsed = nomac.apply({"on": True}, deadline=2500)
     check("nothing answers DIAL and no wake address: on=true fails, no_answer, as before",
           rc == 1 and fault(err) == "no_answer" and elapsed < 2.9, (rc, err, elapsed))
+    # The TV took a wake (here late, from deep standby) and is resuming, and then nothing answers
+    # on either port for a moment: switching it on or off again then gets 'waking', never no_answer
+    # (the caller's infrared power toggle would switch off the TV that is coming on) nor already_off
+    # (it would come on and stay on). Review of 0.4.4: the wake-up signal's memory is dropped once
+    # the DIAL port takes a connection, so these read as no_answer and already_off.
+    for dev, label, again in ((nomac, "no wake address", {"on": True}), (nomac, "no wake address", {"on": False}),
+                              (tv, "a wake address", {"on": False})):
+        m.reset(state="idle", caps="tv", wake_delay=20.0, dial_late=3.0)
+        first, rc, err, elapsed = dev.apply_twice({"on": True}, 1500, then=again, between={"state": "gone"})
+        check("deep standby, %s: on=true done (DIAL late), then nothing answers: %s gets 'waking', never no_answer "
+              "or already_off" % (label, json.dumps(again)),
+              first == "none" and rc == 1 and fault(err) == "waking" and not reads_as_unreachable(err) and
+              (again["on"] or "not switched off" in err), (first, rc, err))
 
     # A changed key that cannot be checked still fails on=true, though the TV took the wake: the
     # API comes up 0.3 s after it presenting key b, and the one check of it gets a 500.

@@ -42,10 +42,11 @@ Config keys for /reset and /set (all optional):
   "OK" replies before the token), wrong_reply ("400" | "200text"), verify ("normal" |
   "always_ok" | "unreadable" | "silent"), revoked (every token refused), apps (a JSON list
   served by appsV2), faults ({"GET /v1/FireTV": mode, ...}; modes: garbage, huge, drip, deep,
-  notjson, wrongtypes, truncated, silent, close, 500, 400, 404, 405, badutf8, hugeheader; the
+  notjson, wrongtypes, truncated, silent, close, reset, 500, 400, 404, 405, badutf8, hugeheader; the
   DIAL wake is "POST /apps/FireTVRemote", and a fault there means the TV did not take the wake),
   fault_after ({"POST /v1/FireTV": 2}: that many requests to the endpoint are answered normally
-  first), starting_s and starting_mode (see the starting state), late (seconds: every command -
+  first), dial_late (seconds: the DIAL wake is taken at once but answered only this much later, as
+  the owner's TV did from deep standby), starting_s and starting_mode (see the starting state), late (seconds: every command -
   a key, a media action, an app launch - is carried out at once and answered only after this
   long, like a busy TV), slow_tls_every (N: every Nth TLS handshake on the API port waits
   slow_tls_s seconds, 0.3 by default, before it starts).
@@ -64,6 +65,7 @@ import random
 import socket
 import ssl
 import string
+import struct
 import sys
 import threading
 import time
@@ -485,6 +487,10 @@ class Tv:
             elif state == "awake":
                 # Assumed, not documented: a DIAL wake also lights a screen that action=sleep darkened.
                 self.stats["display"] = "on"
+        # The owner's TV from deep standby (2026-11-18): it takes the wake at once but answers late.
+        late = float(self.cfg.get("dial_late") or 0)
+        if late > 0:
+            time.sleep(late)
         # 201 with a Location, as captured in the forum thread (post 25).
         conn.sendall(b"HTTP/1.1 201 Created\r\nContent-Type: text/plain\r\nLocation: http://127.0.0.1:%d/apps/FireTVRemote/run"
                      b"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n" % self.dial.port)
@@ -518,6 +524,10 @@ class Tv:
                 pass
         elif mode == "close":
             pass
+        elif mode == "reset":
+            # Ends the connection with a reset once the request has been read (no linger), as a
+            # service that rejects it may; the client then reads a reset, not an empty reply.
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
         elif mode == "500":
             self.send(conn, 500, {"description": "Internal error"})
         elif mode == "400":
@@ -794,8 +804,8 @@ def selftest():
         finally:
             c.close()
 
-    def dial_post():
-        c = http.client.HTTPConnection("127.0.0.1", tv.dial.port, timeout=2)
+    def dial_post(timeout=2):
+        c = http.client.HTTPConnection("127.0.0.1", tv.dial.port, timeout=timeout)
         try:
             c.request("POST", "/apps/FireTVRemote", body=b"")
             r = c.getresponse()
@@ -893,6 +903,26 @@ def selftest():
     time.sleep(0.6)
     check("a DIAL fault: answered 500, and the TV stays idle", st == 500 and tv.stats["wakes"] == wakes and
           refused(tv.api.port), st)
+    tv.apply_cfg({"faults": {}})
+    tv.apply_cfg({"state": "idle", "dial_late": 0.8})
+    wakes = tv.stats["wakes"]
+    try:
+        dial_post(timeout=0.4)
+        late = False
+    except (socket.timeout, TimeoutError):
+        late = True
+    check("dial_late: the DIAL wake is taken at once and answered later", late and tv.stats["wakes"] == wakes + 1,
+          (late, tv.stats["wakes"] - wakes))
+    time.sleep(0.8)
+    tv.apply_cfg({"state": "idle", "dial_late": 0, "faults": {"POST /apps/FireTVRemote": "reset"}})
+    wakes = tv.stats["wakes"]
+    try:
+        dial_post()
+        reset = False
+    except ConnectionResetError:
+        reset = True
+    check("a DIAL fault 'reset': the request is read, the connection reset, and the TV stays idle",
+          reset and tv.stats["wakes"] == wakes and tv.stats["dial_posts"] > 0 and refused(tv.api.port), reset)
     tv.apply_cfg({"faults": {}})
     tv.set_state("deep")
     check("deep: both ports refuse", refused(tv.api.port) and refused(tv.dial.port))
