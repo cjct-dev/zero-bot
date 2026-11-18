@@ -14,6 +14,7 @@
     X(hue, "Hue Bridge") \
     X(kasa, "Kasa") \
     X(wiz, "WiZ") \
+    X(shelly, "Shelly") \
     /* end of the list */
 
 #define ZB_DECLARE(family, name) std::unique_ptr<home::Driver> make_##family##_driver();

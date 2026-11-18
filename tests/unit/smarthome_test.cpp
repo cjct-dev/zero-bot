@@ -25,6 +25,7 @@
 #include "smarthome/drivers/homekit.h"
 #include "smarthome/drivers/hue.h"
 #include "smarthome/drivers/kasa.h"
+#include "smarthome/drivers/shelly.h"
 #include "smarthome/drivers/tapo_driver.h"
 #include "smarthome/drivers/wiz.h"
 #include "smarthome/home.h"
@@ -442,6 +443,27 @@ void test_survival() {
     CHECK(d.thing("b") != nullptr);
     home::merge_things(d, {a, c}, now + 31 * 86400);
     CHECK(d.thing("b") == nullptr && d.meta.count("b") == 0);
+
+    // Shelly review 2: renamed in its maker's app into a heater (a relay met as "Shelly Plus1PM"),
+    // or reported as a switch from then on, a thing asks first as it would have if met that way;
+    // once the user has switched that off, it stays off.
+    {
+        home::Saved s;
+        home::Thing p, l;
+        p.id = "p"; p.name = "Shelly Plus1PM"; p.type = "switch"; p.caps = home::kPower;
+        l.id = "l"; l.name = "Heat lamp"; l.type = "light"; l.caps = home::kPower;
+        home::merge_things(s, {p, l}, now);
+        CHECK(s.thing("p") && !s.thing("p")->ask_first && s.thing("l") && !s.thing("l")->ask_first);
+        p.name = "Towel heater";
+        home::merge_things(s, {p, l}, now);
+        CHECK(s.thing("p") && s.thing("p")->ask_first);
+        for (auto &t : s.things) if (t.id == "p") t.ask_first = false;   // the user switched the question off
+        home::merge_things(s, {p, l}, now);
+        CHECK(s.thing("p") && !s.thing("p")->ask_first);
+        l.type = "switch";
+        home::merge_things(s, {p, l}, now);
+        CHECK(s.thing("l") && s.thing("l")->ask_first);
+    }
 
     // A scan keeps things, settings and the name the device gave; it refreshes the address.
     found.ip = "127.0.0.7";
@@ -2356,6 +2378,66 @@ void test_wiz_discovery() {
     CHECK(!wiz->claims("tapo", {}) && !wiz->claims("homekit", {}));
 }
 
+void test_discovery_shelly() {
+    Section s("discovery: Shelly Gen2+ (two services, one device, one id) and Gen1 (_http._tcp named shelly*); other web servers unseen");
+    auto info = [](const discovery::Device &d, const char *key) {
+        const auto it = d.info.find(key);
+        return it == d.info.end() ? std::string() : it->second;
+    };
+    const std::string gen2_ip("\xC0\x00\x02\x46", 4), gen1_ip("\xC0\x00\x02\x50", 4), printer_ip("\xC0\x00\x02\x5A", 4);
+    const discovery::Packet gen2_shelly = {"mdns", "192.0.2.70", service_answer("_shelly._tcp.local", "shellyplus1pm-a8032ab12345",
+                                           "shellyplus1pm-a8032ab12345.local", gen2_ip, {"gen=2", "app=Plus1PM", "ver=1.4.4"})};
+    const discovery::Packet gen2_http = {"mdns", "192.0.2.70", service_answer("_http._tcp.local", "ShellyPlus1PM-A8032AB12345",
+                                         "shellyplus1pm-a8032ab12345.local", gen2_ip, {"gen=2"})};
+    const discovery::Packet gen1 = {"mdns", "192.0.2.80", service_answer("_http._tcp.local", "shelly1pm-A4CF12F45378", "shelly1pm-A4CF12F45378.local",
+                                    gen1_ip, {"id=shelly1pm-A4CF12F45378", "fw_id=20230913-112003/v1.14.0-gcb84623", "arch=esp8266"})};
+    const discovery::Packet printer = {"mdns", "192.0.2.90", service_answer("_http._tcp.local", "Office Printer", "printer.local", printer_ip, {"path=/"})};
+    const discovery::Packet named = {"mdns", "192.0.2.91", service_answer("_http._tcp.local", "Shelly Kitchen Plug", "kitchen.local",
+                                     std::string("\xC0\x00\x02\x5B", 4), {})};
+    const auto found = discovery::devices_from({gen2_http, printer, gen1, gen2_shelly, named});
+    CHECK_MSG(found.size() == 2, std::to_string(found.size()));
+    const discovery::Device *g2 = nullptr, *g1 = nullptr;
+    for (const auto &d : found) { if (d.ip == "192.0.2.70") g2 = &d; if (d.ip == "192.0.2.80") g1 = &d; }
+    CHECK(g2 && g2->kind == "shelly" && g2->id == "shelly:shellyplus1pm-a8032ab12345" && g2->port == 49317);
+    CHECK(g2 && info(*g2, "gen") == "2" && info(*g2, "app") == "Plus1PM" && info(*g2, "ver") == "1.4.4" && g2->model == "Plus1PM");
+    CHECK(g2 && g2->found_by == std::vector<std::string>({"mdns"}));
+    CHECK(g1 && g1->kind == "shelly" && g1->id == "shelly:shelly1pm-a4cf12f45378" && info(*g1, "gen").empty() && g1->port == 49317);
+    // Heard through one service only, a Gen2+ device keeps the same id: it is not saved twice.
+    for (const auto &one : {gen2_shelly, gen2_http}) {
+        const auto alone = discovery::devices_from({one});
+        CHECK(alone.size() == 1 && alone[0].id == "shelly:shellyplus1pm-a8032ab12345" && alone[0].kind == "shelly");
+    }
+    // A printer's web page alone is nothing: not "other", not listed.
+    CHECK(discovery::devices_from({printer, named}).empty());
+    // review: an ESPHome device that kept a Shelly's host name, with its web server, stays ESPHome
+    // (it was listed as a Shelly, under a second id, and asked /shelly).
+    const std::string esp_ip("\xC0\x00\x02\x63", 4);
+    const auto esp = discovery::devices_from(
+        {{"mdns", "192.0.2.99", service_answer("_http._tcp.local", "shelly-1pm-kitchen", "shelly-1pm-kitchen.local", esp_ip, {})},
+         {"mdns", "192.0.2.99", service_answer("_esphomelib._tcp.local", "shelly-1pm-kitchen", "shelly-1pm-kitchen.local", esp_ip,
+                                               {"platform=ESP8266"})}});
+    CHECK_MSG(esp.size() == 1 && esp[0].kind == "esphome" && esp[0].id.rfind("esphome:", 0) == 0,
+              esp.empty() ? "none" : esp[0].kind + " " + esp[0].id);
+    // The family's driver claims what discovery reports (this test registers its own drivers, so
+    // it is made here rather than looked up).
+    const auto drv = make_shelly_driver();
+    CHECK(drv && g1 && g2 && drv->claims(g1->kind, g1->info) && drv->claims(g2->kind, g2->info));
+    // review 2: discovery always keeps what the driver claims by ("id", and Gen2+ "gen"), however
+    // the device was heard: a Gen1 without TXT keys, a Gen2+ through one service. A record saved by
+    // a version before the driver (an id from the address, no info) is not claimed.
+    const auto bare = discovery::devices_from({{"mdns", "192.0.2.81", service_answer("_http._tcp.local", "shellyplug-s-7C87CE0A1B2C",
+                                                "shellyplug-s-7C87CE0A1B2C.local", std::string("\xC0\x00\x02\x51", 4), {})}});
+    CHECK_MSG(bare.size() == 1 && bare[0].id == "shelly:shellyplug-s-7c87ce0a1b2c" && info(bare[0], "id") == "shellyplug-s-7c87ce0a1b2c" &&
+                  drv->claims(bare[0].kind, bare[0].info),
+              bare.empty() ? "none" : bare[0].id);
+    for (const auto &one : {gen2_shelly, gen2_http}) {
+        const auto alone = discovery::devices_from({one});
+        CHECK(alone.size() == 1 && info(alone[0], "gen") == "2" && info(alone[0], "id") == "shellyplus1pm-a8032ab12345" &&
+              drv->claims(alone[0].kind, alone[0].info));
+    }
+    CHECK(!drv->claims("shelly", {}));
+}
+
 // ---------------------------------------------------------------- names and colours
 void test_names_and_colours() {
     Section s("names and colours");
@@ -2632,6 +2714,7 @@ int main(int argc, char **argv) {
     test_tplink_discovery();
     test_found_again();
     test_wiz_discovery();
+    test_discovery_shelly();
     test_names_and_colours();
     test_moved_devices();
 

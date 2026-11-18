@@ -341,8 +341,28 @@ device directly: nothing goes through the makers' cloud services. Supported so f
   are signed with your WiZ home's key; such a device asks for it once (see below). WiZ does not
   document this protocol: Zero Bot follows the open-source pywizlight library, which Home Assistant
   uses. Tested so far only against a simulated device.
+- **Shelly** relays, plugs, dimmers, colour and white lights, blinds and temperature sensors, of
+  the first generation and of the Plus, Pro, Mini and later ones. Each channel is its own thing: a
+  Plus 2PM is two switches, or one blind when it is set up for a blind; a relay that the Shelly app
+  says feeds lights counts as a light, so "turn off the kitchen" includes it. Zero Bot can switch,
+  dim and colour them, open and close blinds and move them to a position (a position between open
+  and closed only once the blind has been calibrated in the Shelly app), and read power use,
+  temperature and humidity; battery sensors such as the H&T can only be read while they are awake.
+  It never starts a calibration or changes any of the device's settings. A relay or blind named
+  like a garage door, gate, door, lock, opener, valve, alarm or siren is never offered (a Shelly 1
+  is often fitted to a garage door), unless its name says it is a light ("Front door light"); the
+  words for garage, door, gate and lock in German, French, Spanish, Italian, Portuguese, Dutch and
+  Polish count too. An unnamed relay or blind goes by the device's name, so a Shelly named "Garage
+  door" is left out too. Nor is a relay set in the Shelly app to switch itself off within ten
+  seconds (that is how a door or gate opener is wired, whatever it is called), nor thermostats, or
+  smoke, gas, flood and door sensors. Because any of that can be changed in the Shelly app later,
+  Zero Bot reads a relay's or blind's settings again just before each change and does nothing if
+  it is now one of those. Before every change, read and pairing it checks that the device at the
+  saved address is still the same Shelly (the one whose things it read, and the one that took the
+  password), so a password never goes to another device. Tested so far only against simulated
+  devices.
 
-Other families (Shelly and more) are added one driver at a time.
+Other families are added one driver at a time.
 
 1. On your home network, open *Your data → Smart home → Find devices on this network*. Only do
    this on a network you own. The scan only asks devices to identify themselves, the way the
@@ -367,7 +387,12 @@ Other families (Shelly and more) are added one driver at a time.
    WiZ app's export of your home for local integration (32 characters, 0 to 9 and a to f). One key
    serves every WiZ device of the home; a key a device refuses is not sent again until you type it
    again. Signed changes carry the time, so just after the handheld starts they wait until its
-   clock has been set from the internet.
+   clock has been set from the internet. A Shelly asks for nothing unless its owner set a password
+   in the Shelly app; then it asks for that password (a first-generation Shelly first asks for its
+   login's user name, which is admin unless it was changed). A password a Shelly refuses is not
+   sent again, by any later run either, until you type it again, because Shelly devices hold back
+   logins after wrong passwords. The password is kept on the handheld, in the same private file as
+   the devices.
 3. What each device controls is then listed by room. On its page you can set the name you will
    say (*Called*), a *Room* (guessed from the name where it starts with one, such as "Bedroom
    lamp"), whether the *Assistant may use it*, and *Ask before switching on*. That last one is on
@@ -481,13 +506,14 @@ were called, whether the answers hold up, and how long each took. See the notes 
 the file. `tests/run_unit.sh` builds and runs the tests that need neither a device nor an AI
 service (the smart-home layer, the timers: the timer tool, how timers are stored, the
 countdown and the alarm, the radio: the station file, the radio tool and the check of a stream
-against a pretend radio server, the keys and their guide, and the Fire TV, HomeKit, Hue, Kasa and
-WiZ drivers), `tests/tapo_e2e.py` runs the
+against a pretend radio server, the keys and their guide, and the Fire TV, HomeKit, Hue, Kasa, WiZ
+and Shelly drivers), `tests/tapo_e2e.py` runs the
 command-line build against two simulated Tapo plugs, `tests/firetv_e2e.py` and
 `tests/homekit_e2e.py` run those drivers against a simulated TV and a simulated HomeKit bridge,
 `tests/hue_e2e.py` runs the Hue driver and the command-line build against a simulated Hue Bridge,
 `tests/kasa_e2e.py` runs the Kasa driver and the command-line build against simulated Kasa devices,
-`tests/wiz_e2e.py` runs the WiZ driver and the app against simulated WiZ lights and plugs, and
+`tests/wiz_e2e.py` runs the WiZ driver and the app against simulated WiZ lights and plugs,
+`tests/shelly_e2e.py` runs the Shelly driver and the app against simulated Shelly devices, and
 `tests/home_chat_e2e.py` runs its conversation loop against a scripted chat
 service to check that a change needing your yes waits for one.
 
@@ -528,7 +554,7 @@ src/ui/         chat screen, menus, settings pages, alarm banner, app controller
 src/net/        HTTP client (libcurl)
 src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers
 scripts/        toolchain setup, packaging, deployment
-tests/          scored agent test set, unit tests (smart home, timers, radio, keys, Fire TV, HomeKit, Hue, Kasa, WiZ), end-to-end tests with simulated devices
+tests/          scored agent test set, unit tests (smart home, timers, radio, keys, Fire TV, HomeKit, Hue, Kasa, WiZ, Shelly), end-to-end tests with simulated devices
 licenses/       third-party notices and the Apache-2.0 text
 packaging/      launcher entry and icon
 extras/         device-tree overlay for the Wi-Fi channel fix

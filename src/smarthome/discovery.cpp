@@ -33,7 +33,22 @@ const ServiceKind kServices[] = {
     {"_sonos._tcp.local", "sonos"},           {"_elg._tcp.local", "elgato"},
     {"_nanoleafapi._tcp.local", "nanoleaf"},  {"_tplink._tcp.local", "tplink"},
     {"_airplay._tcp.local", "airplay"},       // asked for only because it carries a TV's friendly name
+    // Gen1 Shelly devices announce only their web server. Every other instance of this type
+    // (printers, routers, file servers) is dropped in merge(), unseen: only names starting
+    // "shelly" are kept, as Shelly's own apps do.
+    {"_http._tcp.local", "shelly"},
 };
+const char kHttpService[] = "_http._tcp.local";
+
+// A Shelly's instance name is its host name, "shelly<model>-<MAC>" ("shellyplus1pm-a8032ab12345"),
+// the same in each service it announces: lower-cased it is the device's own id on Gen2 and later.
+bool shelly_label(const std::string &label) {
+    const std::string l = util::lower(label);
+    if (l.size() < 7 || l.size() > 64 || l.compare(0, 6, "shelly") != 0) return false;
+    for (const unsigned char c : l)
+        if (!isalnum(c) && c != '-') return false;
+    return true;
+}
 
 // Most specific first: a device seen several ways is listed as the first of these it matches.
 // Televisions and speakers come before HomeKit, which many of them also announce (for AirPlay 2
@@ -377,6 +392,12 @@ std::vector<Device> merge(const Seen &seen) {
         if (const auto it = seen.txt.find(name); it != seen.txt.end()) txt = it->second;
         // The instance name is "Name._type._tcp.local": the part before the service type is the label.
         const size_t cut0 = util::lower(name).find("." + type);
+        if (type == kHttpService && !shelly_label(cut0 == std::string::npos ? name : name.substr(0, cut0))) continue;
+        // A web server is taken for a Shelly only when nothing more specific came from its address
+        // (instances arrive sorted by type, so _esphomelib, _hap, _googlecast... come first): an
+        // ESPHome device that kept a Shelly's host name stays ESPHome.
+        if (type == kHttpService)
+            if (const auto it = by_ip.find(ip); it != by_ip.end() && !it->second.kind.empty() && it->second.kind != "shelly") continue;
         if (kind == "airplay") {
             // Not a kind of its own here: it only lends its readable name and model to the device.
             friendly[ip] = {clean(cut0 == std::string::npos ? name : name.substr(0, cut0)), clean(txt.count("model") ? txt["model"] : "")};
@@ -387,6 +408,12 @@ std::vector<Device> merge(const Seen &seen) {
         const bool lead = by_ip[ip].kind.empty() || rank_of(kind) < rank_of(by_ip[ip].kind) ||
                           (by_ip[ip].model == "Google Cast Group" && !group);
         Device &d = take(ip, kind, "mdns");
+        if (kind == "shelly" && d.kind == "shelly") {
+            // Gen2 and later announce both services; either may carry these (gen: the generation).
+            for (const char *key : {"gen", "app", "ver"})
+                if (txt.count(key) && !d.info.count(key)) d.info[key] = txt[key];
+            if (d.model.empty() && txt.count("app")) d.model = clean(txt["app"]);
+        }
         if (!lead && !d.name.empty()) continue;   // a less specific service of a device already described
         d.host = host;
         d.port = port;
@@ -413,7 +440,11 @@ std::vector<Device> merge(const Seen &seen) {
                 if (txt.count(key)) d.info[key] = txt[key];
         }
         if (txt.count("bridgeid")) d.id = "hue:" + util::lower(txt["bridgeid"]);
-        else if (txt.count("id")) d.id = kind + ":" + util::lower(txt["id"]);
+        else if (kind == "shelly" && shelly_label(label)) {
+            d.id = "shelly:" + util::lower(label);   // one id whichever service is heard
+            // What the driver claims by: a record saved before it existed has neither "id" nor "gen".
+            if (!d.info.count("id")) d.info["id"] = util::lower(label);
+        } else if (txt.count("id")) d.id = kind + ":" + util::lower(txt["id"]);
     }
 
     for (const auto &t : seen.tapo) {
