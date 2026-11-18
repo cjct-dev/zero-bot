@@ -1534,6 +1534,12 @@ void test_stalled_device() {
     g_fake->call_ms = 1400;
     run({{"action", "off"}, {"target", "Bedroom"}});
     CHECK_MSG(applies() == 2, std::to_string(applies()));
+    // Nor is a slow answer that is an error ("answered with error code ..."): unreachable() lets such
+    // words through (another device may have the address), but the device did answer (review of ZB-055).
+    g_fake->refusing["fake:bridge"] = "the bridge answered with error code 7";
+    g_fake->calls.clear();
+    run({{"action", "off"}, {"target", "Bedroom"}});
+    CHECK_MSG(applies() == 2, std::to_string(applies()));
     g_fake->reset();
 }
 

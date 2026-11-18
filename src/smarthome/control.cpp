@@ -661,7 +661,10 @@ void apply_device(const std::string &network_id, const Saved &saved, std::vector
                 const auto started = std::chrono::steady_clock::now();
                 todo[k]->ok = call_apply(drv, dev, todo[k]->item->thing, todo[k]->change, todo[k]->err);
                 const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
-                if (!todo[k]->ok && took.count() >= kStalledMs && unreachable(todo[k]->err)) stalled = todo[k]->err;
+                // unreachable() also lets "answered with error code ..." through (another device may
+                // have the address); a device that answered, however slowly, has not stalled.
+                if (!todo[k]->ok && took.count() >= kStalledMs && unreachable(todo[k]->err) && !answered(todo[k]->err))
+                    stalled = todo[k]->err;
             }
         }
         // No answer at the saved address: the router may have given the device a new one. Sent
