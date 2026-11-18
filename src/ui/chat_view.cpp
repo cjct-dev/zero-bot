@@ -405,12 +405,21 @@ void ChatView::footer_hints(const std::string &text) {
     }
 }
 
+// Called on every tick while a request is worked on: like the status bar, it sets a colour only
+// when it changes (setting one redraws, even to the same value). tick() animates the text.
 void ChatView::footer_busy(const std::string &text, uint32_t col) {
     if (mode_ == Mode::Typing) return;   // keep the text field while the user types over a running request
-    if (mode_ != Mode::Busy) { set_mode(Mode::Busy); hints_.clear(); }
+    if (mode_ != Mode::Busy) {
+        set_mode(Mode::Busy);
+        hints_.clear();
+        busy_color_ = 0xFFFFFFFF;
+        lv_obj_set_style_text_color(foot_label_, color(kDim), 0);
+    }
     busy_label_ = text;
-    lv_obj_set_style_bg_color(foot_dot_, color(col), 0);
-    lv_obj_set_style_text_color(foot_label_, color(kDim), 0);
+    if (col != busy_color_) {
+        busy_color_ = col;
+        lv_obj_set_style_bg_color(foot_dot_, color(col), 0);
+    }
 }
 
 void ChatView::footer_listening(float level, double seconds, bool has_audio) {

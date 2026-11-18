@@ -839,6 +839,30 @@ struct App {
         chat.footer_busy("Calculating", theme::kThink);
         chat.set_status(Settings::get().agent_name, theme::kThink);
         snap("working");
+        {
+            // While a request is worked on, the footer and status bar are set on every tick with the
+            // same words and colours: nothing is redrawn until something changes (the dots, every
+            // fourth tick, are tick()'s). Checked, not pictured.
+            static int invalidated = 0;
+            const lv_event_cb_t count = [](lv_event_t *) { ++invalidated; };
+            lv_display_t *disp = lv_display_get_default();
+            lv_display_add_event_cb(disp, count, LV_EVENT_REFR_REQUEST, nullptr);   // sent for anything newly to redraw
+            invalidated = 0;
+            for (int i = 0; i < 3; ++i) {
+                chat.footer_busy("Calculating", theme::kThink);
+                chat.set_status(Settings::get().agent_name, theme::kThink);
+            }
+            const int same = invalidated;
+            chat.footer_busy("Calculating", theme::kAccent);
+            const int changed = invalidated - same;
+            chat.footer_busy("Calculating", theme::kThink);
+            lv_display_remove_event_cb_with_user_data(disp, count, nullptr);
+            lv_refr_now(nullptr);
+            if (same != 0 || changed == 0) {
+                fprintf(stderr, "the busy footer redrew with nothing changed (%d requests), or not for a new colour (%d)\n", same, changed);
+                failed = true;
+            }
+        }
 
         chat.begin_answer();
         chat.append_answer("85 euros is about 70.93 pounds, so that's 23.64 each.");
