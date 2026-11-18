@@ -695,6 +695,8 @@ struct App {
     // backlight off), or lit at the brightness setting.
     void set_light(screen::Light from, screen::Light to) {
         if (from == to) return;
+        // Dimmed or off, a crash would leave the backlight so: it puts back the setting instead.
+        display::restore_after_crash(to == screen::Light::Lit ? -1 : Settings::get().brightness);
         if (to == screen::Light::Off) { display::screen_off(); return; }
         const int percent = to == screen::Light::Dimmed ? screen::kDimPercent : Settings::get().brightness;
         if (from == screen::Light::Off) display::screen_on(percent);   // redrawn before the light comes on
@@ -1543,8 +1545,9 @@ int run_app(const std::string &shots_dir, bool keydump) {
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);
+    display::restore_after_crash(-1);              // lit as set; installs the crash handler (set_light)
 
-    const Settings &s = Settings::get();
+    const Settings &s = Settings::get();           // a snapshot, as the settings were at the start
     display::set_brightness(s.brightness);
     audio::set_mic_gain(s.mic_gain);
     audio::set_mic_builtin(s.mic_builtin);
@@ -1573,7 +1576,7 @@ int run_app(const std::string &shots_dir, bool keydump) {
     app.recorder.cancel();
     Agent::get().cancel();
     audio::Music::get().stop();
-    display::screen_on(s.brightness);              // drawn again if it was off, for the clean screen below
+    display::screen_on(Settings::get().brightness);   // as set now, not at the start; drawn again if it was off
     // Leave a clean screen for the launcher to draw over.
     lv_obj_clean(screen);
     lv_refr_now(nullptr);

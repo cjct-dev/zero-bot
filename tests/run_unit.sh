@@ -98,8 +98,8 @@ $WRAP $CXX -o "$OUT/shelly_test" "$OUT/tests_unit_shelly_test.o" $objs -lcurl -l
 $WRAP $CXX -o "$OUT/shelly_cli" "$OUT/tests_unit_shelly_cli.o" $objs -lcurl -lcrypto -lpthread
 # What each key does on the chat screen, and the key guide that lists them (no screen needed).
 $WRAP $CXX -o "$OUT/key_guide_test" "$OUT/tests_unit_key_guide_test.o" "$(obj_of src/ui/key_guide.cpp)"
-# When the screen dims and goes off (no screen needed).
-$WRAP $CXX -o "$OUT/screen_idle_test" "$OUT/tests_unit_screen_idle_test.o" "$(obj_of src/ui/screen_idle.cpp)"
+# When the screen dims and goes off, and the backlight a crash puts back (no screen needed).
+$WRAP $CXX -o "$OUT/screen_idle_test" "$OUT/tests_unit_screen_idle_test.o" "$(obj_of src/ui/screen_idle.cpp)" "$(obj_of src/platform/sys.cpp)"
 # Files saved by two threads at once, the settings shared between threads, all-day alerts when the clocks change.
 $WRAP $CXX -o "$OUT/core_test" "$OUT/tests_unit_core_test.o" "$(obj_of src/core/settings.cpp)" "$(obj_of src/core/store.cpp)" \
     "$(obj_of src/core/util.cpp)" -lpthread

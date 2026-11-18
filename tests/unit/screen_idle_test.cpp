@@ -3,9 +3,18 @@
 // checks what the app does with the answers: black, nothing drawn, a waking key swallowed).
 // Each check prints one line on failure; the exit status is non-zero when any fails.
 #include "ui/screen_idle.h"
+#include "platform/display.h"
 
+#include <csignal>
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <string>
+
+#include <sys/prctl.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 using screen::Idle;
 using screen::Light;
@@ -148,12 +157,60 @@ void test_choices() {
 
 }  // namespace
 
+// A crash while the screen is dimmed or off puts the brightness setting back (the launcher does
+// not), and the process still ends by the same signal. Each case runs in a child of its own, which
+// writes to a file of the test's own instead of the backlight.
+std::string crash(int sig, int restore, bool fault, const std::string &file) {
+    { std::ofstream(file) << "0"; }                    // the backlight as the screen off leaves it
+    const pid_t pid = fork();
+    if (pid == 0) {
+        prctl(PR_SET_DUMPABLE, 0);                     // no core files from the deliberate crashes
+        display::detail::set_backlight_file(file.c_str());
+        display::restore_after_crash(55);              // the screen dims ...
+        display::restore_after_crash(restore);         // ... and then, say, lights again (-1)
+        if (fault) {
+            volatile int *nowhere = nullptr;
+            *nowhere = 1;                              // a real fault, not a raised signal
+        }
+        raise(sig);
+        _exit(0);                                      // not reached when the signal ends the process
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    std::ostringstream text;
+    text << (WIFSIGNALED(status) ? WTERMSIG(status) : -1) << " ";
+    std::ifstream in(file);
+    text << in.rdbuf();
+    return text.str();
+}
+
+void test_crash() {
+    const char *tmp = getenv("TMPDIR");
+    std::string dir = std::string(tmp && *tmp ? tmp : "/tmp") + "/zb-backlight-XXXXXX";
+    if (!mkdtemp(&dir[0])) { check(false, "a folder for the crash tests"); return; }
+    const std::string file = std::string(dir) + "/brightness";
+    auto ends = [](int sig, const char *backlight) { return std::to_string(sig) + " " + backlight; };
+    std::string got = crash(SIGSEGV, 80, true, file);
+    check(got == ends(SIGSEGV, "80"), "a fault while dimmed or off: the setting put back, still a SIGSEGV: " + got);
+    got = crash(SIGABRT, 100, false, file);
+    check(got == ends(SIGABRT, "100"), "an abort (a failed assertion, an uncaught exception): " + got);
+    got = crash(SIGHUP, 5, false, file);
+    check(got == ends(SIGHUP, "5"), "a hang-up ends it as before, the light put back first: " + got);
+    got = crash(SIGBUS, -1, false, file);
+    check(got == ends(SIGBUS, "0"), "lit as set (-1): nothing written: " + got);
+    got = crash(SIGFPE, 7, false, file);
+    check(got == ends(SIGFPE, "7"), "one digit: " + got);
+    unlink(file.c_str());
+    rmdir(dir.c_str());
+}
+
 int main() {
     test_times();
     test_waking();
     test_busy();
     test_order();
     test_choices();
+    test_crash();
     printf("screen idle: %d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? 1 : 0;
 }
