@@ -254,6 +254,20 @@ int main(int argc, char **argv) {
         r.forget("tv1");
         check("memory: forgotten when told (its API answered), the other device's kept",
               !r.get("tv1", t0 + seconds(62)) && r.get("tv2", t0 + seconds(62)) == t0 + seconds(61));
+
+        // The memory of the TV seen on (ZB-069: on=false may wake only a TV on lately): the latest
+        // answer counts, and is kept for a minute from it.
+        Recall seen(60000);
+        seen.renew("tv1", t0, t0);
+        seen.renew("tv1", t0 + seconds(40), t0 + seconds(40));
+        check("seen on: a later answer replaces the earlier one", seen.get("tv1", t0 + seconds(41)) == t0 + seconds(40));
+        check("seen on: kept a minute from the latest answer, not the first",
+              seen.get("tv1", t0 + seconds(99)) == t0 + seconds(40) && !seen.get("tv1", t0 + seconds(100) + milliseconds(1)));
+        seen.renew("tv1", t0 + seconds(200), t0 + seconds(200));
+        seen.renew("tv2", t0 + seconds(200), t0 + seconds(200));
+        seen.forget("tv1");
+        check("seen on: forgotten when told (it was asked to switch off), the other device's kept",
+              !seen.get("tv1", t0 + seconds(201)) && seen.get("tv2", t0 + seconds(201)) == t0 + seconds(200));
     }
 
     // ---- untrusted text

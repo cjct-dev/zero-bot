@@ -27,10 +27,10 @@
 //    "apps": [[name, package], ...]}.
 //  - enumerate() and read() never wake the TV: a sleeping TV is listed with "reachable": false.
 //    apply() wakes an idle TV with the DIAL request when a command could not be delivered at all
-//    (the connection was refused, or TLS never completed), then sends it once more. A command
-//    that went out but was not answered within the deadline is never sent again, because the TV
-//    may have carried it out (a toggle sent twice undoes itself): that is kNotServing. Only
-//    on=true sends the Wake-on-LAN packet.
+//    (the connection was refused, or TLS never completed), then sends it once more (on=false only
+//    when the TV has been on lately: see below). A command that went out but was not answered
+//    within the deadline is never sent again, because the TV may have carried it out (a toggle
+//    sent twice undoes itself): that is kNotServing. Only on=true sends the Wake-on-LAN packet.
 //  - on=true on a TV in deep standby takes 7 s or more after the first Wake-on-LAN packet
 //    (6.5-7.4 s measured). on=true reports kNoAnswer only when a DIAL request that started 8 s
 //    or more after that packet got nothing (the packet counted across on=true calls for the
@@ -64,7 +64,14 @@
 //    answered (an HTTP answer that refuses the wake stays kNotServing). The minute counts from the
 //    first accepted wake of a run with no answer from the API, so an API that is stuck reads as
 //    kNotServing again after it.
-//  - on=false when nothing answers on either port reports kAlreadyOff: the TV is most likely
+//  - on=false never sends what could wake a TV that has not been on lately (the owner's rule):
+//    when its API port takes no connection, the TV is woken to take the sleep key only if, within
+//    the last minute, its API answered (in this call, or a change that did not ask for it to be
+//    switched off), it accepted a wake (it is starting), or this driver sent it a wake-up signal
+//    and has heard nothing since. Otherwise nothing more is sent and the answer is kAlreadyOff.
+//    The cost: a TV left on until its API went idle (its screen saver, after 8 minutes or more
+//    unused) is not switched off over the network.
+//  - on=false when nothing answers on either port reports kAlreadyOff too: the TV is most likely
 //    off (deep standby) already. Never answer it with an infrared power toggle. Exception: when
 //    this driver sent the TV a wake-up signal less than 8 s before on=false was asked and nothing
 //    has answered since, the TV may be coming on right now: kWaking ("... so it was not switched
@@ -114,8 +121,10 @@ using home::json;
 enum class Fault {
     None,         // no error text
     NoAnswer,     // nothing answered on either port: off, deeply asleep, unplugged or moved. Infrared is the fallback.
-    AlreadyOff,   // on=false and nothing answered on either port: most likely off already. NOT an infrared
-                  // fallback: the infrared power key toggles, so it would switch the TV on.
+    AlreadyOff,   // on=false and the TV did not answer: nothing answered on either port, or its API port took
+                  // no connection and it has not been on lately (then nothing that could wake it was sent).
+                  // Most likely off already. NOT an infrared fallback: the infrared power key toggles, so it
+                  // would switch the TV on.
     NotServing,   // the TV is on the network but its control service did not reply: it accepted and stayed
                   // silent (waking does not help), or a command went out and its answer did not come in time
                   // (it may have been carried out, so it is not repeated). Not an infrared fallback. (In the
@@ -279,10 +288,11 @@ std::string unconfirmed_error(bool acts, bool starting);
 // alone is done unless the API presented a key that could not be accepted; anything more needs Up.
 bool power_on_done(Woken api, bool alone);
 
-// When something began, per device (Device::id, or the address when there is none), kept for
+// When something happened, per device (Device::id, or the address when there is none), kept for
 // `keep_ms` and then forgotten: the first magic packet of a still unanswered attempt to switch
-// the TV on, and the first DIAL wake the TV accepted whose API has not answered since. Safe to
-// use from several threads. `now` is a parameter for the tests.
+// the TV on, the first DIAL wake the TV accepted whose API has not answered since, and the last
+// answer from its API to a change that did not ask for it to be switched off. Safe to use from
+// several threads. `now` is a parameter for the tests.
 class Recall {
 public:
     using Clock = std::chrono::steady_clock;
@@ -290,6 +300,8 @@ public:
     std::optional<Clock::time_point> get(const std::string &who, Clock::time_point now = Clock::now());
     // Keeps `at` for `who`, unless an earlier time is still kept; returns the time kept.
     Clock::time_point note(const std::string &who, Clock::time_point at, Clock::time_point now = Clock::now());
+    // Keeps `at` for `who` in place of any time kept: the latest counts.
+    void renew(const std::string &who, Clock::time_point at, Clock::time_point now = Clock::now());
     void forget(const std::string &who);
 
 private:

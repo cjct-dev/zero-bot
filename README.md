@@ -310,6 +310,11 @@ device directly: nothing goes through the makers' cloud services. Supported so f
   installed app by name ("put Netflix on"), switch the screen off and wake the TV again. Switching
   it on counts as done once the TV takes the wake-up request; the TV then needs a few seconds
   before it takes other commands, and Zero Bot says it is still starting up if asked sooner.
+  Switching it off sends the wake-up request only when the TV has answered, or been switched on
+  by Zero Bot, in the last minute: that request is what brings a TV on from deep standby. So a TV
+  left on long enough for its remote-control service to doze off (Fire TVs do that after some
+  minutes unused) is reported as off already, and needs its own remote, or another command
+  first, to be switched off.
   Volume and mute work only on models that report network volume control (many sticks do not);
   for those, and for channels, inputs and number keys, use the infrared remote. A Fire TV in deep
   standby can be woken over the network only if Zero Bot heard its wake-up address while it was

@@ -3,7 +3,7 @@
 
 usage: firetv_e2e.py [path/to/firetv_cli] [group ...]   (default: build/unit/firetv_cli, which
 tests/run_unit.sh builds; every group)
-groups: wrong_code command capability wake starting auth hostile unknown (pairing and enumerate always
+groups: wrong_code command capability wake starting off auth hostile unknown (pairing and enumerate always
 run; naming groups is for quick checks of one area, e.g. of a deliberately broken build)
 
 Prints one line per check and exits non-zero when any fails. Nothing outside 127.0.0.1 is
@@ -988,6 +988,66 @@ def starting_tests(m, tv):
     m.reset(state="awake", caps="tv")
 
 
+def off_tests(m, tv):
+    """on=false must not switch the TV on (ZB-069, the owner's decision). A TV in deep standby
+    refuses its API port, and the DIAL request that would wake it to take the sleep key brings it
+    on (the owner's TV comes on from one even when it answers it late). So the TV is woken to take
+    the sleep key only when it has been on, or coming on, in the last minute; otherwise it is taken
+    to be off already and nothing that could wake it is sent. (Off on a TV where nothing answers,
+    and off right after an on=true that sent a wake-up signal, are in the wake group.)"""
+    m.reset(state="idle", caps="tv", wake_delay=0.3)
+    rc, out, err, elapsed = tv.apply({"on": False})
+    time.sleep(0.6)   # long enough for a wake to have shown
+    st = m.stats()
+    check("off, API refused, nothing heard from the TV lately: already_off, and nothing sent that could wake it",
+          rc == 1 and fault(err) == "already_off" and st["dial_posts"] == 0 and st["wakes"] == 0 and not st["magic"] and
+          keys(st) == [] and st["state"] == "idle" and elapsed < 1.5,
+          (rc, err, st["dial_posts"], st["wakes"], keys(st), st["state"], elapsed))
+    # The owner's TV in deep standby: its DIAL port takes the request and answers late, and the TV comes on.
+    m.reset(state="idle", caps="tv", wake_delay=0.3, dial_late=3.0)
+    rc, out, err, elapsed = tv.apply({"on": False})
+    time.sleep(0.6)
+    st = m.stats()
+    check("off, the owner's TV in deep standby (a DIAL request would be taken late): already_off, the TV is not woken",
+          rc == 1 and fault(err) == "already_off" and st["dial_posts"] == 0 and st["wakes"] == 0 and st["state"] == "idle",
+          (rc, err, st["dial_posts"], st["wakes"], st["state"]))
+    # A sleep the TV took ends "on lately": its API refusing since is a TV gone into deep standby.
+    m.reset(state="awake", caps="tv")
+    first, rc, err, elapsed = tv.apply_twice({"on": False}, 300, between={"state": "idle"})
+    st = m.stats()
+    check("off twice, the TV took the first and its API refused since: already_off, not woken for a second sleep",
+          first == "none" and rc == 1 and fault(err) == "already_off" and keys(st) == ["sleep"] and
+          st["dial_posts"] == 0 and st["wakes"] == 0, (first, rc, err, keys(st), st["dial_posts"]))
+
+    # As before: the TV's API answered a change that left it on under a minute ago (on=true here,
+    # which brought it up), and refuses now: it is on and idle, so it is woken to take the sleep key.
+    m.reset(state="idle", caps="tv", wake_delay=0.3)
+    first, rc, err, elapsed = tv.apply_twice({"on": True}, 300, then={"on": False}, between={"state": "idle"})
+    st = m.stats()
+    check("off under a minute after the API answered a change that left the TV on, refused now: woken, the sleep key "
+          "sent (as before)", first == "none" and rc == 0 and keys(st) == ["sleep"] and st["dial_posts"] == 2 and
+          st["display"] == "off", (first, rc, err, keys(st), st["dial_posts"]))
+    # As before: within the minute after on=true, while the TV is starting (it took the wake, here
+    # late, and its API still refuses), it is coming on anyway, so off may wake it. The API is not
+    # up, so the sleep key is not sent: "still starting up", never already_off.
+    nomac = Tv(m, info={"wakeup": None})
+    nomac.set_auth({k: v for k, v in tv.auth().items() if k != "wake_mac"})
+    m.reset(state="idle", caps="tv", wake_delay=20.0, dial_late=3.0)
+    first, rc, err, elapsed = nomac.apply_twice({"on": True}, 300, then={"on": False})
+    st = m.stats()
+    check("off right after on, the TV starting (its wake taken late, its API still refused): the wake is sent, "
+          "'still starting up', never already_off",
+          first == "none" and rc == 1 and fault(err) == "starting" and st["dial_posts"] == 2 and keys(st) == [],
+          (first, rc, err, st["dial_posts"], keys(st)))
+    # As before: an API port that takes the connection and never completes TLS shows a TV that is on.
+    m.reset(state="hung_tls", caps="tv", wake_delay=0.3)
+    rc, out, err, elapsed = tv.apply({"on": False})
+    st = m.stats()
+    check("off, the API taking the connection but never completing TLS (the TV is on): the wake is tried as before, "
+          "not already_off", rc == 1 and fault(err) == "not_serving" and st["dial_posts"] == 1, (rc, err, st["dial_posts"]))
+    m.reset(state="awake", caps="tv", wake_delay=0.3)   # the wake delay kept for the groups that follow (reset keeps it)
+
+
 def auth_failure_tests(m, tv):
     m.reset(state="awake", caps="tv", revoked=True)
     rc, out, err, _ = tv.apply({"key": "home"})
@@ -1211,6 +1271,8 @@ def main():
         wake_tests(m, tv)
     if wanted("starting"):
         starting_tests(m, tv)
+    if wanted("off"):
+        off_tests(m, tv)
     if wanted("auth"):
         auth_failure_tests(m, tv)
     if wanted("hostile"):
