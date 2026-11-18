@@ -12,7 +12,7 @@ public:
     void show(bool visible);
 
     // Conversation
-    void add_user(const std::string &text, bool steering);
+    lv_obj_t *add_user(const std::string &text, bool steering);   // returns the bubble
     void begin_answer();
     void append_answer(const std::string &delta);
     void end_answer(const std::string &full, bool interrupted);

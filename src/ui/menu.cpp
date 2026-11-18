@@ -115,7 +115,6 @@ void Menu::create(lv_obj_t *parent) {
     lv_obj_set_style_radius(toast_, 6, 0);
     lv_obj_set_style_pad_hor(toast_, 8, 0);
     lv_obj_set_style_pad_ver(toast_, 3, 0);
-    lv_obj_set_style_max_width(toast_, kScreenW - 24, 0);
     lv_obj_align(toast_, LV_ALIGN_BOTTOM_MID, 0, -kHintH - 6);
     lv_obj_add_flag(toast_, LV_OBJ_FLAG_HIDDEN);
 }
@@ -330,6 +329,7 @@ void Menu::problem(const std::string &title, const std::string &text) {
 
 void Menu::toast(const std::string &text) {
     lv_label_set_text(toast_, text.c_str());
+    theme::fit_width(toast_, kScreenW - 24);   // see fit_width: a max width alone can hide a wrapped line
     lv_obj_remove_flag(toast_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(toast_);
     toast_ticks_ = 28;

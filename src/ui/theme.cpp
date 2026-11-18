@@ -69,4 +69,26 @@ lv_obj_t *label(lv_obj_t *parent, const char *text, const lv_font_t *font, uint3
     return l;
 }
 
+namespace {
+lv_point_t text_size(lv_obj_t *l, int32_t max_w) {
+    lv_point_t sz;
+    lv_text_get_size(&sz, lv_label_get_text(l), lv_obj_get_style_text_font(l, LV_PART_MAIN),
+                     lv_obj_get_style_text_letter_space(l, LV_PART_MAIN), lv_obj_get_style_text_line_space(l, LV_PART_MAIN),
+                     max_w, LV_TEXT_FLAG_NONE);
+    return sz;
+}
+}  // namespace
+
+void fit_width(lv_obj_t *l, int32_t max_w) {
+    const int32_t pad = lv_obj_get_style_pad_left(l, LV_PART_MAIN) + lv_obj_get_style_pad_right(l, LV_PART_MAIN) +
+                        2 * lv_obj_get_style_border_width(l, LV_PART_MAIN);
+    const int32_t w = text_size(l, LV_COORD_MAX).x + pad + 1;   // +1: a line exactly as wide as its room still fits
+    lv_obj_set_width(l, w < max_w ? w : max_w);
+}
+
+bool label_fits(lv_obj_t *l) {
+    lv_obj_update_layout(l);
+    return lv_obj_get_content_height(l) >= text_size(l, lv_obj_get_content_width(l)).y;
+}
+
 }  // namespace theme

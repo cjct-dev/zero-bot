@@ -658,6 +658,15 @@ struct App {
         chat.set_status(s.agent_name, theme::kFaint);
         chat.set_indicators(true, false, 68, false, "18:42");
         chat.footer_hints("TAB talk   ·   ENTER type   ·   TAB TAB settings");
+        // A bubble once kept the height of one line while its text wrapped onto a second, so the
+        // last word vanished ("...cybersecurity" for "...cybersecurity news"). Checked, not pictured.
+        for (const char *said : {"What is the latest cybersecurity news", "What's the weather like in Lisbon tomorrow?", "Hi"}) {
+            if (!theme::label_fits(chat.add_user(said, false))) {
+                fprintf(stderr, "a chat bubble is too short for its text: %s\n", said);
+                failed = true;
+            }
+        }
+        chat.clear();
         chat.add_note("Press TAB to talk, press it again when you have finished. Or press ENTER and type.", theme::kDim);
         snap("welcome");
 

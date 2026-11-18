@@ -33,5 +33,12 @@ lv_color_t color(uint32_t hex);
 // A plain container with no padding, border or scrollbars.
 lv_obj_t *box(lv_obj_t *parent, int w, int h, uint32_t bg, bool transparent = false);
 lv_obj_t *label(lv_obj_t *parent, const char *text, const lv_font_t *font, uint32_t col);
+// Sizes a label to its text, padding included, up to max_w; longer text wraps within max_w. Call
+// after setting the text. LVGL's own sizing (width LV_SIZE_CONTENT with a max width) measured the
+// text without the padding, so a line that fitted max_w but not max_w less the padding wrapped
+// onto a second line the label left no room for, and its last word vanished.
+void fit_width(lv_obj_t *l, int32_t max_w);
+// True when a label is tall enough for every line its text wraps into at its current width.
+bool label_fits(lv_obj_t *l);
 
 }  // namespace theme

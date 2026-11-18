@@ -296,6 +296,15 @@ key, real audio), say so plainly rather than implying it was.
   a discovery port that sent pairing to the wrong service). A second review found only smaller
   problems; two rounds and a final check was a sensible stopping point.
 
+**The screen**
+- A label sized by LVGL from its text (width `LV_SIZE_CONTENT` with a max width) left out its padding
+  when measuring, so a line that fitted the max width but not the max width less the padding wrapped
+  onto a second line with no room: the chat bubble showed "...cybersecurity" for "...cybersecurity
+  news", and the user took it for a speech-recognition fault. Size such labels with
+  `theme::fit_width` after setting their text; `--shots` checks a bubble of that length with
+  `theme::label_fits`. When a word seems to go missing, the activity log's tool arguments show
+  what the model actually received.
+
 **Power**
 - The fuel gauge (`/sys/class/power_supply/bq27220-0/`) reports `current_now` in µA: positive
   while charging on USB, negative on battery, 0 only when full on USB. To measure the app, log it

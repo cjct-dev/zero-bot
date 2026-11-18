@@ -159,19 +159,19 @@ void ChatView::after_add() {
     }
 }
 
-void ChatView::add_user(const std::string &text, bool steering) {
+lv_obj_t *ChatView::add_user(const std::string &text, bool steering) {
     stick_bottom_ = true;
     lv_obj_t *row = add_row(true);
     lv_obj_t *bubble = label(row, text.c_str(), body(), kText);
     lv_label_set_long_mode(bubble, LV_LABEL_LONG_MODE_WRAP);
-    lv_obj_set_width(bubble, LV_SIZE_CONTENT);
-    lv_obj_set_style_max_width(bubble, 236, 0);
     lv_obj_set_style_bg_color(bubble, color(steering ? kPanelHi : kUser), 0);
     lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(bubble, 7, 0);
     lv_obj_set_style_pad_hor(bubble, 7, 0);
     lv_obj_set_style_pad_ver(bubble, 3, 0);
+    fit_width(bubble, 236);   // not LV_SIZE_CONTENT with a max width: that lost the last wrapped word
     after_add();
+    return bubble;
 }
 
 void ChatView::begin_answer() {
