@@ -931,6 +931,12 @@ struct Setup {
         if (on_finish) on_finish();
     }
 
+    // Every page of the guide is marked as one: SPACE does not close it (Menu::in_guide).
+    void show(MenuPage page) {
+        page.guide = true;
+        menu.push(std::move(page));
+    }
+
     MenuItem edit(const std::string &label, std::string Settings::*field, const std::string &help, bool secret = false) {
         Menu &m = menu;
         return MenuItem::val(label, [field, secret] {
@@ -963,7 +969,7 @@ struct Setup {
             items.push_back(MenuItem::action("Finish", [self] { self->finish(); }));
             return items;
         };
-        menu.push(std::move(page));
+        show(std::move(page));
     }
 
     // Step 5: about the user.
@@ -993,7 +999,7 @@ struct Setup {
             items.push_back(MenuItem::action("Continue", [self] { self->step_extras(); }));
             return items;
         };
-        menu.push(std::move(page));
+        show(std::move(page));
     }
 
     // Step 4: models, pre-filled from what the service offers.
@@ -1014,7 +1020,7 @@ struct Setup {
             items.push_back(MenuItem::action("Continue", [self] { self->step_you(); }));
             return items;
         };
-        menu.push(std::move(page));
+        show(std::move(page));
     }
 
     // Step 3: the AI service. "Test and continue" proves the address and key before moving on.
@@ -1053,7 +1059,7 @@ struct Setup {
             items.push_back(MenuItem::action("Skip this step", [self] { self->step_models(); }));
             return items;
         };
-        menu.push(std::move(page));
+        show(std::move(page));
     }
 
     // Step 2: is there an internet connection?
@@ -1083,7 +1089,7 @@ struct Setup {
             items.push_back(MenuItem::action("Continue without internet", [self] { self->step_service(); }));
             return items;
         };
-        menu.push(std::move(page));
+        show(std::move(page));
     }
 
     void step_welcome() {
@@ -1099,7 +1105,7 @@ struct Setup {
             items.push_back(MenuItem::action("Skip for now", [self] { self->finish(); }));
             return items;
         };
-        menu.push(std::move(page));
+        show(std::move(page));
     }
 
     std::shared_ptr<Setup> keep;   // set by open_setup; keeps the guide alive while its pages exist

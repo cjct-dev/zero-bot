@@ -118,8 +118,9 @@ instead, see [Building](#building).
 
 The first time you open Zero Bot it walks you through five short steps: checking the internet
 connection, entering the AI service's address and key (with a live test), confirming the models
-it found, a few details about you, and optional extras. **ESC** steps back, and you can skip it
-and run it again later from *Settings → About → Run the setup guide again*.
+it found, a few details about you, and optional extras. **ENTER** chooses (**SPACE** does not
+close the guide), **ESC** steps back, and you can skip it and run it again later from *Settings →
+About → Run the setup guide again*.
 
 ![Setup: welcome](docs/screenshots/setup-welcome.png) ![Setup: AI service](docs/screenshots/setup-service.png)
 

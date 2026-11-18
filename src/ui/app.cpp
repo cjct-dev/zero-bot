@@ -484,7 +484,12 @@ struct App {
         if (menu.open()) {
             if (ev.key == Key::Tab) { if (ev.state == 1) menu.close(); return; }
             // Outside a text field, SPACE closes settings as it opened them, and H shows the keys.
-            if (!menu.editing() && keyguide::is_settings_key(ev)) { menu.close(); return; }
+            // Not the first-run guide, which SPACE did not open: a new user presses it to choose.
+            if (!menu.editing() && keyguide::is_settings_key(ev)) {
+                if (menu.in_guide()) menu.toast("Press ENTER to choose");
+                else menu.close();
+                return;
+            }
             if (!menu.editing() && keyguide::is_guide_key(ev)) { open_key_guide(menu, true); return; }
             menu.key(ev);
             return;
@@ -1182,6 +1187,22 @@ struct App {
 
         run_setup();
         snap("setup-welcome");
+        {
+            // SPACE does not close the guide (a new user presses it to choose), on its own pages
+            // or on a page opened from one; it says which key does. Settings it still closes (above).
+            KeyEvent space; space.key = Key::Char; space.text = " "; space.state = 1;
+            handle_key(space);
+            const bool kept = menu.open() && menu.title() == "Welcome to Zero Bot" && menu.in_guide();
+            menu.choose("Language model", {"one", "two"}, "one", [](const std::string &) {});
+            handle_key(space);
+            const bool kept_above = menu.open() && menu.title() == "Language model";
+            menu.pop();
+            for (int i = 0; i < 28; ++i) menu.tick();   // the hint goes, for the screens to come
+            if (!kept || !kept_above) {
+                fprintf(stderr, "SPACE closed the setup guide (on its page %d, on a page opened from it %d)\n", kept, kept_above);
+                failed = true;
+            }
+        }
         {
             KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
             KeyEvent down; down.key = Key::Down; down.state = 1;
