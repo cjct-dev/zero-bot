@@ -45,15 +45,20 @@ needs a [Tavily](https://tavily.com) key.
 | Key | What it does |
 |---|---|
 | **TAB** | Start talking. Press **TAB** again when you have finished. |
-| **TAB** twice quickly | Open settings. |
+| **SPACE** | Open settings (**TAB** twice quickly does the same). **SPACE** or **TAB** closes them again. |
 | **ENTER** | Start typing a message; **ENTER** again sends it. |
 | **del** twice quickly | Start a new conversation: what was said so far is forgotten. Calendar, timers, reminders and saved memories are kept. |
 | **ESC** | Cancel what is happening: recording, typing, a running request, music. |
 | Hold **ESC** | Leave the app and return to the launcher. |
 | **F** / **X** (or **fn**+**F** / **fn**+**X**) | Scroll the conversation up and down. While typing, use **fn**+**F** / **fn**+**X**. |
+| **H** | Show every key and what it does (also in settings, and under *Settings → Keys*). |
 | **fn**+**S** / **fn**+**D** | Volume down / up. **fn**+**A** mutes and unmutes. |
 | **fn**+**U** / **fn**+**I** | Screen brightness down / up. |
 | **fn**+**Q** / **fn**+**W** / **fn**+**E** | Music: pause or resume / previous track / next track. |
+
+The bottom of the screen names the keys you need most; **H** lists the rest.
+
+![The key guide](docs/screenshots/keys.png)
 
 You do not have to wait for it to finish:
 
@@ -153,8 +158,10 @@ service's list. You can change every model under *Assistant* in settings.
 
 ## Settings
 
-Press **TAB** twice. Move with **fn**+**F**/**X** (or plain **F**/**X**), change values with
-**Z**/**C** (left/right), select with **ENTER**, go back with **ESC**.
+Press **SPACE** (or **TAB** twice). The first page lists the sections below and *Keys*; **ENTER**
+opens one. Move with **fn**+**F**/**X** (or plain **F**/**X**), change values with **Z**/**C**
+(left/right), select with **ENTER**, go back with **ESC** (or **del**). **SPACE** or **TAB** closes
+settings from any page.
 
 | Section | What is there |
 |---|---|
@@ -162,7 +169,8 @@ Press **TAB** twice. Move with **fn**+**F**/**X** (or plain **F**/**X**), change
 | Device | Volume, brightness, microphone gain, time zone, start at power-on, internet via phone, microphone, flip camera image, home city and country, your name, date order, units |
 | Your data | Calendar (edit, add, delete, delete all), reminders and timers (cancel one or all), memory (edit, add, delete, forget everything), TV remote, smart home (devices by room, setting up, the Tapo account), music library, start a new conversation |
 | AI service | Address, API key, web search key, compress audio |
-| About | Status and connection test, exit to launcher |
+| About | Status and connection test, the setup guide again, exit to launcher |
+| Keys | Every key and what it does (as **H** shows them) |
 
 *Compress audio* (under *AI service*, on by default) sends your speech as MP3 and fetches replies
 as Opus, roughly a tenth and a fifth of the uncompressed size. In testing it produced the same

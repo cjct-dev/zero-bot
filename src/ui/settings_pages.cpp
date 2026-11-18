@@ -24,6 +24,7 @@
 #include "platform/display.h"
 #include "platform/ir.h"
 #include "platform/proc.h"
+#include "ui/key_guide.h"
 
 namespace ui {
 
@@ -805,6 +806,28 @@ void open_status(Menu &menu) {
         [&menu](const std::string &text) { if (menu.open()) menu.message("Status", text); });
 }
 
+// ---------------------------------------------------------------- sections
+// The rows under one section's header in the full list of settings.
+std::vector<MenuItem> section_rows(std::vector<MenuItem> all, const std::string &section) {
+    std::vector<MenuItem> rows;
+    bool inside = false;
+    for (MenuItem &row : all) {
+        if (row.kind == MenuItem::Kind::Header) inside = row.label == section;
+        else if (inside) rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// What a section holds, in a few words, for the top page (a section not named here shows none).
+std::string section_about(const std::string &section) {
+    if (section == "Assistant") return "models, voice, name";
+    if (section == "Device") return "sound, screen, phone, place";
+    if (section == "Your data") return "calendar, timers, smart home";
+    if (section == "AI service") return "address and keys";
+    if (section == "About") return "status, setup guide, exit";
+    return "";
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- first-run guide
@@ -844,7 +867,7 @@ struct Setup {
         page.title = "Setup 5 of 5: extras";
         page.build = [self]() {
             std::vector<MenuItem> items;
-            Menu::add_paragraph(items, "All optional. You can change these later in settings (TAB twice).");
+            Menu::add_paragraph(items, "All optional. You can change these later in settings (SPACE).");
             items.push_back(MenuItem::val("Speak replies", [] { return on_off(S().speak_replies); }, nullptr,
                                           [](int) { S().speak_replies = !S().speak_replies; S().save(); }));
             if (autostart::supported())
@@ -1013,9 +1036,9 @@ void open_setup(Menu &menu, std::function<void()> on_finish) {
 }
 
 void open_settings(Menu &menu, const SettingsHooks &hooks) {
-    MenuPage page;
-    page.title = "Settings";
-    page.build = [&menu, hooks]() {
+    // Every row of settings, under a header for each section. The top page lists the sections, and
+    // each opens a page of the rows under its header: a new header here is a new section there.
+    const std::function<std::vector<MenuItem>()> rows = [&menu, hooks]() {
         std::vector<MenuItem> items;
         auto text_setting = [&menu](const std::string &label, std::string Settings::*field, const std::string &help = "") {
             return MenuItem::val(label, [field] { return or_dash(S().*field); }, [&menu, label, field, help] {
@@ -1149,6 +1172,40 @@ void open_settings(Menu &menu, const SettingsHooks &hooks) {
         items.push_back(MenuItem::action("Exit to launcher", [hooks] { if (hooks.exit_app) hooks.exit_app(); }));
         return items;
     };
+    MenuPage page;
+    page.title = "Settings";
+    page.build = [&menu, rows]() {
+        std::vector<MenuItem> items;
+        for (const MenuItem &row : rows()) {
+            if (row.kind != MenuItem::Kind::Header) continue;
+            const std::string section = row.label;
+            items.push_back(MenuItem::val(section, [section] { return section_about(section); }, [&menu, rows, section] {
+                MenuPage part;
+                part.title = section;
+                part.build = [rows, section]() { return section_rows(rows(), section); };
+                menu.push(std::move(part));
+            }));
+        }
+        items.push_back(MenuItem::val(kKeyGuideTitle, [] { return std::string("what each key does"); },
+                                      [&menu] { open_key_guide(menu, true); }));
+        return items;
+    };
+    menu.push(std::move(page));
+}
+
+void open_key_guide(Menu &menu, bool from_settings) {
+    if (menu.open() && menu.title() == kKeyGuideTitle) return;
+    MenuPage page;
+    page.title = kKeyGuideTitle;
+    page.reading = true;
+    std::vector<MenuItem> items;
+    const std::vector<keyguide::Section> &sections = keyguide::sections();
+    for (const keyguide::Section &s : sections) {
+        if (from_settings && &s == &sections.back()) page.top = static_cast<int>(items.size());   // the keys for settings
+        items.push_back(MenuItem::header(s.title));
+        for (const keyguide::Row &r : s.rows) items.push_back(MenuItem::pair(r.keys, r.action));
+    }
+    page.build = [items]() { return items; };
     menu.push(std::move(page));
 }
 

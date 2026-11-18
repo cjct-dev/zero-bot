@@ -160,6 +160,9 @@ footer { margin-top: 48px; color: var(--muted); font-size: 0.82rem; border-top: 
       <tr><th>del twice</th><td>Two presses within 450&nbsp;ms, outside the input line: <code>new_conversation()</code>.</td>
         <td><code>Agent::reset_conversation()</code>: <code>cancel()</code>, then <code>history_</code> is emptied. Calendar,
         reminders and memories are kept.</td></tr>
+      <tr><th>SPACE, H</th><td>Outside the input line, <code>keyguide::chat_key()</code> (<code>ui/key_guide.cpp</code>) maps
+        them: SPACE opens settings, H the key guide.</td>
+        <td>None.</td></tr>
     </tbody>
   </table></div>
   <ul class="prose-list">

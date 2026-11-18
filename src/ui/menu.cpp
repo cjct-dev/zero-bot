@@ -13,7 +13,20 @@ constexpr int kTitleH = 18;
 constexpr int kHintH = 15;
 constexpr int kListH = kScreenH - kTitleH - kHintH;
 constexpr int kVisible = kListH / kRowH;
+constexpr int kReadRowH = 16;                   // rows on a page to read sit closer together
+constexpr int kReadVisible = kListH / kReadRowH;
+constexpr int kPairX = 10 + Menu::kPairKeyW;    // where a Pair row's second column starts
 }  // namespace
+
+int Menu::pair_text_width() { return kScreenW - kPairX - 8; }
+
+MenuItem MenuItem::pair(const std::string &key, const std::string &what) {
+    MenuItem i;
+    i.kind = Kind::Pair;
+    i.label = key;
+    i.value = [what] { return what; };
+    return i;
+}
 
 MenuItem MenuItem::header(const std::string &text) {
     MenuItem i;
@@ -126,14 +139,20 @@ void Menu::build_items() {
 }
 
 void Menu::push(MenuPage page) {
-    Frame f;
-    f.page = std::move(page);
-    stack_.push_back(std::move(f));
+    Frame frame;
+    frame.page = std::move(page);
+    stack_.push_back(std::move(frame));
     lv_obj_remove_flag(root_, LV_OBJ_FLAG_HIDDEN);
     build_items();
-    // Start on the first row that can be selected.
-    for (size_t i = 0; i < items_.size(); ++i)
-        if (items_[i].selectable()) { stack_.back().selected = static_cast<int>(i); break; }
+    Frame &f = stack_.back();
+    if (f.page.reading) {
+        f.selected = -1;   // nothing to choose
+        f.scroll = f.page.top;
+    } else {
+        // Start on the first row that can be selected.
+        for (size_t i = 0; i < items_.size(); ++i)
+            if (items_[i].selectable()) { f.selected = static_cast<int>(i); break; }
+    }
     render();
 }
 
@@ -160,6 +179,7 @@ void Menu::refresh() {
 
 void Menu::settle() {
     Frame &f = stack_.back();
+    if (f.page.reading) { f.selected = -1; return; }
     if (f.selected >= static_cast<int>(items_.size())) f.selected = static_cast<int>(items_.size()) - 1;
     if (f.selected < 0) f.selected = 0;
     while (f.selected < static_cast<int>(items_.size()) - 1 && !items_[static_cast<size_t>(f.selected)].selectable())
@@ -167,6 +187,8 @@ void Menu::settle() {
 }
 
 std::string Menu::title() const { return stack_.empty() ? std::string() : stack_.back().page.title; }
+
+int Menu::first_shown() const { return stack_.empty() ? 0 : stack_.back().scroll; }
 
 std::string Menu::selected() const {
     if (stack_.empty()) return "";
@@ -179,20 +201,39 @@ void Menu::render() {
     Frame &f = stack_.back();
     lv_label_set_text(title_, f.page.title.c_str());
     const int n = static_cast<int>(items_.size());
-    if (f.selected < f.scroll) f.scroll = f.selected;
-    if (f.selected >= f.scroll + kVisible) f.scroll = f.selected - kVisible + 1;
-    if (f.scroll > 0 && !items_[static_cast<size_t>(f.scroll - 1)].selectable() && f.selected == f.scroll)
-        --f.scroll;   // keep a section title visible above its first row
-    if (f.selected < kVisible) f.scroll = 0;   // show any introduction above the first choices
-    if (f.scroll < 0) f.scroll = 0;
+    const bool reading = f.page.reading;
+    const int row_h = reading ? kReadRowH : kRowH;
+    const int visible = reading ? kReadVisible : kVisible;
+    if (reading) {
+        f.scroll = std::max(0, std::min(f.scroll, n - visible));
+    } else {
+        if (f.selected < f.scroll) f.scroll = f.selected;
+        if (f.selected >= f.scroll + kVisible) f.scroll = f.selected - kVisible + 1;
+        if (f.scroll > 0 && !items_[static_cast<size_t>(f.scroll - 1)].selectable() && f.selected == f.scroll)
+            --f.scroll;   // keep a section title visible above its first row
+        if (f.selected < kVisible) f.scroll = 0;   // show any introduction above the first choices
+        if (f.scroll < 0) f.scroll = 0;
+    }
 
     lv_obj_clean(list_);
     live_.clear();
-    for (int row = 0; row < kVisible && f.scroll + row < n; ++row) {
+    for (int row = 0; row < visible && f.scroll + row < n; ++row) {
         const MenuItem &it = items_[static_cast<size_t>(f.scroll + row)];
         const bool selected = f.scroll + row == f.selected;
-        lv_obj_t *line = box(list_, kScreenW, kRowH, selected ? kPanelHi : kBg);
-        lv_obj_set_pos(line, 0, row * kRowH);
+        lv_obj_t *line = box(list_, kScreenW, row_h, selected ? kPanelHi : kBg);
+        lv_obj_set_pos(line, 0, row * row_h);
+        if (it.kind == MenuItem::Kind::Pair) {
+            lv_obj_t *k = label(line, it.label.c_str(), bold(), kAccent);
+            lv_label_set_long_mode(k, LV_LABEL_LONG_MODE_DOTS);
+            lv_obj_set_width(k, kPairKeyW - 4);
+            lv_obj_align(k, LV_ALIGN_LEFT_MID, 10, 0);
+            const std::string what = it.value ? it.value() : "";
+            lv_obj_t *w = label(line, what.c_str(), body(), kText);
+            lv_label_set_long_mode(w, LV_LABEL_LONG_MODE_DOTS);
+            lv_obj_set_width(w, pair_text_width());
+            lv_obj_align(w, LV_ALIGN_LEFT_MID, kPairX, 0);
+            continue;
+        }
         if (it.kind == MenuItem::Kind::Text) {
             lv_obj_t *l = label(line, it.label.c_str(), body(), kDim);
             lv_obj_align(l, LV_ALIGN_LEFT_MID, 8, 0);
@@ -227,15 +268,16 @@ void Menu::render() {
         }
     }
     // Scroll position marker
-    if (n > kVisible) {
+    if (n > visible) {
         const int track = kListH - 4;
-        const int h = track * kVisible / n < 8 ? 8 : track * kVisible / n;
+        const int h = track * visible / n < 8 ? 8 : track * visible / n;
         lv_obj_t *thumb = box(list_, 2, h, kFaint);
-        lv_obj_set_pos(thumb, kScreenW - 3, 2 + (track - h) * f.scroll / (n - kVisible));
+        lv_obj_set_pos(thumb, kScreenW - 3, 2 + (track - h) * f.scroll / (n - visible));
     }
     std::string hint = f.page.hint;
+    if (hint.empty() && reading) hint = n > visible ? "F/X scroll   ·   ESC back" : "ESC back";
     if (hint.empty()) {
-        const MenuItem *cur = f.selected < n ? &items_[static_cast<size_t>(f.selected)] : nullptr;
+        const MenuItem *cur = f.selected >= 0 && f.selected < n ? &items_[static_cast<size_t>(f.selected)] : nullptr;
         hint = cur && cur->adjust ? "Left/Right change   ·   ESC back" : "ENTER select   ·   ESC back";
     }
     lv_label_set_text(hint_, hint.c_str());
@@ -409,6 +451,22 @@ void Menu::key(const KeyEvent &ev) {
             case 'c': case 'C': k = Key::Right; break;
             default: break;
         }
+    }
+    if (f.page.reading) {
+        const int before = f.scroll;
+        switch (k) {
+            case Key::Up: --f.scroll; break;
+            case Key::Down: ++f.scroll; break;
+            case Key::PgUp: f.scroll -= kReadVisible - 1; break;
+            case Key::PgDn: f.scroll += kReadVisible - 1; break;
+            case Key::Enter: case Key::Esc: case Key::Backspace:
+                if (ev.state == 1) pop();
+                return;
+            default: return;
+        }
+        f.scroll = std::max(0, std::min(f.scroll, n - kReadVisible));
+        if (f.scroll != before) render();
+        return;
     }
     const MenuItem *cur = f.selected >= 0 && f.selected < n ? &items_[static_cast<size_t>(f.selected)] : nullptr;
     switch (k) {

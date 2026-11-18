@@ -8,7 +8,9 @@
 #include "platform/keys.h"
 
 struct MenuItem {
-    enum class Kind { Header, Text, Action, Value };   // Header and Text rows cannot be selected
+    // Header, Text and Pair rows cannot be selected. A Pair is two columns: a key (in `label`) and
+    // what it does (in `value`), for the key guide.
+    enum class Kind { Header, Text, Action, Value, Pair };
     Kind kind = Kind::Action;
     std::string label;
     std::function<std::string()> value;        // text shown on the right (optional)
@@ -22,6 +24,7 @@ struct MenuItem {
     static MenuItem action(const std::string &text, std::function<void()> fn, bool danger = false);
     static MenuItem val(const std::string &text, std::function<std::string()> value, std::function<void()> fn,
                         std::function<void(int)> adjust = nullptr);
+    static MenuItem pair(const std::string &key, const std::string &what);
 };
 
 struct MenuPage {
@@ -34,6 +37,10 @@ struct MenuPage {
     // Optional, cheap: a number that changes when the page's rows do (a timer ended or was
     // cancelled elsewhere). tick() rebuilds the page when it changes.
     std::function<int()> revision;
+    // A page to read rather than choose from (the key guide): no cursor, closer rows, up and down
+    // scroll it, ENTER or ESC goes back. `top` is the row shown first.
+    bool reading = false;
+    int top = 0;
 };
 
 class Menu {
@@ -57,8 +64,13 @@ public:
     void message(const std::string &title, const std::string &body);   // a page of plain text
     void problem(const std::string &title, const std::string &text);   // wrapped text that stays until ESC
     size_t depth() const { return stack_.size(); }
+    bool editing() const { return editing_; }   // a text field is open: every key types
     std::string title() const;      // the top page's title, and the label of the row the cursor
     std::string selected() const;   // is on ("" with no page): for the checks in --shots
+    int first_shown() const;        // the row at the top of the screen (for --shots)
+    // The width a Pair row gives its key (the rest is for what it does): for the checks in --shots.
+    static constexpr int kPairKeyW = 84;
+    static int pair_text_width();
     // Splits a paragraph into Text rows that fit the screen width.
     static void add_paragraph(std::vector<MenuItem> &items, const std::string &paragraph);
 
