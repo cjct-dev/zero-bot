@@ -252,10 +252,7 @@ class Device:
         if args.id and self.gen2:
             self.info["id"] = args.id
         if args.mac:
-            if self.gen2:
-                self.info["mac"] = args.mac
-            else:
-                self.shelly["mac"] = self.state["mac"] = args.mac
+            self.set_mac(args.mac)
         self.password = args.password or ""
         self.user = args.user or "admin"
         self.throttle = False
@@ -281,10 +278,14 @@ class Device:
         if cfg.get("id") and self.gen2:
             self.info["id"] = cfg["id"]
         if cfg.get("mac"):
-            if self.gen2:
-                self.info["mac"] = cfg["mac"]
-            else:
-                self.shelly["mac"] = self.state["mac"] = cfg["mac"]
+            self.set_mac(cfg["mac"])
+
+    def set_mac(self, mac):
+        """One MAC everywhere the device reports it."""
+        if self.gen2:
+            self.info["mac"] = self.status["sys"]["mac"] = self.config["sys"]["device"]["mac"] = mac
+        else:
+            self.shelly["mac"] = self.state["mac"] = self.settings["device"]["mac"] = mac
 
     # ---- what /shelly says
     def identity(self):
@@ -517,6 +518,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         with DEV.lock:
             result, error = self.call(name, params)
+        if DEV.hostile == "error500" and error is None:
+            error = (-114, "simulated")
         if fid is None:   # GET /rpc/<method>: the result alone, or the error with a 4xx/5xx status
             return self.send_json(result) if error is None else self.send(500 if error[0] != -103 else 400, {"code": error[0], "message": error[1]})
         reply = {"id": fid, "src": DEV.info["id"], "dst": src}
@@ -524,9 +527,7 @@ class Handler(BaseHTTPRequestHandler):
             reply["result"] = result
         else:
             reply["error"] = {"code": error[0], "message": error[1]}
-        if DEV.hostile == "error500" and error is None:
-            reply.pop("result", None)
-            reply["error"] = {"code": -114, "message": "simulated"}
+        if DEV.hostile == "error500":
             return self.send(500, reply)
         self.send_json(reply)
 
@@ -695,6 +696,17 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(404, "Not Found", "text/plain")
 
 
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # A client that stops reading (the driver refusing an answer too long, or giving up on a
+        # slow one) is part of the tests, not a fault of the mock.
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main():
     global DEV
     ap = argparse.ArgumentParser()
@@ -709,8 +721,7 @@ def main():
     if args.selftest:
         return selftest()
     DEV = Device(args)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    server.daemon_threads = True
+    server = Server(("127.0.0.1", args.port), Handler)
     print("MOCK listening on 127.0.0.1:%d" % server.server_address[1], flush=True)
 
     def watch_stdin():
