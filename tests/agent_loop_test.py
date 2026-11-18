@@ -123,7 +123,7 @@ HOME = _home({"id": "1", "name": "Fan heater", "type": "plug", "caps": 1, "room"
               "ask_first": False, "enabled": True, "ref": {}})
 
 
-def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, photo=False, timeout=60):
+def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, photo=False, timeout=60, radio=None, search_key=None):
     """Runs the app once against `script`: --chat with each of `said`, or --ask `ask` (with `extra`
     arguments such as --steer). Returns a Run."""
     state = tempfile.mkdtemp(prefix="zb-loop-")
@@ -131,8 +131,12 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
     try:
         os.makedirs(state + "/config/zero-bot")
         os.makedirs(state + "/data/zero-bot")
-        json.dump({"llm_model": "scripted", "speak_replies": False, "home_city": "London"},
-                  open(state + "/config/zero-bot/settings.json", "w"))
+        settings = {"llm_model": "scripted", "speak_replies": False, "home_city": "London"}
+        if search_key:
+            settings["search_key"] = search_key
+        json.dump(settings, open(state + "/config/zero-bot/settings.json", "w"))
+        if radio:
+            json.dump({"stations": radio}, open(state + "/config/zero-bot/radio.json", "w"))
         json.dump(script, open(state + "/script.json", "w"))
         log = state + "/requests.jsonl"
         model = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "fake_model.py"), state + "/script.json", log],
@@ -207,6 +211,27 @@ def plain_answer():
           "timer" in names and "calendar_add" in names and "web_search" not in names and "smart_home" not in names, names)
     size = len(json.dumps(body, ensure_ascii=False).encode())
     check(n + ": the first request is %d bytes, under %d" % (size, FIRST_REQUEST_LIMIT), size < FIRST_REQUEST_LIMIT, size)
+
+
+# Ten made-up stations, their names and nicknames as long as a real list's (the radio tool lists them
+# all as data for the model).
+STATIONS = [{"name": ("Station %d " % i + "x" * 20)[:n], "nicknames": ["nick %d-%d yyyyyy" % (i, j) for j in range(k)],
+             "url": "http://127.0.0.1:9/%d.mp3" % i}
+            for i, (n, k) in enumerate(zip([11, 11, 11, 11, 16, 17, 7, 5, 12, 19], [1, 1, 1, 1, 3, 3, 2, 3, 3, 2]))]
+
+
+@scenario
+def first_request_every_tool():
+    # With web search, ten radio stations and a home on this network, every tool that can be
+    # offered is: the same tripwire holds (about 29.5 kB in November 2026).
+    r = run({"default": {"text": "Lisbon."}}, ask="what is the capital of portugal", home=HOME, radio=STATIONS,
+            search_key="test-search-key")
+    n = "first request with every tool offered"
+    body = r.requests[0]["body"] if r.requests else {}
+    names = [t["function"]["name"] for t in body.get("tools", [])]
+    check(n + ": web_search, radio and smart_home are offered", all(x in names for x in ("web_search", "radio", "smart_home")), names)
+    size = len(json.dumps(body, ensure_ascii=False).encode())
+    check(n + ": %d bytes, under %d" % (size, FIRST_REQUEST_LIMIT), size < FIRST_REQUEST_LIMIT, size)
 
 
 @scenario

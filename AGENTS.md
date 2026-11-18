@@ -244,7 +244,8 @@ What exists:
   claim guards (a table of phrasings that must and must not trip them), `say` confirmations, tool
   errors, steering, talk-over, the round budget and its apology, retries and service errors, think
   markers, spelt-out dates, history trimming, smart-home questions, a byte-identical system prompt
-  and the first request's size (a tripwire at 32,000 bytes: raise it knowingly). Add a scenario
+  and the first request's size (a tripwire at 32,000 bytes, for a plain set-up and with every tool
+  offered: web search, ten radio stations, a home; raise it knowingly). Add a scenario
   here with any change to `agent.cpp` or `llm.cpp`.
 
 - **Command-line modes** in `src/main.cpp` (work in the `cli` build):
@@ -363,6 +364,12 @@ key, real audio), say so plainly rather than implying it was.
   without it, an app that crashed or was killed left the station playing with nothing to stop it.
   `Music::play`, `play_live` and `stop` are called from the UI thread and the agent's at once
   (fn+E while the radio tool starts a station); unserialised, that crashed in a stress test.
+- ffplay cannot open a `.pls` or a plain `.m3u` playlist file ("Failed to open file", "Invalid data
+  found"; an HLS `.m3u8` it can), and the README promises both work. Every way of starting a
+  station goes through `radio::check`, which follows the playlist to its stream: the radio tool
+  directly, fn+W/fn+E and the settings page through `radio::check_async` (off the UI thread). The
+  first version of the keys and the page gave the address straight to the player, so a playlist
+  station played when asked for and failed from the keys, blamed on the station.
 - ICY `StreamTitle` on the stations tried was empty or carried advert markers, so "what's on" is
   left to web search rather than read from the stream.
 
@@ -555,7 +562,8 @@ value it already has. `ChatView`'s setters compare with what is shown and return
 that for anything added there (the timer countdown changes once a second, not every tick). A
 label that scrolls redraws the bar on every screen refresh (about 40 times a second, measured in
 the simulator), so nothing there should scroll for long: the now-playing text scrolls only when
-it has all of its room, and beside the countdown it is cut short with dots instead.
+it has all of its room, and beside the countdown it is cut short with dots instead. A radio
+station's name, there for hours, never scrolls (`set_now_playing(text, true)`).
 
 **A settings value that changes by itself** (a timer's time left): set `MenuPage::live`.
 `Menu::tick` then reads the values on screen 15 times a second and redraws only those whose

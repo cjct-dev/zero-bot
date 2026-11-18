@@ -342,9 +342,12 @@ footer { margin-top: 48px; color: var(--muted); font-size: 0.82rem; border-top: 
 
 <section id="tools">
   <h2>3. Tools</h2>
-  <p class="prose">25 tools are defined in <code>build()</code> in <code>src/agent/tools.cpp</code>. Each takes JSON arguments
-  and returns text; a failure is text starting with <code>ERROR</code>. <code>tools::run()</code> rejects unknown names and
-  arguments that are not a JSON object, and catches exceptions. Thirteen tools (<code>kConfirmable</code>) accept a <code>say</code>
+  <p class="prose">26 tools are defined in <code>build()</code> in <code>src/agent/tools.cpp</code>. Each takes JSON arguments
+  and returns text; a failure is text starting with <code>ERROR</code>. <code>tools::run()</code> rejects unknown names (naming
+  the nearest one) and arguments that are not a JSON object, checks each argument's type against the tool's schema before the
+  tool runs, turns a tool's <code>{"error": ...}</code> into the same <code>ERROR</code> shape, and catches exceptions.
+  <code>smart_home</code> and <code>radio</code>, whose schemas are made at run time, check their own arguments. Fourteen
+  tools (<code>kConfirmable</code>) accept a <code>say</code>
   argument: the sentence to speak once the call has worked. <code>tools::confirmation()</code> returns it only when the result
   does not start with <code>ERROR</code> or <code>{"error"</code>.</p>
   <div class="table-wrap"><table>
@@ -388,6 +391,12 @@ footer { margin-top: 48px; color: var(--muted); font-size: 0.82rem; border-top: 
       <tr><th><code>music</code></th><td><code>play</code>, <code>search</code>, <code>stop</code>, <code>next</code>,
         <code>now_playing</code>, <code>library</code> over the local library. During a request, play is queued behind the
         <code>kExchange</code> hold.</td><td><code>MusicLibrary</code>, <code>audio::Music</code></td><td class="say"><span class="yes">stop, next</span></td></tr>
+      <tr><th><code>radio</code></th><td><code>play</code> or <code>stop</code> a station from the user's own list
+        (<code>~/.config/zero-bot/radio.json</code>, <code>src/core/radio.cpp</code>); offered only while that list has stations,
+        with their names as the allowed values. The stream is checked first (a playlist file is followed to its stream; a
+        refusal is reported) and played live through <code>Music::play_live</code>, behind the <code>kExchange</code> hold
+        during a request. Its <code>say</code> is not used when the result asks the model to mention mobile data.</td>
+        <td><code>audio::Music</code>, the station's server</td><td class="say"><span class="yes">yes</span></td></tr>
       <tr><th><code>tv_remote</code></th><td>Sends one infrared key with <code>ir::send()</code>, optionally repeated. A brand the
         user names is saved in settings.</td><td>IR transmitter, <code>Settings</code></td><td class="say"><span class="yes">yes</span></td></tr>
       <tr><th><code>breathe</code></th><td>Starts the guided breathing exercise on screen (box breathing by default); ESC ends

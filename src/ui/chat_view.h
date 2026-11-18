@@ -28,7 +28,10 @@ public:
     // Status bar. Each redraws only what has changed, so they can be called on every tick.
     void set_status(const std::string &name, uint32_t dot_color);
     void set_indicators(bool online, bool via_phone, int battery_percent, bool charging, const std::string &clock);
-    void set_now_playing(const std::string &text);
+    // A track's title too long for its room scrolls. `still` (a radio station's name, shown for as
+    // long as the station plays: hours) is cut short with dots instead, so the bar is not redrawn
+    // many times a second for all that time.
+    void set_now_playing(const std::string &text, bool still = false);
     void set_timer(const std::string &countdown);   // "4:59 +1" beside a stopwatch; "" hides it
     std::string status_name() const;                 // the name the status bar shows (for --shots checks)
     bool now_playing_moves() const;                  // whether the now-playing text is scrolling (for --shots checks)
@@ -58,7 +61,8 @@ private:
     lv_obj_t *timer_ = nullptr, *timer_label_ = nullptr;
     std::string status_name_ = "Zero", indicators_, timer_text_;   // what each part of the status bar shows
     uint32_t status_color_ = 0xFFFFFFFF;     // no colour: the first call sets it
-    int timer_w_ = 0;
+    int timer_w_ = 0, give_way_ = 0;          // the countdown's width, taken from the now-playing text's room
+    bool playing_still_ = false;             // the now-playing text never scrolls (a station's name)
     lv_obj_t *foot_label_ = nullptr, *foot_dot_ = nullptr, *wave_ = nullptr, *input_ = nullptr, *prompt_ = nullptr;
     lv_obj_t *answer_ = nullptr;             // label currently being streamed into
     std::string answer_text_, busy_label_;

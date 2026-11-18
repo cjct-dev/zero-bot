@@ -310,7 +310,12 @@ void ChatView::set_indicators(bool online, bool via_phone, int battery, bool cha
     lv_obj_set_style_text_color(right_, color(battery >= 0 && battery <= 15 && !charging ? kListen : kDim), 0);
 }
 
-void ChatView::set_now_playing(const std::string &text) {
+void ChatView::set_now_playing(const std::string &text, bool still) {
+    if (text == last_playing_ && still == playing_still_) return;
+    if (still != playing_still_) {
+        playing_still_ = still;
+        place_playing(give_way_);
+    }
     if (text == last_playing_) return;
     last_playing_ = text;
     const std::string line = text.empty() ? "" : "\xE2\x99\xAA " + text;   // musical note
@@ -320,11 +325,13 @@ void ChatView::set_now_playing(const std::string &text) {
 // The now-playing text keeps its left edge and gives up `give_way` pixels on its right. In its
 // whole room a title too long for it scrolls; beside a countdown it is cut short with dots instead.
 // A scrolling label redraws the status bar at the screen's full frame rate, and in the smaller room
-// most titles would scroll, for as long as the timer runs.
+// most titles would scroll, for as long as the timer runs. A station's name never scrolls: it stays
+// for as long as the station plays.
 void ChatView::place_playing(int give_way) {
+    give_way_ = give_way;
     lv_obj_set_width(playing_, kPlayingW - give_way);
     lv_obj_align(playing_, LV_ALIGN_RIGHT_MID, -kPlayingRight - give_way, 0);
-    const lv_label_long_mode_t mode = give_way ? LV_LABEL_LONG_MODE_DOTS : LV_LABEL_LONG_MODE_SCROLL_CIRCULAR;
+    const lv_label_long_mode_t mode = give_way || playing_still_ ? LV_LABEL_LONG_MODE_DOTS : LV_LABEL_LONG_MODE_SCROLL_CIRCULAR;
     if (lv_label_get_long_mode(playing_) != mode) lv_label_set_long_mode(playing_, mode);
 }
 

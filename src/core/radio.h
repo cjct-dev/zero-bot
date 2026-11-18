@@ -4,6 +4,7 @@
 // line in the system prompt do not exist, so the model never tries to use radio.
 #pragma once
 #include <atomic>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,12 @@ struct Check {
     std::string url, error;
 };
 Check check(const std::string &url, std::atomic<bool> *cancel = nullptr);
+// The same for a station chosen with a key or in settings, without waiting on the UI thread: the
+// station's stream (the low-data one on a phone's connection) is checked on a thread of its own,
+// and `done` runs on the UI thread (uiq) with the result, where the caller plays `url` (a playlist
+// file already followed: the player cannot open one itself) or says why not. Only the newest
+// call's result is handed over: a station chosen meanwhile wins.
+void check_async(const Station &s, std::function<void(const Check &)> done);
 
 // ---- the radio tool (wired up in agent/tools.cpp)
 // Its description and parameters for the model, made from the station list (names as allowed
