@@ -15,6 +15,7 @@ Answers, by path:
   /geo 403, /gone 404, /fault 500, /busy 429
   /page         a web page (text/html)
   /empty        audio/mpeg with no body at all
+  /silent       takes the request and answers nothing at all for a long while
 
 usage: radio_peer.py path/to/radio_test
 """
@@ -93,6 +94,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, "text/html; charset=utf-8", b"<!DOCTYPE html><html><body>Listen live!</body></html>")
             elif path == "/empty":
                 self.send(200, "audio/mpeg", b"")
+            elif path == "/silent":
+                time.sleep(20)
             else:
                 self.send(404, "text/plain", b"unknown")
         except (BrokenPipeError, ConnectionResetError):

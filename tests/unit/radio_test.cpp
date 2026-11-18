@@ -6,7 +6,9 @@
 //
 // Built by tests/run_unit.sh and run through radio_peer.py, which passes the server's address and
 // a port nothing listens on. Everything it writes goes to a temporary folder of its own.
+#include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -351,6 +353,26 @@ void test_check() {
     }
 }
 
+// ESC during the check of a server that takes the request and sends nothing: the check ends within
+// about a second (curl asks at least once a second), not when its 8 s are up.
+void test_check_cancelled() {
+    for (const char *path : {"/silent", "/trickle.aac"}) {
+        std::atomic<bool> cancel{false};
+        std::thread esc([&cancel] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            cancel = true;
+        });
+        const auto t0 = std::chrono::steady_clock::now();
+        const radio::Check c = radio::check(g_base + path, &cancel);
+        const long ms = static_cast<long>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
+        esc.join();
+        CHECK_HAS(c.error, "cancelled");
+        CHECK(ms < 2500);
+        if (ms >= 2500) fprintf(stderr, "  %s: the check took %ld ms after ESC at 300 ms\n", path, ms);
+    }
+}
+
 // ---------------------------------------------------------------- the player's live mode
 struct StandIn {
     std::string dir, log;
@@ -590,6 +612,7 @@ int main(int argc, char **argv) {
     run("tool spec and prompt line", test_tool_spec_and_prompt);
     run("tool, dry run", test_tool_dry_run);
     run("checking a stream", test_check);
+    run("ESC during the check", test_check_cancelled);
     run("live player", test_live_player);
     run("concurrent starts", test_concurrent_starts);
     run("player ends with the app", test_player_ends_with_app);
