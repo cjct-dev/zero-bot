@@ -10,6 +10,7 @@ const std::vector<Section> &sections() {
          {{"TAB", "talk; TAB again to send"},
           {"ENTER", "type; ENTER again to send"},
           {"SPACE", "settings (or TAB twice)"},
+          {"SPACE SPACE", "save the conversation (tests)"},   // DIAGNOSTICS (temporary)
           {"del del", "start a new conversation"},
           {"ESC", "stop what is happening"},
           {"hold ESC", "leave Zero Bot"},
@@ -38,6 +39,23 @@ bool is_guide_key(const KeyEvent &ev) {
 }
 
 bool is_settings_key(const KeyEvent &ev) { return ev.state == 1 && ev.key == Key::Char && ev.text == " "; }
+
+// DIAGNOSTICS (temporary): see key_guide.h.
+bool DoubleTap::press(unsigned long now) {
+    if (pending_ && now - at_ < window_) {
+        pending_ = false;
+        return true;
+    }
+    pending_ = true;
+    at_ = now;
+    return false;
+}
+
+bool DoubleTap::single_due(unsigned long now) {
+    if (!pending_ || now - at_ < window_) return false;
+    pending_ = false;
+    return true;
+}
 
 ChatKey chat_key(const KeyEvent &ev) {
     if (ev.state == 0) return ChatKey::None;

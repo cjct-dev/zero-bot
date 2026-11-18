@@ -10,6 +10,7 @@
 #include "agent/llm.h"
 #include "agent/prompt.h"
 #include "agent/tools.h"
+#include "core/activity.h"
 #include "core/music_lib.h"
 #include "core/settings.h"
 #include "core/store.h"
@@ -27,7 +28,8 @@ void usage() {
     puts("zero_bot [options]\n"
          "  (no options)          run the app (device screen, or a window in the simulator build)\n"
          "  --ask \"text\"          run one request through the agent and print what happens\n"
-         "  --chat                interactive text conversation on the terminal\n"
+         "  --chat                interactive text conversation on the terminal (/new starts a new one;\n"
+         "                         /save saves it as SPACE twice does on the device: diagnostics, temporary)\n"
          "  --steer \"text\"        with --ask/--chat: add this while the first tool of the first request runs\n"
          "  --home-refresh         read names and states from the saved smart-home devices on this network\n"
          "                         (ZB_TEST_NETWORK=1: a stand-in network where only 127.x devices are contacted)\n"
@@ -135,6 +137,14 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
         std::string line;
         while (printf("> "), fflush(stdout), std::getline(std::cin, line)) {
             if (line == "/new") { agent.reset_conversation(); continue; }
+            // DIAGNOSTICS (temporary, ZB-051): what SPACE twice does on the chat screen.
+            if (line == "/save") {
+                size_t dropped = 0;
+                const json conversation = agent.whole_conversation(&dropped);
+                const activity::SaveResult r = activity::save_conversation(conversation, dropped);
+                printf("[%s]%s%s\n", activity::saved_toast(r).c_str(), r.path.empty() ? "" : " ", r.path.c_str());
+                continue;
+            }
             if (!util::trim(line).empty()) one(line);
         }
     }
