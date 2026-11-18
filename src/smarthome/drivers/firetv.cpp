@@ -1711,8 +1711,10 @@ private:
         }
         if (dial_ok || dial_refused_by_tv || connected) wakes_.forget(who);   // it is on the network
         if (!dial_ok) {
-            if (dial_refused_by_tv || connected)
+            if (dial_refused_by_tv)
                 err = kNotServing;
+            else if (connected)   // accepted, then said nothing: while the TV is starting up, that is why
+                err = detail::woken_error(Woken::NotServing, s.starting());
             else if (!origin)
                 err = std::string(kNoAnswer) + " It may be off or unplugged.";
             else if (evidence && *evidence >= *origin + milliseconds(kDeepResumeMs))

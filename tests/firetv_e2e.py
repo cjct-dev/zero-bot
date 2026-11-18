@@ -817,6 +817,33 @@ def starting_tests(m, tv):
     check("a stuck API (hung_tls): a command's DIAL wake does not make it 'starting'; not serving, twice",
           first == "not_serving" and rc == 1 and fault(err) == "not_serving", (first, rc, err))
 
+    # Power and more while the API is silent after the wake: the TV took the wake, but the rest
+    # needs the API, so the change fails as "still starting up" and nothing else is sent.
+    for mode, extra in (("silent", {"key": "home"}), ("silent_tls", {"source": "Netflix"})):
+        m.reset(state="idle", caps="tv", wake_delay=0.3, starting_s=6.0, starting_mode=mode)
+        rc, out, err, elapsed = tv.apply(dict({"on": True}, **extra))
+        st = m.stats()
+        check("starting (%s): on=true with a %s fails as 'still starting up, try again', nothing else sent" %
+              (mode, list(extra)[0]),
+              rc == 1 and fault(err) == "starting" and message(err) == "The TV is still starting up. Try again in a moment." and
+              keys(st) == [] and st["launched"] == [] and st["dial_posts"] == 1 and st["state"] == "starting",
+              (rc, err, keys(st), st["launched"], st["dial_posts"], st["state"]))
+
+    # The API answered in this call and then went silent: that is not a TV starting up.
+    m.reset(state="idle", caps="tv", wake_delay=0.3, faults={"POST /v1/FireTV": "silent"})
+    rc, out, err, elapsed = tv.apply({"on": True, "key": "home"})
+    check("on=true + a key, the API up after the wake and then silent to the key: not serving, not 'starting'",
+          rc == 1 and fault(err) == "not_serving" and "may still have been carried out" in err, (rc, err))
+
+    # on=true again while the TV is starting, its DIAL request accepted and not answered: still
+    # starting up, not "not replying" (the sentence after which the assistant offered an infrared
+    # power toggle). Without an accepted wake before, that stays not serving (tested below).
+    m.reset(state="idle", caps="tv", wake_delay=0.3, starting_s=8.0, faults={"POST /apps/FireTVRemote": "silent"},
+            fault_after={"POST /apps/FireTVRemote": 1})
+    first, rc, err, elapsed = tv.apply_twice({"on": True}, 300)
+    check("starting: on=true again while the TV starts, its DIAL request accepted and unanswered: 'still starting up'",
+          first == "none" and rc == 1 and fault(err) == "starting" and not reads_as_unreachable(err), (first, rc, err))
+
     # A TV that did not take the wake fails as before, and is not "starting" afterwards.
     m.reset(state="hung", caps="tv", faults={"POST /apps/FireTVRemote": "500"})
     first, rc, err, elapsed = tv.apply_twice({"on": True}, 200, then={"key": "home"})

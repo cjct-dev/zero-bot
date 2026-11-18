@@ -55,8 +55,10 @@
 //    answers anything. Then a command that finds the API silent (it accepts and does not answer)
 //    fails with kStarting, not kNotServing: "The TV is still starting up. Try again in a moment.",
 //    or, when the request went out, "... The command may still have been carried out, so check
-//    the TV before trying again." The minute counts from the first accepted wake of a run with no
-//    answer from the API, so an API that is stuck reads as kNotServing again after it.
+//    the TV before trying again." So does an on=true then whose DIAL request is accepted and not
+//    answered (an HTTP answer that refuses the wake stays kNotServing). The minute counts from the
+//    first accepted wake of a run with no answer from the API, so an API that is stuck reads as
+//    kNotServing again after it.
 //  - on=false when nothing answers on either port reports kAlreadyOff: the TV is most likely
 //    off (deep standby) already. Never answer it with an infrared power toggle. Exception: when
 //    this driver sent the TV a wake-up signal less than 8 s before on=false was asked and nothing
