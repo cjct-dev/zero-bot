@@ -75,7 +75,8 @@ State on disk (all under the user's home, mode 0600 where they hold secrets):
 `~/.config/zero-bot/settings.json`, `~/.config/zero-bot/radio.json` (the user's own stations,
 written by hand; the app ships none and never writes it), and in `~/.local/share/zero-bot/`: `calendar.json`,
 `reminders.json` (running timers too, as records with `"kind": "timer"`), `memory.json`,
-`ir_learned.json`, `music_index.json`, `smarthome.json`.
+`ir_learned.json`, `music_index.json`, `smarthome.json`, and `conversations/` (saved with SPACE
+twice; diagnostic, temporary, see section 7).
 
 ## 4. How a request flows
 
@@ -186,8 +187,10 @@ What exists:
   `tests/unit/key_guide_test.cpp` (what each key does on the chat screen, and that the key guide
   says so), `tests/unit/radio_test.cpp` (the station file, names and nicknames, the tool absent
   without stations, the check of a stream against `tests/unit/radio_peer.py`, the player's live
-  mode against a stand-in `ffplay`) and `tests/unit/tools_test.cpp` (the calculator, dates and
-  zones that do not exist, helper programs: cancelling, time limits, no inherited descriptors),
+  mode against a stand-in `ffplay`), `tests/unit/tools_test.cpp` (the calculator, dates and
+  zones that do not exist, helper programs: cancelling, time limits, no inherited descriptors) and
+  `tests/unit/activity_test.cpp` (saved conversations: what a save holds, keys blanked out, size
+  limits, modes, pruning, nothing written unless asked; diagnostic, temporary),
   then, if `build/cli/zero_bot` is built, runs the timer and radio tools through it (`--tool`),
   checks `--prompt`/`--schema` say nothing of radio without stations, and runs the other offline
   tools through `tests/tools_cli.py` (good, wrong and hostile arguments, each in a fresh state
@@ -284,6 +287,16 @@ key, real audio), say so plainly rather than implying it was.
   the journal. `~/.cache/zero-bot/activity.log` on the device (`src/core/activity.cpp`) has every
   tool call with its arguments, result and duration, request by request; read it as root over ADB.
   It holds no words of the user's and no secrets; keep it that way.
+- **Saved conversations**: SPACE twice on the chat screen writes the conversation so far, as the
+  model saw it, to `/home/pi/.local/share/zero-bot/conversations/` (one JSON file per save, named
+  by the time). Pull them as root, check the copy, and keep them out of the repository (they hold
+  the owner's own words):
+  `timeout 60 scripts/adbx pull /home/pi/.local/share/zero-bot/conversations .local-notes/conversations/`,
+  then compare `md5sum` on both sides (`scripts/adbx shell 'md5sum /home/pi/.local/share/zero-bot/conversations/*'`).
+  `tests/suite/from_conversation.py FILE` prints a draft multi-turn case from one; generalise its
+  words (other names, other events) before it goes into `tests/suite/generate.py`.
+  Both records are diagnostic and temporary: `src/core/activity.h` lists every call site, each
+  marked `DIAGNOSTICS (temporary)`, for removing them (ZB-052).
 
 - The device is reached over USB ADB as root: left-side switch on Slave, cable in the
   right-hand USB-C port, ADB enabled in the device's Settings > Developer. Use `scripts/adbx`
