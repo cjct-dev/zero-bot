@@ -20,8 +20,10 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "unit", "shelly_cli")
@@ -469,6 +471,32 @@ def identity_and_hostile():
     check("identity gen1: another device (by MAC) is not switched", not ok and kind == "other_device" and paths(b.log()) == ["/shelly"], (kind, paths(b.log())))
     a.stop()
     b.stop()
+    # Something that is not a Shelly at all (a printer's web page) now has the address.
+    asked = []
+
+    class Printer(BaseHTTPRequestHandler):
+        def do_GET(self):
+            asked.append(self.path)
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+    printer = ThreadingHTTPServer(("127.0.0.1", 0), Printer)
+    threading.Thread(target=printer.serve_forever, daemon=True).start()
+    a = Mock("plus1pm")
+    st = new_state("printer", a, "shelly:shellyplus1pm-a8032ab12345")
+    cli(st, "enumerate")
+    a.stop()
+    s = load(st)
+    s["device"]["port"] = printer.server_address[1]
+    with open(st, "w") as f:
+        json.dump(s, f)
+    ok, out, kind, err, ms = cli(st, "apply", "switch:0", '{"on":true}')
+    check("identity: a web server that is not a Shelly is asked /shelly and nothing else", not ok and kind == "other_device" and
+          asked == ["/shelly"], (kind, err, asked))
+    printer.shutdown()
 
     m = Mock("plus1pm")
     st = new_state("hostile", m, "shelly:shellyplus1pm-a8032ab12345")

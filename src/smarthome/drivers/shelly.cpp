@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 
@@ -33,7 +34,7 @@ const char *const kNoAnswer = "The Shelly did not answer.";
 const char *const kNeedsPassword = "The Shelly asks for a password.";
 const char *const kRefused = "The Shelly did not accept the saved password,";
 const char *const kThrottled = "The Shelly is turning logins away for a while";
-const char *const kOtherDevice = "A different Shelly now answers at this address.";
+const char *const kOtherDevice = "Another device now answers at this address.";
 const char *const kNotUnderstood = "The Shelly's answer could not be understood.";
 
 namespace {
@@ -1096,8 +1097,11 @@ private:
         return refused && text(member(*refused, key.c_str())) == detail::fingerprint(login.user, login.password);
     }
 
+    // Several devices are read at once (the app uses up to four threads), so the family's secrets
+    // are read, changed and written under one lock: two refusals at the same moment must both stay.
     void note(const char *list, const std::string &key, const json &value) {
         if (!secrets_) return;
+        std::lock_guard<std::mutex> lk(secrets_mtx_);
         json f = secrets_->get(kFamily);
         if (!f.is_object()) f = json::object();
         if (!f.contains(list) || !f[list].is_object()) f[list] = json::object();
@@ -1108,6 +1112,7 @@ private:
 
     void forget(const std::string &key, bool locked_too) {
         if (!secrets_) return;
+        std::lock_guard<std::mutex> lk(secrets_mtx_);
         json f = secrets_->get(kFamily);
         if (!f.is_object()) return;
         bool changed = false;
@@ -1161,8 +1166,9 @@ private:
     // GET /shelly, which never needs a password.
     bool identify(const Target &t, const Deadline &dl, Identity &who, std::string &err) {
         const Reply r = exchange(t, "GET", "/shelly", "", 1, nullptr, dl);
-        if (r.answered && !r.too_long && r.status == 401) {   // never asks for a password on any generation
-            err = kNotUnderstood;
+        // /shelly answers on every Shelly, without a password: any other answer is another device.
+        if (r.answered && !r.too_long && r.status != 429 && (r.status < 200 || r.status >= 300)) {
+            err = std::string(kOtherDevice) + " Scan the network again in Settings, Smart home.";
             return false;
         }
         if (!settle(t, 1, Login(), r, err)) return false;
@@ -1225,6 +1231,8 @@ private:
         if (error && code == 0) return settle(t, gen, l, r, err);   // not an error the device described
         return ok;
     }
+
+    std::mutex secrets_mtx_;
 };
 
 }  // namespace

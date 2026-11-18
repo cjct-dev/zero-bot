@@ -12,11 +12,16 @@
 #include "smarthome/drivers/shelly.h"
 
 #include <arpa/inet.h>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <netinet/in.h>
 #include <string>
 #include <sys/socket.h>
+#include <thread>
+#include <vector>
 #include <unistd.h>
 
 #include <curl/curl.h>
@@ -566,6 +571,122 @@ static void test_driver() {
     CHECK(!drv->apply(dev, sw, on, 2500, err) && starts(err, "The Shelly's saved address cannot be used."));
 }
 
+// ---------------------------------------------------------------- refusals at the same moment
+// A responder on 127.0.0.1 that plays a Gen1 Shelly whose login refuses everything: /shelly
+// answers (it needs no password), everything else is 401. Each connection gets a thread, so that
+// many devices' refusals arrive together.
+struct Refuser {
+    int fd = -1, port = 0;
+    std::atomic<bool> stop{false};
+    std::atomic<int> logins{0};
+    std::thread loop;
+    Refuser() {
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        socklen_t len = sizeof(a);
+        bind(fd, reinterpret_cast<sockaddr *>(&a), sizeof(a));
+        listen(fd, 64);
+        getsockname(fd, reinterpret_cast<sockaddr *>(&a), &len);
+        port = ntohs(a.sin_port);
+        loop = std::thread([this] {
+            while (!stop) {
+                const int c = accept(fd, nullptr, nullptr);
+                if (c < 0) continue;
+                std::thread([this, c] {
+                    std::string req;
+                    char buf[2048];
+                    while (req.find("\r\n\r\n") == std::string::npos) {
+                        const ssize_t n = recv(c, buf, sizeof(buf), 0);
+                        if (n <= 0) break;
+                        req.append(buf, static_cast<size_t>(n));
+                    }
+                    std::string reply;
+                    if (req.compare(0, 12, "GET /shelly ") == 0) {
+                        const std::string body = R"({"type":"SHSW-1","mac":"A4CF12F45378","auth":true})";
+                        reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
+                                std::to_string(body.size()) + "\r\n\r\n" + body;
+                    } else {
+                        if (req.find("Authorization: Basic ") != std::string::npos) ++logins;
+                        reply = "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"x\"\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+                    }
+                    send(c, reply.data(), reply.size(), MSG_NOSIGNAL);
+                    close(c);
+                }).detach();
+            }
+        });
+    }
+    ~Refuser() {
+        stop = true;
+        shutdown(fd, SHUT_RDWR);
+        close(fd);
+        const int poke = socket(AF_INET, SOCK_STREAM, 0);   // wake accept()
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        a.sin_port = htons(static_cast<uint16_t>(port));
+        connect(poke, reinterpret_cast<sockaddr *>(&a), sizeof(a));
+        close(poke);
+        loop.join();
+    }
+};
+
+// The store's own secrets: each get and set is atomic, a get-change-set is not.
+struct SlowSecrets : home::Secrets {
+    mutable std::mutex mtx;
+    json all = json::object();
+    json get(const std::string &f) const override {
+        std::lock_guard<std::mutex> lk(mtx);
+        return all.contains(f) ? all[f] : json::object();
+    }
+    void set(const std::string &f, const json &v) override {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));   // a file write takes a while
+        std::lock_guard<std::mutex> lk(mtx);
+        if (v.is_object() && !v.empty()) all[f] = v;
+        else all.erase(f);
+    }
+};
+
+static void test_refusals_together() {
+    Refuser dev_side;
+    auto drv = make_shelly_driver();
+    SlowSecrets sec;
+    drv->attach(&sec);
+    constexpr int kDevices = 16;
+    std::vector<home::Device> devs(kDevices);
+    home::Thing relay = thing_of({{"gen", 1}, {"comp", "relay"}, {"id", 0}, {"dev", "a4cf12f45378"}}, home::kPower);
+    relay.id = "relay:0";
+    for (int i = 0; i < kDevices; ++i) {
+        devs[i].id = "shelly:shelly1-" + std::to_string(i);
+        devs[i].kind = "shelly";
+        devs[i].ip = "127.0.0.1";
+        devs[i].port = dev_side.port;
+        devs[i].auth = {{"user", "admin"}, {"password", "pw" + std::to_string(i)}};
+        devs[i].things = {relay};
+    }
+    home::Change on;
+    on.on = true;
+    std::vector<std::string> errs(kDevices);
+    std::vector<std::thread> threads;
+    for (int i = 0; i < kDevices; ++i)
+        threads.emplace_back([&, i] { drv->apply(devs[i], relay, on, 2500, errs[i]); });
+    for (auto &t : threads) t.join();
+    int refused = 0;
+    for (const auto &e : errs) refused += starts(e, shelly::kRefused);
+    CHECK_MSG(refused == kDevices && dev_side.logins == kDevices, std::to_string(refused) + " refused, " + std::to_string(dev_side.logins) + " logins");
+    const json f = sec.get("shelly");
+    const size_t kept = f.contains("refused") ? f["refused"].size() : 0;
+    CHECK_MSG(kept == static_cast<size_t>(kDevices), std::to_string(kept) + " of " + std::to_string(kDevices) + " refusals kept");
+    // And so none of them is sent again.
+    const int before = dev_side.logins;
+    for (int i = 0; i < kDevices; ++i) {
+        std::string err;
+        CHECK(!drv->apply(devs[i], relay, on, 2500, err) && starts(err, shelly::kRefused));
+    }
+    CHECK(dev_side.logins == before);
+}
+
 int main() {
     curl_global_init(CURL_GLOBAL_DEFAULT);
     test_identity();
@@ -574,6 +695,7 @@ int main() {
     test_plan();
     test_frames();
     test_driver();
+    test_refusals_together();
     curl_global_cleanup();
     printf("shelly: %d checks, %d failed\n", g_run, g_failed);
     return g_failed ? 1 : 0;

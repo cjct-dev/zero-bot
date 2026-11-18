@@ -65,7 +65,7 @@ extern const char *const kNoAnswer;       // "The Shelly did not answer."
 extern const char *const kNeedsPassword;  // "The Shelly asks for a password."
 extern const char *const kRefused;        // "The Shelly did not accept the saved password,"
 extern const char *const kThrottled;      // "The Shelly is turning logins away for a while"
-extern const char *const kOtherDevice;    // "A different Shelly now answers at this address."
+extern const char *const kOtherDevice;    // "Another device now answers at this address."
 extern const char *const kNotUnderstood;  // "The Shelly's answer could not be understood."
 
 // Building blocks, exposed for shelly_test.cpp. Not part of the interface.

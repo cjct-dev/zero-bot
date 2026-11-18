@@ -54,8 +54,9 @@ src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast); driver.h, the con
 src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
                     pages, breathing screen, alarm banner, theme
 tests/              scored agent test set (needs a live service), device-free unit tests
-                    (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit), Tapo, Fire TV
-                    and HomeKit end to end (tapo_e2e.py, firetv_e2e.py, homekit_e2e.py),
+                    (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit, Shelly), Tapo,
+                    Fire TV, HomeKit and Shelly end to end (tapo_e2e.py, firetv_e2e.py,
+                    homekit_e2e.py, shelly_e2e.py),
                     the loop against a scripted chat service (home_chat_e2e.py), simulated devices
                     and service (mocks/)
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
@@ -144,8 +145,9 @@ What exists:
   `tests/unit/smarthome_test.cpp` (store and migration, names and rooms, schema snapshots in
   `tests/snapshots/`, the safety questions, rate limits, locking, pairing, the Tapo driver's
   refusals, colours, discovery from sample packets through `discovery::devices_from`; devices are
-  a fake driver), `tests/unit/firetv_test.cpp` and `tests/unit/homekit_test.cpp` (each driver's
-  known answers; Fire TV's test certificates are in `tests/mocks/firetv/`),
+  a fake driver), `tests/unit/firetv_test.cpp`, `tests/unit/homekit_test.cpp` and
+  `tests/unit/shelly_test.cpp` (each driver's known and hostile answers; Fire TV's test
+  certificates are in `tests/mocks/firetv/`),
   `tests/unit/http_test.cpp` (the request
   options for devices, against a local peer) and `tests/unit/timers_test.cpp` (the timer tool,
   storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it keeps everything
@@ -160,7 +162,12 @@ What exists:
   answers, checked from the simulated TV's side. It takes a few minutes (it waits out real wake-up
   times). `tests/homekit_e2e.py` does the same for `build/unit/homekit_cli` against a simulated
   HomeKit bridge (`tests/mocks/homekit/mock_homekit.py`): pairing, refused codes, bridged
-  accessories switched off, changed databases, Unpair.
+  accessories switched off, changed databases, Unpair. `tests/shelly_e2e.py` (about 15 s) drives
+  `build/unit/shelly_cli` against `tests/mocks/shelly/mock_shelly.py`, which plays Gen1 and Gen2+
+  models with and without a password (its digest code reproduces RFC 7616's examples), then runs
+  `build/cli/zero_bot --tool smart_home` against a saved home of simulated Shellies when that is
+  built: passwords asked for, refused and never resent, covers, lights, refused models, another
+  device at the saved address, hostile answers, and that no setup or calibration call is ever sent.
 - **Code ported from other projects** keeps their notices in the source file and in
   `licenses/THIRD-PARTY-NOTICES.md`, which the package installs; add to it with any new port.
 - **The request loop, scripted**: `tests/home_chat_e2e.py` runs `build/cli/zero_bot --chat` against
@@ -295,6 +302,11 @@ key, real audio), say so plainly rather than implying it was.
   login that would lock out every plug of a second account, a confirmation the model could skip,
   a discovery port that sent pairing to the wrong service). A second review found only smaller
   problems; two rounds and a final check was a sensible stopping point.
+- libcurl's digest authentication (`http::Request::digest_user`) sends a POST first with an
+  empty body, to draw the device's challenge, and only then the body with the credentials. A
+  device that asks for no password takes that empty request as the call. The Shelly driver
+  therefore makes its digest calls as GET (Shelly's `/rpc/<Method>?<params>`); a mock that
+  parses the body before checking the login hides the problem.
 
 **Power**
 - The fuel gauge (`/sys/class/power_supply/bq27220-0/`) reports `current_now` in µA: positive

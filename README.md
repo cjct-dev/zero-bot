@@ -246,8 +246,20 @@ device directly: nothing goes through the makers' cloud services. Supported so f
   pairing and then carries on with the new key; if it does not, it asks you to pair again. Amazon
   does not document this interface, so a Fire TV software update could change it. Tested so far
   only against a simulated TV.
+- **Shelly** relays, plugs, dimmers, colour and white lights, blinds and temperature sensors, of
+  the first generation and of the Plus, Pro, Mini and later ones. Each channel is its own thing: a
+  Plus 2PM is two switches, or one blind when it is set up for a blind; a relay that the Shelly app
+  says feeds lights counts as a light, so "turn off the kitchen" includes it. Zero Bot can switch,
+  dim and colour them, open and close blinds and move them to a position (a position between open
+  and closed only once the blind has been calibrated in the Shelly app), and read power use,
+  temperature and humidity; battery sensors such as the H&T can only be read while they are awake.
+  It never starts a calibration or changes any of the device's settings. A relay named like a
+  garage door, gate, door, lock, valve, alarm or siren is never offered (a Shelly 1 is often fitted
+  to a garage door), unless its name says it is a light ("Front door light"); nor are thermostats,
+  or smoke, gas, flood and door sensors. Before every change Zero Bot checks that the device at the
+  saved address is still the same Shelly. Tested so far only against simulated devices.
 
-Other families (Hue, Shelly, WiZ, Kasa and more) are added one driver at a time.
+Other families (Hue, WiZ, Kasa and more) are added one driver at a time.
 
 1. On your home network, open *Your data → Smart home → Find devices on this network*. Only do
    this on a network you own. The scan only asks devices to identify themselves, the way the
@@ -264,7 +276,11 @@ Other families (Hue, Shelly, WiZ, Kasa and more) are added one driver at a time.
    type, valid for 5 minutes. A code the TV refuses is never sent again: start again and the TV
    shows a new one. A HomeKit accessory asks for its 8-digit setup code (like 123-45-678); a code
    it refuses is not sent again until you type it again, because accessories stop pairing after
-   too many wrong codes.
+   too many wrong codes. A Shelly asks for nothing unless its owner set a password in the Shelly
+   app; then it asks for that password (a first-generation Shelly first asks for its login's user
+   name, which is admin unless it was changed). A password a Shelly refuses is not sent again, by
+   any later run either, until you type it again, because Shelly devices hold back logins after
+   wrong passwords. The password is kept on the handheld, in the same private file as the devices.
 3. What each device controls is then listed by room. On its page you can set the name you will
    say (*Called*), a *Room* (guessed from the name where it starts with one, such as "Bedroom
    lamp"), whether the *Assistant may use it*, and *Ask before switching on*. That last one is on
@@ -367,9 +383,10 @@ devices at a 127.x address are ever contacted and nothing is scanned; the tests 
 were called, whether the answers hold up, and how long each took. See the notes at the top of
 the file. `tests/run_unit.sh` builds and runs the tests that need neither a device nor an AI
 service (the smart-home layer, and the timers: the timer tool, how timers are stored, the
-countdown and the alarm, and the Fire TV and HomeKit drivers), `tests/tapo_e2e.py` runs the
-command-line build against two simulated Tapo plugs, `tests/firetv_e2e.py` and
-`tests/homekit_e2e.py` run those drivers against a simulated TV and a simulated HomeKit bridge, and
+countdown and the alarm, and the Fire TV, HomeKit and Shelly drivers), `tests/tapo_e2e.py` runs
+the command-line build against two simulated Tapo plugs, `tests/firetv_e2e.py`,
+`tests/homekit_e2e.py` and `tests/shelly_e2e.py` run those drivers against a simulated TV, a
+simulated HomeKit bridge and simulated Shelly devices (the last also through the app), and
 `tests/home_chat_e2e.py` runs its conversation loop against a scripted chat
 service to check that a change needing your yes waits for one.
 
@@ -410,7 +427,7 @@ src/ui/         chat screen, menus, settings pages, alarm banner, app controller
 src/net/        HTTP client (libcurl)
 src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers
 scripts/        toolchain setup, packaging, deployment
-tests/          scored agent test set, unit tests (smart home, timers, Fire TV, HomeKit), end-to-end tests with simulated devices
+tests/          scored agent test set, unit tests (smart home, timers, Fire TV, HomeKit, Shelly), end-to-end tests with simulated devices
 licenses/       third-party notices and the Apache-2.0 text
 packaging/      launcher entry and icon
 extras/         device-tree overlay for the Wi-Fi channel fix
