@@ -300,6 +300,9 @@ key, real audio), say so plainly rather than implying it was.
   The first review of the WiZ driver found that a command for a light switched the plug that now
   had its address. Such a driver checks the device's MAC (the one discovery saved it under)
   before every change, and fails with a word `unreachable()` knows so the app looks for it.
+- A default that reads a device's name must also read the name the user types. WiZ devices keep
+  no name, so the heater question (on for a plug named like a heater) never applied to one until
+  `set_thing_alias` learnt to switch it on for a name that newly sounds like a heater.
 - Before promising a device can be controlled, check whether it has a local interface at all.
   Several popular products are cloud-only.
 - New device code is reviewed before it touches a real device: in this project the first
