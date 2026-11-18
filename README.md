@@ -246,8 +246,18 @@ device directly: nothing goes through the makers' cloud services. Supported so f
   pairing and then carries on with the new key; if it does not, it asks you to pair again. Amazon
   does not document this interface, so a Fire TV software update could change it. Tested so far
   only against a simulated TV.
+- **TP-Link Kasa** plugs, power strips, wall switches, dimmers, bulbs and light strips that use
+  Kasa's older local protocol (models such as HS100, HS103, HS110, KP115, HS200, HS220, HS300,
+  KP303, KL130 and KL430). They need no account and no setting up: Zero Bot switches them on and
+  off (each socket of a strip on its own), dims dimmers and bulbs, sets a bulb's colour or shade of
+  white, and reads the power and today's energy on models that measure it. TP-Link has been moving
+  Kasa devices to the newer login that Tapo plugs use with firmware updates; Zero Bot cannot use
+  that login with these devices, and says so for one that has moved (the Kasa app still controls
+  it). Newer Kasa models made on Tapo's system are listed as Tapo devices (untested). The older
+  protocol has no password at all. TP-Link does not document it. Tested so far only against
+  simulated devices.
 
-Other families (Hue, Shelly, WiZ, Kasa and more) are added one driver at a time.
+Other families (Hue, Shelly, WiZ and more) are added one driver at a time.
 
 1. On your home network, open *Your data → Smart home → Find devices on this network*. Only do
    this on a network you own. The scan only asks devices to identify themselves, the way the
@@ -264,7 +274,7 @@ Other families (Hue, Shelly, WiZ, Kasa and more) are added one driver at a time.
    type, valid for 5 minutes. A code the TV refuses is never sent again: start again and the TV
    shows a new one. A HomeKit accessory asks for its 8-digit setup code (like 123-45-678); a code
    it refuses is not sent again until you type it again, because accessories stop pairing after
-   too many wrong codes.
+   too many wrong codes. Older Kasa devices ask for nothing.
 3. What each device controls is then listed by room. On its page you can set the name you will
    say (*Called*), a *Room* (guessed from the name where it starts with one, such as "Bedroom
    lamp"), whether the *Assistant may use it*, and *Ask before switching on*. That last one is on
@@ -367,9 +377,10 @@ devices at a 127.x address are ever contacted and nothing is scanned; the tests 
 were called, whether the answers hold up, and how long each took. See the notes at the top of
 the file. `tests/run_unit.sh` builds and runs the tests that need neither a device nor an AI
 service (the smart-home layer, and the timers: the timer tool, how timers are stored, the
-countdown and the alarm, and the Fire TV and HomeKit drivers), `tests/tapo_e2e.py` runs the
+countdown and the alarm, and the Fire TV, HomeKit and Kasa drivers), `tests/tapo_e2e.py` runs the
 command-line build against two simulated Tapo plugs, `tests/firetv_e2e.py` and
-`tests/homekit_e2e.py` run those drivers against a simulated TV and a simulated HomeKit bridge, and
+`tests/homekit_e2e.py` run those drivers against a simulated TV and a simulated HomeKit bridge,
+`tests/kasa_e2e.py` runs the Kasa driver and the command-line build against simulated Kasa devices, and
 `tests/home_chat_e2e.py` runs its conversation loop against a scripted chat
 service to check that a change needing your yes waits for one.
 
@@ -410,7 +421,7 @@ src/ui/         chat screen, menus, settings pages, alarm banner, app controller
 src/net/        HTTP client (libcurl)
 src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers
 scripts/        toolchain setup, packaging, deployment
-tests/          scored agent test set, unit tests (smart home, timers, Fire TV, HomeKit), end-to-end tests with simulated devices
+tests/          scored agent test set, unit tests (smart home, timers, Fire TV, HomeKit, Kasa), end-to-end tests with simulated devices
 licenses/       third-party notices and the Apache-2.0 text
 packaging/      launcher entry and icon
 extras/         device-tree overlay for the Wi-Fi channel fix

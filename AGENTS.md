@@ -54,8 +54,9 @@ src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast); driver.h, the con
 src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
                     pages, breathing screen, alarm banner, theme
 tests/              scored agent test set (needs a live service), device-free unit tests
-                    (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit), Tapo, Fire TV
-                    and HomeKit end to end (tapo_e2e.py, firetv_e2e.py, homekit_e2e.py),
+                    (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit, Kasa), Tapo,
+                    Fire TV, HomeKit and Kasa end to end (tapo_e2e.py, firetv_e2e.py,
+                    homekit_e2e.py, kasa_e2e.py),
                     the loop against a scripted chat service (home_chat_e2e.py), simulated devices
                     and service (mocks/)
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
@@ -144,8 +145,9 @@ What exists:
   `tests/unit/smarthome_test.cpp` (store and migration, names and rooms, schema snapshots in
   `tests/snapshots/`, the safety questions, rate limits, locking, pairing, the Tapo driver's
   refusals, colours, discovery from sample packets through `discovery::devices_from`; devices are
-  a fake driver), `tests/unit/firetv_test.cpp` and `tests/unit/homekit_test.cpp` (each driver's
-  known answers; Fire TV's test certificates are in `tests/mocks/firetv/`),
+  a fake driver), `tests/unit/firetv_test.cpp`, `tests/unit/homekit_test.cpp` and
+  `tests/unit/kasa_test.cpp` (each driver's known answers; Fire TV's test certificates are in
+  `tests/mocks/firetv/`),
   `tests/unit/http_test.cpp` (the request
   options for devices, against a local peer) and `tests/unit/timers_test.cpp` (the timer tool,
   storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it keeps everything
@@ -161,6 +163,11 @@ What exists:
   times). `tests/homekit_e2e.py` does the same for `build/unit/homekit_cli` against a simulated
   HomeKit bridge (`tests/mocks/homekit/mock_homekit.py`): pairing, refused codes, bridged
   accessories switched off, changed databases, Unpair.
+- **Kasa end to end**: `tests/kasa_e2e.py` runs `build/unit/kasa_cli` against
+  `tests/mocks/kasa/mock_kasa.py` (plugs, a strip, a dimmer, bulbs, a camera and a plug moved to the
+  newer login): discovery answers, every kind of change, meters, hostile answers; then, when it is
+  built, `build/cli/zero_bot` on `ZB_TEST_NETWORK` against the same devices. Checked from the
+  devices' side.
 - **Code ported from other projects** keeps their notices in the source file and in
   `licenses/THIRD-PARTY-NOTICES.md`, which the package installs; add to it with any new port.
 - **The request loop, scripted**: `tests/home_chat_e2e.py` runs `build/cli/zero_bot --chat` against
