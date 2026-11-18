@@ -675,22 +675,54 @@ class App:
         os.chmod(self.file, 0o600)
 
 
+def app_with_bridge(m, tmp):
+    """The app, on the stand-in network, with this mock saved as a paired bridge (paired by hue_cli)."""
+    st = paired(m, tmp, "app-pairing.json")
+    app = App(tmp)
+    out = app.run("--home-refresh")
+    network = next((l.split(" id ")[1].strip() for l in out.splitlines() if l.startswith("network: Test network, id ")), "")
+    check(network.startswith("net-"), "the app runs on the stand-in test network")
+    device = {"id": DEVICE_ID, "kind": "hue_bridge", "name": "Hue Bridge", "model": "BSB002", "mac": "", "last_ip": "127.0.0.1",
+              "port": m.port, "info": {"bridgeid": BRIDGE_ID, "modelid": "BSB002"}, "found_by": ["mdns"], "enabled": True,
+              "needs_setup": False, "last_seen": 1, "problem": "", "auth": auth(st), "things": []}
+    app.save({"version": 2, "secrets": {},
+              "networks": {network: {"label": "Test network", "gateway_mac": "02:00:00:00:00:00", "allowed_at": 1,
+                                     "last_scan": 1, "devices": [device]}}})
+    return app, network
+
+
+# A real bridge puts a room's smart plugs in the scenes made for that room. Recalling such a scene
+# would switch on whatever the plug feeds (here a "Fan heater", which the app asks about before
+# switching it on), without that question: the scene is not offered at all.
+def test_scene_with_plug(tmp):
+    with Mock(files={"plug-in-scene": ""}) as m:
+        st, things = enumerated(m, tmp)
+        check(rid("sc-relax-living") not in things, "a scene that switches on a smart plug is not offered")
+        check(rid("sc-relax-kitchen") in things and rid("sc-bright-down") in things, "scenes without a plug still are")
+        if not os.access(APP, os.X_OK):
+            print("info  %s is not built (repobuild cli): the app's part was skipped" % APP, flush=True)
+            return
+        app, network = app_with_bridge(m, tmp)
+        m.reset_log()
+        out = app.run("--home-refresh")
+        check("1 device ready." in out, "the app reads the bridge")
+        m.reset_log()
+        r = app.tool({"action": "scene", "target": "Living room"})
+        log = m.log()
+        check(not puts(log), "starting the Living room's scene sends nothing (%s)" % (r,))
+        r = cli(st, "read", rid("l-plug"))
+        check(r.rc == 0 and r.out[0]["things"][0]["state"].get("on") is False, "and the heater plug stays off")
+        m.reset_log()
+        r = app.tool({"action": "on", "target": "Fan heater"})
+        check(isinstance(r, str) and r.startswith("CONFIRM:") and m.log() == [], "the plug itself is still asked about first")
+
+
 def test_app(tmp):
     if not os.access(APP, os.X_OK):
         print("info  %s is not built (repobuild cli): the app's part was skipped" % APP, flush=True)
         return
     with Mock() as m:
-        st = paired(m, tmp)
-        app = App(tmp)
-        out = app.run("--home-refresh")
-        network = next((l.split(" id ")[1].strip() for l in out.splitlines() if l.startswith("network: Test network, id ")), "")
-        check(network.startswith("net-"), "the app runs on the stand-in test network")
-        device = {"id": DEVICE_ID, "kind": "hue_bridge", "name": "Hue Bridge", "model": "BSB002", "mac": "", "last_ip": "127.0.0.1",
-                  "port": m.port, "info": {"bridgeid": BRIDGE_ID, "modelid": "BSB002"}, "found_by": ["mdns"], "enabled": True,
-                  "needs_setup": False, "last_seen": 1, "problem": "", "auth": auth(st), "things": []}
-        app.save({"version": 2, "secrets": {},
-                  "networks": {network: {"label": "Test network", "gateway_mac": "02:00:00:00:00:00", "allowed_at": 1,
-                                         "last_scan": 1, "devices": [device]}}})
+        app, network = app_with_bridge(m, tmp)
         m.reset_log()
         out = app.run("--home-refresh")
         check("1 device ready." in out, "refresh reads the bridge")
@@ -771,7 +803,7 @@ def main():
     only = [t for t in os.environ.get("HUE_E2E_ONLY", "").split(",") if t]
     try:
         for test in (test_pairing, test_pairing_refusals, test_things, test_apply, test_groups, test_refused_key,
-                     test_certificate_change, test_unreachable, test_malformed, test_unpair, test_app):
+                     test_certificate_change, test_unreachable, test_malformed, test_unpair, test_scene_with_plug, test_app):
             if only and test.__name__ not in only:
                 continue
             print("--- " + test.__name__, flush=True)

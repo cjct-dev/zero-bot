@@ -22,7 +22,9 @@
 //    "scene", kScene, room = its room or zone); one per sensor device with a temperature or motion
 //    service (type "sensor", kSensor). Thing::room is the light's room, else its first zone (by
 //    name). Devices with a camera, siren, chime, doorbell button or contact/tamper service are
-//    never exposed, nor is any scene that includes one of their lights.
+//    never exposed, nor is any scene that includes one of their lights, nor a scene that switches
+//    on a smart plug (or does not say it stays off): a plug may feed a heater, which the app asks
+//    about before switching it on, and a scene would switch it on without that question.
 //  - Thing::state: lights {"on", "brightness" 0..100, "kelvin" (white mode) or "hue" 0..360 and
 //    "saturation" 0..100 (colour mode)}; sensors {"current_c", "motion"}; scenes {}.
 //  - Thing::ref (driver-private): lights {"kind":"light","rid","device","mirek":[min,max],

@@ -554,6 +554,11 @@ void build_things(const Snapshot &s, std::vector<home::Thing> &out, BridgeInfo &
     auto group_ref = [&](const GroupInfo &g) {
         return json{{"rtype", g.rtype}, {"rid", g.rid}, {"gl", g.gl}, {"n", g.lights.size()}, {"fp", g.fp}};
     };
+    // A smart plug is a light service whose archetype (or its device's) is "plug".
+    auto is_plug = [&](const L &l) {
+        const json *dev = device_of(l.device);
+        return str(field(*l.res, "metadata"), "archetype") == "plug" || (dev && str(field(*dev, "metadata"), "archetype") == "plug");
+    };
 
     // Lights and plugs.
     for (const auto &l : lights) {
@@ -568,9 +573,7 @@ void build_things(const Snapshot &s, std::vector<home::Thing> &out, BridgeInfo &
         t.name = clean_name(str(field(res, "metadata"), "name"));
         if (t.name.empty() && dev) t.name = clean_name(str(field(*dev, "metadata"), "name"));
         if (t.name.empty()) t.name = "Hue light";
-        const std::string archetype = str(field(res, "metadata"), "archetype");
-        const std::string dev_archetype = dev ? str(field(*dev, "metadata"), "archetype") : std::string();
-        t.type = archetype == "plug" || dev_archetype == "plug" ? "plug" : "light";
+        t.type = is_plug(l) ? "plug" : "light";
         t.caps = home::kPower;
         json ref = {{"kind", "light"}, {"rid", l.id}, {"device", safe_id(l.device) ? l.device : std::string()}};
         double b = 0;
@@ -610,12 +613,19 @@ void build_things(const Snapshot &s, std::vector<home::Thing> &out, BridgeInfo &
         out.push_back(t);
     }
 
-    // Scenes, unless one of their lights belongs to a device that is never exposed.
+    // Scenes, unless one of their lights belongs to a device that is never exposed, or one of them
+    // switches on a smart plug: the Hue app puts a room's plugs in the scenes made for that room,
+    // and a plug may feed anything (a heater), which the app asks about before switching it on
+    // (Thing::ask_first) while a scene would switch it on without that question.
     std::map<std::string, std::string> group_name;
     for (const auto &g : groups)
         if (g.rtype != "bridge_home") group_name[g.rid] = g.name;
     std::map<std::string, std::string> device_of_light;
-    for (const auto &l : lights) device_of_light[l.id] = l.device;
+    std::set<std::string> plugs;
+    for (const auto &l : lights) {
+        device_of_light[l.id] = l.device;
+        if (is_plug(l)) plugs.insert(l.id);
+    }
     size_t scenes = 0;
     for (const auto &sc : s.scenes) {
         if (out.size() >= kMaxThings || ++scenes > kMaxResources) break;
@@ -630,6 +640,9 @@ void build_things(const Snapshot &s, std::vector<home::Thing> &out, BridgeInfo &
             const std::string rid = str(target, "rid");
             const auto it = device_of_light.find(rid);
             if (str(target, "rtype") != "light" || it == device_of_light.end() || denied.count(it->second)) { ok = false; break; }
+            bool on = true;
+            const bool says_off = boolean(field(field(a, "action"), "on"), "on", on) && !on;
+            if (plugs.count(rid) && !says_off) { ok = false; break; }
         }
         if (!ok) continue;
         home::Thing t;

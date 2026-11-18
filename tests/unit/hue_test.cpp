@@ -431,6 +431,30 @@ static void test_things() {
     for (const auto &t : things) allowed = allowed && kAllowed.count(t.type);
     check(allowed, "every thing is of a type on the allow-list");
 
+    // A scene that switches on a smart plug (the Hue app puts a room's plugs in its scenes) would
+    // switch on whatever the plug feeds, a heater perhaps, without the question the plug itself
+    // gets: such a scene is not offered. One that switches the plug off, or leaves it out, is.
+    {
+        Snapshot p = s;
+        p.scenes.push_back(json::parse(R"({"id":"scene-plug-on","type":"scene","metadata":{"name":"Cosy"},
+            "group":{"rid":"room-living","rtype":"room"},
+            "actions":[{"target":{"rid":"light-sofa","rtype":"light"},"action":{"on":{"on":true}}},
+                       {"target":{"rid":"light-plug","rtype":"light"},"action":{"on":{"on":true}}}]})"));
+        p.scenes.push_back(json::parse(R"({"id":"scene-plug-unsaid","type":"scene","metadata":{"name":"Cosy two"},
+            "group":{"rid":"room-living","rtype":"room"},
+            "actions":[{"target":{"rid":"light-plug","rtype":"light"},"action":{"dimming":{"brightness":50}}}]})"));
+        p.scenes.push_back(json::parse(R"({"id":"scene-plug-off","type":"scene","metadata":{"name":"Night"},
+            "group":{"rid":"room-living","rtype":"room"},
+            "actions":[{"target":{"rid":"light-sofa","rtype":"light"},"action":{"on":{"on":true}}},
+                       {"target":{"rid":"light-plug","rtype":"light"},"action":{"on":{"on":false}}}]})"));
+        std::vector<home::Thing> with_plug;
+        build_things(p, with_plug, info);
+        check(!has_thing(with_plug, "scene-plug-on"), "a scene that switches a smart plug on is not offered");
+        check(!has_thing(with_plug, "scene-plug-unsaid"), "nor one that does not say the plug stays off");
+        check(has_thing(with_plug, "scene-plug-off") && has_thing(with_plug, "scene-relax"),
+              "a scene that switches the plug off, or leaves it out, is offered");
+    }
+
     // Hostile shapes: wrong types everywhere must not throw.
     Snapshot bad;
     bad.devices = json::parse(R"([{"id":5},{"id":"d","services":"x"},{"id":"e","services":[{"rid":1,"rtype":null}]}])");

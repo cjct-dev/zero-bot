@@ -30,6 +30,8 @@ Control files in DIR, read on every connection or request (the test writes them)
   config.json   an object merged into /api/0/config (e.g. an old swversion)
   extra-room    exists: the Hall light's device moves to the Kitchen (membership changed)
   no-camera     exists: the camera (and its floodlight and scene) is not on this bridge
+  plug-in-scene exists: the Living room's Relax scene also switches on its smart plug (the
+                "Fan heater"), as the Hue app does when a scene is made for a room with a plug
   swap-after-config   a certificate name: once /api/0/config has been answered, new
                 connections get that certificate (a certificate changed mid-pairing)
   unreachable   exists: every light reports communication issues on PUT (207)
@@ -168,7 +170,7 @@ def simple(name, rtype, owner, **fields):
 HOSTILE_NAME = "\u0007Evil\u202e lamp " + "x" * 60 + "\n"
 
 
-def make_resources(extra_room=False, no_camera=False):
+def make_resources(extra_room=False, no_camera=False, plug_scene=False):
     devices = [
         device("bridge", "Hue Bridge", "bridge_v2", "BSB002", [("br", "bridge"), ("zdd", "zigbee_device_discovery")]),
         device("d-sofa", "Sofa lamp", "table_shade", "LCA001", [("l-sofa", "light"), ("zc-sofa", "zigbee_connectivity")], "sultan_bulb"),
@@ -222,7 +224,7 @@ def make_resources(extra_room=False, no_camera=False):
     grouped = [grouped_light("room-living", "room"), grouped_light("room-kitchen", "room"), grouped_light("room-hallway", "room"),
                grouped_light("zone-outside", "zone"), grouped_light("zone-down", "zone"), grouped_light("home", "bridge_home")]
     scenes = [
-        scene("sc-relax-living", "Relax", "room-living", "room", ["l-sofa", "l-ceiling"]),
+        scene("sc-relax-living", "Relax", "room-living", "room", ["l-sofa", "l-ceiling"] + (["l-plug"] if plug_scene else [])),
         scene("sc-relax-kitchen", "Relax", "room-kitchen", "room", ["l-strip", "l-spots"]),
         scene("sc-bright-down", "Bright", "zone-down", "zone", ["l-sofa", "l-ceiling", "l-strip", "l-spots"]),
         scene("sc-alarm", "Alarm flash", "room-hallway", "room", ["l-flood", "l-hall"]),
@@ -272,7 +274,7 @@ class Bridge:
         self.dir = state_dir
         self.lock = threading.Lock()
         self.keys = set()
-        self.flags = (False, False)
+        self.flags = (False, False, False)
         self.res = make_resources()
         self.contexts = {}
         for name in ("a", "b", "rsa", "other", "san", "chain"):
@@ -324,7 +326,8 @@ class Bridge:
                 f.write(json.dumps(entry) + "\n")
 
     def sync_membership(self):
-        flags = (os.path.exists(self.path("extra-room")), os.path.exists(self.path("no-camera")))
+        flags = (os.path.exists(self.path("extra-room")), os.path.exists(self.path("no-camera")),
+                 os.path.exists(self.path("plug-in-scene")))
         if flags != self.flags:
             self.res = make_resources(*flags)   # set before a test uses it: states start afresh
             self.flags = flags

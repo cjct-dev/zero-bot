@@ -252,9 +252,11 @@ device directly: nothing goes through the makers' cloud services. Supported so f
   temperature of Hue motion sensors. Rooms and zones come from the Hue app, and a whole room or
   zone is switched with one command to the bridge whenever the request covers exactly its lights.
   Hue cameras, doorbells, chimes and contact sensors are never offered, nor are scenes that use
-  them. Zero Bot remembers the bridge's security key from pairing and sends nothing to a device
-  that presents another; a bridge software update can change the key, and Zero Bot then asks you
-  to press the bridge's button again to confirm. Tested so far only against a simulated bridge.
+  them, nor scenes that switch on a Hue smart plug: a plug is switched on only when you name it,
+  so that its *Ask before switching on* question is never skipped. Zero Bot remembers the
+  bridge's security key from pairing and sends nothing to a device that presents another; a
+  bridge software update can change the key, and Zero Bot then asks you to press the bridge's
+  button again to confirm. Tested so far only against a simulated bridge.
 
 Other families (Shelly, WiZ, Kasa and more) are added one driver at a time.
 
