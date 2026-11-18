@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -71,7 +72,16 @@ class Run:
         self.out = out
 
 
-def converse(script, said, plug=False, refuse=False, ask_first=False):
+def closed_port():
+    """A port on 127.0.0.1 that nothing listens on: bound, then closed again at once."""
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def converse(script, said, plug=False, refuse=False, ask_first=False, stations=None):
     state = tempfile.mkdtemp(prefix="zb-selfheal-e2e-")
     procs = []
     try:
@@ -107,6 +117,8 @@ def converse(script, said, plug=False, refuse=False, ask_first=False):
             json.dump(home, open(path, "w"))
             mock_call(plug_port, "/mock/reset", {"refuse_set": refuse})   # also forgets the setup's session and counts
         json.dump({"llm_model": "scripted", "fast_mode": False, "speak_replies": False}, open(state + "/config/zero-bot/settings.json", "w"))
+        if stations:
+            json.dump({"stations": stations}, open(state + "/config/zero-bot/radio.json", "w"))
         json.dump(script, open(state + "/script.json", "w"))
         log = state + "/requests.jsonl"
         chat, chat_port = start([sys.executable, "-I", os.path.join(HERE, "mocks", "mock_chat.py"), state + "/script.json", log], "CHAT")
@@ -212,6 +224,24 @@ def main():
                   "note": [["nothing has been done", {"text": "I could not set it: it needs a time."}]]}, ["remind me about tea"])
     check("'Done, shall I do anything else?' after a failed call is still withdrawn",
           r.answers == ["I could not set it: it needs a time."] and r.withdrawn == 1, (r.answers, r.withdrawn))
+
+    # ---- radio: a station that did not play is not announced as playing (ZB-055). The station's
+    # address is a port nothing listens on, so the check before playing fails and nothing is played.
+    stations = [{"name": "Closed FM", "url": "http://127.0.0.1:%d/live.mp3" % closed_port()}]
+    play = {"tool": "radio", "args": {"action": "play", "station": "Closed FM", "say": "Here is Closed FM."}}
+    told = "Sorry, Closed FM did not play: its server could not be reached."
+    for claim in ("Here is Closed FM.", "Here’s Closed FM for you.", "Playing Closed FM now.", "Closed FM is playing now."):
+        r = converse({"user": [["closed fm", play]], "after": [["ERROR", {"text": claim}]],
+                      "note": [["nothing has been done", {"text": told}]]}, ["play closed fm"], stations=stations)
+        check("radio: the call failed, so %r is withdrawn and the failure told" % claim,
+              r.results[:1] and r.results[0].startswith("ERROR:") and r.answers == [told] and r.withdrawn == 1,
+              (r.results, r.answers, r.withdrawn))
+    for honest in ("Closed FM is not playing: its server could not be reached.", "Here's the problem: Closed FM did not answer.",
+                   "I couldn't start playing Closed FM, its server is not answering.", "Closed FM isn't playing right now, sorry."):
+        r = converse({"user": [["closed fm", play]], "after": [["ERROR", {"text": honest}]],
+                      "note": [["nothing has been done", {"text": "withdrawn by mistake"}]]}, ["play closed fm"], stations=stations)
+        check("radio: after the failure %r is spoken as it is" % honest, r.answers == [honest] and r.withdrawn == 0,
+              (r.answers, r.withdrawn))
 
     # ---- never silence: an empty reply goes back once; then an answer is made here
     r = converse({"user": [["capital of portugal", {"text": ""}]], "note": [["Your reply was empty", {"text": "Lisbon."}]]},

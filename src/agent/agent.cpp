@@ -95,9 +95,19 @@ bool claims_action(const std::string &raw) {
 // question is not that claim, and is often the right answer then: "Shall I put it in for next
 // year?" after a date in the past, "Shall I set the heater to 28 degrees?" for a change that waits
 // for a yes. "Done, anything else?" still claims.
+//
+// Something said to be on: "Here is Closed FM.", "Playing Jazz FM", "It's playing now", the radio
+// and music tools' own confirmations, after the call that would have started it failed. Not
+// "Here's the problem", "Here's what happened", nor "it isn't playing".
 bool claims_done(const std::string &raw) {
     static const std::regex offer("\\b(shall|should|can|could|may|will|would|do) i\\b", std::regex::icase | std::regex::optimize);
-    return claims_action(std::regex_replace(raw, offer, "$1"));
+    static const std::regex on_air(
+        "^\\W*(here('s| is| comes| you go| we go)\\b(?![^.!?:]*\\b(problem|issue|trouble|thing|what|why|how|error|sorry)\\b)"
+        "|playing\\b)|\\b(is|are|i'?m|it'?s) (now |already )?playing\\b",
+        std::regex::icase | std::regex::optimize);
+    std::string text = std::regex_replace(raw, offer, "$1");
+    for (size_t at; (at = text.find("\xE2\x80\x99")) != std::string::npos;) text.replace(at, 3, "'");  // typographic apostrophe
+    return claims_action(text) || std::regex_search(text, on_air);
 }
 
 // What a tool call asked for, to recognise the same call again: the tool and its arguments in a
