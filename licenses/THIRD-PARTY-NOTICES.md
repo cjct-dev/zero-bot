@@ -47,3 +47,16 @@ License, Version 2.0 (full text in `Apache-2.0.txt` beside this file). Neither h
 The C++ code in `homekit.cpp` is a re-write over libcrypto; the file lists what each part
 follows. "HomeKit" is a trademark of Apple Inc. Zero Bot is not made or endorsed by Apple or
 Amazon.
+
+### Hue driver (`src/smarthome/drivers/hue.cpp`)
+
+Parts of the Hue Bridge protocol handling follow these two projects, both under the Apache License,
+Version 2.0 (full text in `Apache-2.0.txt` beside this file). Neither has a NOTICE file.
+
+- aiohue, github.com/home-assistant-libs/aiohue: Licensed under the Apache License, Version 2.0;
+  its copyright notice is in its LICENSE file.
+- openhue-api, github.com/openhue/openhue-api (an OpenAPI description of the bridge's CLIP version
+  2 interface): Licensed under the Apache License, Version 2.0.
+
+The C++ code in `hue.cpp` is a re-write; nothing was copied, and the file lists what each part
+follows. Zero Bot is not made or endorsed by Signify, the maker of Philips Hue.
