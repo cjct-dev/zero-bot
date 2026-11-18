@@ -151,7 +151,8 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   - *Never silence.* "Done" in a reply after tool calls that all failed or wait for a yes is
     withdrawn once, like the guard for no tool at all (`claims_done`: an offer put as a question,
     "Shall I put it in for next year?", is not withdrawn; it is often the right answer then; the
-    radio's and music's own confirmations, "Here is X." or "X is playing", are claims too). An
+    radio's and music's own confirmations, "Here is X." or "X is playing", are claims too, but not in
+    a sentence that says no or asks: "Nothing is playing right now" is the honest answer to "skip"). An
     empty reply goes back to the model once, then an answer is made in code. When the service is
     lost after tools ran, the user hears the confirmations of the calls that worked and that the
     rest could not be finished.

@@ -97,17 +97,30 @@ bool claims_action(const std::string &raw) {
 // for a yes. "Done, anything else?" still claims.
 //
 // Something said to be on: "Here is Closed FM.", "Playing Jazz FM", "It's playing now", the radio
-// and music tools' own confirmations, after the call that would have started it failed. Not
-// "Here's the problem", "Here's what happened", nor "it isn't playing".
+// and music tools' own confirmations, after the call that would have started it failed. Judged
+// sentence by sentence, and not in one that says no or asks: "Nothing is playing right now" (the
+// honest answer to "skip this song" with no music on), "Closed FM isn't playing", "Here's the
+// problem", "The speaker is playing at 20 %; shall I set it to 90 %?" (a change that waits for a yes).
 bool claims_done(const std::string &raw) {
     static const std::regex offer("\\b(shall|should|can|could|may|will|would|do) i\\b", std::regex::icase | std::regex::optimize);
     static const std::regex on_air(
-        "^\\W*(here('s| is| comes| you go| we go)\\b(?![^.!?:]*\\b(problem|issue|trouble|thing|what|why|how|error|sorry)\\b)"
+        "^\\W*(here('s| is| comes| you go| we go)\\b(?![^:]*\\b(problem|issue|trouble|thing|what|why|how|error|sorry|list)\\b)"
         "|playing\\b)|\\b(is|are|i'?m|it'?s) (now |already )?playing\\b",
         std::regex::icase | std::regex::optimize);
+    static const std::regex says_no("\\b(no|not|nothing|none|nobody|never|neither|nor|cannot|unable|failed|sorry)\\b|n't\\b",
+                                    std::regex::icase | std::regex::optimize);
     std::string text = std::regex_replace(raw, offer, "$1");
     for (size_t at; (at = text.find("\xE2\x80\x99")) != std::string::npos;) text.replace(at, 3, "'");  // typographic apostrophe
-    return claims_action(text) || std::regex_search(text, on_air);
+    if (claims_action(text)) return true;
+    for (size_t from = 0; from < text.size();) {
+        const size_t end = text.find_first_of(".!?", from);
+        const std::string sentence = text.substr(from, end == std::string::npos ? std::string::npos : end - from);
+        const bool question = end != std::string::npos && text[end] == '?';
+        if (!question && std::regex_search(sentence, on_air) && !std::regex_search(sentence, says_no)) return true;
+        if (end == std::string::npos) break;
+        from = end + 1;
+    }
+    return false;
 }
 
 // What a tool call asked for, to recognise the same call again: the tool and its arguments in a

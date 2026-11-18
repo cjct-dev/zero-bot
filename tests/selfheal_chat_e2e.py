@@ -242,6 +242,20 @@ def main():
                       "note": [["nothing has been done", {"text": "withdrawn by mistake"}]]}, ["play closed fm"], stations=stations)
         check("radio: after the failure %r is spoken as it is" % honest, r.answers == [honest] and r.withdrawn == 0,
               (r.answers, r.withdrawn))
+    # ... nor a sentence that says no or asks (review of ZB-055): "skip this song" with no music on fails
+    # with "nothing is playing", and saying so is the honest answer, as it was before the radio's claims.
+    for honest in ("Here's an idea: shall I play another station?", "Here is the list of stations you have: Closed FM."):
+        r = converse({"user": [["closed fm", play]], "after": [["ERROR", {"text": honest}]],
+                      "note": [["nothing has been done", {"text": "withdrawn by mistake"}]]}, ["play closed fm"], stations=stations)
+        check("radio: after the failure %r is spoken as it is" % honest, r.answers == [honest] and r.withdrawn == 0,
+              (r.answers, r.withdrawn))
+    skip = {"tool": "music", "args": {"action": "next"}}
+    for honest in ("Nothing is playing right now, so there is nothing to skip.", "No music is playing at the moment.",
+                   "There's nothing to skip: no song is playing."):
+        r = converse({"user": [["skip", skip]], "after": [["ERROR", {"text": honest}]],
+                      "note": [["nothing has been done", {"text": "withdrawn by mistake"}]]}, ["skip this song"])
+        check("music: nothing to skip, and %r is spoken as it is" % honest,
+              r.results == ["ERROR: nothing is playing"] and r.answers == [honest] and r.withdrawn == 0, (r.results, r.answers, r.withdrawn))
 
     # ---- never silence: an empty reply goes back once; then an answer is made here
     r = converse({"user": [["capital of portugal", {"text": ""}]], "note": [["Your reply was empty", {"text": "Lisbon."}]]},
