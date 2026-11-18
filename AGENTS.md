@@ -287,6 +287,12 @@ What exists:
   only devices at 127.x addresses are contacted and nothing is scanned; use it for any smart-home
   test on a PC, never `--discover`), `ZB_TEST_TETHER=1` (the radio acts as on a phone's
   connection).
+- **Measurement switches** (`src/agent/experiment.h`; compiled into the `cli` build only, CMake option
+  `ZB_EXPERIMENTS`): `ZB_EXP_TRACE=file` appends a JSON line per model call (purpose, timings, token
+  counts the service reports, size sent) and per request (first sentence, tools, guards, second look);
+  no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`. The runners' `--trace`
+  puts each turn's trace into `--json`; `tests/exp_report.py` summarises and compares such files.
+  With no `ZB_EXP_*` variable set nothing sent or done changes (checked in `agent_loop_test.py`).
 - **Screens**: `build/sim/zero_bot --shots out/` and look at the PNGs. Every UI change should
   be checked this way before it goes to the device. The script in `App::render_shots` walks
   the menus by counting key presses, so adding a settings row shifts later screenshots: fix

@@ -125,19 +125,22 @@ HOME = _home({"id": "1", "name": "Fan heater", "type": "plug", "caps": 1, "room"
 
 
 def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, photo=False, timeout=60, radio=None, search_key=None,
-        inspect=None):
+        inspect=None, trace=False, settings=None):
     """Runs the app once against `script`: --chat with each of `said`, or --ask `ask` (with `extra`
     arguments such as --steer). Returns a Run. `inspect(state_folder)` is called before the
-    temporary home is removed, to look at what the run left there."""
+    temporary home is removed, to look at what the run left there. `trace`: the experiments' trace
+    (ZB_EXP_TRACE) is recorded, in Run.trace (events) and Run.trace_text. `settings` are added to
+    the app's settings file."""
     state = tempfile.mkdtemp(prefix="zb-loop-")
     model = None
     try:
         os.makedirs(state + "/config/zero-bot")
         os.makedirs(state + "/data/zero-bot")
-        settings = {"llm_model": "scripted", "speak_replies": False, "home_city": "London"}
+        app_settings = {"llm_model": "scripted", "speak_replies": False, "home_city": "London"}
         if search_key:
-            settings["search_key"] = search_key
-        json.dump(settings, open(state + "/config/zero-bot/settings.json", "w"))
+            app_settings["search_key"] = search_key
+        app_settings.update(settings or {})
+        json.dump(app_settings, open(state + "/config/zero-bot/settings.json", "w"))
         if radio:
             json.dump({"stations": radio}, open(state + "/config/zero-bot/radio.json", "w"))
         json.dump(script, open(state + "/script.json", "w"))
@@ -153,6 +156,10 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
         for v in ("ZB_SEARCH_KEY", "ZB_FAKE_CAMERA", "ZB_TEST_NETWORK", "ZB_DATE_ORDER", "http_proxy", "HTTP_PROXY",
                   "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
             e.pop(v, None)
+        for v in [k for k in e if k.startswith("ZB_EXP_")]:   # experiments' switches: only as a scenario sets them
+            e.pop(v)
+        if trace:
+            e["ZB_EXP_TRACE"] = state + "/trace.jsonl"
         if home:
             json.dump(home, open(state + "/data/zero-bot/smarthome.json", "w"))
             e["ZB_TEST_NETWORK"] = "1"
@@ -169,6 +176,8 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
             out = (ex.stdout.decode() if isinstance(ex.stdout, bytes) else ex.stdout or "") + "\n[TIMED OUT]\n"
         requests = [json.loads(l) for l in open(log)] if os.path.exists(log) else []
         r = Run(out, requests)
+        r.trace_text = open(state + "/trace.jsonl").read() if os.path.exists(state + "/trace.jsonl") else ""
+        r.trace = [json.loads(l) for l in r.trace_text.splitlines() if l.strip()]
         if VERBOSE: print(repr(r))
         if inspect: inspect(state)
         return r
@@ -724,6 +733,127 @@ def home_after_photo():
     res = r.results()
     check("smart home after a photo: a change the photo asked for waits for the user's word", len(res) >= 2 and res[0].startswith(sign)
           and res[1].startswith("CONFIRM") and "text from outside" in res[1] and not any('"now":"on"' in x for x in res), r)
+
+
+# ------------------------------------------------------------------ the experiments' trace (ZB_EXP_*)
+def events(r, kind):
+    return [e for e in r.trace if e.get("ev") == kind]
+
+
+@scenario
+def trace_off_sends_nothing_new():
+    r = run({"default": {"text": "Lisbon is the capital of Portugal."}}, ask="what is the capital of portugal", fast=True)
+    n = "experiments off"
+    check(n + ": no request asks for token counts", r.requests and not any("stream_options" in b for b in r.bodies()), r.bodies()[:1])
+    check(n + ": the system prompt starts as it always has", r.requests and text_of(r.messages(1)[0]).startswith("You are "), "")
+    check(n + ": no speech is synthesised for a probe", not any(q["rule"] == "speech" for q in r.requests), r)
+
+
+@scenario
+def trace_held_draft():
+    script = {"rules": [{"when": {"said": SECOND_LOOK}, "reply": {"text": "OK"}}],
+              "default": {"text": "Lisbon is the capital of Portugal."}, "cached_tokens": 1234}
+    r = run(script, ask="what is the capital of portugal", fast=True, trace=True)
+    n = "trace, a held draft and its second look"
+    check(n + ": the answer is unchanged", r.answer == "Lisbon is the capital of Portugal." and len(r.requests) == 2, r)
+    check(n + ": every call asks for token counts", all(b.get("stream_options") == {"include_usage": True} for b in r.bodies()), "")
+    start, cs, reqs = events(r, "start"), events(r, "call"), events(r, "request")
+    check(n + ": one start line, first", len(start) == 1 and r.trace[0]["ev"] == "start", r.trace_text)
+    check(n + ": two calls, decide then second_look, numbered in the request",
+          [(c["req"], c["call"], c["purpose"], c["role"]) for c in cs] == [(1, 1, "decide", "main"), (1, 2, "second_look", "main")], cs)
+    if len(cs) == 2:
+        c = cs[0]
+        check(n + ": the service's counts are kept", c["usage"].get("prompt_tokens", 0) > 1000 and c["usage"].get("completion_tokens", 0) > 0
+              and c["usage"].get("prompt_tokens_details", {}).get("cached_tokens") == 1234, c["usage"])
+        sent = len(json.dumps(r.requests[0]["body"], ensure_ascii=False, separators=(",", ":")).encode())
+        check(n + ": the body's size as sent", abs(c["body_bytes"] - sent) < sent * 0.05, (c["body_bytes"], sent))
+        check(n + ": times in order", 0 <= c["t_send"] and 0 <= c["ttfb_ms"] <= c["first_text_ms"] <= c["done_ms"] and
+              c["first_call_ms"] == -1 and cs[1]["t_send"] >= c["t_send"] + c["done_ms"] - 5, cs)
+        check(n + ": fast mode, tools offered, outcome text", c["fast"] and c["tools"] > 10 and c["tool_choice"] == "auto" and
+              c["outcome"] == "text" and c["attempts"] == 1 and c["status"] == 200, c)
+    check(n + ": one request line", len(reqs) == 1 and reqs[0]["req"] == 1, reqs)
+    if reqs:
+        q = reqs[0]
+        check(n + ": the second look said OK; no guard, no tool", q["second_look"] == "ok" and q["guards"] == [] and q["tools"] == []
+              and q["calls"] == 2, q)
+        check(n + ": the first sentence comes after the second look, before the end",
+              len(cs) == 2 and cs[1]["t_send"] + cs[1]["done_ms"] - 5 <= q["first_sentence_ms"] <= q["done_ms"] and q["absorb_ms"] >= 0, q)
+
+
+@scenario
+def trace_tools_and_guards():
+    script = {"rules": [{"when": {"result": "{"}, "reply": {"text": "Christmas is in 37 days."}},
+                        {"when": {"said": "timer"}, "reply": calls(TIMER_12)},
+                        {"when": {"said": "christmas"}, "reply": calls(XMAS)},
+                        {"when": {"said": CORRECTION}, "reply": {"text": "I can't do that, sorry."}},
+                        {"when": {"said": "dentist"}, "reply": {"text": "Done, I've added it to your calendar."}}]}
+    r = run(script, said=["set a timer for 12 minutes", "how long until christmas", "add the dentist on friday"], trace=True)
+    n = "trace, tools and guards"
+    reqs, cs = events(r, "request"), events(r, "call")
+    check(n + ": three requests", [q["req"] for q in reqs] == [1, 2, 3], reqs)
+    if len(reqs) != 3: return
+    t = reqs[0]["tools"]
+    check(n + ": a confirmed tool, one call", len(t) == 1 and t[0]["name"] == "timer" and t[0]["outcome"] == "ok" and t[0]["ms"] >= 0
+          and reqs[0]["calls"] == 1 and reqs[0]["first_sentence_ms"] >= 0, reqs[0])
+    first = [c for c in cs if c["req"] == 1]
+    check(n + ": the call's outcome is the tool's name", [c["outcome"] for c in first] == [["timer"]] and first[0]["first_call_ms"] >= 0, first)
+    check(n + ": a tool, then the answer", [c["purpose"] for c in cs if c["req"] == 2] == ["decide", "after_tool"] and
+          [x["name"] for x in reqs[1]["tools"]] == ["date_info"], [c for c in cs if c["req"] == 2])
+    check(n + ": the claim guard, then a corrected call", [g["guard"] for g in reqs[2]["guards"]] == ["claims_action"] and
+          [c["purpose"] for c in cs if c["req"] == 3] == ["decide", "correction"] and reqs[2]["second_look"] is None, reqs[2])
+
+
+@scenario
+def trace_holds_no_words():
+    script = {"rules": [{"when": {"said": "zebracorn"}, "reply": calls(("timer", {"action": "start", "minutes": 3, "label": "marmotlime",
+                                                                                  "say": "Your marmotlime timer is set."}))},
+                        {"when": {"said": "quokka"}, "reply": {"text": "A quokkafish is not a fish."}}]}
+    r = run(script, said=["start a zebracorn timer for 3 minutes", "what is a quokka"], trace=True, fast=True)
+    n = "trace holds no words"
+    check(n + ": something was traced", len(events(r, "call")) >= 2 and len(events(r, "request")) == 2, r.trace_text)
+    leaked = [w for w in ("zebracorn", "marmotlime", "quokka", "Your", "fish", "test-key", "Bearer", "scripted", "127.0.0.1", "London")
+              if w.lower() in r.trace_text.lower()]
+    check(n + ": not the user's, the model's or a tool's words, the key, the model's id or the address", not leaked, leaked)
+
+
+@scenario
+def trace_slow_and_refused():
+    script = {"rules": [{"when": {"usage": True}, "reply": {"status": 400, "body": '{"error": {"message": "unknown field stream_options"}}'}},
+                        {"when": {"said": "slow"}, "reply": {"text": "Here it is.", "delay_ms": 400}}],
+              "default": {"text": "Fine."}}
+    r = run(script, said=["a slow one", "and another"], trace=True)
+    n = "trace, a slow answer and a service that refuses the counts"
+    cs = events(r, "call")
+    check(n + ": the answers still come", [t["answer"] for t in r.turns] == ["Here it is.", "Fine."], r)
+    check(n + ": asked once, then never again", [("stream_options" in b) for b in r.bodies()] == [True, False, False], [r.requests])
+    if len(cs) == 2:
+        check(n + ": the refused call counts two sends and no usage", cs[0]["attempts"] == 2 and not cs[0]["usage_asked"] and
+              cs[0]["usage"] is None and cs[1]["attempts"] == 1, cs)
+        check(n + ": the wait shows in the time to the first byte", cs[0]["ttfb_ms"] >= 390 and cs[1]["ttfb_ms"] < 390, cs)
+
+
+@scenario
+def trace_cache_bust_and_tts_probe():
+    script = {"rules": [{"when": {"said": "hello"}, "reply": {"chunks": ["Hello there. ", "How can I help?"]}}], "default": {"text": "Bye."}}
+    r = run(script, said=["hello", "bye"], env={"ZB_EXP_CACHE_BUST": "1", "ZB_EXP_TTS_PROBE": "1"}, trace=True,
+            settings={"tts_model": "scripted-voice"})
+    n = "cache bust and speech probe"
+    prompts = [text_of(r.messages(i + 1)[0]) for i in range(len(r.requests)) if r.requests[i]["rule"] != "speech"]
+    check(n + ": one random line on top of the system prompt, the same in every call of a run",
+          len(prompts) == 2 and prompts[0].startswith("(Session ") and len(set(prompts)) == 1, [p[:40] for p in prompts])
+    r2 = run(script, ask="hello", env={"ZB_EXP_CACHE_BUST": "1"})
+    other = text_of(r2.messages(1)[0]) if r2.requests else ""
+    check(n + ": another run gets another line", other.startswith("(Session ") and prompts and other.split("\n")[0] != prompts[0].split("\n")[0],
+          other[:40])
+    # (the first piece handed to speech, however much of the answer the chunker put in it)
+    said = [q["body"].get("input", "").strip() for q in r.requests if q["rule"] == "speech" and q["body"].get("response_format") == "pcm"]
+    check(n + ": each request's first piece of speech is synthesised once, nothing else",
+          len(said) == 2 and said[0].startswith("Hello there.") and said[1] == "Bye.", said)
+    tts = events(r, "tts")
+    check(n + ": the probe's time is traced per request", sorted(e["req"] for e in tts) == [1, 2] and all(e["ok"] and e["tts_first_ms"] >= 0
+          for e in tts), tts)
+    check(n + ": the start line says which switches were on", events(r, "start") and events(r, "start")[0]["cache_bust"] and
+          events(r, "start")[0]["tts_probe"], events(r, "start"))
 
 
 def main():

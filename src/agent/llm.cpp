@@ -6,6 +6,7 @@
 #include <chrono>
 #include <unistd.h>
 
+#include "agent/experiment.h"
 #include "core/settings.h"
 #include "net/http.h"
 #include "platform/codec.h"
@@ -104,6 +105,21 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
     const bool sent_effort = opt.fast && !effort_rejected;
     if (sent_effort) body["reasoning_effort"] = "none";
 
+    // Experiments only (ZB_EXP_TRACE): the call's timings and the token counts the service reports,
+    // which it sends only when asked. Never asked for otherwise; dropped for good after a 400.
+    const bool tracing = experiment::tracing();
+    static std::atomic<bool> usage_rejected{false};
+    const bool sent_usage = tracing && !usage_rejected;
+    if (sent_usage) body["stream_options"] = {{"include_usage", true}};
+    const auto started = std::chrono::steady_clock::now();
+    const long t_send = tracing ? experiment::request_ms() : -1;
+    long ttfb = -1, first_text = -1, first_call = -1;
+    int attempts = 1;
+    json usage;
+    auto since = [&] {
+        return static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
+    };
+
     // With reasoning switched off, some models still leak their thinking markers into the
     // answer: a "<think>...</think>" block, or the answer, a stray "</think>", then the answer
     // again. Neither may reach the speaker, so text is passed on only once it is known to be
@@ -163,15 +179,21 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
             out.error = e.is_string() ? e.get<std::string>() : util::jget(e, "message", std::string("service error"));
             return;
         }
+        // The token counts come in a last event of their own, with an empty list of choices.
+        if (tracing && ev.contains("usage") && ev["usage"].is_object()) usage = experiment::numbers_only(ev["usage"]);
         if (!ev.contains("choices") || !ev["choices"].is_array() || ev["choices"].empty()) return;
         const json &choice = ev["choices"][0];
         if (!choice.contains("delta") || !choice["delta"].is_object()) return;
         const json &delta = choice["delta"];
         if (delta.contains("content") && delta["content"].is_string()) {
             const std::string piece = delta["content"].get<std::string>();
-            if (!piece.empty()) filter_text(piece, false);
+            if (!piece.empty()) {
+                if (tracing && first_text < 0) first_text = since();
+                filter_text(piece, false);
+            }
         }
         if (delta.contains("tool_calls") && delta["tool_calls"].is_array()) {
+            if (tracing && first_call < 0) first_call = since();
             for (const json &tc : delta["tool_calls"]) {
                 const size_t idx = static_cast<size_t>(util::jget(tc, "index", 0));
                 if (out.tool_calls.size() <= idx) out.tool_calls.resize(idx + 1);
@@ -198,6 +220,7 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
     req.timeout_s = 180;
     req.cancel = opt.cancel;
     req.on_data = [&](const char *data, size_t n) {
+        if (tracing && ttfb < 0) ttfb = since();
         pending.append(data, n);
         size_t pos;
         while ((pos = pending.find('\n')) != std::string::npos) {
@@ -212,30 +235,67 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
         held.clear();
         thinking = answer_over = false;
         out = ChatResult();
+        ttfb = first_text = first_call = -1;
+        usage = nullptr;
     };
     // Upstream hiccups (5xx, dropped connections, a service that says it is overloaded) are common
     // on mobile links. As long as nothing has been passed on yet, the call is tried again, twice at
     // most and all within its own three minutes: a timeout once the request had gone out is not
     // repeated, since that would double the wait.
-    const auto started = std::chrono::steady_clock::now();
     http::Retry retry = service_retry(3, req.timeout_s);
     retry.again = [&](const http::Response &r) {
         if (!out.content.empty() || !out.tool_calls.empty()) return false;
         return r.ok() ? !out.error.empty() && busy_message(out.error) : http::transient(r);
     };
-    retry.before_resend = reset;
+    retry.before_resend = [&] { reset(); ++attempts; };
     http::Response res = http::send_retrying(req, retry);
+    auto remaining_budget = [&] {
+        const long spent_s = static_cast<long>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count());
+        return std::max(1L, req.timeout_s - spent_s) * 1000;
+    };
+    if (sent_usage && res.status == 400 && out.content.empty() && out.tool_calls.empty()) {
+        // Experiments only: a service that turns down the request for token counts gets the call
+        // without it. If that is refused too, the counts were not the reason; ask for them again.
+        body.erase("stream_options");
+        req.body = dump(body);
+        reset();
+        ++attempts;
+        retry.budget_ms = remaining_budget();
+        res = http::send_retrying(req, retry);
+        if (res.status != 400) usage_rejected = true;
+        else body["stream_options"] = {{"include_usage", true}};
+    }
     if (sent_effort && res.status == 400 && out.content.empty() && out.tool_calls.empty()) {
         effort_rejected = true;
         body.erase("reasoning_effort");
         req.body = dump(body);
         reset();
-        const long spent_s = static_cast<long>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count());
-        retry.budget_ms = std::max(1L, req.timeout_s - spent_s) * 1000;
+        ++attempts;
+        retry.budget_ms = remaining_budget();
         res = http::send_retrying(req, retry);
     }
     if (!pending.empty()) handle_line(pending);
     filter_text("", true);
+
+    if (tracing) {
+        // Counts, sizes and times only: never the words sent or received, a key or the model's id.
+        json outcome;
+        if (res.error == "cancelled") outcome = "cancelled";
+        else if (!res.ok() || !out.error.empty()) outcome = "error";
+        else if (!out.tool_calls.empty()) {
+            outcome = json::array();
+            for (const auto &c : out.tool_calls)
+                if (!c.name.empty()) outcome.push_back(c.name);
+        } else outcome = out.content.empty() ? "empty" : "text";
+        experiment::trace_call({{"role", opt.role.empty() ? "main" : opt.role}, {"purpose", opt.purpose},
+                                {"tools", tools.is_array() ? static_cast<long>(tools.size()) : 0L},
+                                {"tool_choice", body.contains("tool_choice") ? body["tool_choice"] : json(nullptr)},
+                                {"fast", body.contains("reasoning_effort")}, {"usage_asked", body.contains("stream_options")},
+                                {"body_bytes", static_cast<long>(req.body.size())}, {"t_send", t_send}, {"ttfb_ms", ttfb},
+                                {"first_text_ms", first_text}, {"first_call_ms", first_call}, {"done_ms", since()},
+                                {"attempts", attempts}, {"status", res.status}, {"usage", usage}, {"outcome", outcome},
+                                {"text_chars", static_cast<long>(out.content.size())}});
+    }
 
     if (res.error == "cancelled") { out.cancelled = true; return out; }
     if (!res.ok() && out.error.empty()) out.error = api_error(res);
@@ -352,6 +412,8 @@ std::string describe_image(const std::string &jpeg, const std::string &question,
     opt.temperature = 0.2;
     opt.fast = Settings::get().fast_mode;  // reading a sign or a menu needs eyes, not deliberation
     opt.cancel = cancel;
+    opt.role = "vision";
+    opt.purpose = "look";
     const ChatResult res = chat(messages, json::array(), opt);
     if (!res.error.empty()) { err = res.error; return ""; }
     if (res.cancelled) { err = "cancelled"; return ""; }

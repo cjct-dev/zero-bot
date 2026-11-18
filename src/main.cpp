@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "agent/agent.h"
+#include "agent/experiment.h"
 #include "agent/llm.h"
 #include "agent/prompt.h"
 #include "agent/tools.h"
@@ -148,6 +149,7 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
             if (!util::trim(line).empty()) one(line);
         }
     }
+    experiment::wait_probes(30000);   // speech probes of the experiments' trace (ZB_EXP_TTS_PROBE) still running
     return 0;
 }
 

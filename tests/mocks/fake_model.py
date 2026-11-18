@@ -25,6 +25,8 @@ optional):
   "results": N             exactly N tool results follow the newest user message
   "tools": true|false      the request offers tools (the loop's last round offers none)
   "effort": true|false     the request carries "reasoning_effort"
+  "usage": true|false      the request asks for token counts ("stream_options": {"include_usage": true},
+                           which the app sends only for the experiments' trace, ZB_EXP_TRACE)
 
 REPLY:
 
@@ -35,6 +37,13 @@ REPLY:
   {"stream_error": "message"}           an error event inside a 200 stream
   "delay_ms": N                         wait this long before answering (any reply)
   "no_ids": true                        tool calls without ids (some services omit them)
+
+A request that asks for token counts gets them in a last event with no choices, as the services do:
+prompt_tokens about a quarter of the body's bytes, completion_tokens a quarter of the reply's, and
+prompt_tokens_details.cached_tokens from the script's top-level "cached_tokens" (default 0).
+
+POST .../audio/speech (the speech service) answers 200 with 0.1 s of silent 24 kHz PCM, logged
+with "rule": "speech".
 
 LOG gets one JSON object per request: {"n": 1, "rule": index or "default", "body": {...}}.
 """
@@ -84,6 +93,8 @@ def matches(when, body):
         return False
     if "effort" in when and ("reasoning_effort" in body) != when["effort"]:
         return False
+    if "usage" in when and bool((body.get("stream_options") or {}).get("include_usage")) != when["usage"]:
+        return False
     return True
 
 
@@ -102,7 +113,7 @@ def decide(body):
     return "default", SCRIPT.get("default", {"text": "OK."})
 
 
-def events(reply):
+def events(reply, body):
     out = []
     pieces = reply.get("chunks") or ([reply["text"]] if reply.get("text") else [])
     for piece in pieces:
@@ -119,6 +130,11 @@ def events(reply):
     if reply.get("stream_error"):
         out.append({"error": {"message": reply["stream_error"]}})
     out.append({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if calls else "stop"}]})
+    if (body.get("stream_options") or {}).get("include_usage"):
+        sent = len(json.dumps(body, ensure_ascii=False).encode()) // 4
+        made = len("".join(pieces).encode()) // 4 + 20 * len(calls) + 1
+        out.append({"choices": [], "usage": {"prompt_tokens": sent, "completion_tokens": made, "total_tokens": sent + made,
+                                             "prompt_tokens_details": {"cached_tokens": SCRIPT.get("cached_tokens", 0)}}})
     return out
 
 
@@ -128,6 +144,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        if self.path.endswith("/audio/speech"):
+            with LOCK:
+                COUNT[0] += 1
+                with open(LOG, "a") as f:
+                    f.write(json.dumps({"n": COUNT[0], "rule": "speech", "body": body}, ensure_ascii=False) + "\n")
+            raw = b"\0" * 4800
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/pcm")
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(raw)
+            self.close_connection = True
+            return
         with LOCK:
             COUNT[0] += 1
             rule, reply = decide(body)
@@ -140,7 +170,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(reply["status"])
             self.send_header("Content-Type", reply.get("content_type", "application/json"))
         else:
-            raw = ("".join("data: %s\n\n" % json.dumps(e, ensure_ascii=False) for e in events(reply)) + "data: [DONE]\n\n").encode()
+            raw = ("".join("data: %s\n\n" % json.dumps(e, ensure_ascii=False) for e in events(reply, body)) + "data: [DONE]\n\n").encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(raw)))

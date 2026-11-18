@@ -28,6 +28,9 @@ struct ChatOptions {
     bool fast = false;                                  // skip the model's reasoning step
     std::atomic<bool> *cancel = nullptr;
     std::function<void(const std::string &)> on_text;   // streamed answer text
+    // What the call is for, for the experiments' trace only (agent/experiment.h); changes nothing
+    // that is sent. role: "main" if empty, "vision"...; purpose: "decide", "second_look"...
+    std::string role, purpose;
 };
 
 ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt);

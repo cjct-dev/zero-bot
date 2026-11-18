@@ -11,7 +11,11 @@ the loop can be compared run against run.
 Usage:
     . path/to/env.sh            # sets ZB_API_BASE, ZB_API_KEY, optional ZB_SEARCH_KEY
     tests/agent_eval.py [--bin build/cli/zero_bot] [--repeat N] [--only substring[,substring]]
-                        [--fast 0|1] [--jobs N] [--json out.json] [--rescore out.json]
+                        [--fast 0|1] [--jobs N] [--json out.json] [--rescore out.json] [--trace]
+
+--trace records the experiments' trace (src/agent/experiment.h, cli build) of every turn into
+--json: model calls with their timings and token counts, tools, guards. tests/exp_report.py
+summarises such files.
 
 Side effects are disabled (ZB_DRY_RUN): no music plays, no infrared is sent and no smart-home
 device is switched. Every case starts from an empty calendar, memory and settings; the smart-home
@@ -663,6 +667,9 @@ def run_case(binary, base_env, c):
     for k, v in c["env"].items():
         if v is None: env.pop(k, None)
         else: env[k] = v
+    # --trace: the experiments' trace (src/agent/experiment.h; cli build), one file per case.
+    trace = state + "/trace.jsonl" if base_env.get("ZB_EVAL_TRACE") else None
+    if trace: env["ZB_EXP_TRACE"] = trace
     cmd = [binary, "--chat"] + (["--steer", c["steer"]] if c["steer"] else [])
     t0 = time.time()
     try:
@@ -671,13 +678,40 @@ def run_case(binary, base_env, c):
         failed = None
     except subprocess.TimeoutExpired as e:
         out, failed = (e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or ""), "timeout"
+    events = []
+    if trace and os.path.exists(trace):
+        for line in open(trace, encoding="utf-8", errors="replace"):
+            try: events.append(json.loads(line))
+            except ValueError: pass
     shutil.rmtree(state, ignore_errors=True)
     turns = [parse_turn(seg) for seg in TURN_RE.split(out)[1:]]
     expected = sum(1 for t in c["turns"] if t != "/new")
     while len(turns) < expected:
         turns.append({"tools": [], "results": [], "answer": "", "total": time.time() - t0, "first": None,
                       "error": failed or "no output for this turn"})
+    if trace:   # request n of the run is the n-th turn ("/new" starts none)
+        for i, t in enumerate(turns): t["trace"] = [e for e in events if e.get("req") == i + 1]
     return turns
+
+def trace_summary(results):
+    """One line from the traces of a --trace run: model calls, tokens and upload per request."""
+    reqs = [e for r in results for t in r["turns"] for e in t.get("trace", []) if e.get("ev") == "request"]
+    if not reqs: return "trace: none recorded"
+    calls = {}
+    for r in results:
+        for t in r["turns"]:
+            for e in t.get("trace", []):
+                if e.get("ev") == "call": calls.setdefault((id(t), e["req"]), []).append(e)
+    per = list(calls.values())
+    tok = sorted(sum((c.get("usage") or {}).get("prompt_tokens", 0) for c in cs) for cs in per)
+    cached = sum(((c.get("usage") or {}).get("prompt_tokens_details") or {}).get("cached_tokens", 0) for cs in per for c in cs)
+    sent = sum(tok)
+    up = sorted(sum(c.get("body_bytes", 0) for c in cs) for cs in per)
+    n = sorted(len(cs) for cs in per)
+    med = lambda v: v[len(v) // 2] if v else 0
+    return ("trace: %d requests | model calls per request median %d, mean %.2f | prompt tokens per request median %d, cached %.0f%% "
+            "| upload per request median %.1f kB" % (len(reqs), med(n), sum(n) / max(1, len(n)), med(tok),
+                                                     100.0 * cached / sent if sent else 0, med(up) / 1000.0))
 
 def score(c, turns):
     problems = []
@@ -721,6 +755,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=1, help="cases to run at once (timings are only comparable at 1)")
     ap.add_argument("--json", default="", help="write full results to this file")
     ap.add_argument("--rescore", default="", help="score a results file written by --json again instead of running (same day; clock-time checks will fail)")
+    ap.add_argument("--trace", action="store_true", help="record the experiments' trace (cli build, ZB_EXP_TRACE) into each turn of --json")
     args = ap.parse_args()
     saved = {}
     if args.rescore:
@@ -731,6 +766,7 @@ def main():
     env = dict(os.environ, ZB_DRY_RUN="1", ZB_NO_AUDIO="1")
     if os.environ.get("ZB_EVAL_CAMERA"): env["ZB_FAKE_CAMERA"] = os.environ["ZB_EVAL_CAMERA"]
     if args.fast is not None: env["ZB_FAST_MODE"] = args.fast
+    if args.trace: env["ZB_EVAL_TRACE"] = "1"
 
     wanted = [w for w in args.only.split(",") if w]
     cases = [c for c in CASES if not wanted or any(w in c["name"] for w in wanted)]
@@ -759,6 +795,7 @@ def main():
     print("\n%d/%d passed | per request: total median %.1fs, mean %.1fs, 90th %.1fs, worst %.1fs | first words: median %.1fs, 90th %.1fs"
           % (n - failures, n, med(totals), sum(totals) / max(1, len(totals)), p90(totals), totals[-1] if totals else 0,
              med(firsts), p90(firsts)))
+    if args.trace: print(trace_summary(results))
     if failed_names:
         print("failed: " + ", ".join("%s%s" % (k, " x%d" % v if args.repeat > 1 else "") for k, v in sorted(failed_names.items())))
     if args.json: json.dump(results, open(args.json, "w"), indent=1)

@@ -18,6 +18,14 @@ option(ZB_DESKTOP "Build the desktop simulator instead of the device binary" ON)
 # ZB_CLI_ONLY=ON -> terminal-only build of the agent (no screen code, no LVGL); quick to compile,
 # used for testing and tuning the agent loop on a PC.
 option(ZB_CLI_ONLY "Build only the command-line agent, without the on-screen app" OFF)
+# ZB_EXPERIMENTS=ON -> the ZB_EXP_* measurement switches (src/agent/experiment.h: a trace of model
+# calls and requests, probes) are compiled in. On by default in the cli build only, so the device
+# and simulator binaries cannot carry them by accident.
+if(ZB_CLI_ONLY)
+    option(ZB_EXPERIMENTS "Compile in the ZB_EXP_* measurement switches" ON)
+else()
+    option(ZB_EXPERIMENTS "Compile in the ZB_EXP_* measurement switches" OFF)
+endif()
 
 if(NOT ZB_CLI_ONLY)
 set(ZB_CACHE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.cache")
@@ -73,7 +81,7 @@ target_include_directories(zero_bot PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 target_compile_options(zero_bot PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
-target_compile_definitions(zero_bot PRIVATE ZB_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(zero_bot PRIVATE ZB_VERSION="${PROJECT_VERSION}" ZB_EXPERIMENTS=$<BOOL:${ZB_EXPERIMENTS}>)
 if(ZB_CLI_ONLY)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(ZB_CLI_DEPS REQUIRED IMPORTED_TARGET libcurl libcrypto)
