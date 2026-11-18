@@ -20,6 +20,7 @@ constexpr int kMaxRounds = 8;            // model calls per request, including t
 constexpr size_t kMaxHistory = 40;       // messages kept as context
 constexpr size_t kMaxToolResult = 6000;  // characters of tool output passed back to the model
 constexpr size_t kMaxEarlier = 200;      // DIAGNOSTICS (temporary): trimmed messages kept for a saved conversation
+constexpr int kCheckWaitMs = 1500;       // experiments only (E3): how long a finished draft waits for the parallel check
 
 // Appended after a reply that was drafted without tools (fast mode only). The second look reuses
 // the whole prompt, so the server answers it from its prefix cache in a fraction of a normal
@@ -447,14 +448,29 @@ void Agent::run_turn() {
         // used a tool: "done" with nothing done, or a price or opening time from memory. So a reply
         // that arrives with no tool call is held back and checked before a word of it is spoken.
         const bool hold = deciding && !acted && !guarded && opt.fast;
+        // Experiments only (E3, ZB_EXP_DECIDE=parallel): a short check beside this call says whether a
+        // tool is needed at all. A draft it clears is spoken as it streams, without the second look.
+        experiment::ParallelCheck pcheck;
+        if (hold && experiment::parallel_check()) pcheck.start(messages, tool_schema, opt.model);
+        bool released = false;     // E3: the held draft is being spoken as it streams
+        std::string held_text;     // E3: the draft so far, while the check has not cleared it
         if (hold) add_note(messages, kDecideNote);
         opt.purpose = round == kMaxRounds - 1 ? "last_round" : corrected ? "correction" : deciding ? "decide" : "after_tool";
         opt.cancel = &round_cancel_;
         opt.on_text = [&](const std::string &piece) {
-            if (steered || unbacked || hold) return;
+            if (steered || unbacked) return;
+            std::string text = piece;
+            if (hold && !released) {
+                if (!pcheck.active()) return;   // held whole, and checked once it is complete
+                held_text += piece;
+                if (!pcheck.said_none()) return;
+                released = true;                // E3: cleared while it is still being written
+                pcheck.used("stream");
+                text = held_text;
+            }
             if (!began) { began = true; if (ev_.answer_begin) ev_.answer_begin(); }
-            if (ev_.answer_delta) ev_.answer_delta(piece);
-            for (auto &sentence : chunker.feed(piece)) {
+            if (ev_.answer_delta) ev_.answer_delta(text);
+            for (auto &sentence : chunker.feed(text)) {
                 // New input arrived before anything was said: withdraw this draft and let the
                 // model reconsider with the extra instruction.
                 if (!speech_started && has_pending()) { steered = true; round_cancel_ = true; return; }
@@ -516,7 +532,18 @@ void Agent::run_turn() {
             break;
         }
 
-        if (hold && res.tool_calls.empty() && !res.content.empty()) {
+        // E3: a draft the parallel check clears once the draft is complete stands without the second look.
+        bool cleared = released;
+        if (pcheck.active()) {
+            if (!res.tool_calls.empty()) pcheck.used("main_tool");
+            else if (hold && !released && !res.content.empty()) {
+                cleared = pcheck.wait_none(kCheckWaitMs);
+                pcheck.used(cleared ? "after" : pcheck.answered() ? "second_look" : "late");
+            }
+            pcheck.stop();
+            rt.parallel_check(pcheck.summary());
+        }
+        if (hold && !cleared && res.tool_calls.empty() && !res.content.empty()) {
             json review = messages;
             review.push_back({{"role", "assistant"}, {"content", res.content}});
             review.push_back({{"role", "user"}, {"content", kSecondLook}});
@@ -597,7 +624,7 @@ void Agent::run_turn() {
             if (absorb_inputs(false) > 0) { new_request(); round = -1; continue; }   // a new request: fresh budget
             break;
         }
-        if (hold && res.tool_calls.empty()) {
+        if (hold && !released && res.tool_calls.empty()) {
             // The draft stands: release it as if it had streamed.
             began = true;
             if (ev_.answer_begin) ev_.answer_begin();

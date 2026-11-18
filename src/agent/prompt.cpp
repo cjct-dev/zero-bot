@@ -57,8 +57,9 @@ std::string system_prompt() {
          "('friday', 'tomorrow') from the list of coming days below.\n"
          "- A date given without a year means the next time that date comes round: this year if it is still "
          "ahead, otherwise next year. Work that out yourself and save it; do not ask or refuse because the date "
-         "is far off.\n"
-         "- Some tools take 'say': the short confirmation to speak once the call has worked. Fill it in whenever "
+         "is far off.\n";
+    p += experiment::say_rule("- Some tools take 'say': the short confirmation to speak once the call has worked. ");
+    p += "Fill it in whenever "
          "that call is all the request needs, in the user's language, so they hear the result without delay. "
          "When it confirms something dated, it says the day (and the time, if there is one) back, so that a "
          "mishearing is caught at once.\n"

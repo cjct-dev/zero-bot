@@ -873,6 +873,228 @@ def trace_cache_bust_and_tts_probe():
           events(r, "start")[0]["tts_probe"], events(r, "start"))
 
 
+# ------------------------------------------------------------------ E2: the tool text (ZB_EXP_TOOLS)
+def _shape(tools):
+    """What a variant may never change: names, parameters, their types and enums, required fields."""
+    out = []
+    for t in tools:
+        f = t["function"]
+        p = f.get("parameters", {})
+        out.append((f["name"], sorted((k, v.get("type"), json.dumps(v.get("enum"))) for k, v in p.get("properties", {}).items()),
+                    p.get("required")))
+    return out
+
+
+def _variant_run(variant):
+    env = {"ZB_EXP_TOOLS": variant} if variant else {}
+    r = run({"default": {"text": "Lisbon."}}, ask="what is the capital of portugal", home=HOME, radio=STATIONS,
+            search_key="test-search-key", env=env)
+    body = r.requests[0]["body"] if r.requests else {}
+    return body.get("tools", []), text_of(body.get("messages", [{}])[0])
+
+
+SAY_SHORT = "Spoken once this has worked; see Using tools."
+
+
+@scenario
+def exp_tools_variants():
+    n = "E2 tool text"
+    plain, plain_prompt = _variant_run(None)
+    full, full_prompt = _variant_run("full")
+    say1, say1_prompt = _variant_run("say1")
+    lean, lean_prompt = _variant_run("lean")
+    check(n + ": full is what the app sends without the switch", full == plain and full_prompt == plain_prompt and len(plain) > 20,
+          len(plain))
+    check(n + ": say1 and lean keep every name, parameter, type, enum and required field",
+          _shape(say1) == _shape(plain) and _shape(lean) == _shape(plain), "")
+    by = lambda tools: {t["function"]["name"]: t["function"] for t in tools}
+    P, S, L = by(plain), by(say1), by(lean)
+    says = {k: f["parameters"]["properties"]["say"]["description"] for k, f in S.items() if "say" in f["parameters"].get("properties", {})}
+    check(n + ": say1: every confirmable tool, smart_home and radio included, has the one short line",
+          {"timer", "calendar_add", "smart_home", "radio", "music", "device", "breathe"} <= set(says) and
+          all(d.startswith(SAY_SHORT) for d in says.values()), says)
+    check(n + ": say1: the limits some tools add are kept", "start, cancel and add_time" in says.get("timer", "") and
+          "stop and next" in says.get("music", "") and "Not for status" in says.get("device", "") and
+          "Not for status" in says.get("smart_home", ""), says)
+    def without_say(f):
+        g = json.loads(json.dumps(f))
+        g.get("parameters", {}).get("properties", {}).pop("say", None)
+        return g
+    check(n + ": say1 changes nothing but the say text", all(without_say(S[k]) == without_say(P[k]) for k in P), "")
+    check(n + ": say1: the system prompt says once what a confirmation holds",
+          "with the detail that matters (\"Your timer is set for 12 minutes.\")" in say1_prompt and "the detail that matters" not in plain_prompt
+          and lean_prompt == say1_prompt, "")
+    size = lambda tools: len(json.dumps(tools, ensure_ascii=False, separators=(",", ":")).encode())
+    check(n + ": each variant is smaller: full %d, say1 %d, lean %d bytes" % (size(plain), size(say1), size(lean)),
+          size(plain) - size(say1) > 1000 and size(say1) - size(lean) > 1500, "")
+    fixed = [k for k in L if k not in ("smart_home", "radio")]
+    text = lambda f: len(f["description"]) + sum(len(v.get("description", "")) for v in f["parameters"].get("properties", {}).values())
+    full_text, lean_text = sum(text(P[k]) for k in fixed), sum(text(L[k]) for k in fixed)
+    check(n + ": lean: no fixed tool's text grows, and all of it is at least a quarter shorter (%d to %d characters); "
+          "smart_home and radio keep theirs" % (full_text, lean_text),
+          all(text(L[k]) <= text(P[k]) for k in fixed) and lean_text <= full_text * 0.75 and
+          L["smart_home"]["description"] == P["smart_home"]["description"] and L["radio"]["description"] == P["radio"]["description"],
+          [k for k in fixed if text(L[k]) > text(P[k])])
+    rules = {"calendar_add": ["only way", "not in memory_save", "ask for a missing one"],
+             "reminder_set": ["only way", "is a timer instead", "calendar_add"],
+             "timer": ["only way", "counted down from now"], "memory_save": ["only way"],
+             "tv_remote": ["smart_home", "no fallback"], "date_info": ["never count days"],
+             "web_search": ["Not for settled general knowledge"], "world_time": ["Not for the user's own time"],
+             "calendar_update": ["never add a second event"], "breathe": ["Start it at once"]}
+    missing = [(k, w) for k, ws in rules.items() for w in ws if w not in L.get(k, {}).get("description", "")]
+    check(n + ": lean keeps the boundary rules", not missing, missing)
+    out = subprocess.run([APP, "--schema"], env=dict(os.environ, ZB_EXP_TOOLS="sayone"), capture_output=True, text=True, timeout=30)
+    check(n + ": an unknown variant stops the run", out.returncode == 2 and "not a variant" in out.stderr, (out.returncode, out.stderr))
+
+
+# ------------------------------------------------------------------ E3: the parallel check (ZB_EXP_DECIDE)
+CHECK_NOTE = "Say only whether answering it needs one of your tools"
+PARALLEL = {"ZB_EXP_DECIDE": "parallel"}
+
+
+def _check_requests(r):
+    return [q for q in r.requests if q["rule"] != "speech" and CHECK_NOTE in text_of(q["body"]["messages"][-1])]
+
+
+def _pcheck(r):
+    reqs = events(r, "request")
+    return reqs[0].get("parallel_check") if reqs else None
+
+
+@scenario
+def exp_check_none_streams():
+    # The check clears the draft before the draft arrives: spoken as it streams, no second look.
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": {"text": "NONE"}},
+                        {"when": {"said": SECOND_LOOK}, "reply": {"text": "OK"}}],
+              "default": {"chunks": ["Lisbon is the capital ", "of Portugal."], "delay_ms": 300}}
+    r = run(script, ask="what is the capital of portugal", fast=True, env=PARALLEL, trace=True)
+    n = "E3 check says none, early"
+    check(n + ": the draft is the answer", r.answer == "Lisbon is the capital of Portugal.", r)
+    check(n + ": two calls (draft and check), no second look", len(r.requests) == 2 and not any(
+        SECOND_LOOK in json.dumps(q["body"]) for q in r.requests), r)
+    cq = _check_requests(r)
+    main = [q for q in r.requests if q not in cq]
+    if len(cq) == 1 and len(main) == 1:
+        c, m = cq[0]["body"], main[0]["body"]
+        check(n + ": the check sends the same prompt, tools and conversation, with its note in place of the decide note",
+              c["messages"][0] == m["messages"][0] and c["tools"] == m["tools"] and c["messages"][:-1] == m["messages"][:-1] and
+              DECIDE_NOTE in text_of(m["messages"][-1]) and DECIDE_NOTE not in text_of(c["messages"][-1]) and
+              text_of(c["messages"][-1]).split("\n\n")[0] == text_of(m["messages"][-1]).split("\n\n")[0], "")
+        check(n + ": the check asks for a word", c["max_tokens"] <= 16 and c.get("reasoning_effort") == "none" and c["model"] == m["model"],
+              (c["max_tokens"], c.get("reasoning_effort")))
+    else:
+        check(n + ": one check request and one deciding request", False, r)
+    pc = _pcheck(r)
+    check(n + ": traced: none, used while streaming", pc and pc["verdict"] == "none" and pc["used"] == "stream" and pc["ms"] >= 0, pc)
+    cs = events(r, "call")
+    check(n + ": the check's call is traced with its purpose", sorted(c["purpose"] for c in cs) == ["decide", "parallel_check"], cs)
+
+
+@scenario
+def exp_check_none_after():
+    # The draft is complete before the check answers: it waits for the check, then stands.
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": {"text": "NONE.", "delay_ms": 300}},
+                        {"when": {"said": SECOND_LOOK}, "reply": {"text": "OK"}}],
+              "default": {"text": "Lisbon is the capital of Portugal."}}
+    r = run(script, said=["what is the capital of portugal", "thanks"], fast=True, env=PARALLEL, trace=True)
+    n = "E3 check says none, after the draft"
+    check(n + ": both answers spoken as drafted", [t["answer"] for t in r.turns] == ["Lisbon is the capital of Portugal."] * 2, r)
+    check(n + ": no second look in either turn", not any(SECOND_LOOK in json.dumps(q["body"]) for q in r.requests) and
+          len(r.requests) == 4, r)
+    reqs = events(r, "request")
+    check(n + ": traced: none, used after the draft", [q.get("parallel_check", {}).get("used") for q in reqs] == ["after", "after"], reqs)
+    if len(r.requests) == 4:
+        second = [q for q in r.requests if q not in _check_requests(r)][-1]["body"]["messages"]
+        check(n + ": the next turn sees the draft as the reply, and no check note", second[-2] == {"role": "assistant",
+              "content": "Lisbon is the capital of Portugal."} and CHECK_NOTE not in json.dumps(second), second[-3:])
+
+
+@scenario
+def exp_check_tool_runs_second_look():
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": {"text": "TOOL"}},
+                        {"when": {"said": SECOND_LOOK}, "reply": calls(XMAS)},
+                        {"when": {"result": "{"}, "reply": {"text": "Christmas is in 37 days."}}],
+              "default": {"text": "Christmas is in 40 days."}}
+    r = run(script, ask="how many days until christmas", fast=True, env=PARALLEL, trace=True)
+    n = "E3 check says a tool is needed"
+    check(n + ": the second look runs and its tool call is made", [t for t, _ in r.tools()] == ["date_info"] and
+          r.answer == "Christmas is in 37 days." and "40 days" not in r.out, r)
+    check(n + ": four calls (draft, check, second look, answer)", len(r.requests) == 4, r)
+    pc = _pcheck(r)
+    check(n + ": traced: tool, then the second look", pc and pc["verdict"] == "tool" and pc["used"] == "second_look" and
+          events(r, "request")[0]["second_look"] == "date_info", events(r, "request"))
+
+
+@scenario
+def exp_check_calls_a_tool():
+    # A check that calls a tool instead of answering a word: a tool is needed. Its call is never made.
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": calls(TIMER_12)},
+                        {"when": {"said": SECOND_LOOK}, "reply": {"text": "OK"}}],
+              "default": {"text": "How long should the timer be?"}}
+    r = run(script, ask="set a timer", fast=True, env=PARALLEL, trace=True)
+    n = "E3 check calls a tool"
+    check(n + ": nothing is run; the second look clears the question", r.tools() == [] and r.answer == "How long should the timer be?", r)
+    pc = _pcheck(r)
+    check(n + ": traced as tool", pc and pc["verdict"] == "tool" and pc["used"] == "second_look", pc)
+
+
+@scenario
+def exp_check_late_or_failed():
+    n = "E3 check late"
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": {"text": "NONE", "delay_ms": 2500}},
+                        {"when": {"said": SECOND_LOOK}, "reply": {"text": "OK"}}],
+              "default": {"text": "Lisbon is the capital of Portugal."}}
+    r = run(script, ask="what is the capital of portugal", fast=True, env=PARALLEL, trace=True)
+    check(n + ": the second look runs, the answer stands", r.answer == "Lisbon is the capital of Portugal." and
+          any(SECOND_LOOK in json.dumps(q["body"]) for q in r.requests), r)
+    pc = _pcheck(r)
+    check(n + ": traced as late and cancelled", pc and pc["used"] == "late" and pc["verdict"] == "cancelled", pc)
+    n = "E3 check failed"
+    script["rules"][0]["reply"] = {"status": 403, "body": '{"error": {"message": "not allowed"}}'}
+    r = run(script, ask="what is the capital of portugal", fast=True, env=PARALLEL, trace=True)
+    check(n + ": the second look runs, the answer stands, no error shown", r.answer == "Lisbon is the capital of Portugal." and
+          any(SECOND_LOOK in json.dumps(q["body"]) for q in r.requests) and "not allowed" not in r.out, r)
+    pc = _pcheck(r)
+    check(n + ": traced as failed", pc and pc["verdict"] == "failed" and pc["used"] == "second_look", pc)
+    n = "E3 check answers in words"
+    script["rules"][0]["reply"] = {"text": "Lisbon."}
+    r = run(script, ask="what is the capital of portugal", fast=True, env=PARALLEL, trace=True)
+    pc = _pcheck(r)
+    check(n + ": unclear, so the second look runs", pc and pc["verdict"] == "unclear" and pc["used"] == "second_look" and
+          r.answer == "Lisbon is the capital of Portugal.", (pc, r))
+
+
+@scenario
+def exp_check_main_tool_and_guard():
+    n = "E3 the deciding call makes a tool call"
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": {"text": "NONE", "delay_ms": 200}}], "default": calls(TIMER_12)}
+    r = run(script, ask="set a timer for 12 minutes", fast=True, env=PARALLEL, trace=True)
+    check(n + ": the tool runs and its confirmation is spoken", [t for t, _ in r.tools()] == ["timer"] and
+          r.answer == "Your timer is set for 12 minutes.", r)
+    pc = _pcheck(r)
+    check(n + ": the check's word changes nothing", pc and pc["used"] == "main_tool", pc)
+    n = "E3 a cleared draft that claims an action"
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": {"text": "NONE"}},
+                        {"when": {"said": CORRECTION}, "reply": calls(TIMER_12)}],
+              "default": {"chunks": ["Done, your timer is set for 12 minutes. ", "Enjoy."], "delay_ms": 300}}
+    r = run(script, ask="set a timer for 12 minutes", fast=True, env=PARALLEL, trace=True)
+    check(n + ": the claim guard still withdraws it, and the tool is called", [t for t, _ in r.tools()] == ["timer"] and
+          r.answer == "Your timer is set for 12 minutes." and "Enjoy" not in r.answer, r)
+    reqs = events(r, "request")
+    check(n + ": traced: cleared while streaming, then the guard", reqs and reqs[0]["parallel_check"]["used"] == "stream" and
+          [g["guard"] for g in reqs[0]["guards"]] == ["claims_action"], reqs)
+
+
+@scenario
+def exp_check_only_when_held():
+    n = "E3 no check without fast mode, nor without the switch"
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": {"text": "NONE"}}], "default": {"text": "Lisbon."}}
+    r = run(script, ask="what is the capital of portugal", fast=False, env=PARALLEL)
+    check(n + ": fast mode off: one call", len(r.requests) == 1 and not _check_requests(r), r)
+    r = run(script, ask="what is the capital of portugal", fast=True)
+    check(n + ": switch off: no check", not _check_requests(r) and len(r.requests) == 2, r)
+
+
 def main():
     if not os.access(APP, os.X_OK):
         sys.exit("no app at %s (build the cli preset first)" % APP)
