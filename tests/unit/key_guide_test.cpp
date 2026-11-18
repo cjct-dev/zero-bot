@@ -43,6 +43,11 @@ const char *name(ChatKey k) {
         case ChatKey::Type: return "Type";
         case ChatKey::DeleteTap: return "DeleteTap";
         case ChatKey::TypeHint: return "TypeHint";
+        case ChatKey::PreviousTrack: return "PreviousTrack";
+        case ChatKey::NextTrack: return "NextTrack";
+        case ChatKey::Mute: return "Mute";
+        case ChatKey::VolumeDown: return "VolumeDown";
+        case ChatKey::VolumeUp: return "VolumeUp";
     }
     return "?";
 }
@@ -79,8 +84,17 @@ void test_chat_keys() {
     expect(key(Key::Delete), ChatKey::DeleteTap, "fn+del");
     expect(key(Key::Backspace, 2), ChatKey::None, "del held");
     // Other letters and digits only say how to type.
-    for (const char *t : {"a", "w", "z", "c", "1", "!"}) expect(text(t), ChatKey::TypeHint, std::string("letter ") + t);
-    expect(text("w", 0), ChatKey::None, "a letter let go");
+    for (const char *t : {"q", "z", "c", "1", "!"}) expect(text(t), ChatKey::TypeHint, std::string("letter ") + t);
+    expect(text("q", 0), ChatKey::None, "a letter let go");
+    // W, E, A, S, D: the fn layer's media and volume keys without fn (the owner's request, 0.4.2).
+    expect(text("w"), ChatKey::PreviousTrack, "W");
+    expect(text("E"), ChatKey::NextTrack, "E");
+    expect(text("a"), ChatKey::Mute, "A");
+    expect(text("s"), ChatKey::VolumeDown, "S");
+    expect(text("D"), ChatKey::VolumeUp, "D");
+    expect(text("s", 2), ChatKey::VolumeDown, "S held repeats");
+    expect(text("w", 2), ChatKey::None, "W held does not skip again");
+    expect(text("a", 2), ChatKey::None, "A held does not toggle again");
     // TAB, ESC and the fn layer's control keys are handled before chat_key is asked.
     for (Key k : {Key::Tab, Key::Esc, Key::VolumeUp, Key::Mute, Key::MediaPlay, Key::Left, Key::Home})
         expect(key(k), ChatKey::None, "a key handled elsewhere");

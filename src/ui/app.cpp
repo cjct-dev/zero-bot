@@ -512,6 +512,18 @@ struct App {
             case ChatKey::PageUp: chat.scroll(110); break;
             case ChatKey::PageDown: chat.scroll(-110); break;
             case ChatKey::TypeHint: show_level("Press ENTER to type"); break;
+            // W, E, A, S, D: the fn layer's media and volume keys, without fn.
+            case ChatKey::PreviousTrack: case ChatKey::NextTrack: case ChatKey::Mute:
+            case ChatKey::VolumeDown: case ChatKey::VolumeUp: {
+                const ChatKey k = keyguide::chat_key(ev);
+                KeyEvent fn = ev;
+                fn.text.clear();
+                fn.key = k == ChatKey::PreviousTrack ? Key::MediaPrevious : k == ChatKey::NextTrack ? Key::MediaNext
+                       : k == ChatKey::Mute          ? Key::Mute         : k == ChatKey::VolumeDown ? Key::VolumeDown
+                                                                                                    : Key::VolumeUp;
+                control_key(fn);
+                break;
+            }
             case ChatKey::None: break;
         }
     }
@@ -912,7 +924,7 @@ struct App {
             handle_key(del);
             snap("new-conversation");
             // A letter key does not start typing (ENTER does); it says how to.
-            KeyEvent letter; letter.key = Key::Char; letter.text = "w"; letter.state = 1;
+            KeyEvent letter; letter.key = Key::Char; letter.text = "k"; letter.state = 1;
             handle_key(letter);
             update_footer();
             snap("letter-hint");

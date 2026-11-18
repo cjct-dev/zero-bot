@@ -54,10 +54,10 @@ needs a [Tavily](https://tavily.com) key.
 | Hold **ESC** | Leave the app and return to the launcher. |
 | **F** / **X** (or **fn**+**F** / **fn**+**X**) | Scroll the conversation up and down. While typing, use **fn**+**F** / **fn**+**X**. |
 | **H** | Show every key and what it does (also in settings, and under *Settings → Keys*). |
-| **fn**+**S** / **fn**+**D** | Volume down / up. **fn**+**A** mutes and unmutes. |
+| **fn**+**S** / **fn**+**D** | Volume down / up. **fn**+**A** mutes and unmutes. On the conversation screen, until **ENTER** starts typing, plain **S** / **D** and **A** do the same. |
 | **fn**+**U** / **fn**+**I** | Screen brightness down / up. |
 | Any key, screen off | Turns the screen back on, and does nothing else. |
-| **fn**+**Q** / **fn**+**W** / **fn**+**E** | Music: pause or resume / previous track / next track. With a radio station on: pause or resume / previous station in your list / next station. |
+| **fn**+**Q** / **fn**+**W** / **fn**+**E** | Music: pause or resume / previous track / next track. With a radio station on: pause or resume / previous station in your list / next station. On the conversation screen, until **ENTER** starts typing, plain **W** / **E** do the same as **fn**+**W** / **fn**+**E**. |
 
 The bottom of the screen names the keys you need most; **H** lists the rest.
 
