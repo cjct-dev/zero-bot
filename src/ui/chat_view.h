@@ -20,7 +20,8 @@ public:
     void add_tool(const std::string &label);
     void add_note(const std::string &text, uint32_t color);
     void add_alert(const std::string &text);
-    void add_image(const std::string &image_path);
+    // With `owned`, the file is the row's own (a photo's thumbnail): it is deleted with the row.
+    void add_image(const std::string &image_path, bool owned = false);
     void clear();
     void scroll(int dy);
     bool empty() const { return count_ == 0; }

@@ -1,6 +1,7 @@
 #include "ui/chat_view.h"
 
 #include <cstdio>
+#include <unistd.h>
 
 #include "ui/theme.h"
 
@@ -254,11 +255,20 @@ void ChatView::add_alert(const std::string &text) {
     after_add();
 }
 
-void ChatView::add_image(const std::string &image_path) {
+void ChatView::add_image(const std::string &image_path, bool owned) {
     lv_obj_t *row = add_row(false);
     lv_obj_t *img = lv_image_create(row);
     const std::string src = "A:" + image_path;
     lv_image_set_src(img, src.c_str());
+    // The screen may read the file again whenever it redraws the row, so it goes when the row does
+    // (pruned, cleared or the app's next start), not before: otherwise every photo's thumbnail
+    // would stay in the cache folder for good.
+    if (owned)
+        lv_obj_add_event_cb(img, [](lv_event_t *e) {
+            auto *path = static_cast<std::string *>(lv_event_get_user_data(e));
+            unlink(path->c_str());
+            delete path;
+        }, LV_EVENT_DELETE, new std::string(image_path));
     lv_obj_set_style_radius(img, 5, 0);
     lv_obj_set_style_clip_corner(img, true, 0);
     lv_obj_set_style_border_width(img, 1, 0);

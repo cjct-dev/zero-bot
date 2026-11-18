@@ -3,6 +3,8 @@
 #include <atomic>
 #include <csignal>
 #include <cstdio>
+#include <cstring>
+#include <dirent.h>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -83,6 +85,20 @@ constexpr double kMaxSpeechSeconds = 90;
 std::atomic<bool> g_exit{false};
 void on_signal(int) { g_exit = true; }
 
+// A photo's thumbnail, shown in the chat, lives in the cache folder until its chat row goes
+// (ChatView::add_image). Rows are not deleted when the app ends, so the next start clears those.
+const char *const kThumbPrefix = "thumb_";
+void remove_old_thumbnails() {
+    const std::string dir = util::cache_dir();
+    std::vector<std::string> old;
+    if (DIR *d = opendir(dir.c_str())) {
+        while (const dirent *e = readdir(d))
+            if (strncmp(e->d_name, kThumbPrefix, strlen(kThumbPrefix)) == 0) old.push_back(dir + "/" + e->d_name);
+        closedir(d);
+    }
+    for (const std::string &path : old) unlink(path.c_str());
+}
+
 struct App {
     ChatView chat;
     Menu menu;
@@ -147,16 +163,18 @@ struct App {
             // decodes a thumbnail. Starting ffmpeg takes one to three seconds on the device, so it
             // runs beside the request instead of holding the photo back from the service, on a
             // copy, since the next photo replaces this one. Each thumbnail gets its own name
-            // because the image cache is keyed by path.
+            // because the image cache is keyed by path, and is deleted with its chat row (or at
+            // the next start: remove_old_thumbnails).
             static std::atomic<int> serial{0};
-            const std::string base = util::cache_dir() + "/thumb_" + std::to_string(serial++ % 8) + "_" + std::to_string(time(nullptr));
+            const std::string base = util::cache_dir() + "/" + kThumbPrefix + std::to_string(serial++) + "_" + std::to_string(time(nullptr));
             std::string data;
             if (!util::read_file(jpeg, data) || !util::write_file_atomic(base + ".jpg", data)) return;
             std::thread([this, base] {
                 const std::string thumb = base + ".png";
                 const auto res = proc::run({"ffmpeg", "-v", "error", "-y", "-i", base + ".jpg", "-vf", "scale=128:-2", thumb}, "", 8000);
                 unlink((base + ".jpg").c_str());
-                if (res.ok()) uiq::post([this, thumb] { chat.add_image(thumb); });
+                if (res.ok()) uiq::post([this, thumb] { chat.add_image(thumb, true); });
+                else unlink(thumb.c_str());
             }).detach();
         };
         Agent::get().start(ev);
@@ -772,6 +790,27 @@ struct App {
             }
         }
         chat.clear();
+        {
+            // A photo's thumbnail goes with its chat row, and one left by an earlier run goes at
+            // the next start; an image the row does not own stays. Checked, not pictured.
+            const std::string own = util::cache_dir() + "/" + kThumbPrefix + "shots.png", other = util::cache_dir() + "/shots-image.png";
+            util::write_file_atomic(own, "x");
+            util::write_file_atomic(other, "x");
+            chat.add_image(own, true);
+            chat.add_image(other);
+            const bool shown = access(own.c_str(), F_OK) == 0;
+            chat.clear();
+            const bool gone = access(own.c_str(), F_OK) != 0, stayed = access(other.c_str(), F_OK) == 0;
+            unlink(other.c_str());
+            util::write_file_atomic(own, "x");
+            remove_old_thumbnails();
+            const bool cleared = access(own.c_str(), F_OK) != 0;
+            if (!shown || !gone || !stayed || !cleared) {
+                fprintf(stderr, "a thumbnail was not deleted with its chat row or at the next start (kept while shown %d, "
+                                "gone with the row %d, other image kept %d, left over removed %d)\n", shown, gone, stayed, cleared);
+                failed = true;
+            }
+        }
         chat.add_note("Press TAB to talk, press it again when you have finished. Or press ENTER and type.", theme::kDim);
         snap("welcome");
         {
@@ -1466,6 +1505,7 @@ int run_app(const std::string &shots_dir, bool keydump) {
     audio::set_mic_builtin(s.mic_builtin);
     audio::set_volume_async(s.volume);
 
+    remove_old_thumbnails();   // before the first photo of this run
     app.wire_agent();
     app.welcome();
     app.auto_select_models();
