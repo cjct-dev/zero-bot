@@ -790,7 +790,8 @@ namespace {
 const char *const kSceneChanged =
     "this scene has changed on the Hue Bridge since the device list was read; refresh the device list in Settings, Smart home";
 const char *const kSceneDisabled =
-    "this scene also changes a light the assistant may not use; switch the lights on by name instead";
+    "this scene also changes a light the assistant may not use; allow that light in Settings, Smart home, or switch the "
+    "lights by name instead";
 const char *const kScenePlug =
     "this scene also switches on a smart plug, and a plug is only switched on by name; switch the lights on by name instead";
 const char *const kSceneAskFirst =
