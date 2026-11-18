@@ -253,12 +253,14 @@ def chk_dad_age(t):
     year = d.year if d <= datetime.date(d.year, 6, 2) else d.year + 1
     return [] if says_int(t["answer"], year - 1955) else ["answer should give the age %d" % (year - 1955)]
 
-def case(name, request, must=(), must_not=(), checks=(), env=None, steer=None, home=None):
+def case(name, request, must=(), must_not=(), checks=(), env=None, steer=None, home=None, radio=None):
     """request: one utterance or a list (a conversation; "/new" starts a fresh one, memories are kept).
     must / must_not / checks apply to the last turn; speech-suitability rules apply to every turn.
-    home: a smart-home file to start from, saved for the stand-in test network (see EVAL_HOME)."""
+    home: a smart-home file to start from, saved for the stand-in test network (see EVAL_HOME).
+    radio: a radio station file to start from (see EVAL_RADIO); without one there are no stations."""
     return {"name": name, "turns": [request] if isinstance(request, str) else list(request), "must": list(must),
-            "must_not": list(must_not), "checks": list(checks), "env": env or {}, "steer": steer, "home": home}
+            "must_not": list(must_not), "checks": list(checks), "env": env or {}, "steer": steer, "home": home,
+            "radio": radio}
 
 # ---------------------------------------------------------------- a made-up home for the smart-home cases
 # Saved for the network ZB_TEST_NETWORK=1 stands in for (its id is checked in tests/unit). Every
@@ -357,6 +359,36 @@ SOCKETS_HOME = _home(*[_thing("s%d" % i, "Socket %d" % i, "plug", POWER, "", {"o
 
 FRI_8PM = lambda: stamps(next_weekday(4), "20:00")
 CANNOT = r"can'?t|cannot|not able|unable|don'?t have|no way|not something|isn'?t something|not set up|only"
+
+# ---------------------------------------------------------------- made-up radio stations
+# Addresses on 127.0.0.1 that nothing answers: with ZB_DRY_RUN (set for every case) no station is
+# ever checked or played. The names are made up; none is a real station's.
+EVAL_RADIO = {"stations": [
+    {"name": "Harbour FM", "nicknames": ["Harbour"], "url": "http://127.0.0.1:9/harbour.mp3"},
+    {"name": "Northern Radio 2", "nicknames": ["Radio 2"], "url": "http://127.0.0.1:9/two.m3u8",
+     "low_data_url": "http://127.0.0.1:9/two-low.m3u8"},
+    {"name": "Night Jazz 24", "nicknames": ["the jazz station", "Jazz 24"], "url": "http://127.0.0.1:9/jazz.aac"},
+    {"name": "City Talk", "url": "http://127.0.0.1:9/talk.mp3"}]}
+
+def radio_play(station):
+    """Problem text unless the turn asked radio to play exactly `station`."""
+    def check(t):
+        for c in calls(t, "radio"):
+            if str(c.get("action", "play")).lower() == "play" and c.get("station") == station: return []
+        return ["radio should play %s, got %s" % (station, calls(t, "radio"))]
+    return check
+
+def radio_never_plays(t):
+    played = [c for c in calls(t, "radio") if str(c.get("action", "play")).lower() == "play"]
+    return ["radio should not play anything, got %s" % played] if played else []
+
+def stops_player(t):
+    if any(str(c.get("action", "")).lower() == "stop" for c in calls(t, "radio|music")): return []
+    return ["radio or music should stop, got %s" % calls(t, "radio|music")]
+
+# Saying that radio is not available: "no radio stations are set up", "I can't play radio stations".
+RADIO_NOT_SET_UP = (r"not set up|no (radio )?stations|(can'?t|cannot|unable to|not able to|don'?t|do not|no way to)\b.{0,40}"
+                    r"\b(radio|stations?|stream|live)|radio (isn'?t|is not|aren'?t|has not|hasn'?t)|without (any )?(radio )?stations")
 UNSURE = r"search|can'?t (check|look|confirm)|cannot|not set up|unable|not sure|may have changed|might have changed|" \
          r"check (the|their)|double.check|verify|usually|typically|normally|generally|i believe|from memory|as far as i know"
 
@@ -562,6 +594,24 @@ CASES = [
          home=TV_HOME),
     case("route_lamp_no_home", "turn on the bedroom lamp", must_not=["tv_remote", "device"],
          checks=[answer(CANNOT + r"|smart.home|set up|settings", "that no lamps are set up")]),
+
+    # Radio from the user's own stations, against the music library and with no stations at all.
+    case("radio_by_nickname", "play radio 2", must=["radio"], must_not=["music"], radio=EVAL_RADIO,
+         checks=[radio_play("Northern Radio 2")]),
+    case("radio_by_name", "put on harbour fm", must=["radio"], must_not=["music"], radio=EVAL_RADIO,
+         checks=[radio_play("Harbour FM")]),
+    case("radio_nickname_phrase", "can you put the jazz station on", must=["radio"], must_not=["music"], radio=EVAL_RADIO,
+         checks=[radio_play("Night Jazz 24")]),
+    case("radio_stop", ["play radio 2", "stop the radio"], must=["radio|music"], radio=EVAL_RADIO, checks=[stops_player]),
+    case("radio_vs_music", "play some abba", must=["music"], must_not=["radio"], radio=EVAL_RADIO,
+         checks=[lambda t: arg(t, "music", "action", has("play"), "play")]),
+    case("radio_unknown_station", "play radio 4", must_not=["music"], radio=EVAL_RADIO,
+         checks=[radio_never_plays, not_answer(r"(now )?playing radio 4|here'?s radio 4|radio 4 is (now )?(on|playing)",
+                                                  "claim Radio 4 is playing"),
+                 answer(CANNOT + r"|not (one of|in|on)|no (station|radio 4)|isn'?t (one|in|on|a)|aren'?t", "that Radio 4 is not one of the stations")]),
+    case("radio_none_set_up", "play radio 2", must_not=["radio"],
+         checks=[not_answer(r"(now )?playing radio 2|here'?s radio 2|radio 2 is (now )?(on|playing)", "claim Radio 2 is playing"),
+                 answer(RADIO_NOT_SET_UP, "that radio is not set up")]),
 ]
 
 # ---------------------------------------------------------------- running and scoring
@@ -601,6 +651,8 @@ def run_case(binary, base_env, c):
         if os.environ.get("ZB_EVAL_" + key.upper()): settings[key] = os.environ["ZB_EVAL_" + key.upper()]
     json.dump(settings, open(state + "/config/zero-bot/settings.json", "w"))
     env = dict(base_env, XDG_CONFIG_HOME=state + "/config", XDG_DATA_HOME=state + "/data", XDG_CACHE_HOME=state + "/cache")
+    if c.get("radio"):
+        json.dump(c["radio"], open(state + "/config/zero-bot/radio.json", "w"))
     if c.get("home"):
         # The made-up home lives on the stand-in network, where only 127.x addresses could ever be
         # contacted; with ZB_DRY_RUN none is.

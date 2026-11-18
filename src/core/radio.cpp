@@ -388,7 +388,8 @@ std::string prompt_line() {
     std::string names;
     for (size_t i = 0; i < list.size(); ++i) names += (i ? ", " : "") + list[i].name;
     return "- Radio stations the user has set up, played with radio: " + names +
-           ". A request for one of them by name means radio, not the music library.\n";
+           ". A request for one of them by name means radio, not the music library. Only the user can add a station "
+           "(in a file on the device); you cannot.\n";
 }
 
 std::string run_tool(const json &a, const ToolEnv &env) {
@@ -401,8 +402,8 @@ std::string run_tool(const json &a, const ToolEnv &env) {
     }
     const std::vector<Station> list = stations();
     if (list.empty())
-        return fail("no radio stations are set up, so nothing was played. Tell the user that they can list their own stations in "
-                    "the file " + shown_path() + "; the README explains how");
+        return fail("no radio stations are set up, so nothing was played. Tell the user that they can add their own in the file " +
+                    shown_path() + "; settings, Your data, Radio stations says how");
     if (action != "play" && !(action.empty() && !said.empty())) return fail("action must be play or stop");
     if (said.empty()) return fail("give the station to play: one of " + names_in_quotes(list));
     const int i = find(list, said);

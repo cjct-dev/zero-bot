@@ -683,7 +683,8 @@ void radio_hint(const json &a, json &out) {
     const auto words = util::split(asked, ' ');
     if (std::find(words.begin(), words.end(), "radio") == words.end() && std::find(words.begin(), words.end(), "fm") == words.end()) return;
     out["radio"] = radio::stations().empty()
-                       ? "No radio stations are set up, so radio cannot play: the user can list their own stations (the README explains how)."
+                       ? "No radio stations are set up, so radio cannot play. The user can add their own: settings, Your data, Radio "
+                         "stations says how."
                        : "A radio station is played with the radio tool, not from the music library.";
 }
 

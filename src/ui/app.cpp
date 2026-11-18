@@ -967,6 +967,8 @@ struct App {
         menu.key(down); menu.key(down);                // "Radio stations"
         menu.key(enter);
         snap("radio-stations");
+        for (int i = 0; i < 3; ++i) menu.key(down);    // "Read the file again", below how to add stations
+        snap("radio-stations-help");
         menu.key(esc);
         for (int i = 0; i < 9; ++i) menu.key(down);
         snap("settings-service");

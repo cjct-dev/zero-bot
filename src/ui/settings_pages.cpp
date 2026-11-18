@@ -447,10 +447,14 @@ void open_radio(Menu &menu) {
                 menu.refresh();
             }));
         items.push_back(MenuItem::header(list.empty() ? "No stations yet" : "Adding stations"));
-        Menu::add_paragraph(items, "Stations are kept in " + radio::shown_path() + ": for each, its name, any nicknames and the "
-                                   "stream's web address, and if it has one, a low-data address for when the internet comes "
-                                   "through your phone. The README shows the format; radio-browser.info lists the addresses of "
-                                   "many stations. A change is used from the next request on.");
+        Menu::add_paragraph(items, "Add them to " + radio::shown_path() + ": a name, nicknames and a stream address each, "
+                                   "and a low-data one if there is. The README shows how; radio-browser.info lists addresses.");
+        // Also what makes the paragraph above reachable: the cursor stops at the last row it can select.
+        items.push_back(MenuItem::action("Read the file again", [&menu] {
+            menu.refresh();
+            const size_t n = radio::stations().size();
+            menu.toast(n ? std::to_string(n) + (n == 1 ? " station" : " stations") : std::string("No stations in the file"));
+        }));
         return items;
     };
     menu.push(std::move(page));
