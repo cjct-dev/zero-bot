@@ -9,7 +9,7 @@
 //  - Device kind "tplink". Claimed when Device::info "device_type" is one of the two families
 //    switched here, "IOT.SMARTPLUGSWITCH" (plugs, strips, wall switches, dimmers) or
 //    "IOT.SMARTBULB" (bulbs, light strips), and the kind is "tplink", or "tapo" for a device an
-//    earlier version saved from its 20002 reply. The Tapo driver claims "SMART.*" types only.
+//    earlier version saved from its 20002 reply. The Tapo driver claims no "IOT." type.
 //  - Things: a plug or wall switch is one thing "main" (type plug or switch, kPower); a dimmer is
 //    one "light" with kBrightness; a power strip is one "plug" per socket, its id the socket's
 //    child id; a bulb or light strip is one "light" with kBrightness, kColorTemp and kColor as
