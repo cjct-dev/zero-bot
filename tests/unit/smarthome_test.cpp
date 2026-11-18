@@ -2053,6 +2053,16 @@ void test_tplink_discovery() {
     CHECK_MSG(both && both->kind == "tplink" && info(both, "scheme") == "XOR" && both->port == 9999 && both->name == "Both",
               both ? info(both, "scheme") : "no device");
     for (const char *ip : {"192.0.2.90", "192.0.2.91", "192.0.2.92", "192.0.2.93", "192.0.2.94"}) CHECK_MSG(!at(ip), ip);
+    // An older Kasa answer that gives no MAC takes the address over as Kasa, but not the id of
+    // the HomeKit accessory announced there: a saved, paired HomeKit record would otherwise become
+    // the Kasa driver's (and its Unpair would forget the pairing without telling the accessory).
+    {
+        const auto mixed = discovery::devices_from(
+            {{"mdns", "192.0.2.95", service_answer(hap, "Plug 95", "plug95.local", std::string("\xC0\x00\x02\x5F", 4), {"id=AA:BB:CC:00:00:95", "ci=7", "sf=1"})},
+             {"kasa", "192.0.2.95", sysinfo(R"J("type":"IOT.SMARTPLUGSWITCH","model":"HS100(UK)","alias":"No MAC")J")}});
+        CHECK_MSG(mixed.size() == 1 && mixed[0].kind == "tplink" && mixed[0].id.compare(0, 7, "tplink:") == 0,
+                  mixed.empty() ? "nothing" : mixed[0].kind + " " + mixed[0].id);
+    }
 
     // The same plug before and after a firmware update keeps its id, so a later scan updates it.
     const auto before = discovery::devices_from({{"kasa", "192.0.2.80", sysinfo(R"J("type":"IOT.SMARTPLUGSWITCH","alias":"x","mac":"50:C7:BF:00:00:80")J")}});

@@ -403,6 +403,37 @@ static void test_routing() {
               !kasa->claims("tapo", kasa_new));
     check("Kasa claims nothing of other kinds", !kasa->claims("homekit", plug) && !kasa->claims("kasa", plug));
     check("no pairing", kasa->next_step(home::Device()).kind == home::Pairing::None);
+
+    // The port: what discovery saved for kind tplink; never the newer login's HTTP port that a
+    // version which filed these under Tapo saved.
+    home::Device d;
+    d.kind = "tplink";
+    d.port = 10001;
+    const int saved_port = port_for(d);
+    d.port = 0;
+    const int no_port = port_for(d);
+    d.kind = "tapo";
+    d.port = 80;
+    check("port: the saved one for tplink, else 9999 (an older version's Tapo record kept port 80)",
+          saved_port == 10001 && no_port == 9999 && port_for(d) == 9999);
+}
+
+// ---------------------------------------------------------------- the device at the address is the saved one
+static void test_identity() {
+    check("MAC digits from every way of writing one", mac_digits("50:C7:BF:00:00:01") == "50c7bf000001" &&
+                                                         mac_digits("50-c7-bf-00-00-01") == "50c7bf000001" &&
+                                                         mac_digits("50C7BF000001") == "50c7bf000001");
+    check("not a MAC: too short, too long, not hex, empty", mac_digits("50:C7:BF:00:00").empty() &&
+                                                                mac_digits("50:C7:BF:00:00:01:02").empty() &&
+                                                                mac_digits("zz:C7:BF:00:00:01").empty() && mac_digits("").empty());
+    check("the saved plug answers: same device", same_device("50:c7:bf:00:00:01", json::parse(kPlugV1)));
+    check("a bulb by its mic_mac", same_device("1c:3b:f3:00:00:06", json::parse(kColourBulb)));
+    check("another device at the address: not the same", !same_device("c0:06:c3:00:00:02", json::parse(kPlugV1)) &&
+                                                          !same_device("50:c7:bf:00:00:01", json::parse(kColourBulb)));
+    check("nothing saved, or nothing reported: nothing to compare", same_device("", json::parse(kPlugV1)) &&
+                                                                       same_device("50:c7:bf:00:00:01", json::parse(kSwitch)));
+    const std::string low = util::lower(kasa::kOtherDevice);
+    check("its sentence reads as 'not at that address', so the app looks for the device again", has(low, "answer"));
 }
 
 // ---------------------------------------------------------------- the driver on 127.0.0.1
@@ -441,6 +472,27 @@ static std::thread serve_once(Listener &l, std::string &got, const std::string &
             if (send(c, out.data(), out.size(), MSG_NOSIGNAL) < 0) perror("send");
         }
         close(c);
+    });
+}
+
+// Answers one connection after another with `replies` in turn, one framed request each; `got`
+// collects the requests as the device decoded them.
+static std::thread serve_each(Listener &l, std::vector<std::string> &got, const std::vector<std::string> &replies) {
+    return std::thread([&l, &got, replies] {
+        for (const std::string &reply : replies) {
+            if (!l.pending(3000)) return;
+            const int c = accept(l.fd, nullptr, nullptr);
+            if (c < 0) return;
+            unsigned char head[4];
+            if (recv(c, head, 4, MSG_WAITALL) == 4) {
+                const size_t n = (size_t(head[0]) << 24) | (size_t(head[1]) << 16) | (size_t(head[2]) << 8) | head[3];
+                std::string body(n, '\0');
+                if (n < 100000 && recv(c, &body[0], n, MSG_WAITALL) == static_cast<ssize_t>(n)) got.push_back(decrypt(body));
+                const std::string out = frame(reply);
+                if (send(c, out.data(), out.size(), MSG_NOSIGNAL) < 0) perror("send");
+            }
+            close(c);
+        }
     });
 }
 
@@ -546,6 +598,65 @@ static void test_driver() {
         set_probe_port(20002);
     }
 
+    // The router gave the saved plug's address to another Kasa plug: nothing is switched there.
+    {
+        const std::string sysinfo = std::string(R"J({"system":{"get_sysinfo":)J") + kPlugV1 + "}}";
+        const std::string get = R"J({"system":{"get_sysinfo":{}}})J";
+        home::Device dev;
+        dev.kind = "tplink";
+        dev.ip = "127.0.0.1";
+        dev.name = "Desk fan";
+        dev.mac = "c0:06:c3:00:00:02";   // the saved plug; the one answering is 50:C7:BF:00:00:01
+        dev.info = {{"device_type", "IOT.SMARTPLUGSWITCH"}, {"scheme", "XOR"}};
+        dev.things = things_of(kPlugV2);
+        home::Change on;
+        on.on = true;
+        {
+            Listener l;
+            dev.port = l.port;
+            std::vector<std::string> got;
+            std::thread t = serve_each(l, got, {sysinfo});
+            const bool ok = kasa->apply(dev, dev.things[0], on, 2500, err);
+            t.join();
+            check("another plug at the address: the change is refused", !ok && err == kasa::kOtherDevice, err);
+            check("another plug at the address: it was only asked what it is", got == std::vector<std::string>{get} && !l.pending(300),
+                  got.empty() ? "" : got.back());
+        }
+        {
+            Listener l;
+            dev.port = l.port;
+            std::vector<std::string> got;
+            std::thread t = serve_each(l, got, {sysinfo, sysinfo});
+            std::vector<home::Thing> out;
+            const bool e = kasa->enumerate(dev, out, err);
+            const bool r = kasa->read(dev, out, err);
+            t.join();
+            check("another plug at the address: enumerate and read refuse, the saved name and things stay",
+                  !e && !r && err == kasa::kOtherDevice && dev.name == "Desk fan" && out.size() == 1 && out[0].name == "Desk fan", err);
+        }
+        {
+            Listener l;
+            dev.port = l.port;
+            dev.mac = "50-C7-BF-00-00-01";   // now it is the saved one, written another way
+            std::vector<std::string> got;
+            std::thread t = serve_each(l, got, {sysinfo, R"J({"system":{"set_relay_state":{"err_code":0}}})J"});
+            const bool ok = kasa->apply(dev, dev.things[0], on, 2500, err);
+            t.join();
+            check("the saved plug at the address: asked who it is, then switched",
+                  ok && got == std::vector<std::string>{get, R"J({"system":{"set_relay_state":{"state":1}}})J"}, err);
+        }
+        {
+            Listener l;
+            dev.port = l.port;
+            dev.mac = "";   // a saved device without a MAC: nothing to compare, one request
+            std::vector<std::string> got;
+            std::thread t = serve_each(l, got, {R"J({"system":{"set_relay_state":{"err_code":0}}})J"});
+            const bool ok = kasa->apply(dev, dev.things[0], on, 2500, err);
+            t.join();
+            check("no saved MAC: the change alone", ok && got.size() == 1 && has(got[0], "set_relay_state"), err);
+        }
+    }
+
     // Addresses that are not usable are never tried.
     {
         home::Device dev;
@@ -564,6 +675,7 @@ int main() {
     test_energy();
     test_requests();
     test_routing();
+    test_identity();
     test_driver();
     printf("%d checks, %d failed\n", g_run, g_failed);
     return g_failed ? 1 : 0;

@@ -29,6 +29,8 @@ namespace kasa {
 const char *const kNewLogin = "this Kasa device moved to TP-Link's newer login";
 const char *const kNoAnswer = "the Kasa device did not answer";
 const char *const kRefused = "the Kasa device refused the connection";
+// "answers" is one of the words that make the app look for the device at a new address.
+const char *const kOtherDevice = "another Kasa device now answers at this one's saved address";
 
 namespace {
 
@@ -268,7 +270,7 @@ public:
         json reply;
         if (!ask(dev, {{kRelay, {{"get_sysinfo", json::object()}}}}, reply, until, err)) return false;
         json sysinfo;
-        if (!sysinfo_in(reply, sysinfo, err)) return false;
+        if (!sysinfo_in(dev, reply, sysinfo, err)) return false;
         if (!detail::things_from(sysinfo, out, err)) return false;
         const std::string name = home::clean_name(text(sysinfo, "alias"));
         if (!name.empty()) dev.name = name;
@@ -294,7 +296,7 @@ public:
         json reply;
         if (!ask(dev, request, reply, until, err)) return false;
         json sysinfo;
-        if (!sysinfo_in(reply, sysinfo, err)) return false;
+        if (!sysinfo_in(dev, reply, sysinfo, err)) return false;
         for (auto &t : things) {
             detail::state_from(sysinfo, t);
             if (own_meter && metered(t) && child_of(t).empty()) {
@@ -336,9 +338,20 @@ public:
     }
 
 private:
+    // A Kasa device takes any command from anyone, so before a change the device at the saved
+    // address is asked who it is. After the router hands that address to another Kasa device, a
+    // plug's "on" would otherwise switch that one instead: every socket of a strip, or a heater
+    // whose "Ask before switching on" is never asked because the command was for another thing.
     bool send_change(const home::Device &dev, const json &request, int deadline_ms, std::string &err) const {
         const Clock::time_point until = Clock::now() + std::chrono::milliseconds(std::max(1, deadline_ms));
         json reply;
+        if (!detail::mac_digits(dev.mac).empty()) {
+            json sysinfo;
+            if (!ask(dev, {{kRelay, {{"get_sysinfo", json::object()}}}}, reply, until, err) ||
+                !sysinfo_in(dev, reply, sysinfo, err))
+                return false;
+            reply = json();
+        }
         if (!ask(dev, request, reply, until, err)) return false;
         return detail::reply_ok(request, reply, err);
     }
@@ -349,7 +362,7 @@ private:
             err = new_login_error();
             return false;
         }
-        const int port = dev.port > 0 ? dev.port : kDefaultPort;
+        const int port = detail::port_for(dev);
         switch (exchange(dev.ip, port, request, reply, until)) {
         case Outcome::Ok:
             return true;
@@ -369,7 +382,8 @@ private:
         return false;
     }
 
-    static bool sysinfo_in(const json &reply, json &sysinfo, std::string &err) {
+    // get_sysinfo from a reply, from the device that was saved (see send_change).
+    static bool sysinfo_in(const home::Device &dev, const json &reply, json &sysinfo, std::string &err) {
         const json &s = member(member(reply, kRelay), "get_sysinfo");
         if (!s.is_object()) {
             err = kUnreadable;
@@ -377,6 +391,10 @@ private:
         }
         if (number(s, "err_code", 0) != 0) {
             err = kCommandRefused;
+            return false;
+        }
+        if (!detail::same_device(dev.mac, s)) {
+            err = kOtherDevice;
             return false;
         }
         sysinfo = s;
@@ -747,6 +765,27 @@ bool reply_ok(const json &request, const json &reply, std::string &err) {
     }
     return true;
 }
+
+std::string mac_digits(const std::string &raw) {
+    std::string hex;
+    for (const char c : raw) {
+        if (c == ':' || c == '-') continue;
+        if (!isxdigit(static_cast<unsigned char>(c)) || hex.size() >= 12) return "";
+        hex += static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    }
+    return hex.size() == 12 ? hex : "";
+}
+
+bool same_device(const std::string &saved_mac, const json &sysinfo) {
+    const std::string saved = mac_digits(saved_mac);
+    const std::string mac = mac_digits(text(sysinfo, "mac")), mic = mac_digits(text(sysinfo, "mic_mac"));
+    if (saved.empty() || (mac.empty() && mic.empty())) return true;   // nothing to compare
+    return saved == mac || saved == mic;
+}
+
+// Discovery gives kind "tplink" the port that answered (9999) or 0. A device an earlier version
+// filed under Tapo kept the newer login's HTTP port, which is not this protocol's.
+int port_for(const home::Device &dev) { return dev.kind == "tplink" && dev.port > 0 ? dev.port : kDefaultPort; }
 
 void set_probe_port(int port) { g_probe_port = port; }
 int probe_port() { return g_probe_port; }

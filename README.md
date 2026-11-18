@@ -254,8 +254,10 @@ device directly: nothing goes through the makers' cloud services. Supported so f
   Kasa devices to the newer login that Tapo plugs use with firmware updates; Zero Bot cannot use
   that login with these devices, and says so for one that has moved (the Kasa app still controls
   it). Newer Kasa models made on Tapo's system are listed as Tapo devices (untested). The older
-  protocol has no password at all. TP-Link does not document it. Tested so far only against
-  simulated devices.
+  protocol has no password at all, so before each change Zero Bot asks the device at the saved
+  address which device it is: when the router has given that address to another Kasa device,
+  nothing is switched and the device is looked for again. TP-Link does not document the protocol.
+  Tested so far only against simulated devices.
 
 Other families (Hue, Shelly, WiZ and more) are added one driver at a time.
 

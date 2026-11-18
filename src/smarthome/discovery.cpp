@@ -431,6 +431,7 @@ std::vector<Device> merge(const Seen &seen) {
         std::string mac = normal_mac(util::jget(s, "mac", std::string()));
         if (mac.empty()) mac = normal_mac(util::jget(s, "mic_mac", std::string()));   // bulbs
         if (!mac.empty()) { d.mac = mac; d.id = "tplink:" + mac; }
+        else if (d.id.compare(0, 7, "tplink:") != 0) d.id.clear();   // not another kind's id: made below from the address
         d.port = kKasaPort;
         d.info["device_type"] = device_type;
         d.info["scheme"] = "XOR";   // it answered the older protocol, so that is what it speaks

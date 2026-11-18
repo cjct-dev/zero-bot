@@ -19,8 +19,13 @@
 //    recognised from Device::info "scheme" (set by discovery from the 20002 reply), or when its
 //    port refuses the connection and a 20002 query to its address says so. Nothing is then sent
 //    and the error begins with kNewLogin. This driver does not speak that login.
-//  - Port: Device::port when not 0, else 9999. One TCP connection per request, closed after the
-//    reply. No pairing and no secrets. Deadlines: apply's deadline_ms; 4 s for enumerate and read.
+//  - The device at the saved address must be the saved one: when Device::mac is known, every
+//    get_sysinfo answer is checked against it, and a change is preceded by a get_sysinfo (one more
+//    connection) so that nothing is switched on another Kasa device that has taken the address.
+//    The error then begins with kOtherDevice, which makes the app look for the device again.
+//  - Port: Device::port when not 0 (kind "tplink"), else 9999. One TCP connection per request,
+//    closed after the reply. No pairing and no secrets. Deadlines: apply's deadline_ms for the
+//    check and the change together; 4 s for enumerate and read.
 //
 // Depends on the C++ standard library, POSIX sockets and nlohmann/json.
 #pragma once
@@ -40,6 +45,7 @@ using home::json;
 extern const char *const kNewLogin;   // "this Kasa device moved to TP-Link's newer login"
 extern const char *const kNoAnswer;   // "the Kasa device did not answer"
 extern const char *const kRefused;    // "the Kasa device refused the connection"
+extern const char *const kOtherDevice;   // "another Kasa device now answers at this one's saved address"
 
 // Building blocks, exposed so that kasa_test.cpp can check each one. Not part of the interface.
 namespace detail {
@@ -78,6 +84,15 @@ bool request_for_sockets(const std::vector<const home::Thing *> &things, const h
                          std::string &err);
 // Whether the device carried out every method of `request`, from its reply.
 bool reply_ok(const json &request, const json &reply, std::string &err);
+
+// The twelve hex digits of a MAC address written with ':', '-' or nothing between pairs, lower
+// case; "" when it is not one.
+std::string mac_digits(const std::string &raw);
+// Whether a get_sysinfo answer is from the device saved with `saved_mac` (its "mac", or "mic_mac"
+// on bulbs). True when either side has no MAC to compare.
+bool same_device(const std::string &saved_mac, const json &sysinfo);
+// The TCP port to use: Device::port for kind "tplink" when set, else 9999.
+int port_for(const home::Device &dev);
 
 // The UDP port of the 20002 query sent when port 9999 refuses (tests point it at a mock).
 void set_probe_port(int port);

@@ -3,8 +3,8 @@
 
 usage: tests/kasa_e2e.py [path/to/kasa_cli [path/to/zero_bot]] [group ...]
        (defaults: build/unit/kasa_cli, which tests/run_unit.sh builds, and build/cli/zero_bot)
-groups: discover enumerate apply read moved hostile app (default: all; "app" is skipped with a
-note when the command-line build is missing)
+groups: discover enumerate apply read moved swap hostile app (default: all; "app" is skipped
+with a note when the command-line build is missing)
 
 tests/mocks/kasa/mock_kasa.py runs a plug and a second plug with meters of the two hardware
 generations, a wall switch, a dimmer, a six-socket strip, a colour bulb, a light strip, a
@@ -27,7 +27,8 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 paths = [a for a in sys.argv[1:] if os.sep in a or a.endswith("_cli") or a.endswith("zero_bot")]
-GROUPS = [a for a in sys.argv[1:] if a not in paths] or ["discover", "enumerate", "apply", "read", "moved", "hostile", "app"]
+GROUPS = [a for a in sys.argv[1:] if a not in paths] or ["discover", "enumerate", "apply", "read", "moved", "swap", "hostile",
+                                                         "app"]
 CLI = os.path.abspath(paths[0]) if paths else os.path.join(HERE, "..", "build", "unit", "kasa_cli")
 APP = os.path.abspath(paths[1]) if len(paths) > 1 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
 MOCK = os.path.join(HERE, "mocks", "kasa", "mock_kasa.py")
@@ -85,14 +86,18 @@ DEVICE_TYPES = {"plug": "IOT.SMARTPLUGSWITCH", "plug2": "IOT.SMARTPLUGSWITCH", "
                 "dimmer": "IOT.SMARTPLUGSWITCH", "strip": "IOT.SMARTPLUGSWITCH", "bulb": "IOT.SMARTBULB",
                 "lightstrip": "IOT.SMARTBULB", "edison": "IOT.SMARTBULB", "camera": "IOT.SMARTPLUGSWITCH",
                 "moved": "IOT.SMARTPLUGSWITCH"}
+# The MACs the simulated devices report (mock_kasa.py), as discovery would have saved them.
+MACS = {"plug": "50:c7:bf:00:00:01", "plug2": "c0:06:c3:00:00:02", "switch": "50:c7:bf:00:00:03",
+        "dimmer": "50:c7:bf:00:00:04", "strip": "c0:06:c3:00:00:05", "bulb": "1c:3b:f3:00:00:06"}
 
 
-def state_file(mock, name, scheme="XOR", port=None, fname=None, plug=False):
+def state_file(mock, name, scheme="XOR", port=None, fname=None, plug=False, mac=""):
     """A saved device, as discovery and the app would have it, pointing at the mock's port; with
-    plug=True it already has the one thing a plug has (as if read before)."""
+    plug=True it already has the one thing a plug has (as if read before); with a MAC, the driver
+    checks that the device answering at the address is this one."""
     path = os.path.join(workdir, (fname or name) + ".json")
     if not os.path.exists(path):
-        dev = {"id": "tplink:" + name, "kind": "tplink", "name": name, "model": "", "mac": "", "ip": "127.0.0.1",
+        dev = {"id": "tplink:" + name, "kind": "tplink", "name": name, "model": "", "mac": mac, "ip": "127.0.0.1",
                "port": port if port is not None else mock.ports[name]["tcp"],
                "info": {"device_type": DEVICE_TYPES[name], "scheme": scheme}}
         with open(path, "w") as f:
@@ -347,6 +352,49 @@ def test_moved(mock):
     check("claims: Kasa takes a moved device, Tapo does not", out == {"claims": True, "tapo_claims": False}, out)
 
 
+# ---------------------------------------------------------------- another device at the saved address
+def test_swap(mock):
+    """The router gave a saved device's address to another Kasa device (both saved with their MACs,
+    as discovery saves them): nothing may be switched on the device now at that address."""
+    mock.reset()
+    base = "C006C30000050000000000000000000000000000"
+    fan = state_file(mock, "plug2", port=mock.ports["strip"]["tcp"], fname="fan-at-strip", plug=True, mac=MACS["plug2"])
+    before = mock.stats("strip")["state"]["children"]
+    rc, out, err, _ = cli(fan, "apply", "main", json.dumps({"on": True}))
+    st = mock.stats("strip")
+    check("swap: a plug's 'on' sent to the address the strip now has is refused",
+          rc == 1 and "another Kasa device now answers" in err, (rc, out, err))
+    check("swap: the strip was only asked what it is, and not one socket changed",
+          st["requests"] == [GET_SYSINFO] and st["state"]["children"] == before, (st["requests"], st["state"]))
+    rc, out, err, _ = cli(fan, "enumerate")
+    with open(fan) as f:
+        saved = json.load(f)
+    check("swap: enumerate refuses too; the plug's saved name and thing are not replaced by the strip's",
+          rc == 1 and "another Kasa device" in err and saved["device"]["name"] == "plug2" and
+          [t["id"] for t in saved["things"]] == ["main"], (rc, err, saved))
+    # The devices at their own addresses, saved with their MACs: asked who they are, then changed.
+    mock.reset()
+    rc, out, err, _ = cli(state_file(mock, "switch", fname="switch-mac", plug=True, mac=MACS["switch"]), "apply", "main",
+                          json.dumps({"on": True}))
+    check("own address: the switch is asked who it is, then switched on", rc == 0 and requests(mock, "switch") ==
+          [GET_SYSINFO, {"system": {"set_relay_state": {"state": 1}}}] and mock.stats("switch")["state"]["relay_state"] == 1,
+          (rc, err, requests(mock, "switch")))
+    strip = state_file(mock, "strip", fname="strip-mac", mac=MACS["strip"].upper())
+    rc, out, err, _ = cli(strip, "enumerate")
+    rc2, out2, err2, _ = cli(strip, "apply-many", base + "03," + base + "04", json.dumps({"on": True}))
+    reqs = requests(mock, "strip")
+    check("own address: the strip's sockets, after the same question, in one request",
+          rc == 0 and rc2 == 0 and reqs[-2:] == [GET_SYSINFO, {"context": {"child_ids": [base + "03", base + "04"]},
+                                                              "system": {"set_relay_state": {"state": 1}}}],
+          (err, err2, reqs[-2:]))
+    bulb = state_file(mock, "bulb", fname="bulb-mac", mac=MACS["bulb"])
+    rc, out, err, _ = cli(bulb, "enumerate")
+    rc2, out2, err2, _ = cli(bulb, "apply", "main", json.dumps({"on": True, "brightness": 30}))
+    check("own address: a bulb, known by its mic_mac", rc == 0 and rc2 == 0 and
+          mock.stats("bulb")["state"]["light_state"].get("brightness") == 30, (err, err2))
+    mock.reset()
+
+
 # ---------------------------------------------------------------- hostile answers
 def test_hostile(mock):
     mock.reset()
@@ -426,20 +474,27 @@ def test_app(mock):
     network = next((l.split(" id ")[1].strip() for l in out.splitlines() if l.startswith("network: Test network, id ")), "")
     check("app: runs on the stand-in test network", network.startswith("net-"), out)
 
-    def saved(name, scheme="XOR", kind="tplink"):
-        return {"id": "tplink:" + name, "kind": kind, "name": "Kasa", "model": "", "mac": "", "last_ip": "127.0.0.1",
-                "port": mock.ports[name]["tcp"], "info": {"device_type": DEVICE_TYPES[name], "scheme": scheme},
+    def saved(name, scheme="XOR", kind="tplink", at=None):
+        return {"id": "tplink:" + name, "kind": kind, "name": "Kasa", "model": "", "mac": MACS.get(name, ""),
+                "last_ip": "127.0.0.1", "port": mock.ports[at or name]["tcp"],
+                "info": {"device_type": DEVICE_TYPES[name], "scheme": scheme},
                 "found_by": ["kasa"], "enabled": True, "last_seen": 1, "problem": "", "things": []}
     moved = saved("moved", scheme="KLAP", kind="tapo")   # as an older version filed it
+    # The desk fan's plug, read before; the router has since given its address to the kettle plug.
+    fan = saved("plug2", at="plug")
+    fan["name"] = "Desk fan"
+    fan["things"] = [{"id": "main", "name": "Desk fan", "type": "plug", "caps": 1, "enabled": True, "ask_first": False,
+                      "ref": {}, "state": {"on": False}}]
     root = {"version": 2, "secrets": {}, "networks": {network: {
         "label": "Test network", "gateway_mac": "02:00:00:00:00:00", "allowed_at": 1, "last_scan": 1,
-        "devices": [saved("plug"), saved("switch"), saved("dimmer"), saved("strip"), saved("bulb"), moved]}}}
+        "devices": [saved("plug"), saved("switch"), saved("dimmer"), saved("strip"), saved("bulb"), moved, fan]}}}
     os.makedirs(os.path.dirname(home_file), exist_ok=True)
     with open(home_file, "w") as f:
         json.dump(root, f)
 
     out = run("--home-refresh")
-    check("app refresh: five devices ready, the moved one not", "5 ready, 1 not: " + "this Kasa device " + NEW_LOGIN in out, out)
+    check("app refresh: five devices ready, the moved one and the desk fan not", "5 ready, 2 not: " + "this Kasa device " +
+          NEW_LOGIN in out, out)
     check("app refresh: the moved one says it needs the newer login", any("Moved" in l or NEW_LOGIN in l for l in out.splitlines())
           and NEW_LOGIN in out, out)
     for name in ("Kettle plug", "Porch light", "Hall dimmer", "Socket C", "Reading lamp"):
@@ -451,6 +506,11 @@ def test_app(mock):
 
     r = tool({"action": "on", "target": "Kettle plug"})
     check("app: switching the kettle on asks first, and nothing is sent", isinstance(r, str) and r.startswith("CONFIRM") and
+          not any("set_relay_state" in json.dumps(q) for q in mock.stats("plug")["requests"]), r)
+    r = tool({"action": "on", "target": "Desk fan"})
+    check("app: the desk fan's 'on' does not reach the kettle now at its address (no question was asked for it)",
+          not (isinstance(r, dict) and r.get("now") == "on") and "another Kasa device" in json.dumps(r) and
+          mock.stats("plug")["state"]["relay_state"] == 0 and
           not any("set_relay_state" in json.dumps(q) for q in mock.stats("plug")["requests"]), r)
     r = tool({"action": "on", "target": "Porch light"})
     check("app: the porch light switch goes on", r == {"now": "on", "target": "Porch light"} and
