@@ -281,7 +281,8 @@ Other families (Hue, Shelly, Kasa and more) are added one driver at a time.
 3. What each device controls is then listed by room. On its page you can set the name you will
    say (*Called*), a *Room* (guessed from the name where it starts with one, such as "Bedroom
    lamp"), whether the *Assistant may use it*, and *Ask before switching on*. That last one is on
-   by default for anything whose name suggests heat (heater, kettle, iron, …): the assistant then
+   by default for a plug whose name suggests heat (heater, kettle, iron, …), and is switched on
+   when you give a plug such a name under *Called*: the assistant then
    asks "Turn on Bed heater?" and switches it only if your very next words are a plain yes ("yes",
    "go ahead", "yes please"). Anything else, including a new request or "leave it off", counts as
    no. Turn it off for something you use every day.

@@ -462,6 +462,38 @@ void test_survival() {
     CHECK(e.devices[0].problem == "it did not answer" && find_thing(e, "fake:hub", "a") != nullptr);
 }
 
+void test_named_by_user() {
+    Section s("store: a plug the user names like a heater asks before it is switched on");
+    g_fake->reset();
+    // A plug whose maker gives it no name (a WiZ plug is "WiZ plug 06b7") is first named by the
+    // user: a name that sounds like a heater asks first, as a maker's name does when it is first
+    // seen. A plug whose name already sounded like one keeps what the user chose for it.
+    write_home({device("fake:wiz", {thing("plug", "WiZ plug 06b7", "plug", home::kPower, "", {{"on", false}}),
+                                    thing("lamp", "WiZ light 033d", "light", home::kPower, "", {{"on", false}}),
+                                    thing("used", "Fan heater", "plug", home::kPower, "", {{"on", false}})})});
+    home::set_thing_alias(g_net.id(), "fake:wiz", "plug", "Bed heater");
+    home::set_thing_alias(g_net.id(), "fake:wiz", "lamp", "Heat lamp");   // a light: the switch is the user's to set
+    home::set_thing_alias(g_net.id(), "fake:wiz", "used", "Bathroom heater");
+    const home::NetworkEntry e = home::entry(g_net.id());
+    CHECK(find_thing(e, "fake:wiz", "plug") && find_thing(e, "fake:wiz", "plug")->ask_first);
+    CHECK(find_thing(e, "fake:wiz", "lamp") && !find_thing(e, "fake:wiz", "lamp")->ask_first);
+    CHECK(find_thing(e, "fake:wiz", "used") && !find_thing(e, "fake:wiz", "used")->ask_first);
+    std::string r = run({{"action", "on"}, {"target", "Bed heater"}});
+    CHECK_MSG(starts(r, "CONFIRM: nothing has been changed yet, because \"Bed heater\" is set to be switched on only after"), r);
+    CHECK(g_fake->applied() == 0);
+    // Switched off by the user, it stays off when the name changes again, and a refresh keeps it.
+    home::set_thing_ask_first(g_net.id(), "fake:wiz", "plug", false);
+    home::set_thing_alias(g_net.id(), "fake:wiz", "plug", "Bedroom heater");
+    CHECK(!find_thing(home::entry(g_net.id()), "fake:wiz", "plug")->ask_first);
+    home::set_thing_ask_first(g_net.id(), "fake:wiz", "plug", true);
+    home::Thing wiz_plug;
+    wiz_plug.id = "plug"; wiz_plug.name = "WiZ plug 06b7"; wiz_plug.type = "plug"; wiz_plug.caps = home::kPower;
+    g_fake->listing["fake:wiz"] = {wiz_plug};
+    home::refresh(g_net.id(), "fake:wiz");
+    CHECK(find_thing(home::entry(g_net.id()), "fake:wiz", "plug")->ask_first);
+    g_fake->reset();
+}
+
 // ---------------------------------------------------------------- targets
 home::Item item(const std::string &dev, const std::string &id, const std::string &name, const std::string &type, uint32_t caps,
                 const std::string &room, const std::string &alias = "") {
@@ -2137,6 +2169,7 @@ int main(int argc, char **argv) {
 
     test_migration();
     test_survival();
+    test_named_by_user();
     test_targets();
     test_schema();
     test_commands();
