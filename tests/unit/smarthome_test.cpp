@@ -22,6 +22,8 @@
 
 #include "core/util.h"
 #include "smarthome/color.h"
+#include "smarthome/drivers/homekit.h"
+#include "smarthome/drivers/hue.h"
 #include "smarthome/drivers/tapo_driver.h"
 #include "smarthome/home.h"
 #include "smarthome/internal.h"
@@ -1967,6 +1969,85 @@ void test_discovery() {
     CHECK_MSG(tv && tv->kind == "fire_tv", tv ? tv->kind : "no device at the TV's address");
 }
 
+// A Hue Bridge announces itself three ways: mDNS _hue._tcp (port 443, TXT bridgeid and modelid), SSDP
+// (a hue-bridgeid header) and, as a HomeKit bridge, _hap._tcp (port 8080, md=BSB002, ci=2). The
+// HomeKit values are those of a real bridge recorded in homekit_python's tested-devices notes
+// (Apache-2.0); the rest follow Signify's discovery guide as summarised in the discovery design.
+void test_discovery_hue() {
+    Section s("discovery: a Hue Bridge seen over mDNS, SSDP and HomeKit is one hue_bridge on port 443, never HomeKit's");
+    auto answer = [](const std::string &type, const std::string &instance, const std::string &host, const std::string &ip_bytes,
+                     int port, const std::vector<std::string> &txt) {
+        const std::string full = instance + "." + type;
+        std::string srv = std::string(4, '\0');
+        srv += static_cast<char>(port >> 8);
+        srv += static_cast<char>(port & 255);
+        srv += dns_name(host);
+        std::string kv;
+        for (const auto &t : txt) { kv += static_cast<char>(t.size()); kv += t; }
+        std::vector<std::string> rr = {dns_record(type, 12, dns_name(full)), dns_record(full, 33, srv), dns_record(full, 16, kv),
+                                       dns_record(host, 1, ip_bytes)};
+        std::string pkt(12, '\0');
+        pkt[2] = '\x84';
+        pkt[7] = static_cast<char>(rr.size());
+        for (const auto &r : rr) pkt += r;
+        return pkt;
+    };
+    const std::string ip_bytes("\xC0\x00\x02\x46", 4);   // 192.0.2.70
+    const std::string hue = answer("_hue._tcp.local", "Hue Bridge - 005301", "hue-005301.local", ip_bytes, 443,
+                                   {"bridgeid=00005efffe005301", "modelid=BSB002"});
+    const std::string hap = answer("_hap._tcp.local", "Philips hue - 005301", "hue-005301.local", ip_bytes, 8080,
+                                   {"c#=105", "ff=1", "id=D6:A6:AF:B9:45:FC", "md=BSB002", "pv=1.1", "s#=1", "sf=0", "ci=2"});
+    const std::string ssdp = "HTTP/1.1 200 OK\r\nHOST: 239.255.255.250:1900\r\nEXT:\r\nCACHE-CONTROL: max-age=100\r\n"
+                             "LOCATION: http://192.0.2.70:80/description.xml\r\nSERVER: Hue/1.0 UPnP/1.0 IpBridge/1.71.0\r\n"
+                             "hue-bridgeid: 00005EFFFE005301\r\nST: upnp:rootdevice\r\n"
+                             "USN: uuid:2f402f80-da50-11e1-9b23-00005e005301::upnp:rootdevice\r\n\r\n";
+    auto info = [](const discovery::Device &d, const char *key) {
+        const auto it = d.info.find(key);
+        return it == d.info.end() ? std::string() : it->second;
+    };
+    auto hue_driver = make_hue_driver();
+    auto homekit_driver = make_homekit_driver();
+    // Every order the answers can arrive in gives the same device.
+    const std::vector<std::vector<discovery::Packet>> orders = {
+        {{"mdns", "192.0.2.70", hap}, {"mdns", "192.0.2.70", hue}, {"ssdp", "192.0.2.70", ssdp}},
+        {{"mdns", "192.0.2.70", hue}, {"mdns", "192.0.2.70", hap}},
+        {{"ssdp", "192.0.2.70", ssdp}, {"mdns", "192.0.2.70", hap}, {"mdns", "192.0.2.70", hue}},
+    };
+    for (size_t k = 0; k < orders.size(); ++k) {
+        const auto found = discovery::devices_from(orders[k]);
+        const std::string order = " (order " + std::to_string(k + 1) + ")";
+        CHECK_MSG(found.size() == 1, "one device at the bridge's address" + order);
+        if (found.size() != 1) continue;
+        const discovery::Device &d = found[0];
+        CHECK_MSG(d.kind == "hue_bridge", "listed as a Hue Bridge, not HomeKit: " + d.kind + order);
+        CHECK_MSG(d.id == "hue:00005efffe005301", "known by its bridge id: " + d.id + order);
+        CHECK_MSG(d.port == 443, "the port is the bridge's HTTPS port, not HomeKit's 8080: " + std::to_string(d.port) + order);
+        CHECK_MSG(info(d, "bridgeid") == "00005efffe005301" && info(d, "modelid") == "BSB002", "bridge id and model kept" + order);
+        CHECK_MSG(d.name == "Hue Bridge - 005301", "named by its own announcement: " + d.name + order);
+        CHECK_MSG(hue_driver->claims(d.kind, d.info), "the Hue driver claims it" + order);
+        CHECK_MSG(!homekit_driver->claims(d.kind, d.info), "the HomeKit driver does not" + order);
+    }
+    // Found by SSDP alone (some firmware may still answer it): a Hue Bridge on the default port.
+    const auto by_ssdp = discovery::devices_from({{"ssdp", "192.0.2.70", ssdp}});
+    CHECK(by_ssdp.size() == 1 && by_ssdp[0].kind == "hue_bridge" && by_ssdp[0].id == "hue:00005efffe005301" &&
+          by_ssdp[0].port == 0 && info(by_ssdp[0], "bridgeid") == "00005efffe005301");
+    CHECK(by_ssdp.size() == 1 && hue_driver->claims(by_ssdp[0].kind, by_ssdp[0].info));
+    // Found by _hue._tcp alone.
+    const auto by_mdns = discovery::devices_from({{"mdns", "192.0.2.70", hue}});
+    CHECK(by_mdns.size() == 1 && by_mdns[0].kind == "hue_bridge" && by_mdns[0].port == 443);
+    // The first, round bridge (BSB001) has no version 2: listed, never claimed.
+    const auto round = discovery::devices_from({{"mdns", "192.0.2.71", answer("_hue._tcp.local", "Philips hue - 0053FF",
+                                                                             "hue-0053ff.local", std::string("\xC0\x00\x02\x47", 4), 443,
+                                                                             {"bridgeid=00005efffe0053ff", "modelid=BSB001"})}});
+    CHECK(round.size() == 1 && round[0].kind == "hue_bridge" && !hue_driver->claims(round[0].kind, round[0].info));
+    // Only the HomeKit announcement heard (the bridge's own was lost): HomeKit's driver still leaves
+    // it alone, by its model, so its single HomeKit pairing is not used up for nothing.
+    const auto hap_only = discovery::devices_from({{"mdns", "192.0.2.70", hap}});
+    CHECK(hap_only.size() == 1 && hap_only[0].kind == "homekit" && info(hap_only[0], "md") == "BSB002");
+    CHECK(hap_only.size() == 1 && !homekit_driver->claims(hap_only[0].kind, hap_only[0].info));
+    CHECK(homekit_driver->claims("homekit", {{"md", "Hub"}, {"ci", "2"}}) && !homekit_driver->claims("homekit", {{"md", "bsb003"}}));
+}
+
 // ---------------------------------------------------------------- names and colours
 void test_names_and_colours() {
     Section s("names and colours");
@@ -2102,6 +2183,7 @@ int main(int argc, char **argv) {
     test_link_kinds();
     test_tv_keys();
     test_discovery();
+    test_discovery_hue();
     test_names_and_colours();
 
     const std::string rm = "rm -rf '" + dir + "'";

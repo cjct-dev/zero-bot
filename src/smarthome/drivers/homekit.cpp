@@ -2558,6 +2558,15 @@ public:
         for (const long no : {4L, 6L, 11L, 12L, 13L, 15L, 16L, 17L, 18L, 19L, 22L, 23L, 24L, 25L, 26L, 27L, 28L, 29L,
                               30L, 31L, 32L, 33L, 34L, 35L, 36L})
             if (ci == no) return false;
+        // A Hue Bridge (model BSB001, BSB002, BSB003: "md" in its HomeKit announcement) has a driver
+        // of its own, which also offers its scenes; discovery lists it under that kind whenever its
+        // own announcement was heard, and this keeps a scan that heard only HomeKit from offering it.
+        const auto md = info.find("md");
+        if (md != info.end() && md->second.size() == 6) {
+            std::string model = md->second;
+            for (char &c : model) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+            if (model.compare(0, 5, "BSB00") == 0) return false;
+        }
         return true;
     }
 

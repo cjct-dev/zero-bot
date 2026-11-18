@@ -292,8 +292,10 @@ std::vector<Device> merge(const Seen &seen) {
             if (txt.count(key)) d.info[key] = txt[key];
         if (kind == "homekit") {
             // ff: pair with the authentication chip's method when bit 0 is set; c#: goes up when
-            // the accessory's database changes; pv: the protocol version.
-            for (const char *key : {"ff", "c#", "pv"})
+            // the accessory's database changes; pv: the protocol version; md: the model, by which
+            // the HomeKit driver recognises a device that has a driver of its own (a Hue Bridge
+            // whose own announcement was not heard).
+            for (const char *key : {"ff", "c#", "pv", "md"})
                 if (txt.count(key)) d.info[key] = txt[key];
         }
         if (kind == "fire_tv") {
