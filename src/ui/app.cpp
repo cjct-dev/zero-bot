@@ -554,17 +554,21 @@ struct App {
         if (!ended.empty()) timers_ended(ended);
         alarm.tick(now_ms);
         sync_banner();
-        if (alarm.ringing()) wake_screen(now_ms);      // on at once, and lit while it rings
         // Under a menu or the breathing exercise the status bar cannot be seen; changing it would
         // only make the screen redraw what is hidden. It catches up when they close.
-        if (menu.open() || breath.active()) return;
-        const int revision = Store::get().timers_revision();
-        if (revision != timer_revision) {
-            timer_revision = revision;
-            timer_ends.clear();
-            for (const Reminder &t : Store::get().timers()) timer_ends.push_back(t.due);
+        if (!menu.open() && !breath.active()) {
+            const int revision = Store::get().timers_revision();
+            if (revision != timer_revision) {
+                timer_revision = revision;
+                timer_ends.clear();
+                for (const Reminder &t : Store::get().timers()) timer_ends.push_back(t.due);
+            }
+            chat.set_timer(timers::badge(timer_ends, now));
         }
-        chat.set_timer(timers::badge(timer_ends, now));
+        // A timer that has ended turns the screen on at once, and it stays lit while the alarm
+        // rings. Last, so that the frame drawn before the light comes on already has the banner,
+        // the alert and the countdown as they now are.
+        if (!ended.empty() || alarm.ringing()) wake_screen(now_ms);
     }
 
     void timers_ended(const std::vector<timers::Ended> &ended) {
@@ -581,7 +585,6 @@ struct App {
             // What the user says next may be about it: "give it five more minutes".
             Agent::get().add_context("The timer \"" + e.label + "\" ended at " + at + " and its alarm rang.");
         }
-        wake_screen(display::now_ms());
         if (!names.empty() && Settings::get().speak_replies && !muted) Agent::get().say("Time's up: " + names + ".");
     }
 
@@ -986,8 +989,9 @@ struct App {
             s.screen_off_min = minutes;
             Store::get().add_timer("Eggs", 1, time(nullptr) - 5);
             update_timers(display::now_ms());
-            const bool rang = was_off && !display::screen_is_off() && alarm.ringing() && banner.visible() &&
-                              audio::Music::get().holding(audio::Music::kAlarm);
+            // The first frame drawn before the light comes on has the banner and the countdown.
+            const bool rang = was_off && !display::screen_is_off() && display::frame_current() && alarm.ringing() &&
+                              banner.visible() && audio::Music::get().holding(audio::Music::kAlarm);
             KeyEvent key; key.key = Key::Char; key.text = "a"; key.state = 1;
             handle_key(key);
             snap("timer-silenced");
@@ -1168,6 +1172,72 @@ struct App {
         }
         (void)flight; (void)birthday;
         menu.close();
+        {
+            // The screen off, after the last frame: a reminder turns it on at once, and so does a
+            // timer's alarm over settings, with the banner already in the frame drawn before the
+            // light comes on. A key on a dark screen does nothing else in a settings text field
+            // either (ENTER would save it, a letter would be typed), and a volume key changes nothing.
+            const int minutes = s.screen_off_min;
+            s.screen_off_min = 5;
+            auto go_dark = [&] {
+                const unsigned long t = display::now_ms();
+                wake_screen(t);
+                tick_screen(t + 5 * 60000UL, false);
+                return display::screen_is_off() && display::frame_black();
+            };
+            auto press = [&](Key k, const char *text, std::initializer_list<int> states) {
+                KeyEvent ev; ev.key = k; ev.text = text;
+                for (int st : states) { ev.state = st; handle_key(ev); }
+            };
+            auto picture = [] {
+                lv_draw_buf_t *b = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_XRGB8888);
+                std::string v = b ? std::string(reinterpret_cast<const char *>(b->data), b->data_size) : std::string();
+                if (b) lv_draw_buf_destroy(b);
+                return v;
+            };
+            const bool speak = s.speak_replies;
+            s.speak_replies = false;                                   // no voice in screenshots
+            bool dark = go_dark();
+            store.add_reminder("Water the plants", time(nullptr) - 1);
+            check_alerts();
+            const bool reminder = !display::screen_is_off() && display::frame_current();
+            s.speak_replies = speak;
+
+            open_menu();
+            menu.key(down); menu.key(down); menu.key(enter);           // "Your data", on "Calendar"
+            menu.key(enter); menu.key(enter); menu.key(enter);         // the first event's title, in a text field
+            const bool field = menu.editing();
+            const std::string shown = picture();
+            dark = go_dark() && dark;
+            press(Key::Char, "x", {1, 0});
+            bool still = menu.editing() && picture() == shown;
+            dark = go_dark() && dark;
+            press(Key::Enter, "", {1, 0});
+            still = still && menu.editing() && picture() == shown;
+            const int volume = s.volume;
+            dark = go_dark() && dark;
+            press(Key::VolumeUp, "", {1, 2, 0});
+            still = still && s.volume == volume && !display::screen_is_off();
+            menu.close();
+
+            open_menu();
+            dark = go_dark() && dark;
+            muted = true;
+            store.add_timer("Tea", 1, time(nullptr) - 5);
+            update_timers(display::now_ms());
+            const bool alarm_first_frame = !display::screen_is_off() && alarm.ringing() && banner.visible() && display::frame_current();
+            press(Key::Char, "a", {1, 0});
+            const bool silenced = !alarm.ringing() && menu.open();
+            muted = false;
+            menu.close();
+            s.screen_off_min = minutes;
+            if (!dark || !reminder || !field || !still || !alarm_first_frame || !silenced) {
+                fprintf(stderr, "a reminder or an alarm did not light the screen as it now is, or a key on a dark screen "
+                                "did more than wake it (dark %d, reminder %d, text field %d, untouched %d, alarm frame %d, "
+                                "silenced %d)\n", dark, reminder, field, still, alarm_first_frame, silenced);
+                failed = true;
+            }
+        }
         timers::fix_clock(0);
         return failed ? 1 : 0;
     }

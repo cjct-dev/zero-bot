@@ -197,7 +197,8 @@ are always shown and spoken with the month as a word, so a misheard date is easy
 screen off when the device has not been used for that long, against burn-in: it is drawn black,
 nothing more is drawn, and the backlight goes off. Music and the radio keep playing. Any key turns
 it back on, exactly as it was (the chat, a settings page, text being typed), and does nothing else,
-so a stray press is harmless. It stays on while you are talking, while a request is worked on or
+so a stray press is harmless (a modifier such as **fn** or shift on its own is not read as a key:
+press another). It stays on while you are talking, while a request is worked on or
 its answer spoken, during a breathing exercise and while a timer's alarm rings; an alarm or a
 reminder turns it on at once.
 
