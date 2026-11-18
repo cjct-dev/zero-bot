@@ -5,6 +5,7 @@ pretend bridges (tests/mocks/hue/mock_hue.py) on 127.0.0.1.
 usage: tests/hue_e2e.py [path/to/hue_cli [path/to/zero_bot]]
        (defaults: build/unit/hue_cli, which tests/run_unit.sh builds, and build/cli/zero_bot; the
        app's part is skipped, and says so, when the command-line build is missing)
+       HUE_E2E_ONLY=test_groups,test_app runs only the named groups.
 
 Everything runs with ZB_TEST_NETWORK=1 (the stand-in network: only 127.x addresses are ever
 contacted, nothing is scanned) and the app with its state in a fresh temporary folder. Every mock
@@ -761,15 +762,19 @@ def main():
     if not os.access(CLI, os.X_OK):
         sys.exit("no hue_cli at %s (run tests/run_unit.sh first)" % CLI)
     tmp = tempfile.mkdtemp(prefix="hue_e2e_run_")
+    only = [t for t in os.environ.get("HUE_E2E_ONLY", "").split(",") if t]
     try:
         for test in (test_pairing, test_pairing_refusals, test_things, test_apply, test_groups, test_refused_key,
                      test_certificate_change, test_unreachable, test_malformed, test_unpair, test_app):
+            if only and test.__name__ not in only:
+                continue
             print("--- " + test.__name__, flush=True)
             try:
                 test(tempfile.mkdtemp(dir=tmp))
             except Exception as e:   # a crash is a failed check, and the remaining tests still run
                 check(False, "%s raised %s: %s" % (test.__name__, type(e).__name__, e))
-        test_secrets_never_printed()
+        if keys or not only:   # a run of groups that pair nothing has no key to watch
+            test_secrets_never_printed()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     failed = results.count(False)

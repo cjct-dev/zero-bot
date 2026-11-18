@@ -1996,7 +1996,7 @@ void test_discovery_hue() {
     const std::string hue = answer("_hue._tcp.local", "Hue Bridge - 005301", "hue-005301.local", ip_bytes, 443,
                                    {"bridgeid=00005efffe005301", "modelid=BSB002"});
     const std::string hap = answer("_hap._tcp.local", "Philips hue - 005301", "hue-005301.local", ip_bytes, 8080,
-                                   {"c#=105", "ff=1", "id=D6:A6:AF:B9:45:FC", "md=BSB002", "pv=1.1", "s#=1", "sf=0", "ci=2"});
+                                   {"c#=105", "ff=1", "id=AA:BB:CC:00:53:01", "md=BSB002", "pv=1.1", "s#=1", "sf=0", "ci=2"});
     const std::string ssdp = "HTTP/1.1 200 OK\r\nHOST: 239.255.255.250:1900\r\nEXT:\r\nCACHE-CONTROL: max-age=100\r\n"
                              "LOCATION: http://192.0.2.70:80/description.xml\r\nSERVER: Hue/1.0 UPnP/1.0 IpBridge/1.71.0\r\n"
                              "hue-bridgeid: 00005EFFFE005301\r\nST: upnp:rootdevice\r\n"
