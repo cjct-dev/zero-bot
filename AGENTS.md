@@ -372,6 +372,15 @@ key, real audio), say so plainly rather than implying it was.
 - Music must not start before the spoken reply, nor resume between a question and its answer.
   That is what the hold flags are for.
 - `pw-cat` raw input counts underruns while its source is slow to start; that is not a fault.
+- Music skipped from the second track on: each track was an ffplay of about 53 MB (it loads the
+  whole video and audio library; ffmpeg is the same) on a device with 350 MB and some 200 MB already
+  in swap, so the system swapped in bursts and the player stalled. ffplay then hands the sound graph
+  silence, so `pw-top` counted no dropout: measure the player's memory and the swap (`vmstat`), not
+  only the graph. MP3s are now decoded in the app (libmpg123, loaded at run time) and played by
+  `pacat` (about 8 MB in all; 0 gaps and almost no swap in a 90 s test); `pacat` goes through the
+  PulseAudio layer as ffplay did, so a held track (SIGSTOP) stalls nothing else. Never record the
+  speaker while the owner's music plays (it is licensed): test with a generated tone, and only when
+  nothing else is playing; and do not poll `pw-top` during a test, it disturbs playback itself.
 - The sound graph runs in the smallest chunk any client asks for. The launcher keeps a stream open
   at about 5 ms, which pulled the graph down to 128 samples (2.7 ms): music skipped whenever the
   processor was busy, whatever latency the player itself asked for (`pw-top` showed it, ERR

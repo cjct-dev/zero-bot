@@ -36,7 +36,7 @@ APP="src/smarthome/store.cpp src/smarthome/targets.cpp src/smarthome/control.cpp
      src/smarthome/discovery.cpp src/smarthome/tapo.cpp $DRIVERS src/core/util.cpp src/platform/proc.cpp
      src/platform/sys.cpp src/net/http.cpp"
 # The timers need only these, with util.cpp and proc.cpp from above.
-TIMERS="src/core/timers.cpp src/core/store.cpp src/platform/audio.cpp"
+TIMERS="src/core/timers.cpp src/core/store.cpp src/platform/audio.cpp src/platform/codec.cpp"
 # The radio needs these on top of the smart-home objects (for its name cleaning) and audio.cpp.
 RADIO="src/core/radio.cpp src/core/tether.cpp"
 # The tools' foundations need only the calculator, with util.cpp and proc.cpp from above.
@@ -48,7 +48,7 @@ obj_of() { echo "$OUT/$(echo "$1" | tr '/' '_' | sed 's/\.cpp$/.o/')"; }
 
 # Objects are rebuilt only when their source or a header in src/ is newer.
 newest_header=$(find src -name '*.h' -newer "$OUT/.stamp" 2>/dev/null | head -n 1 || true)
-for src in $APP $TIMERS $RADIO $TOOLS $DIAG tests/unit/activity_test.cpp tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp tests/unit/mic_route_test.cpp \
+for src in $APP $TIMERS $RADIO $TOOLS $DIAG tests/unit/activity_test.cpp tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp tests/unit/mic_route_test.cpp tests/unit/music_test.cpp \
            tests/unit/radio_test.cpp tests/unit/tools_test.cpp tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp \
            tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp tests/unit/hue_test.cpp tests/unit/hue_cli.cpp \
            tests/unit/kasa_test.cpp tests/unit/kasa_cli.cpp tests/unit/wiz_test.cpp tests/unit/wiz_cli.cpp \
@@ -67,11 +67,12 @@ timer_objs="$(obj_of src/core/util.cpp) $(obj_of src/platform/proc.cpp)"
 for src in $TIMERS; do timer_objs="$timer_objs $(obj_of "$src")"; done
 $WRAP $CXX -o "$OUT/smarthome_test" "$OUT/tests_unit_smarthome_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/http_test" "$OUT/tests_unit_http_test.o" $objs -lcurl -lcrypto -lpthread
-$WRAP $CXX -o "$OUT/timers_test" "$OUT/tests_unit_timers_test.o" $timer_objs -lpthread
-$WRAP $CXX -o "$OUT/mic_route_test" "$OUT/tests_unit_mic_route_test.o" $timer_objs -lpthread
-radio_objs="$(obj_of src/platform/audio.cpp)"
+$WRAP $CXX -o "$OUT/timers_test" "$OUT/tests_unit_timers_test.o" $timer_objs -ldl -lpthread
+$WRAP $CXX -o "$OUT/mic_route_test" "$OUT/tests_unit_mic_route_test.o" $timer_objs -ldl -lpthread
+$WRAP $CXX -o "$OUT/music_test" "$OUT/tests_unit_music_test.o" $timer_objs -ldl -lpthread
+radio_objs="$(obj_of src/platform/audio.cpp) $(obj_of src/platform/codec.cpp)"
 for src in $RADIO; do radio_objs="$radio_objs $(obj_of "$src")"; done
-$WRAP $CXX -o "$OUT/radio_test" "$OUT/tests_unit_radio_test.o" $radio_objs $objs -lcurl -lcrypto -lpthread
+$WRAP $CXX -o "$OUT/radio_test" "$OUT/tests_unit_radio_test.o" $radio_objs $objs -lcurl -lcrypto -ldl -lpthread
 $WRAP $CXX -o "$OUT/tools_test" "$OUT/tests_unit_tools_test.o" "$(obj_of src/agent/calc.cpp)" "$(obj_of src/core/util.cpp)" \
     "$(obj_of src/platform/proc.cpp)" -lpthread
 # The Fire TV driver's own tests; firetv_cli is what tests/firetv_e2e.py drives against its mock.
@@ -142,6 +143,8 @@ done
 env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_CACHE_HOME HOME="$home" TMPDIR="$state" TZ=UTC "$OUT/timers_test" || failed=1
 echo "=== the built-in microphone with a plug in the jack"
 "$OUT/mic_route_test" || failed=1
+echo "=== music: MP3 decoded in the app and played by pacat"
+"$OUT/music_test" || failed=1
 for f in calendar memory reminders; do
     if ! cmp -s "$home/.local/share/zero-bot/$f.json" "$state/$f.expected"; then
         echo "FAIL the tests changed $f.json in the home folder they were run from"

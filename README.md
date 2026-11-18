@@ -108,7 +108,7 @@ Download `zero-bot_<version>_arm64.deb` from the Releases page, copy it to the C
 (over SSH, ADB or the microSD card) and install it on the device:
 
 ```sh
-sudo apt install ./zero-bot_0.4.3_arm64.deb
+sudo apt install ./zero-bot_0.4.4_arm64.deb
 ```
 
 "Zero Bot" then appears in the launcher within a few seconds. To build the package yourself
@@ -571,7 +571,10 @@ service to check that a change needing your yes waits for one.
 - **Speaker or headphones in the headphone socket.** The board switches its input to the socket's
   microphone when a plug goes in. With *Device → Microphone: Built-in* (the default), Zero Bot
   records from the built-in microphone anyway, so a speaker or headphones without a microphone work.
-- **Music skips now and then.** The launcher keeps a low-latency sound stream open, which makes the
+- **Music skips now and then.** Zero Bot plays MP3s with a small built-in decoder (`libmpg123`)
+  through `pacat`; both come with most systems (packages `libmpg123-0t64` and `pulseaudio-utils`).
+  Without them it falls back to ffplay, which needs about 50 MB per track and can make a device
+  with little free memory skip. Separately, the launcher keeps a low-latency sound stream open, which makes the
   whole sound system work in very small chunks (about 3 ms); on this processor they run dry
   whenever something else is busy. A larger minimum fixes it for every app (sounds then start a few
   milliseconds later). Put this in `~/.config/pipewire/pipewire.conf.d/10-min-quantum.conf` and

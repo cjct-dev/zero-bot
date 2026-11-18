@@ -1,4 +1,5 @@
 #include "platform/audio.h"
+#include "platform/codec.h"
 
 #include <algorithm>
 #include <chrono>
@@ -6,6 +7,9 @@
 #include <csignal>
 #include <cstring>
 #include <sstream>
+#include <fcntl.h>
+#include <memory>
+#include <strings.h>
 #include <unistd.h>
 
 namespace audio {
@@ -440,6 +444,36 @@ Music &Music::get() {
     return m;
 }
 
+namespace {
+bool is_mp3(const std::string &path) {
+    return path.size() > 4 && strcasecmp(path.c_str() + path.size() - 4, ".mp3") == 0;
+}
+
+// Decodes the track into the player's stdin. The player may be stopped meanwhile (the next track,
+// stop, leaving the app): the write then fails and this ends; SIGPIPE is blocked in this thread so
+// that the failure does not end the app. A held player (SIGSTOP) blocks the write until it goes on.
+void feed_player(std::shared_ptr<codec::Mp3File> mp3, int fd) {
+    sigset_t pipe_signal;
+    sigemptyset(&pipe_signal);
+    sigaddset(&pipe_signal, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &pipe_signal, nullptr);
+    std::vector<unsigned char> buf(16384);
+    for (;;) {
+        const long n = mp3->read(buf.data(), buf.size());
+        if (n <= 0) break;
+        const unsigned char *p = buf.data();
+        size_t left = static_cast<size_t>(n);
+        while (left) {
+            const ssize_t w = ::write(fd, p, left);
+            if (w <= 0) { ::close(fd); return; }
+            p += w;
+            left -= static_cast<size_t>(w);
+        }
+    }
+    ::close(fd);   // the player plays what it has, then ends
+}
+}  // namespace
+
 void Music::play(std::vector<std::string> paths) {
     std::lock_guard<std::mutex> ctl(ctl_);
     stop_locked();
@@ -459,17 +493,36 @@ void Music::play(std::vector<std::string> paths) {
             // microphone is open.
             if (holds_ != 0) { usleep(50 * 1000); continue; }
             std::string path;
+            std::thread feeder;
             {
                 std::lock_guard<std::mutex> lk(mtx_);
                 if (holds_ != 0) continue;
                 if (index_ >= queue_.size()) break;
                 path = queue_[index_++];
                 current_ = path;
-                // The player's own audio buffer is about 12 ms, which any busy moment elsewhere on a
-                // small processor outruns: measured on a CardputerZero, playback skipped under load
-                // with the default and held steady with 300 ms. Music does not need low latency.
-                child_ = proc::spawn({"env", "PULSE_LATENCY_MSEC=300", "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path},
-                                     false, false);
+                // An MP3 is decoded here (libmpg123) and played by pacat, about 5 MB in all. ffplay
+                // held some 50 MB per track on a device with 350 MB: by the second track the system
+                // was swapping, and the player stalled now and then (heard as skips, which the sound
+                // graph never counted, since ffplay kept handing it silence). pacat goes through the
+                // same PulseAudio layer as ffplay did, so a held track (SIGSTOP) stalls nothing else.
+                // Anything else, or without libmpg123 or pacat, is played by ffplay as before.
+                auto mp3 = std::make_shared<codec::Mp3File>();
+                if (is_mp3(path) && proc::have("pacat") && mp3->open(path)) {
+                    child_ = proc::spawn({"pacat", "--playback", "--raw", "--format=s16le", "--rate=" + std::to_string(mp3->rate()),
+                                          "--channels=" + std::to_string(mp3->channels()), "--latency-msec=300",
+                                          "--client-name=Zero Bot", "--stream-name=Music"},
+                                         true, false);
+                    // Close-on-exec, so that no other program the app starts holds the track open.
+                    const int fd = child_.in >= 0 ? fcntl(child_.in, F_DUPFD_CLOEXEC, 0) : -1;
+                    proc::close_in(child_);   // the feeder holds the only write end: its close ends the track
+                    if (fd >= 0) feeder = std::thread(feed_player, mp3, fd);
+                } else {
+                    // The player's own audio buffer is about 12 ms, which any busy moment elsewhere on a
+                    // small processor outruns: measured on a CardputerZero, playback skipped under load
+                    // with the default and held steady with 300 ms. Music does not need low latency.
+                    child_ = proc::spawn({"env", "PULSE_LATENCY_MSEC=300", "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path},
+                                         false, false);
+                }
                 stopped_ = false;
             }
             skip_ = false;
@@ -483,6 +536,9 @@ void Music::play(std::vector<std::string> paths) {
                 }
                 if (!proc::alive(child_)) break;
             }
+            // The player has ended (or been stopped, so the feeder's next write fails): the feeder
+            // finishes too. Joined outside mtx_, which hold() takes.
+            if (feeder.joinable()) feeder.join();
         }
         std::lock_guard<std::mutex> lk(mtx_);
         if (generation_ == gen) { current_.clear(); running_ = false; }
