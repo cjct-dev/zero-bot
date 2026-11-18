@@ -3,9 +3,10 @@
 # pairing, the Tapo driver's refusals, colours), the drivers' own tests (Fire TV, HomeKit, Hue,
 # Kasa, WiZ, Shelly), the HTTP options for devices, the timers (the timer tool, storage, the
 # countdown, the alarm and its player), the radio (the station file, the tool, the check of a
-# stream, the player's live mode), the keys (what each does on the chat screen, and the key guide)
-# and what the other tools stand on (calculator, dates, time zones, helper programs). Nothing but
-# 127.0.0.1 is contacted, and no AI service, sound or screen is needed.
+# stream, the player's live mode), the keys (what each does on the chat screen, and the key guide),
+# when the screen dims and goes off, what the other tools stand on (calculator, dates, time
+# zones, helper programs) and the diagnostics (the activity log and saved conversations;
+# temporary). Nothing but 127.0.0.1 is contacted, and no AI service, sound or screen is needed.
 #
 #   tests/run_unit.sh                   build into build/unit and run
 #   ZB_UPDATE_SNAPSHOTS=1 tests/run_unit.sh    rewrite tests/snapshots/*.json from the current schema
@@ -40,12 +41,14 @@ TIMERS="src/core/timers.cpp src/core/store.cpp src/platform/audio.cpp"
 RADIO="src/core/radio.cpp src/core/tether.cpp"
 # The tools' foundations need only the calculator, with util.cpp and proc.cpp from above.
 TOOLS="src/agent/calc.cpp"
+# DIAGNOSTICS (temporary): the activity log and saved conversations, with util.cpp from above.
+DIAG="src/core/activity.cpp src/core/settings.cpp"
 
 obj_of() { echo "$OUT/$(echo "$1" | tr '/' '_' | sed 's/\.cpp$/.o/')"; }
 
 # Objects are rebuilt only when their source or a header in src/ is newer.
 newest_header=$(find src -name '*.h' -newer "$OUT/.stamp" 2>/dev/null | head -n 1 || true)
-for src in $APP $TIMERS $RADIO $TOOLS tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp \
+for src in $APP $TIMERS $RADIO $TOOLS $DIAG tests/unit/activity_test.cpp tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp \
            tests/unit/radio_test.cpp tests/unit/tools_test.cpp tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp \
            tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp tests/unit/hue_test.cpp tests/unit/hue_cli.cpp \
            tests/unit/kasa_test.cpp tests/unit/kasa_cli.cpp tests/unit/wiz_test.cpp tests/unit/wiz_cli.cpp \
@@ -92,6 +95,9 @@ $WRAP $CXX -o "$OUT/shelly_cli" "$OUT/tests_unit_shelly_cli.o" $objs -lcurl -lcr
 $WRAP $CXX -o "$OUT/key_guide_test" "$OUT/tests_unit_key_guide_test.o" "$(obj_of src/ui/key_guide.cpp)"
 # When the screen dims and goes off (no screen needed).
 $WRAP $CXX -o "$OUT/screen_idle_test" "$OUT/tests_unit_screen_idle_test.o" "$(obj_of src/ui/screen_idle.cpp)"
+# DIAGNOSTICS (temporary): saved conversations.
+$WRAP $CXX -o "$OUT/activity_test" "$OUT/tests_unit_activity_test.o" "$(obj_of src/core/activity.cpp)" \
+    "$(obj_of src/core/settings.cpp)" "$(obj_of src/core/util.cpp)" -lpthread
 
 failed=0
 echo "=== smart home"
@@ -114,6 +120,8 @@ echo "=== keys"
 "$OUT/key_guide_test" || failed=1
 echo "=== screen off"
 "$OUT/screen_idle_test" || failed=1
+echo "=== diagnostics: saved conversations (temporary)"
+"$OUT/activity_test" "$state/activity" || failed=1
 
 echo "=== radio"
 TMPDIR="$state" python3 -I tests/unit/radio_peer.py "$OUT/radio_test" || failed=1

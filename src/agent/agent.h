@@ -55,6 +55,11 @@ public:
     // (used by the command-line test mode).
     std::string run_blocking(const std::string &text);
     json history_snapshot();
+    // DIAGNOSTICS (temporary, ZB-051; core/activity.h): the conversation from its start, as the
+    // model saw it, for saving when the user asks: the messages trimmed from the model's context
+    // (shortened) and then the context itself, copied under the lock. `dropped` is set to how
+    // many messages even earlier than those were not kept.
+    json whole_conversation(size_t *dropped = nullptr);
 
 private:
     Agent() = default;
@@ -81,4 +86,8 @@ private:
     std::string last_answer_;
     std::string context_;                   // see add_context (guarded by mtx_)
     time_t context_at_ = 0;
+    // DIAGNOSTICS (temporary): what trim_history took out of history_, for whole_conversation
+    // (guarded by mtx_; at most kMaxEarlier messages, the rest counted in earlier_dropped_).
+    json earlier_ = json::array();
+    size_t earlier_dropped_ = 0;
 };

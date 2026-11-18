@@ -7,11 +7,16 @@ random choice picks slot values and the light speech-recogniser slips (fillers, 
 dropped article), so the file is the same on every run. Change the templates, run this again, and
 read the diff before committing it. `--check` exits non-zero when cases.json is out of date.
 
-Each case: {"name", "tags", "turns", "must", "must_not", "checks", "env", "home", "steer"}.
+Each case: {"name", "tags", "turns", "must", "must_not", "checks", "env", "home", "steer"}, and
+"long_ok" when it has one.
   turns     what the user says, in order ("/new" starts a new conversation, memories kept)
   must      tools the last turn must call; "a|b" means either
   must_not  tools it must not call; "*" means none at all
-  checks    declarative checks of the last turn, compiled by tests/agent_suite.py (see KINDS there)
+  checks    declarative checks of the last turn, compiled by tests/agent_suite.py (see KINDS there);
+            a check with "turn": N looks at turn N instead (0 is the first, -1 the last; "/new" is
+            not a turn), so a middle turn can be held to something too
+  long_ok   turns (numbered the same way) whose answer may run longer than the usual cap of 420
+            characters: analytical and deeper follow-ups, where a long answer is wanted
   home      "eval", "tv" or "sockets": a made-up smart home from tests/agent_eval.py
   tags      the category first, then features: asr, lang, lang-xx, uk, us, followup, compound,
             notool, clarify, home, route, search (needs a search key), camera
@@ -36,7 +41,7 @@ MON, TUE, WED, THU, FRI, SAT, SUN = range(7)
 
 
 # ------------------------------------------------------------------ building blocks
-def case(cat, turns, tags=(), must=(), must_not=(), checks=(), env=None, home=None, steer=None):
+def case(cat, turns, tags=(), must=(), must_not=(), checks=(), env=None, home=None, steer=None, long_ok=()):
     COUNT[cat] = COUNT.get(cat, 0) + 1
     turns = [turns] if isinstance(turns, str) else list(turns)
     tags = [cat] + [t for t in tags if t != cat]
@@ -45,6 +50,7 @@ def case(cat, turns, tags=(), must=(), must_not=(), checks=(), env=None, home=No
     if home and "home" not in tags: tags.append("home")
     CASES.append({"name": "%s-%03d" % (cat, COUNT[cat]), "tags": tags, "turns": turns, "must": list(must), "must_not": list(must_not),
                   "checks": list(checks), "env": env or {}, "home": home, "steer": steer})
+    if long_ok: CASES[-1]["long_ok"] = list(long_ok)
 
 
 def ans(pattern, what=None): return {"kind": "answer", "re": pattern, "what": what}
@@ -65,6 +71,9 @@ def date_in(days): return {"kind": "date_in", "days": days}
 def currency(amount=None, frm=None, to=None): return {"kind": "currency", "amount": amount, "from": frm, "to": to}
 def home_call(action, targets=None, **values): return {"kind": "home_call", "action": action, "targets": targets, "values": values}
 def simple(kind, **kw): return dict({"kind": kind}, **kw)
+def max_calls(tool, n): return {"kind": "max_calls", "tool": tool, "n": n}
+def max_words(n): return {"kind": "max_words", "n": n}
+def on_turn(turn, check): return dict(check, turn=turn)
 
 
 QUESTION = ans(r"\?", "a question")
@@ -593,6 +602,65 @@ for text, must, checks in [
         ("start a 25 minute timer and play some music", ["timer", "music"], [timer(1500)]),
         ("what time is it in new york and in tokyo", ["world_time"], [arg_has("world_time", "place", "new york", "new_york"), arg_has("world_time", "place", "tokyo")])]:
     case("compound", text, tags=["asr"] if " uh " in text else [], must=must, checks=checks)
+
+# ------------------------------------------------------------------ dialogue: threads of several turns, as people have them
+# Generalised from conversations saved on the device (SPACE twice; tests/suite/from_conversation.py
+# drafts a case from one): other companies and events, never the user's own words. Kept last, with
+# no seeded choices, so that adding to it leaves the cases above unchanged. Simple factual turns are
+# held to a few words (max_words); analytical and deeper follow-ups are not: a long answer is
+# wanted there (long_ok).
+# Asking back takes many shapes ("not sure what X refers to", "could you say it again", "couldn't
+# find an event called X"); each of these came from a live run that the first, narrower pattern let pass.
+NOT_CLARIFY = nans(r"what do you mean|(could|can) you (clarify|say (it|that) again|spell|repeat|give me (a bit )?more|tell me (what|where|which|more))|"
+                   r"not sure what (you mean|.{0,40}(refers? to|stands? for|means?))|what (it|that|.{0,30}) stands? for|"
+                   r"couldn'?t find (an? |any )?(event|thing) called|which company|what is (an? )?o\.?p\.?o",
+                   "ask what was meant instead of looking it up")
+# ... and the search must be for the listing: a live run searched "Stripe Open Platform" and passed.
+IPO_QUERY = arg_has("web_search", "query", "ipo", "initial public offering", "public offering", "listing", "go public", "going public",
+                    "flotation", "float", "debut")
+SAYS_TIME = ans(r"\b\d{1,2}(:\d\d)?\s*(am|pm|a\.m\.|p\.m\.)|\b\d{1,2}:\d\d\b|o'?clock|\b(noon|midday)\b|in the (morning|afternoon|evening)",
+                "a time of day")
+# A misheard "IPO": with a company and "what time", the likely reading is the listing. Look it up
+# rather than ask what the letters mean.
+for text, tags in [("what time uk time is the stripe o.p.o.", ["asr"]),
+                   ("when is the revolut eye pee oh happening in uk time", ["asr"]),
+                   ("what time does the monzo i.p.o. start in uk time", ["asr"]),
+                   ("whats the date of the canva ipo and what time is that uk time", [])]:
+    case("dialogue", text, tags=tags + ["uk", "search"], must=["web_search"], checks=[NOT_CLARIFY, IPO_QUERY])
+# A follow-up that leans on the turn before: the subject is known, and the time is converted.
+case("dialogue", ["when is discord's ipo", "and what time would trading start uk time"], tags=["uk", "search"],
+     must=["web_search|world_time"], checks=[SAYS_TIME, nans(r"which company|what company", "ask which company")])
+case("dialogue", ["when is the next apple product launch event", "what time is that in uk time"], tags=["uk", "search"],
+     must=["web_search|world_time"], checks=[SAYS_TIME, nans(r"which event|what event", "ask which event")])
+# The search budget: a clarified question is looked up once or twice, not four times in a row; nor
+# is the misheard one before it (a live run made seven searches there, 55 s, and passed).
+case("dialogue", ["what time uk time is the stripe o.p.o.", "sorry, i meant the stripe i-p-o, the stock market listing. when does it price"],
+     tags=["asr", "uk", "search"], must=["web_search"], checks=[max_calls("web_search", 2), on_turn(0, max_calls("web_search", 2))])
+case("dialogue", "when does the revolut i-p-o price, the initial public offering i mean", tags=["asr", "search"],
+     must=["web_search"], checks=[max_calls("web_search", 2)])
+# Two questions in one, both answered, within the same budget, at whatever length they need.
+case("dialogue", "whats the market mood ahead of the monzo ipo, and can staff sell their shares straight after the listing or will the price crash",
+     tags=["compound", "search"], must=["web_search"], long_ok=[0],
+     checks=[max_calls("web_search", 2), ans(r"lock.?up|vest|restrict|can'?t sell|cannot sell|not allowed|wait|holding period", "the rules on selling"),
+             ans(r"sentiment|analyst|investor|demand|expect|bullish|bearish|optimis|cautious|mood|appetite", "the market mood")])
+case("dialogue", "what are analysts expecting from shell's results this week, and if they miss will the share price drop much",
+     tags=["compound", "uk", "search"], must=["web_search"], long_ok=[0],
+     checks=[max_calls("web_search", 2), ans(r"analyst|expect|forecast|estimate|consensus", "what is expected"),
+             ans(r"drop|fall|fell|decline|react|move|reaction|slide|hit", "what a miss would do")])
+# A deeper follow-up keeps the subject, and may take the room it needs.
+case("dialogue", ["when is the canva ipo", "could that mean the best designers cash out and leave the company"], tags=["search"], long_ok=[1],
+     checks=[ans(r"canva|lock.?up|vest|retention|stock|shares|equity", "the company or how staff shares work"),
+             nans(r"which company|what company", "ask which company")])
+case("dialogue", ["when does the discord lock-up period end after its ipo", "so could a wave of staff selling then drag the share price down for months"],
+     tags=["search"], long_ok=[1],
+     checks=[ans(r"discord|lock.?up|sell|supply|price|shares", "the subject"), nans(r"which company|what company", "ask which company")])
+# Length both ways in one thread: a simple fact stays short, the analysis after it does not have to.
+case("dialogue", ["when is shein going public", "what will its ticker symbol be", "do you think staff selling after the lock-up could drag the price down"],
+     tags=["search"], long_ok=[2],
+     checks=[on_turn(1, max_words(40)), ans(r"lock.?up|price|sell|shares", "the subject")])
+case("dialogue", ["whats the stock market listing date for starling bank", "which exchange will it list on", "and is it likely to be a good long-term investment"],
+     tags=["uk", "search"], long_ok=[2],
+     checks=[on_turn(1, max_words(40)), nans(r"which (company|bank)|what (company|bank)", "ask which company")])
 
 
 def main():

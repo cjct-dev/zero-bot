@@ -47,6 +47,7 @@ needs a [Tavily](https://tavily.com) key.
 |---|---|
 | **TAB** | Start talking. Press **TAB** again when you have finished. |
 | **SPACE** | Open settings (**TAB** twice quickly does the same). **SPACE** or **TAB** closes them again. |
+| **SPACE** twice quickly | Save this conversation, to help diagnose and improve the assistant (see [Diagnostics (temporary)](#diagnostics-temporary)). Because of this, one **SPACE** opens settings a moment later, once no second press has come (at once if another key follows it). |
 | **ENTER** | Start typing a message; **ENTER** again sends it. |
 | **del** twice quickly | Start a new conversation: what was said so far is forgotten. Calendar, timers, reminders and saved memories are kept. |
 | **ESC** | Cancel what is happening: recording, typing, a running request, music. |
@@ -171,7 +172,7 @@ settings from any page.
 |---|---|
 | Assistant | Language, vision, speech-to-text and text-to-speech models; voice; spoken replies on/off; fast replies; the assistant's name |
 | Device | Volume, brightness, screen off after, microphone gain, time zone, start at power-on, internet via phone, microphone, flip camera image, home city and country, your name, date order, units |
-| Your data | Calendar (edit, add, delete, delete all), reminders and timers (cancel one or all), memory (edit, add, delete, forget everything), TV remote, smart home (devices by room, setting up, the Tapo account), music library, radio stations (what was read from your list, play one to try it), start a new conversation |
+| Your data | Calendar (edit, add, delete, delete all), reminders and timers (cancel one or all), memory (edit, add, delete, forget everything), TV remote, smart home (devices by room, setting up, the Tapo account), music library, radio stations (what was read from your list, play one to try it), saved conversations (how many, delete them all; see [Diagnostics (temporary)](#diagnostics-temporary)), start a new conversation |
 | AI service | Address, API key, web search key, compress audio |
 | About | Status and connection test, the setup guide again, exit to launcher |
 | Keys | Every key and what it does (as **H** shows them) |
@@ -448,16 +449,37 @@ devices, with or without this app.
   only by your user, with what a device needs to be talked to (for Tapo, the account e-mail and a
   SHA-1 of its password). While the assistant may use devices, their names and states are sent
   to your AI service with each request; addresses and account details never are.
-- A log of the tools the assistant used and what they returned is kept in
-  `~/.cache/zero-bot/activity.log` (readable only by your user, about 256 kB at most plus one
-  older file), to help diagnose problems. What you say is not written to it, nor any password or
-  token. Delete it whenever you like.
+- A log of the tools the assistant used, and conversations you choose to save, are kept to help
+  diagnose problems: see [Diagnostics (temporary)](#diagnostics-temporary).
 - What you say, type and photograph is sent to the AI service you configured. Web searches go to
   Tavily; weather, currency and share-price lookups go to Open-Meteo, open.er-api.com and Yahoo
   Finance.
 - Python runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox with no
   network, no access to your files, a 20-second limit and a memory cap.
 - Reminders and timers only fire while the app is running.
+
+## Diagnostics (temporary)
+
+Two records exist for now to diagnose problems and improve the assistant. Both will be removed in
+a later version (and their files deleted from the device).
+
+- **The activity log**, `~/.cache/zero-bot/activity.log`: every tool the assistant used, with
+  what it was asked, what came back and how long it took, request by request. It is always kept,
+  readable only by your user, about 256 kB at most plus one older file. What you say is not
+  written to it, nor any password or token. Delete it whenever you like.
+- **Saved conversations**, `~/.local/share/zero-bot/conversations/`: only when you press **SPACE**
+  twice quickly on the chat screen, the conversation so far is saved from its start, as the AI
+  service saw it: what you said (with the time), each reply, and each tool the assistant used,
+  with what it was asked and the start of what came back. One file per save, named by the time
+  (the folder and files readable only by your user); the newest 50 are kept, 4 MB at most. Your
+  API and web-search keys are blanked out of them, and passwords and pairing codes never reach a
+  conversation (they are typed in settings). Your own words are saved as you said them, so save
+  only conversations you are happy to share with whoever looks into a problem.
+  *Settings → Your data → Saved conversations* shows how many there are and deletes them all.
+
+`tests/suite/from_conversation.py FILE` turns a saved conversation into a draft test case for the
+generated request set, for a person to edit (and to replace your own words with others) before
+adding it.
 
 ## Building
 
@@ -501,7 +523,7 @@ A screenless build of the agent, for testing prompts and tools quickly:
 cmake --preset cli && cmake --build --preset cli
 export ZB_API_BASE=https://your-service/v1 ZB_API_KEY=... ZB_SEARCH_KEY=...
 build/cli/zero_bot --ask "what's the weather like in lisbon tomorrow"
-build/cli/zero_bot --chat
+build/cli/zero_bot --chat           # /new starts a new conversation, /save saves it (as SPACE twice does)
 build/cli/zero_bot --tool weather '{"location":"Lisbon"}'
 ```
 
@@ -519,8 +541,8 @@ were called, whether the answers hold up, and how long each took. See the notes 
 the file. `tests/run_unit.sh` builds and runs the tests that need neither a device nor an AI
 service (the smart-home layer, the timers: the timer tool, how timers are stored, the
 countdown and the alarm, the radio: the station file, the radio tool and the check of a stream
-against a pretend radio server, the keys and their guide, and the Fire TV, HomeKit, Hue, Kasa, WiZ
-and Shelly drivers), `tests/tapo_e2e.py` runs the
+against a pretend radio server, the keys and their guide, saved conversations, and the Fire TV,
+HomeKit, Hue, Kasa, WiZ and Shelly drivers), `tests/tapo_e2e.py` runs the
 command-line build against two simulated Tapo plugs, `tests/firetv_e2e.py` and
 `tests/homekit_e2e.py` run those drivers against a simulated TV and a simulated HomeKit bridge,
 `tests/hue_e2e.py` runs the Hue driver and the command-line build against a simulated Hue Bridge,

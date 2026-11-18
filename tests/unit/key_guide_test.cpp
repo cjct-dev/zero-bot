@@ -95,6 +95,7 @@ void test_guide_matches_keys() {
     struct Said { const char *keys; KeyEvent ev; ChatKey does; };
     const Said said[] = {
         {"SPACE", text(" "), ChatKey::Settings},
+        {"SPACE SPACE", text(" "), ChatKey::Settings},   // each press; DoubleTap tells one from two
         {"H", text("h"), ChatKey::Guide},
         {"F  X", text("f"), ChatKey::ScrollUp},
         {"F  X", text("x"), ChatKey::ScrollDown},
@@ -116,7 +117,7 @@ void test_guide_matches_keys() {
             check(!r.keys.empty() && !r.action.empty(), "a line of the guide is complete");
         }
     const std::string chat = sections.front().title, anywhere = sections[1].title, settings = sections.back().title;
-    for (const char *k : {"TAB", "ENTER", "SPACE", "del del", "ESC", "hold ESC", "F  X", "fn+F  fn+X", "H"})
+    for (const char *k : {"TAB", "ENTER", "SPACE", "SPACE SPACE", "del del", "ESC", "hold ESC", "F  X", "fn+F  fn+X", "H"})
         check(all.count(chat + ": " + k) == 1, std::string("the chat screen's keys include ") + k);
     for (const char *k : {"fn+S  fn+D", "fn+A", "fn+U  fn+I", "fn+Q", "fn+W  fn+E", "any key"})
         check(all.count(anywhere + ": " + k) == 1, std::string("the keys that work everywhere include ") + k);
@@ -129,6 +130,36 @@ void test_guide_matches_keys() {
     // TAB twice still opens settings, and the guide says so beside SPACE.
     for (const keyguide::Row &r : sections.front().rows)
         if (r.keys == "SPACE") check(r.action.find("TAB twice") != std::string::npos, "SPACE's line mentions TAB twice");
+}
+
+// DIAGNOSTICS (temporary, ZB-051): SPACE once opens settings when the window has passed without a
+// second press; SPACE twice saves the conversation, and settings never open on the way.
+void test_double_tap() {
+    const unsigned long w = 450;
+    keyguide::DoubleTap tap(w);
+    check(!tap.pending() && !tap.single_due(1000), "nothing waits before a press");
+    check(!tap.press(1000) && tap.pending(), "a first press waits");
+    check(!tap.single_due(1000 + w - 1), "a single press waits out the whole window");
+    check(tap.single_due(1000 + w) && !tap.pending(), "then it is acted on (settings open)");
+    check(!tap.single_due(1000 + 5 * w), "only once");
+
+    check(!tap.press(5000) && tap.press(5000 + w - 1), "a second press inside the window is a double tap (save)");
+    check(!tap.pending() && !tap.single_due(5000 + 10 * w), "and the first is used up: settings do not open as well");
+
+    check(!tap.press(9000) && !tap.press(9000 + w), "a second press at the window's end is a new single press");
+    check(tap.single_due(9000 + 2 * w), "which opens settings in its turn");
+
+    check(!tap.press(12000) && tap.press(12100) && !tap.press(12200), "a third quick press starts again");
+    check(tap.single_due(12200 + w), "as a single press");
+
+    tap.press(15000);
+    check(tap.cancel(), "another key first: the waiting press is handed back, to open settings at once");
+    check(!tap.cancel(), "and only once");
+    check(!tap.pending() && !tap.single_due(15000 + w), "nothing is left to act on when the window ends");
+    check(!tap.press(15100), "and the next press is a first press, not a double tap");
+
+    keyguide::DoubleTap held(w);
+    check(!held.press(0) && held.single_due(w), "a press at time zero counts like any other");
 }
 
 void test_hints() {
@@ -145,6 +176,7 @@ void test_hints() {
 int main() {
     test_chat_keys();
     test_guide_matches_keys();
+    test_double_tap();
     test_hints();
     printf("keys: %d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? 1 : 0;

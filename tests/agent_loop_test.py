@@ -20,7 +20,8 @@ spoken or done while the microphone is open); the round budget, its last tool-fr
 spoken apology; a fresh budget for a follow-up; retries on 5xx, the reasoning-field fallback,
 refused keys, an outage page, an error inside the stream, an empty answer; think markers; time
 stamps and spelt-out dates; a byte-identical system prompt between calls; history trimming; the
-size of the first request; smart-home questions and answers on a stand-in home.
+size of the first request; smart-home questions and answers on a stand-in home; a saved conversation
+("/save", what SPACE twice does on the device; diagnostics, temporary).
 
 Not covered (no command-line hook): cancel, interrupting a spoken answer, context notes from the
 timer's alarm, transcription of recorded speech.
@@ -123,9 +124,11 @@ HOME = _home({"id": "1", "name": "Fan heater", "type": "plug", "caps": 1, "room"
               "ask_first": False, "enabled": True, "ref": {}})
 
 
-def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, photo=False, timeout=60, radio=None, search_key=None):
+def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, photo=False, timeout=60, radio=None, search_key=None,
+        inspect=None):
     """Runs the app once against `script`: --chat with each of `said`, or --ask `ask` (with `extra`
-    arguments such as --steer). Returns a Run."""
+    arguments such as --steer). Returns a Run. `inspect(state_folder)` is called before the
+    temporary home is removed, to look at what the run left there."""
     state = tempfile.mkdtemp(prefix="zb-loop-")
     model = None
     try:
@@ -167,6 +170,7 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
         requests = [json.loads(l) for l in open(log)] if os.path.exists(log) else []
         r = Run(out, requests)
         if VERBOSE: print(repr(r))
+        if inspect: inspect(state)
         return r
     finally:
         if model:
@@ -607,6 +611,75 @@ def history_trimmed():
           [b["messages"][1]["role"] for b in r.bodies()])
     last = json.dumps(r.messages(len(r.requests))) if r.requests else ""
     check(n + ": the oldest turns are gone, the newest kept", "turn 1 hello" not in last and "turn 24 timer" in last, "")
+
+
+# ------------------------------------------------------------------ saved conversations (DIAGNOSTICS, temporary)
+@scenario
+def conversation_saved():
+    """What SPACE twice does on the device is "/save" here: the conversation from its start, as the
+    model saw it, in a 0700 folder as a 0600 file, with the service key blanked out; nothing is
+    written without it."""
+    import stat
+    script = {"rules": [{"when": {"said": "timer"}, "reply": calls(TIMER_12)}], "default": {"text": "Noted."}}
+    seen = {}
+
+    def look(state):
+        folder = state + "/data/zero-bot/conversations"
+        seen["folder"] = folder if os.path.isdir(folder) else None
+        seen["files"] = sorted(os.listdir(folder)) if seen["folder"] else []
+        if seen["files"]:
+            path = os.path.join(folder, seen["files"][-1])
+            seen["folder_mode"] = stat.S_IMODE(os.stat(folder).st_mode)
+            seen["file_mode"] = stat.S_IMODE(os.stat(path).st_mode)
+            seen["text"] = open(path, encoding="utf-8").read()
+            seen["record"] = json.loads(seen["text"])
+
+    n = "saved conversation"
+    run(script, said=["hello there", "set a timer for 12 minutes"], inspect=look)
+    check(n + ": nothing is written without being asked", seen["folder"] is None, seen)
+    r = run(script, said=["/save"], inspect=look)
+    check(n + ": with nothing said, nothing is saved", "[Nothing to save yet]" in r.out and seen["folder"] is None, r)
+
+    # 24 turns, so that the oldest have left the model's context before the save.
+    said = ["turn %d %s" % (i, "timer" if i % 3 == 0 else "hello") for i in range(1, 25)] + ["my key is test-key-0123", "/save"]
+    r = run(script, said=said, env={"ZB_API_KEY": "test-key-0123"}, timeout=120, inspect=look)
+    check(n + ": the toast's words and the file are printed", "[Conversation saved] " in r.out and len(seen["files"]) == 1, r)
+    if not seen.get("record"): return
+    check(n + ": the folder is 0700 and the file 0600", seen["folder_mode"] == 0o700 and seen["file_mode"] == 0o600,
+          (oct(seen["folder_mode"]), oct(seen["file_mode"])))
+    rec, msgs = seen["record"], seen["record"]["messages"]
+    users = [m for m in msgs if m["role"] == "user"]
+    check(n + ": from its start, though the model no longer sees the first turns",
+          len(users) == 25 and users[0]["content"].endswith("] turn 1 hello") and rec["earlier_messages_not_kept"] == 0,
+          [u["content"] for u in users[:2]])
+    check(n + ": each user message as the model saw it, with its time", all(STAMP_RE.match(u["content"]) and
+          re.match(r"^\d{4}-\d\d-\d\d \d\d:\d\d$", u.get("time", "")) for u in users), users[:1])
+    timer_calls = [c for m in msgs for c in m.get("tool_calls", [])]
+    check(n + ": each tool call with its arguments and result", len(timer_calls) == 8 and all(
+          c["tool"] == "timer" and c["arguments"].get("minutes") == 12 and c.get("result") for c in timer_calls), timer_calls[:1])
+    replies = [m for m in msgs if m["role"] == "assistant" and not m.get("tool_calls")]
+    check(n + ": each reply", len(replies) == 25 and replies[0]["content"] == "Noted.", replies[:1])
+    check(n + ": the service key is blanked out", "test-key-0123" not in seen["text"] and "my key is [removed]" in seen["text"], "")
+    check(n + ": what the app was set to", rec.get("fast_mode") is False and rec.get("app_version") and rec.get("format") == 1, rec.keys())
+
+    # tests/suite/from_conversation.py drafts a case from it: the user's words without what the app added.
+    folder = tempfile.mkdtemp(prefix="zb-conv-")
+    try:
+        path = os.path.join(folder, "saved.json")
+        open(path, "w", encoding="utf-8").write(seen["text"])
+        tool = os.path.join(HERE, "suite", "from_conversation.py")
+        out = subprocess.run([sys.executable, "-I", tool, path], capture_output=True, text=True, timeout=30)
+        js = subprocess.run([sys.executable, "-I", tool, path, "--json"], capture_output=True, text=True, timeout=30)
+        entry = json.loads(js.stdout) if js.returncode == 0 else {}
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    check(n + ": the converter drafts a case for generate.py", out.returncode == 0 and out.stdout.startswith("# Draft from saved.json") and
+          'case("dialogue", ["turn 1 hello", "turn 2 hello", "turn 3 timer"' in out.stdout and "EDIT BEFORE USE" in out.stdout,
+          out.stdout[:600] + out.stderr)
+    check(n + ": and an entry for cases.json: turns as said, the last turn's tools as must",
+          entry.get("turns", [""])[0] == "turn 1 hello" and len(entry.get("turns", [])) == 25 and
+          entry.get("turns", [""])[-1] == "my key is [removed]" and entry.get("must") == [] and "followup" in entry.get("tags", []),
+          entry)
 
 
 # ------------------------------------------------------------------ smart-home questions

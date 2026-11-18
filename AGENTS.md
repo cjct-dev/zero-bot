@@ -77,7 +77,8 @@ State on disk (all under the user's home, mode 0600 where they hold secrets):
 `~/.config/zero-bot/settings.json`, `~/.config/zero-bot/radio.json` (the user's own stations,
 written by hand; the app ships none and never writes it), and in `~/.local/share/zero-bot/`: `calendar.json`,
 `reminders.json` (running timers too, as records with `"kind": "timer"`), `memory.json`,
-`ir_learned.json`, `music_index.json`, `smarthome.json`.
+`ir_learned.json`, `music_index.json`, `smarthome.json`, and `conversations/` (saved with SPACE
+twice; diagnostic, temporary, see section 7).
 
 ## 4. How a request flows
 
@@ -191,8 +192,10 @@ What exists:
   says so), `tests/unit/screen_idle_test.cpp` (when the screen dims and goes off, what keeps it lit
   and what wakes it), `tests/unit/radio_test.cpp` (the station file, names and nicknames, the tool absent
   without stations, the check of a stream against `tests/unit/radio_peer.py`, the player's live
-  mode against a stand-in `ffplay`) and `tests/unit/tools_test.cpp` (the calculator, dates and
-  zones that do not exist, helper programs: cancelling, time limits, no inherited descriptors),
+  mode against a stand-in `ffplay`), `tests/unit/tools_test.cpp` (the calculator, dates and
+  zones that do not exist, helper programs: cancelling, time limits, no inherited descriptors) and
+  `tests/unit/activity_test.cpp` (saved conversations: what a save holds, keys blanked out, size
+  limits, modes, pruning, nothing written unless asked; diagnostic, temporary),
   then, if `build/cli/zero_bot` is built, runs the timer and radio tools through it (`--tool`),
   checks `--prompt`/`--schema` say nothing of radio without stations, and runs the other offline
   tools through `tests/tools_cli.py` (good, wrong and hostile arguments, each in a fresh state
@@ -272,8 +275,12 @@ What exists:
   `--sample N --seed S` (a few from every category), plus `--repeat`, `--fast`, `--json`. It
   prints pass rates per tag and the slowest cases. Checks are declarative (`"kind"` in the file,
   compiled by `KINDS` in the runner) and accept every right answer: a timer or a reminder for "in
-  20 minutes", several right tools, any of the right numbers. Run a sample or the tags you
-  touched, not the whole set, unless asked.
+  20 minutes", several right tools, any of the right numbers. A check looks at the last turn
+  unless it names another (`"turn"`); `long_ok` lists the turns that may answer at length, which
+  the owner wants for analytical follow-ups (so `max_words` is for simple factual turns only;
+  `max_calls` caps a tool, such as searches in a row). The `dialogue` category holds threads of
+  several turns generalised from saved conversations (`tests/suite/from_conversation.py` drafts
+  one). Run a sample or the tags you touched, not the whole set, unless asked.
 - **Environment switches**: `ZB_DRY_RUN=1` (tools do not play music, send infrared or switch
   devices), `ZB_NO_AUDIO=1`, `ZB_FAKE_CAMERA=file.jpg`, `ZB_FAST_MODE=0|1`, `ZB_DATE_ORDER=dmy|mdy`,
   `ZB_TEST_NETWORK=1` (a stand-in network, id `net-58678b031ae6e411`, instead of the real one:
@@ -305,6 +312,16 @@ key, real audio), say so plainly rather than implying it was.
   the journal. `~/.cache/zero-bot/activity.log` on the device (`src/core/activity.cpp`) has every
   tool call with its arguments, result and duration, request by request; read it as root over ADB.
   It holds no words of the user's and no secrets; keep it that way.
+- **Saved conversations**: SPACE twice on the chat screen writes the conversation so far, as the
+  model saw it, to `/home/pi/.local/share/zero-bot/conversations/` (one JSON file per save, named
+  by the time). Pull them as root, check the copy, and keep them out of the repository (they hold
+  the owner's own words):
+  `timeout 60 scripts/adbx pull /home/pi/.local/share/zero-bot/conversations .local-notes/conversations/`,
+  then compare `md5sum` on both sides (`scripts/adbx shell 'md5sum /home/pi/.local/share/zero-bot/conversations/*'`).
+  `tests/suite/from_conversation.py FILE` prints a draft multi-turn case from one; generalise its
+  words (other names, other events) before it goes into `tests/suite/generate.py`.
+  Both records are diagnostic and temporary: `src/core/activity.h` lists every call site, each
+  marked `DIAGNOSTICS (temporary)`, for removing them (ZB-052).
 
 - The device is reached over USB ADB as root: left-side switch on Slave, cable in the
   right-hand USB-C port, ADB enabled in the device's Settings > Developer. Use `scripts/adbx`

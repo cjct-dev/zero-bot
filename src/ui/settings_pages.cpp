@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "agent/llm.h"
+#include "core/activity.h"
 #include "core/autostart.h"
 #include "core/music_lib.h"
 #include "core/radio.h"
@@ -416,6 +417,30 @@ void open_remote(Menu &menu) {
             items.push_back(MenuItem::action("Forget all learned buttons", [&menu] {
                 menu.confirm("Forget every learned button?", "Forget all", [] { ir::forget_all(); });
             }, true));
+        return items;
+    };
+    menu.push(std::move(page));
+}
+
+// ---------------------------------------------------------------- saved conversations
+// DIAGNOSTICS (temporary, ZB-051; core/activity.h): what SPACE twice on the chat screen has saved,
+// and a way to delete it all.
+void open_saved_conversations(Menu &menu) {
+    MenuPage page;
+    page.title = "Saved conversations";
+    page.build = [&menu]() {
+        std::vector<MenuItem> items;
+        const size_t n = activity::saved_count();
+        items.push_back(MenuItem::header(n ? std::to_string(n) + (n == 1 ? " conversation saved" : " conversations saved")
+                                           : std::string("None saved")));
+        if (n)
+            items.push_back(MenuItem::action("Delete saved conversations", [&menu] {
+                menu.confirm("Delete every saved conversation?", "Delete all", [] { activity::delete_saved(); });
+            }, true));
+        Menu::add_paragraph(items, "SPACE twice on the chat screen saves the conversation so far, to help diagnose and improve "
+                                   "the assistant. Nothing is saved any other way. This is temporary and will be removed.");
+        Menu::add_paragraph(items, "Kept in ~/.local/share/zero-bot/conversations, the newest " + std::to_string(activity::kMaxSaved) +
+                                       " at most.");
         return items;
     };
     menu.push(std::move(page));
@@ -1207,6 +1232,11 @@ void open_settings(Menu &menu, const SettingsHooks &hooks) {
             const size_t n = radio::stations().size();
             return n ? std::to_string(n) + (n == 1 ? " station" : " stations") : std::string("none");
         }, [&menu] { open_radio(menu); }));
+        // DIAGNOSTICS (temporary, ZB-051)
+        items.push_back(MenuItem::val("Saved conversations", [] {
+            const size_t n = activity::saved_count();
+            return n ? std::to_string(n) + " saved" : std::string("none");
+        }, [&menu] { open_saved_conversations(menu); }));
         items.push_back(MenuItem::action("Start a new conversation", [&menu, hooks] {
             if (hooks.new_conversation) hooks.new_conversation();
             menu.close();

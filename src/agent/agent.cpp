@@ -18,6 +18,7 @@ namespace {
 constexpr int kMaxRounds = 8;            // model calls per request, including tool round-trips
 constexpr size_t kMaxHistory = 40;       // messages kept as context
 constexpr size_t kMaxToolResult = 6000;  // characters of tool output passed back to the model
+constexpr size_t kMaxEarlier = 200;      // DIAGNOSTICS (temporary): trimmed messages kept for a saved conversation
 
 // Appended after a reply that was drafted without tools (fast mode only). The second look reuses
 // the whole prompt, so the server answers it from its prefix cache in a fraction of a normal
@@ -174,6 +175,8 @@ void Agent::reset_conversation() {
     {
         std::lock_guard<std::mutex> lk(mtx_);
         history_ = json::array();
+        earlier_ = json::array();   // DIAGNOSTICS (temporary)
+        earlier_dropped_ = 0;
     }
     home::conversation_reset();   // a web page read in it no longer holds smart-home changes back
 }
@@ -218,6 +221,15 @@ size_t Agent::history_size() {
 json Agent::history_snapshot() {
     std::lock_guard<std::mutex> lk(mtx_);
     return history_;
+}
+
+// DIAGNOSTICS (temporary, ZB-051): see agent.h.
+json Agent::whole_conversation(size_t *dropped) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    json all = earlier_;
+    for (const json &m : history_) all.push_back(m);
+    if (dropped) *dropped = earlier_dropped_;
+    return all;
 }
 
 bool Agent::has_pending() {
@@ -314,6 +326,13 @@ void Agent::trim_history() {
             size_t start = history_.size() - kMaxHistory;
             // Context must begin with a user message, never in the middle of a tool exchange.
             while (start < history_.size() && util::jget(history_[start], "role", std::string()) != "user") ++start;
+            // DIAGNOSTICS (temporary, ZB-051): what leaves the context stays available to a saved conversation.
+            for (size_t i = 0; i < start; ++i) earlier_.push_back(activity::compact(history_[i]));
+            if (earlier_.size() > kMaxEarlier) {
+                const size_t over = earlier_.size() - kMaxEarlier;
+                earlier_.erase(earlier_.begin(), earlier_.begin() + static_cast<long>(over));
+                earlier_dropped_ += over;
+            }
             json kept = json::array();
             for (size_t i = start; i < history_.size(); ++i) kept.push_back(history_[i]);
             history_ = std::move(kept);
@@ -329,7 +348,7 @@ void Agent::run_turn() {
     interrupted_ = false;
     if (absorb_inputs(true) == 0) return;
     trim_history();
-    activity::request();
+    activity::request();   // DIAGNOSTICS (temporary): the activity log
 
     const json tool_schema = tools::schema();
     tools::Context tool_ctx;
@@ -602,6 +621,7 @@ void Agent::run_turn() {
                     result = "ERROR: this exact call already failed in this request, so it was not made again. It said: " +
                              earlier->second + ". Change what that asks you to change, or tell the user it did not work";
                 else result = tools::run(c.name, c.args, tool_ctx);
+                // DIAGNOSTICS (temporary): the activity log
                 activity::tool(c.name, c.args, result,
                                static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                                      std::chrono::steady_clock::now() - tool_started).count()));

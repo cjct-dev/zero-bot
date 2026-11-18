@@ -14671,5 +14671,503 @@
   "env": {},
   "home": null,
   "steer": null
+ },
+ {
+  "name": "dialogue-001",
+  "tags": [
+   "dialogue",
+   "asr",
+   "uk",
+   "search"
+  ],
+  "turns": [
+   "what time uk time is the stripe o.p.o."
+  ],
+  "must": [
+   "web_search"
+  ],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "not_answer",
+    "re": "what do you mean|(could|can) you (clarify|say (it|that) again|spell|repeat|give me (a bit )?more|tell me (what|where|which|more))|not sure what (you mean|.{0,40}(refers? to|stands? for|means?))|what (it|that|.{0,30}) stands? for|couldn'?t find (an? |any )?(event|thing) called|which company|what is (an? )?o\\.?p\\.?o",
+    "what": "ask what was meant instead of looking it up"
+   },
+   {
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "ipo",
+     "initial public offering",
+     "public offering",
+     "listing",
+     "go public",
+     "going public",
+     "flotation",
+     "float",
+     "debut"
+    ]
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null
+ },
+ {
+  "name": "dialogue-002",
+  "tags": [
+   "dialogue",
+   "asr",
+   "uk",
+   "search"
+  ],
+  "turns": [
+   "when is the revolut eye pee oh happening in uk time"
+  ],
+  "must": [
+   "web_search"
+  ],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "not_answer",
+    "re": "what do you mean|(could|can) you (clarify|say (it|that) again|spell|repeat|give me (a bit )?more|tell me (what|where|which|more))|not sure what (you mean|.{0,40}(refers? to|stands? for|means?))|what (it|that|.{0,30}) stands? for|couldn'?t find (an? |any )?(event|thing) called|which company|what is (an? )?o\\.?p\\.?o",
+    "what": "ask what was meant instead of looking it up"
+   },
+   {
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "ipo",
+     "initial public offering",
+     "public offering",
+     "listing",
+     "go public",
+     "going public",
+     "flotation",
+     "float",
+     "debut"
+    ]
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null
+ },
+ {
+  "name": "dialogue-003",
+  "tags": [
+   "dialogue",
+   "asr",
+   "uk",
+   "search"
+  ],
+  "turns": [
+   "what time does the monzo i.p.o. start in uk time"
+  ],
+  "must": [
+   "web_search"
+  ],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "not_answer",
+    "re": "what do you mean|(could|can) you (clarify|say (it|that) again|spell|repeat|give me (a bit )?more|tell me (what|where|which|more))|not sure what (you mean|.{0,40}(refers? to|stands? for|means?))|what (it|that|.{0,30}) stands? for|couldn'?t find (an? |any )?(event|thing) called|which company|what is (an? )?o\\.?p\\.?o",
+    "what": "ask what was meant instead of looking it up"
+   },
+   {
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "ipo",
+     "initial public offering",
+     "public offering",
+     "listing",
+     "go public",
+     "going public",
+     "flotation",
+     "float",
+     "debut"
+    ]
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null
+ },
+ {
+  "name": "dialogue-004",
+  "tags": [
+   "dialogue",
+   "uk",
+   "search"
+  ],
+  "turns": [
+   "whats the date of the canva ipo and what time is that uk time"
+  ],
+  "must": [
+   "web_search"
+  ],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "not_answer",
+    "re": "what do you mean|(could|can) you (clarify|say (it|that) again|spell|repeat|give me (a bit )?more|tell me (what|where|which|more))|not sure what (you mean|.{0,40}(refers? to|stands? for|means?))|what (it|that|.{0,30}) stands? for|couldn'?t find (an? |any )?(event|thing) called|which company|what is (an? )?o\\.?p\\.?o",
+    "what": "ask what was meant instead of looking it up"
+   },
+   {
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "ipo",
+     "initial public offering",
+     "public offering",
+     "listing",
+     "go public",
+     "going public",
+     "flotation",
+     "float",
+     "debut"
+    ]
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null
+ },
+ {
+  "name": "dialogue-005",
+  "tags": [
+   "dialogue",
+   "uk",
+   "search",
+   "followup"
+  ],
+  "turns": [
+   "when is discord's ipo",
+   "and what time would trading start uk time"
+  ],
+  "must": [
+   "web_search|world_time"
+  ],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "answer",
+    "re": "\\b\\d{1,2}(:\\d\\d)?\\s*(am|pm|a\\.m\\.|p\\.m\\.)|\\b\\d{1,2}:\\d\\d\\b|o'?clock|\\b(noon|midday)\\b|in the (morning|afternoon|evening)",
+    "what": "a time of day"
+   },
+   {
+    "kind": "not_answer",
+    "re": "which company|what company",
+    "what": "ask which company"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null
+ },
+ {
+  "name": "dialogue-006",
+  "tags": [
+   "dialogue",
+   "uk",
+   "search",
+   "followup"
+  ],
+  "turns": [
+   "when is the next apple product launch event",
+   "what time is that in uk time"
+  ],
+  "must": [
+   "web_search|world_time"
+  ],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "answer",
+    "re": "\\b\\d{1,2}(:\\d\\d)?\\s*(am|pm|a\\.m\\.|p\\.m\\.)|\\b\\d{1,2}:\\d\\d\\b|o'?clock|\\b(noon|midday)\\b|in the (morning|afternoon|evening)",
+    "what": "a time of day"
+   },
+   {
+    "kind": "not_answer",
+    "re": "which event|what event",
+    "what": "ask which event"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null
+ },
+ {
+  "name": "dialogue-007",
+  "tags": [
+   "dialogue",
+   "asr",
+   "uk",
+   "search",
+   "followup"
+  ],
+  "turns": [
+   "what time uk time is the stripe o.p.o.",
+   "sorry, i meant the stripe i-p-o, the stock market listing. when does it price"
+  ],
+  "must": [
+   "web_search"
+  ],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "max_calls",
+    "tool": "web_search",
+    "n": 2
+   },
+   {
+    "kind": "max_calls",
+    "tool": "web_search",
+    "n": 2,
+    "turn": 0
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null
+ },
+ {
+  "name": "dialogue-008",
+  "tags": [
+   "dialogue",
+   "asr",
+   "search"
+  ],
+  "turns": [
+   "when does the revolut i-p-o price, the initial public offering i mean"
+  ],
+  "must": [
+   "web_search"
+  ],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "max_calls",
+    "tool": "web_search",
+    "n": 2
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null
+ },
+ {
+  "name": "dialogue-009",
+  "tags": [
+   "dialogue",
+   "compound",
+   "search"
+  ],
+  "turns": [
+   "whats the market mood ahead of the monzo ipo, and can staff sell their shares straight after the listing or will the price crash"
+  ],
+  "must": [
+   "web_search"
+  ],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "max_calls",
+    "tool": "web_search",
+    "n": 2
+   },
+   {
+    "kind": "answer",
+    "re": "lock.?up|vest|restrict|can'?t sell|cannot sell|not allowed|wait|holding period",
+    "what": "the rules on selling"
+   },
+   {
+    "kind": "answer",
+    "re": "sentiment|analyst|investor|demand|expect|bullish|bearish|optimis|cautious|mood|appetite",
+    "what": "the market mood"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "long_ok": [
+   0
+  ]
+ },
+ {
+  "name": "dialogue-010",
+  "tags": [
+   "dialogue",
+   "compound",
+   "uk",
+   "search"
+  ],
+  "turns": [
+   "what are analysts expecting from shell's results this week, and if they miss will the share price drop much"
+  ],
+  "must": [
+   "web_search"
+  ],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "max_calls",
+    "tool": "web_search",
+    "n": 2
+   },
+   {
+    "kind": "answer",
+    "re": "analyst|expect|forecast|estimate|consensus",
+    "what": "what is expected"
+   },
+   {
+    "kind": "answer",
+    "re": "drop|fall|fell|decline|react|move|reaction|slide|hit",
+    "what": "what a miss would do"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "long_ok": [
+   0
+  ]
+ },
+ {
+  "name": "dialogue-011",
+  "tags": [
+   "dialogue",
+   "search",
+   "followup"
+  ],
+  "turns": [
+   "when is the canva ipo",
+   "could that mean the best designers cash out and leave the company"
+  ],
+  "must": [],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "answer",
+    "re": "canva|lock.?up|vest|retention|stock|shares|equity",
+    "what": "the company or how staff shares work"
+   },
+   {
+    "kind": "not_answer",
+    "re": "which company|what company",
+    "what": "ask which company"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "long_ok": [
+   1
+  ]
+ },
+ {
+  "name": "dialogue-012",
+  "tags": [
+   "dialogue",
+   "search",
+   "followup"
+  ],
+  "turns": [
+   "when does the discord lock-up period end after its ipo",
+   "so could a wave of staff selling then drag the share price down for months"
+  ],
+  "must": [],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "answer",
+    "re": "discord|lock.?up|sell|supply|price|shares",
+    "what": "the subject"
+   },
+   {
+    "kind": "not_answer",
+    "re": "which company|what company",
+    "what": "ask which company"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "long_ok": [
+   1
+  ]
+ },
+ {
+  "name": "dialogue-013",
+  "tags": [
+   "dialogue",
+   "search",
+   "followup"
+  ],
+  "turns": [
+   "when is shein going public",
+   "what will its ticker symbol be",
+   "do you think staff selling after the lock-up could drag the price down"
+  ],
+  "must": [],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "max_words",
+    "n": 40,
+    "turn": 1
+   },
+   {
+    "kind": "answer",
+    "re": "lock.?up|price|sell|shares",
+    "what": "the subject"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "long_ok": [
+   2
+  ]
+ },
+ {
+  "name": "dialogue-014",
+  "tags": [
+   "dialogue",
+   "uk",
+   "search",
+   "followup"
+  ],
+  "turns": [
+   "whats the stock market listing date for starling bank",
+   "which exchange will it list on",
+   "and is it likely to be a good long-term investment"
+  ],
+  "must": [],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "max_words",
+    "n": 40,
+    "turn": 1
+   },
+   {
+    "kind": "not_answer",
+    "re": "which (company|bank)|what (company|bank)",
+    "what": "ask which company"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "long_ok": [
+   2
+  ]
  }
 ]

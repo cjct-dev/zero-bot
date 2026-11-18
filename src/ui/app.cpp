@@ -14,6 +14,7 @@
 #include "ui/alarm_view.h"
 #include "ui/breath_view.h"
 #include "agent/llm.h"
+#include "core/activity.h"
 #include "core/music_lib.h"
 #include "core/radio.h"
 #include "core/settings.h"
@@ -108,6 +109,9 @@ struct App {
     audio::Recorder recorder;
     unsigned long rec_start = 0;
     unsigned long last_delete = 0;   // for the double tap that starts a new conversation
+    // DIAGNOSTICS (temporary, ZB-051): SPACE once opens settings, twice saves the conversation.
+    // Without the diagnostics, SPACE would open settings at once again (open_menu in handle_key).
+    keyguide::DoubleTap space_tap{kDoubleTapMs};
     // Volume and brightness keys: what the footer shows for a moment, and settings waiting to be
     // written once the key has been let go (so a held key does not rewrite the file ten times a second).
     std::string level_text;
@@ -274,6 +278,23 @@ struct App {
         open_settings(menu, hooks);
     }
 
+    // DIAGNOSTICS (temporary, ZB-051; core/activity.h): SPACE twice saves the conversation so far,
+    // from its start, to help diagnose and improve the assistant. Nothing is saved any other way.
+    void save_conversation() {
+        size_t dropped = 0;
+        const json conversation = Agent::get().whole_conversation(&dropped);
+        show_level(activity::saved_toast(activity::save_conversation(conversation, dropped)));
+    }
+
+    // DIAGNOSTICS (temporary): one SPACE opens settings once the time for a second has passed,
+    // unless something else has taken the screen meanwhile.
+    bool settings_may_open() {
+        return !menu.open() && !recorder.active() && !chat.typing() && !breath.active() && !alarm.ringing();
+    }
+    void settle_keys(unsigned long now) {
+        if (space_tap.single_due(now) && settings_may_open()) open_menu();
+    }
+
     // Forgets what has been said so far. Calendar, reminders and saved memories are untouched.
     void new_conversation() {
         Agent::get().reset_conversation();
@@ -388,6 +409,10 @@ struct App {
             spent_text = ev.text;
             return;
         }
+        // DIAGNOSTICS (temporary): a SPACE waiting to open settings is a single press once another
+        // key comes, so settings open now and the key goes to them, as both did before SPACE SPACE
+        // existed ("SPACE, Down, ENTER" still works however quickly it is typed).
+        if (ev.state == 1 && !keyguide::is_settings_key(ev) && space_tap.cancel() && settings_may_open()) open_menu();
 
         // A ringing alarm takes the next key press, whatever the key and whatever is on screen (the
         // chat, a menu, the breathing exercise), and the press goes no further. TAB also starts
@@ -475,7 +500,12 @@ struct App {
                 else last_delete = now;
                 break;
             case ChatKey::Type: chat.typing_begin(""); break;
-            case ChatKey::Settings: open_menu(); break;            // SPACE; TAB twice also works
+            // SPACE (TAB twice also opens settings). DIAGNOSTICS (temporary, ZB-051): a second SPACE
+            // soon after saves the conversation instead, so one SPACE opens settings only once the
+            // double-tap window has passed (settle_keys).
+            case ChatKey::Settings:
+                if (space_tap.press(now)) save_conversation();
+                break;
             case ChatKey::Guide: open_key_guide(menu, false); break;
             case ChatKey::ScrollUp: chat.scroll(34); break;
             case ChatKey::ScrollDown: chat.scroll(-34); break;
@@ -648,6 +678,7 @@ struct App {
     void periodic() {
         const unsigned long now = display::now_ms();
         if (esc_armed && now - esc_down >= kEscHoldMs) { g_exit = true; return; }
+        settle_keys(now);   // DIAGNOSTICS (temporary)
         if (now - last_tick >= 66) {
             last_tick = now;
             update_footer();
@@ -845,7 +876,8 @@ struct App {
             dark = go_dark() && dark;
             press(Key::Char, " ", {1, 0});
             swallowed = swallowed && !display::screen_is_off() && !menu.open();
-            press(Key::Char, " ", {1, 0});                              // settings, on "Assistant"
+            press(Key::Char, " ", {1, 0});                              // settings, on "Assistant",
+            settle_keys(display::now_ms() + kDoubleTapMs);              // once SPACE SPACE is ruled out
             dark = go_dark() && dark;
             press(Key::Down, "", {1, 2, 0});
             swallowed = swallowed && menu.open() && menu.selected() == "Assistant";
@@ -894,7 +926,10 @@ struct App {
                 // scrolls; ESC (pressed and let go) goes back to the chat.
                 KeyEvent space; space.key = Key::Char; space.text = " "; space.state = 1;
                 handle_key(space);
-                const bool opened = menu.open() && menu.depth() == 1 && menu.title() == "Settings" && menu.selected() == "Assistant";
+                const bool waited = !menu.open();                 // a second SPACE may yet come (DIAGNOSTICS)
+                settle_keys(display::now_ms() + kDoubleTapMs);    // none did: settings open
+                const bool opened = waited && menu.open() && menu.depth() == 1 && menu.title() == "Settings" &&
+                                    menu.selected() == "Assistant";
                 handle_key(space);
                 const bool closed = !menu.open();
                 KeyEvent h; h.key = Key::Char; h.text = "h"; h.state = 1;
@@ -927,12 +962,24 @@ struct App {
                 for (const keyguide::Section &sec : keyguide::sections())
                     for (const keyguide::Row &row : sec.rows)
                         if (width(row.keys, theme::bold()) > Menu::kPairKeyW - 4 || width(row.action, theme::body()) > Menu::pair_text_width()) {
-                            fprintf(stderr, "the key guide's line for %s does not fit the screen\n", row.keys.c_str());
+                            fprintf(stderr, "the key guide's line for %s does not fit the screen (keys %d of %d px, words %d of %d px)\n",
+                                    row.keys.c_str(), width(row.keys, theme::bold()), Menu::kPairKeyW - 4,
+                                    width(row.action, theme::body()), Menu::pair_text_width());
                             failed = true;
                         }
                 for (const bool configured : {true, false})
                     if (width(keyguide::idle_hint(configured), theme::small()) > theme::kScreenW - 12) {
                         fprintf(stderr, "the hints on the bottom row do not fit: %s\n", keyguide::idle_hint(configured).c_str());
+                        failed = true;
+                    }
+                // DIAGNOSTICS (temporary): what SPACE twice says, on the same row.
+                activity::SaveResult nothing, saved, broken;
+                nothing.nothing = true;
+                saved.path = "x";
+                broken.error = "x";
+                for (const activity::SaveResult &r : {nothing, saved, broken})
+                    if (width(activity::saved_toast(r), theme::small()) > theme::kScreenW - 12) {
+                        fprintf(stderr, "the words after SPACE twice do not fit the bottom row: %s\n", activity::saved_toast(r).c_str());
                         failed = true;
                     }
             }
@@ -1295,8 +1342,80 @@ struct App {
                 failed = true;
             }
         }
+        failed = diagnostics_shots(snap) || failed;   // DIAGNOSTICS (temporary)
         timers::fix_clock(0);
         return failed ? 1 : 0;
+    }
+
+    // DIAGNOSTICS (temporary, ZB-051): the screens of saved conversations, last so that removing them
+    // renumbers nothing. Returns true when something did not behave.
+    template <typename Snap>
+    bool diagnostics_shots(Snap &snap) {
+        bool failed = false;
+        // SPACE twice on the chat screen saves the conversation. Settings never open on the way, nor
+        // after it; with nothing said yet there is nothing to save.
+        chat.clear();
+        chat.add_note("New conversation. What was said before is forgotten.", theme::kDim);
+        KeyEvent space; space.key = Key::Char; space.text = " "; space.state = 1;
+        handle_key(space);
+        handle_key(space);
+        settle_keys(display::now_ms() + kDoubleTapMs);
+        update_footer();
+        snap("save-nothing");
+        if (menu.open() || level_text != "Nothing to save yet" || activity::saved_count() != 0) {
+            fprintf(stderr, "SPACE twice opened settings, or did not say there was nothing to save\n");
+            failed = true;
+        }
+        level_until = 0;
+        // SPACE and then another key at once: SPACE was a single press, so settings open and the key
+        // goes to them (Down moves to the second section), as it did before SPACE SPACE existed.
+        {
+            KeyEvent down; down.key = Key::Down; down.state = 1;
+            handle_key(space);
+            handle_key(down);
+            const bool quick = menu.open() && menu.depth() == 1 && menu.title() == "Settings" && menu.selected() == "Device" &&
+                               !space_tap.pending();
+            menu.close();
+            settle_keys(display::now_ms() + kDoubleTapMs);
+            if (!quick || menu.open()) {
+                fprintf(stderr, "SPACE then Down at once did not open settings on their second section\n");
+                failed = true;
+            }
+            menu.close();
+        }
+        // One saved conversation (written by the real writer, into this run's own state folder), shown
+        // in Settings > Your data and deleted from there.
+        const json sample = json::array({
+            json{{"role", "user"}, {"content", "[Wed 18 Nov 2026, 12:00] What's the weather like in Lisbon tomorrow?"}},
+            json{{"role", "assistant"}, {"content", ""},
+                 {"tool_calls", json::array({json{{"id", "call_1"}, {"type", "function"},
+                                                  {"function", {{"name", "weather"}, {"arguments", "{\"location\":\"Lisbon\"}"}}}}})}},
+            json{{"role", "tool"}, {"tool_call_id", "call_1"}, {"content", "{\"tomorrow\":\"rain, 18 to 21 C\"}"}},
+            json{{"role", "assistant"}, {"content", "Tomorrow in Lisbon looks wet. Take an umbrella."}}});
+        const bool wrote = !activity::save_conversation(sample, 0).path.empty();
+        KeyEvent down; down.key = Key::Down; down.state = 1;
+        KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
+        open_menu();
+        for (int i = 0; i < 10 && menu.selected() != "Your data"; ++i) menu.key(down);
+        menu.key(enter);
+        for (int i = 0; i < 20 && menu.selected() != "Saved conversations"; ++i) menu.key(down);
+        const bool listed = menu.selected() == "Saved conversations";
+        menu.key(enter);
+        snap("saved-conversations");
+        const bool shown = menu.title() == "Saved conversations";
+        const bool offered = menu.selected() == "Delete saved conversations";   // the only row to choose
+        menu.key(enter);
+        snap("saved-conversations-delete");
+        const bool asked = menu.selected() == "Cancel";
+        menu.key(down);
+        menu.key(enter);                               // "Delete all"
+        const bool gone = activity::saved_count() == 0;
+        if (!wrote || !listed || !shown || !offered || !asked || !gone) {
+            fprintf(stderr, "a saved conversation was not written, listed, shown or deleted as it should be\n");
+            failed = true;
+        }
+        menu.close();
+        return failed;
     }
 };
 
