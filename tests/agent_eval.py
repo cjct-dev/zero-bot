@@ -388,7 +388,8 @@ def stops_player(t):
 
 # Saying that radio is not available: "no radio stations are set up", "I can't play radio stations".
 RADIO_NOT_SET_UP = (r"not set up|no (radio )?stations|(can'?t|cannot|unable to|not able to|don'?t|do not|no way to)\b.{0,40}"
-                    r"\b(radio|stations?|stream|live)|radio (isn'?t|is not|aren'?t|has not|hasn'?t)|without (any )?(radio )?stations")
+                    r"\b(radio|stations?|stream|live)|radio (isn'?t|is not|aren'?t|has not|hasn'?t)|without (any )?(radio )?stations|"
+                    r"\b(not|no) (the |any )?(radio|live radio|radio stations?|radio streams?)\b")
 UNSURE = r"search|can'?t (check|look|confirm)|cannot|not set up|unable|not sure|may have changed|might have changed|" \
          r"check (the|their)|double.check|verify|usually|typically|normally|generally|i believe|from memory|as far as i know"
 
