@@ -295,6 +295,10 @@ key, real audio), say so plainly rather than implying it was.
 - Smart-home discovery uses only what the devices' own apps use (mDNS, SSDP, the vendor's
   broadcast). No address sweeps, no port scans, opt-in per network with a warning. "This
   network" is the SSID plus the router's hardware address, not the SSID alone.
+- A change to discovery's ranking can give a saved device a new id (a Kasa EP25 saved as a
+  HomeKit accessory now answers as Kasa). The new record must not reopen what the user closed on
+  the old one ("Assistant may use it" off, "Ask before switching on"): `remember_scan` adds a
+  record whose MAC another record already has with the assistant's use switched off.
 - Before promising a device can be controlled, check whether it has a local interface at all.
   Several popular products are cloud-only.
 - New device code is reviewed before it touches a real device: in this project the first
