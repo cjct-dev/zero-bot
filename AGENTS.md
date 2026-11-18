@@ -55,10 +55,11 @@ src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast); driver.h, the con
 src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
                     pages, the keys and their guide (key_guide), breathing screen, alarm banner, theme
 tests/              scored agent test set (needs a live service), device-free unit tests
-                    (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit, Hue, keys),
-                    Tapo, Fire TV, HomeKit and Hue end to end (tapo_e2e.py, firetv_e2e.py,
-                    homekit_e2e.py, hue_e2e.py),
-                    the loop against a scripted chat service (home_chat_e2e.py), simulated devices
+                    (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit, Hue, keys,
+                    radio, tools), Tapo, Fire TV, HomeKit and Hue end to end (tapo_e2e.py,
+                    firetv_e2e.py, homekit_e2e.py, hue_e2e.py),
+                    the loop against a scripted chat service (home_chat_e2e.py, and
+                    selfheal_chat_e2e.py for failures), simulated devices
                     and service (mocks/)
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
 ```
@@ -121,6 +122,32 @@ Things in that loop that exist for a reason; do not remove them without re-runni
 - **Context notes** (`Agent::add_context`): something the user saw or heard without the model
   taking part (a timer's alarm) rides along with their next message, within ten minutes, so
   that "give it five more minutes" means something to the model.
+- **Failed tool calls** (tested by `tests/selfheal_chat_e2e.py`):
+  - *What the model is told.* `tools::run` checks each argument against the tool's own schema
+    before the tool runs: a wrong type names the argument, what it must be and what was sent;
+    "yes", "true" or 1 for a boolean and an enum value in other capitals are taken as meant; empty
+    text for a number counts as not given. A call cut short or broken says where, with an example;
+    an unknown tool name gets the nearest one. Every failure has one shape, `ERROR: what was wrong.
+    What to do` (a tool's JSON `{"error": ...}` is turned into it); `tools::failed()` recognises it.
+    Tools whose schema is made at run time (`smart_home`, `radio`: `obj({})` in `build()`) check
+    their own arguments.
+  - *Retries.* Only what is safe to repeat is sent again by itself: the AI service, transcription,
+    speech, and the tools' reads and searches (`fetch_json`), through `http::send_retrying`, after
+    a failure on the way (`http::transient`: no connection, a dropped one, 408, 429, 5xx but 501
+    and 505; never a refusal, and never a timeout once the request had gone out), after a pause
+    and inside the request's own time limit. Nothing that changes, logs in or pairs is retried by
+    this; a device change is resent only by the smart-home layer, at a device's new address, and
+    only when it comes out the same if made twice (on, 40 %, an input; never a volume step, key
+    press or playback control: some TVs toggle play and pause with one command). In the loop, a
+    call that failed is not made again unchanged in the same request (`call_key`: tool and
+    arguments, "say" aside): the model is told it already failed. What the user says next clears
+    that, so "try again" works.
+  - *Never silence.* "Done" in a reply after tool calls that all failed or wait for a yes is
+    withdrawn once, like the guard for no tool at all (`claims_done`: an offer put as a question,
+    "Shall I put it in for next year?", is not withdrawn; it is often the right answer then). An
+    empty reply goes back to the model once, then an answer is made in code. When the service is
+    lost after tools ran, the user hears the confirmations of the calls that worked and that the
+    rest could not be finished.
 
 ## 5. Building
 
@@ -156,10 +183,14 @@ What exists:
   storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it keeps everything
   it writes in a temporary folder of its own, so running it by hand is safe too) and
   `tests/unit/key_guide_test.cpp` (what each key does on the chat screen, and that the key guide
-  says so) and `tests/unit/radio_test.cpp` (the station file, names and nicknames, the tool absent
+  says so), `tests/unit/radio_test.cpp` (the station file, names and nicknames, the tool absent
   without stations, the check of a stream against `tests/unit/radio_peer.py`, the player's live
-  mode against a stand-in `ffplay`), then runs the timer and radio tools through `build/cli/zero_bot
-  --tool` and checks `--prompt`/`--schema` say nothing of radio without stations, if that is built. `ZB_UPDATE_SNAPSHOTS=1`
+  mode against a stand-in `ffplay`) and `tests/unit/tools_test.cpp` (the calculator, dates and
+  zones that do not exist, helper programs: cancelling, time limits, no inherited descriptors),
+  then, if `build/cli/zero_bot` is built, runs the timer and radio tools through it (`--tool`),
+  checks `--prompt`/`--schema` say nothing of radio without stations, and runs the other offline
+  tools through `tests/tools_cli.py` (good, wrong and hostile arguments, each in a fresh state
+  folder). `ZB_UPDATE_SNAPSHOTS=1`
   rewrites the snapshots: read the diff before committing it. `ZB_BUILD_WRAPPER=cmd` runs each
   compile through `cmd`.
 - **Tapo end to end**: `tests/tapo_e2e.py` runs `build/cli/zero_bot` against two simulated plugs
@@ -179,8 +210,12 @@ What exists:
   `tests/mocks/mock_chat.py` (a chat-completions service that answers from a script, photo
   questions included) and simulated plugs and strips, with `ZB_FAKE_CAMERA` for a photo of a sign
   that tries to switch them, and checks from the devices' side that a change needing a yes waits
-  for one. Use the scripted service for any change to the loop that a live model cannot be
-  trusted to test.
+  for one. `tests/selfheal_chat_e2e.py` does the same for failures: a model that sends a call cut
+  short, a number as a word or a misspelt tool, repeats a failed change, says "done" after a
+  failure or replies with nothing, and a service that answers 503, is overloaded or is lost after
+  tools ran (the script can answer with an HTTP status, an error inside the stream, raw arguments
+  or several calls; a pretend plug can refuse to switch, `{"refuse_set": true}`). Use the scripted
+  service for any change to the loop that a live model cannot be trusted to test.
 
 - **Command-line modes** in `src/main.cpp` (work in the `cli` build):
   `--ask "text"`, `--chat`, `--tool NAME 'JSON'`, `--steer "text"` (inject input during the
@@ -295,6 +330,14 @@ key, real audio), say so plainly rather than implying it was.
 - Give tools the allowed names as an `enum` (smart-home devices) rather than describing them.
 - Text that came from the network or a device (names, descriptions) is untrusted: strip
   control characters, cap the length, pass it as data.
+- Models send `1e300`, `"nan"` and numbers where text was meant. Converting a double that is not
+  finite or not in range to an int is undefined (it crashed `date_info`), so the tools' `num_arg`
+  takes finite values only and `clamp_int` brings them into range first; text arguments accept a
+  number as its digits. Nested brackets overflowed the calculator's stack: recursive parsers need
+  a depth limit.
+- `mktime` makes 31 February into 3 March without a word, and the zone database holds folders
+  named like countries ("Australia") that the C library reads as UTC: `parse_local` and
+  `timezone_exists` refuse both. Check that a date, time or zone exists before using it.
 - nlohmann::json: a function taking `const json &` called with `{x}`, where `x` is already a
   json value, gets a copy of `x`, not a one-element array (nested lists do become arrays). Build
   lists as `std::vector<json>` or `json::array({...})`. It also sorts object keys when dumping.
@@ -304,6 +347,15 @@ key, real audio), say so plainly rather than implying it was.
   dropped. A follow-up now gets a fresh budget, and running out is spoken.
 - Anything "known" about the world goes stale: the calendar refuses one-off events in the past
   because a date said without a year means its next occurrence.
+- The chat call's own retry counted a timeout with no answer yet as "worth another try", so one
+  request could wait 180 s three times. Retries now share one rule (`http::transient`) and one
+  budget (`http::send_retrying`). Whether a request can have reached the peer is `Response::sent`
+  (curl's request size or connect time); curl's pre-transfer time is no guide, it is set for a
+  refused connection too.
+- A model whose call failed tends to send the identical call again, and a change that timed out
+  may have happened: sent twice, a volume step is two steps. The loop does not make a failed call
+  again unchanged until the user has spoken; ask "could this happen twice?" of anything that
+  resends.
 
 **Devices and protocols**
 - Tapo plugs lock out after rejected logins. The transport never retries a rejected login,
@@ -376,12 +428,18 @@ key, real audio), say so plainly rather than implying it was.
 - A multi-agent workflow resumed after an interruption reuses finished steps only when it makes
   the same calls in the same order. To continue with a changed plan, save the finished results to
   a file and start a new run from there.
+- A sandbox does not close what it inherits: `bwrap` handed the app's open descriptors (the
+  framebuffer among them, which LVGL opens without close-on-exec) to the sandboxed Python.
+  `proc::spawn` closes everything above stderr in the child; keep it. Anything slow that a tool
+  starts takes `ctx.cancel` (`proc::run`'s last argument), so ESC stops it.
 
 ## 9. Adding things
 
 **A tool.** In `src/agent/tools.cpp`: write `t_name(const json &, Context &)` returning text or
 JSON for the model (use `fail("...")` for errors, phrased as an instruction about what to do
-next); add it to `build()` with a description written for the model and a compact schema; add
+next); add it to `build()` with a description written for the model and a compact schema (the
+runner checks argument types against it before the tool runs, so the tool keeps only its domain
+rules; a reply that reads from the network uses `fetch_json`, which retries what is safe); add
 it to `kConfirmable` if success is fully known from the arguments. If it needs the screen or
 hardware, add a callback to `tools::Context` and an event in `AgentEvents`, set in
 `Agent::run_turn` and handled in `App::wire_agent` through `uiq::post`. Honour `dry_run()`.
@@ -450,7 +508,11 @@ driver keeps: map only allow-listed types (lights, plugs, switches, thermostats,
 speakers, TVs, scenes, read-only sensors; never locks, garage doors, alarms, cameras, valves or
 cooking appliances); state in the units and keys documented in `home.h`; secrets only in
 `Device::auth` or `secrets()`, never in errors; never retry a rejected code or password, even in
-a later run; honour `Device::port`; deadlines of about 2.5 s for a change and 4 s for listing;
+a later run; no retries of its own of a change (the shared layer resends one only at a device's
+new address, and only when it comes out the same if made twice; `http::send_retrying` is for
+the internet, not for devices); an error for a device that did not answer reads as one ("did not
+answer", "timed out", "could not connect"), which is what makes the layer look for it at a new
+address; honour `Device::port`; deadlines of about 2.5 s for a change and 4 s for listing;
 no threads, sockets or connections of its own between calls; errors are short sentences. Use
 the `http::Request` options (`local`, `timeout_ms`, `insecure`, `pinned_pubkey`, `want_peer_cert`,
 digest, client certificate) and `color.h` rather than private copies. Set `local` on every

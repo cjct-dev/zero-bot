@@ -2,17 +2,20 @@
 # Device-free unit tests: the smart-home layer (store, names, schema, safety rules, locking,
 # pairing, the Tapo driver's refusals, colours), the HTTP options for devices, the timers (the
 # timer tool, storage, the countdown, the alarm and its player), the radio (the station file,
-# the tool, the check of a stream, the player's live mode) and the keys (what each does on the
-# chat screen, and the key guide). Nothing but 127.0.0.1 is contacted, and no AI service, sound
-# or screen is needed.
+# the tool, the check of a stream, the player's live mode), the keys (what each does on the
+# chat screen, and the key guide) and what the other tools stand on (calculator, dates, time
+# zones, helper programs). Nothing but 127.0.0.1 is contacted, and no AI service, sound or screen
+# is needed.
 #
 #   tests/run_unit.sh                   build into build/unit and run
 #   ZB_UPDATE_SNAPSHOTS=1 tests/run_unit.sh    rewrite tests/snapshots/*.json from the current schema
 #   ZB_BUILD_WRAPPER=cmd tests/run_unit.sh     run each compile through cmd (e.g. a lock on a shared machine)
 #
 # When the command-line build exists (build/cli/zero_bot), the timer and radio tools are also run
-# through it, zero_bot --tool timer '{...}', with a fresh, temporary state folder, and the system
-# prompt and tool list are checked to say nothing of radio until stations are listed. CXX picks the compiler
+# through it, zero_bot --tool timer '{...}', with a fresh, temporary state folder, the system
+# prompt and tool list are checked to say nothing of radio until stations are listed, and so are
+# the other tools that need no network (tests/tools_cli.py: good, wrong and hostile arguments).
+# CXX picks the compiler
 # (default g++). Exits non-zero when anything fails.
 set -eu
 cd "$(dirname "$0")/.."
@@ -35,14 +38,16 @@ APP="src/smarthome/store.cpp src/smarthome/targets.cpp src/smarthome/control.cpp
 TIMERS="src/core/timers.cpp src/core/store.cpp src/platform/audio.cpp"
 # The radio needs these on top of the smart-home objects (for its name cleaning) and audio.cpp.
 RADIO="src/core/radio.cpp src/core/tether.cpp"
+# The tools' foundations need only the calculator, with util.cpp and proc.cpp from above.
+TOOLS="src/agent/calc.cpp"
 
 obj_of() { echo "$OUT/$(echo "$1" | tr '/' '_' | sed 's/\.cpp$/.o/')"; }
 
 # Objects are rebuilt only when their source or a header in src/ is newer.
 newest_header=$(find src -name '*.h' -newer "$OUT/.stamp" 2>/dev/null | head -n 1 || true)
-for src in $APP $TIMERS $RADIO tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp \
-           tests/unit/radio_test.cpp tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp \
-           tests/unit/hue_test.cpp tests/unit/hue_cli.cpp \
+for src in $APP $TIMERS $RADIO $TOOLS tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp \
+           tests/unit/radio_test.cpp tests/unit/tools_test.cpp tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp \
+           tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp tests/unit/hue_test.cpp tests/unit/hue_cli.cpp \
            src/ui/key_guide.cpp tests/unit/key_guide_test.cpp; do
     obj=$(obj_of "$src")
     if [ ! -f "$obj" ] || [ "$src" -nt "$obj" ] || [ -n "$newest_header" ]; then
@@ -61,6 +66,8 @@ $WRAP $CXX -o "$OUT/timers_test" "$OUT/tests_unit_timers_test.o" $timer_objs -lp
 radio_objs="$(obj_of src/platform/audio.cpp)"
 for src in $RADIO; do radio_objs="$radio_objs $(obj_of "$src")"; done
 $WRAP $CXX -o "$OUT/radio_test" "$OUT/tests_unit_radio_test.o" $radio_objs $objs -lcurl -lcrypto -lpthread
+$WRAP $CXX -o "$OUT/tools_test" "$OUT/tests_unit_tools_test.o" "$(obj_of src/agent/calc.cpp)" "$(obj_of src/core/util.cpp)" \
+    "$(obj_of src/platform/proc.cpp)" -lpthread
 # The Fire TV driver's own tests; firetv_cli is what tests/firetv_e2e.py drives against its mock.
 $WRAP $CXX -o "$OUT/firetv_test" "$OUT/tests_unit_firetv_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/firetv_cli" "$OUT/tests_unit_firetv_cli.o" $objs -lcurl -lcrypto -lpthread
@@ -89,6 +96,9 @@ echo "=== keys"
 
 echo "=== radio"
 TMPDIR="$state" python3 -I tests/unit/radio_peer.py "$OUT/radio_test" || failed=1
+
+echo "=== tools: calculator, dates, time zones, helper programs"
+TZ=UTC "$OUT/tools_test" "$state" || failed=1
 
 echo "=== timers"
 # As someone would run the binary by hand: no XDG folders set, and a home that holds data of its
@@ -196,4 +206,7 @@ radio_expect "a phone's connection" "$(ZB_TEST_TETHER=1 in_radio_state "$cli" --
 radio_expect "stop" "$(in_radio_state "$cli" --tool radio '{"action":"stop"}')" 'radio stopped'
 echo "radio through the command-line build: $passed passed, $radio_failed failed"
 [ "$radio_failed" -eq 0 ] || failed=1
+
+echo "=== the other tools that need no network, through the command-line build"
+python3 -I tests/tools_cli.py "$cli" || failed=1
 exit $failed

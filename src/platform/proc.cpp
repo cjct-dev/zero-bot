@@ -9,10 +9,20 @@
 #include <poll.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 namespace proc {
+
+// In the child, between fork and exec: close every descriptor from `lowest` up. Only system calls
+// here (the parent has other threads, so nothing that might take a lock).
+static void close_from(int lowest) {
+#ifdef SYS_close_range
+    if (syscall(SYS_close_range, static_cast<unsigned>(lowest), ~0U, 0U) == 0) return;
+#endif
+    for (int fd = lowest; fd < 4096; ++fd) close(fd);
+}
 
 Child spawn(const std::vector<std::string> &argv, bool pipe_in, bool pipe_out, bool merge_err, bool die_with_parent) {
     Child c;
@@ -45,6 +55,11 @@ Child spawn(const std::vector<std::string> &argv, bool pipe_in, bool pipe_out, b
         dup2(pipe_in ? in_pipe[0] : devnull, STDIN_FILENO);
         dup2(pipe_out ? out_pipe[1] : devnull, STDOUT_FILENO);
         dup2(merge_err && pipe_out ? out_pipe[1] : devnull, STDERR_FILENO);
+        // Many descriptors are opened without close-on-exec (the graphics library's framebuffer,
+        // files read with streams, possibly sockets kept alive for the next request), and a
+        // sandbox does not close what it inherits: the sandboxed Python could otherwise write to
+        // the screen or to a device's open connection. The child gets its three standard streams.
+        close_from(3);
         signal(SIGPIPE, SIG_DFL);
         execvp(args[0], args.data());
         _exit(127);
@@ -109,8 +124,9 @@ void stop(Child &c, int sig) {
 }
 
 Result run(const std::vector<std::string> &argv, const std::string &input, int timeout_ms, size_t max_out,
-           bool merge_err) {
+           bool merge_err, const std::atomic<bool> *cancel) {
     Result res;
+    if (cancel && *cancel) { res.cancelled = true; return res; }
     Child c = spawn(argv, !input.empty(), true, merge_err);
     if (!c.running()) return res;
     if (c.in >= 0) {
@@ -125,20 +141,37 @@ Result run(const std::vector<std::string> &argv, const std::string &input, int t
     }
     using clock = std::chrono::steady_clock;
     const auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
+    auto left_ms = [&] { return std::chrono::duration_cast<std::chrono::milliseconds>(deadline - clock::now()).count(); };
+    // With a cancel flag, wait in short slices so that it is seen promptly.
+    auto slice = [&](long long left) { return static_cast<int>(cancel ? std::min<long long>(left, 50) : left); };
     char buf[4096];
     for (;;) {
-        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - clock::now()).count();
+        if (cancel && *cancel) { res.cancelled = true; break; }
+        const long long left = left_ms();
         if (left <= 0) { res.timed_out = true; break; }
         pollfd pfd{c.out, POLLIN, 0};
-        int r = poll(&pfd, 1, static_cast<int>(left));
+        int r = poll(&pfd, 1, slice(left));
         if (r < 0) { if (errno == EINTR) continue; break; }
-        if (r == 0) { res.timed_out = true; break; }
+        if (r == 0) continue;
         ssize_t n = read(c.out, buf, sizeof(buf));
         if (n <= 0) break;
-        if (res.out.size() < max_out) res.out.append(buf, std::min(static_cast<size_t>(n), max_out - res.out.size()));
+        const size_t room = max_out - std::min(max_out, res.out.size());
+        if (static_cast<size_t>(n) > room) res.truncated = true;
+        res.out.append(buf, std::min(static_cast<size_t>(n), room));
     }
-    if (res.timed_out) { stop(c, SIGKILL); res.code = -1; }
-    else res.code = wait(c);
+    // The output has ended, but a program that closed it can still be running: the wait for it
+    // to end has the same deadline and the same cancel flag.
+    while (!res.timed_out && !res.cancelled && c.running()) {
+        int status = 0;
+        const pid_t r = waitpid(c.pid, &status, WNOHANG);
+        if (r == c.pid) { c.pid = -1; close_fds(c); res.code = decode(status); return res; }
+        if (r < 0 && errno != EINTR) { c.pid = -1; close_fds(c); return res; }
+        if (cancel && *cancel) { res.cancelled = true; break; }
+        if (left_ms() <= 0) { res.timed_out = true; break; }
+        usleep(10 * 1000);
+    }
+    stop(c, SIGKILL);
+    res.code = -1;
     return res;
 }
 

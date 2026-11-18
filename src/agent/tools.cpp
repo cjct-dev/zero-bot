@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <random>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "agent/calc.h"
@@ -33,20 +34,77 @@ using util::jget;
 
 bool dry_run() { return getenv("ZB_DRY_RUN") != nullptr; }
 
-std::string str_arg(const json &a, const char *key) { return util::trim(jget(a, key, std::string())); }
+// Text arguments. A number sent where text was expected is taken as its digits, so that a date
+// sent as 20261225 is refused as a date instead of being read as no date at all (which meant
+// today), and a TV key sent as 5 is the key "5".
+std::string str_arg(const json &a, const char *key) {
+    const auto it = a.find(key);
+    if (it == a.end() || it->is_null()) return "";
+    if (it->is_string()) return util::trim(it->get<std::string>());
+    if (it->is_number()) return it->dump();
+    return "";
+}
 
-// Models sometimes send numbers as strings; accept both.
+bool given(const json &a, const char *key) {
+    const auto it = a.find(key);
+    return it != a.end() && !it->is_null();
+}
+
+// Models sometimes send numbers as strings; accept both. Only finite numbers count: "nan" and
+// "inf" parse as numbers, and converting them (or 1e300) to a whole number is undefined.
 bool num_arg(const json &a, const char *key, double &out) {
     auto it = a.find(key);
     if (it == a.end() || it->is_null()) return false;
-    if (it->is_number()) { out = it->get<double>(); return true; }
+    if (it->is_number()) { out = it->get<double>(); return std::isfinite(out); }
     if (it->is_string()) {
         char *end = nullptr;
         const std::string s = it->get<std::string>();
         out = strtod(s.c_str(), &end);
-        return end != s.c_str();
+        return end != s.c_str() && std::isfinite(out);
     }
     return false;
+}
+
+// A finite value brought into [lo, hi] before it becomes an int.
+int clamp_int(double v, int lo, int hi) {
+    if (!(v > lo)) return lo;
+    if (v >= hi) return hi;
+    return static_cast<int>(v);
+}
+
+// An id from an earlier result. A missing id and one that is not a number get different answers,
+// so that the model looks the id up instead of sending the same thing again.
+bool id_arg(const json &a, const char *key, int &id, std::string &err, const std::string &where) {
+    double v = 0;
+    if (!given(a, key)) { err = std::string(key) + " is required; " + where; return false; }
+    if (!num_arg(a, key, v) || v != std::floor(v) || v < 1 || v > 1e9) {
+        err = std::string(key) + " must be a whole number such as 12; " + where;
+        return false;
+    }
+    id = static_cast<int>(v);
+    return true;
+}
+
+// Text that is kept and shown again (titles, notes, reminders, memories): control characters, line
+// breaks included, become single spaces. Memories go into the instructions of every later
+// request, where a line break could pass for a heading or an entry of its own.
+std::string clean_text(const std::string &raw) {
+    std::string s;
+    for (char c : raw) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (u < 0x20 || u == 0x7f) c = ' ';
+        if (c == ' ' && (s.empty() || s.back() == ' ')) continue;
+        s += c;
+    }
+    return util::trim(s);
+}
+
+// The error for a date or time that is malformed or not real (31 February, 25:00), with what
+// was sent, so the model can see which part to change.
+std::string bad_time(const std::string &field, const std::string &sent, bool date_only = false) {
+    return field + " must be a real " +
+           (date_only ? std::string("date written like 2026-03-14") : std::string("date and time written like 2026-03-14 18:30 (24-hour clock)")) +
+           (sent.empty() ? "" : "; '" + util::truncate_utf8(sent, 40) + "' is not one");
 }
 
 bool bool_arg(const json &a, const char *key, bool fallback) {
@@ -57,6 +115,8 @@ bool bool_arg(const json &a, const char *key, bool fallback) {
     return fallback;
 }
 
+// Every caller reads (a forecast, a rate, a price, a place, a search), so a request that failed on
+// the way is sent once more after half a second, inside the same 20 seconds.
 json fetch_json(const std::string &url, std::string &err, Context &ctx, const std::vector<std::string> &headers = {},
                 const std::string &post_body = "") {
     http::Request req;
@@ -65,8 +125,21 @@ json fetch_json(const std::string &url, std::string &err, Context &ctx, const st
     req.timeout_s = 20;
     req.cancel = ctx.cancel;
     if (!post_body.empty()) { req.method = "POST"; req.body = post_body; }
-    const http::Response res = http::send(req);
-    if (!res.ok()) { err = res.error == "no connection" ? "no internet connection" : res.describe(); return json(); }
+    http::Retry retry;
+    retry.attempts = 2;
+    retry.budget_ms = req.timeout_s * 1000;
+    const http::Response res = http::send_retrying(req, retry);
+    if (!res.ok()) {
+        if (res.error == "no connection") err = "no internet connection";
+        else if (!res.error.empty()) err = res.error;
+        else {
+            // An error page is HTML, which says nothing the model can use; a JSON or plain answer may.
+            const std::string body = util::trim(res.body);
+            err = "the service answered with an error (HTTP " + std::to_string(res.status) + ")";
+            if (!body.empty() && body[0] != '<') err += ": " + clean_text(util::truncate_utf8(body, 160));
+        }
+        return json();
+    }
     json j = json::parse(res.body, nullptr, false);
     if (j.is_discarded()) { err = "unexpected reply from the service"; return json(); }
     return j;
@@ -110,8 +183,12 @@ bool geocode(const std::string &query, Place &out, std::string &err, Context &ct
     for (char &c : name)
         if (c == ',') c = ' ';
     name = util::trim(name);
-    for (size_t cut = name.rfind(' '); (!j.contains("results") || j["results"].empty()) && cut != std::string::npos && cut > 0;
-         cut = name.rfind(' ', cut - 1)) {
+    // A region is a word or three ("new south wales"); a long string of words would otherwise cost
+    // one more request per word.
+    int tries = 0;
+    for (size_t cut = name.rfind(' '); (!j.contains("results") || j["results"].empty()) && cut != std::string::npos && cut > 0 &&
+                                       tries < 3;
+         cut = name.rfind(' ', cut - 1), ++tries) {
         const std::string region = util::trim(name.substr(cut + 1));
         j = fetch_json(base + "8&name=" + http::url_encode(util::trim(name.substr(0, cut))), err, ctx);
         if (!err.empty()) return false;
@@ -126,8 +203,9 @@ bool geocode(const std::string &query, Place &out, std::string &err, Context &ct
         return false;
     }
     const json &r = j["results"][pick];
-    out.name = jget(r, "name", query);
-    out.country = jget(r, "country", std::string());
+    // Names from the network are data for the model: no control characters, and short.
+    out.name = util::truncate_utf8(clean_text(jget(r, "name", query)), 80);
+    out.country = util::truncate_utf8(clean_text(jget(r, "country", std::string())), 60);
     out.timezone = jget(r, "timezone", std::string());
     out.lat = jget(r, "latitude", 0.0);
     out.lon = jget(r, "longitude", 0.0);
@@ -182,9 +260,9 @@ std::string t_calculator(const json &a, Context &) {
     return calc::format(value);
 }
 
-std::string t_python(const json &a, Context &) {
+std::string t_python(const json &a, Context &ctx) {
     const std::string code = jget(a, "code", std::string());
-    if (util::trim(code).empty()) return fail("code is required");
+    if (util::trim(code).empty()) return fail("code is required: complete Python source as text");
     if (!proc::have("bwrap")) return fail("the Python sandbox is not available on this device");
     // No network, no access to user files, a throw-away /tmp, and limits on time and memory.
     std::vector<std::string> argv = {"bwrap", "--unshare-all", "--die-with-parent", "--new-session",
@@ -195,11 +273,20 @@ std::string t_python(const json &a, Context &) {
     if (access("/usr/lib64", F_OK) == 0) { argv.insert(argv.end(), {"--symlink", "usr/lib64", "/lib64"}); }
     if (access("/etc/ld.so.cache", R_OK) == 0)
         argv.insert(argv.end(), {"--ro-bind", "/etc/ld.so.cache", "/etc/ld.so.cache"});
-    argv.insert(argv.end(), {"sh", "-c", "ulimit -v 400000 2>/dev/null; exec python3 -I -"});
-    const proc::Result res = proc::run(argv, code, 20000, 6000, true);
+    // 200 MB of address space: several times what Python with its common modules needs (under
+    // 30 MB measured on a PC), and
+    // well short of the device's memory (about 350 MB, shared with everything else), so a runaway
+    // list ends in a MemoryError rather than pushing the whole device into swap.
+    argv.insert(argv.end(), {"sh", "-c", "ulimit -v 200000 2>/dev/null; exec python3 -I -"});
+    const proc::Result res = proc::run(argv, code, 20000, 6000, true, ctx.cancel);
     std::string out = util::sanitize_utf8(util::trim(res.out));
+    if (res.cancelled) return fail("stopped: the user cancelled the request");
+    if (res.truncated) out += "\n(output cut short after 6000 bytes; print less, e.g. a summary or the first lines)";
     if (res.timed_out) return fail("the code ran for more than 20 seconds and was stopped." + (out.empty() ? "" : " Output so far:\n" + out));
-    if (res.code != 0) return "ERROR (exit code " + std::to_string(res.code) + "):\n" + (out.empty() ? "(no output)" : out);
+    if (res.code != 0)
+        return fail("the code stopped with an error (exit code " + std::to_string(res.code) +
+                    "). Fix it and run it again, or tell the user it could not be worked out. Its output:\n" +
+                    (out.empty() ? "(no output)" : out));
     return out.empty() ? "(the code ran but printed nothing; use print() to see a result)" : out;
 }
 
@@ -228,7 +315,7 @@ void civil_from_days(long z, int &y, int &m, int &d) {
 
 bool parse_day(const std::string &text, long &days) {
     int y = 0, m = 0, d = 0;
-    if (sscanf(text.c_str(), "%d-%d-%d", &y, &m, &d) != 3 || y < 1 || m < 1 || m > 12 || d < 1 || d > 31) return false;
+    if (sscanf(text.c_str(), "%d-%d-%d", &y, &m, &d) != 3 || y < 1 || y > 9999 || m < 1 || m > 12 || d < 1 || d > 31) return false;
     days = days_from_civil(y, m, d);
     int cy, cm, cd;
     civil_from_days(days, cy, cm, cd);
@@ -251,10 +338,14 @@ std::string t_date_info(const json &a, Context &) {
     parse_day(util::format_time(time(nullptr), "%Y-%m-%d"), today);
     long day = today;
     const std::string date = str_arg(a, "date");
-    if (!date.empty() && !parse_day(date, day)) return fail("date must be a real date written as YYYY-MM-DD");
+    if (!date.empty() && !parse_day(date, day)) return fail(bad_time("date", date, true));
     double add = 0;
-    const bool shifted = num_arg(a, "add_days", add) && add != 0;
-    if (shifted) day += static_cast<long>(std::llround(add));
+    if (given(a, "add_days")) {
+        if (!num_arg(a, "add_days", add)) return fail("add_days must be a number of days, such as 30 or -7");
+        // Far enough for any question; beyond it the calendar arithmetic would overflow.
+        if (std::fabs(add) > 1e6) return fail("add_days must be within a million days either way");
+        day += static_cast<long>(std::llround(add));
+    }
     json out = {{"date", day_text(day)}, {"today", day_text(today)}};
     const long diff = day - today;
     if (diff == 0) out["days_from_today"] = "0 (it is today)";
@@ -277,8 +368,9 @@ std::string t_look(const json &a, Context &ctx) {
     // still plenty to read a sign or menu, at about a third of the bytes.
     const bool slow_link = tether::via_phone();
     const bool flip = Settings::get().camera_flip;
-    std::string err = slow_link ? camera::capture(path, 960, 720, flip) : camera::capture(path, 1280, 960, flip);
-    if (!err.empty()) return fail(err);
+    std::string err = slow_link ? camera::capture(path, 960, 720, flip, ctx.cancel) : camera::capture(path, 1280, 960, flip, ctx.cancel);
+    if (ctx.cancel && *ctx.cancel) return fail("stopped: the user cancelled the request");
+    if (!err.empty()) return fail(err + ". Tell the user; do not describe a photo");
     if (ctx.on_image) ctx.on_image(path);
     std::string jpeg;
     if (!util::read_file(path, jpeg)) return fail("could not read the photo");
@@ -340,12 +432,53 @@ json event_json(const CalEvent &e) {
     return j;
 }
 
+// Titles and notes are kept short enough to show on the screen and in an alert.
+constexpr size_t kMaxTitle = 120, kMaxNotes = 1000;
+constexpr double kMaxRemindMinutes = 366.0 * 24 * 60;
+
+// Title, notes and alert lead time, shared by add and update. Only what is given is changed.
+bool event_text_args(const json &a, CalEvent &e, std::string &err) {
+    if (given(a, "title")) {
+        const std::string title = clean_text(str_arg(a, "title"));
+        if (title.size() > kMaxTitle) { err = "title must be under 120 characters; put the details in notes"; return false; }
+        if (!title.empty()) e.title = title;
+    }
+    if (a.contains("notes")) {
+        e.notes = clean_text(str_arg(a, "notes"));
+        if (e.notes.size() > kMaxNotes) { err = "notes must be under 1000 characters; keep only what the user will need"; return false; }
+    }
+    if (given(a, "remind_minutes_before")) {
+        double remind;
+        if (!num_arg(a, "remind_minutes_before", remind))
+            { err = "remind_minutes_before must be a number of minutes, such as 30 (or -1 for no alert)"; return false; }
+        if (remind > kMaxRemindMinutes) { err = "remind_minutes_before must be at most a year (527040 minutes)"; return false; }
+        e.remind_min = remind < 0 ? -1 : static_cast<int>(remind);
+    }
+    return true;
+}
+
+// A one-off event in the past is refused: a year-less date ("the 3rd of April") that has gone by
+// this year is the commonest slip. A repeating event may start in the past: a birthday is entered
+// with its birth year.
+bool in_the_past(const CalEvent &e) {
+    return e.repeat.empty() && e.start < (e.all_day ? day_start(time(nullptr)) : time(nullptr) - 12 * 3600);
+}
+
+std::string past_error() {
+    return fail("that start is in the past; now is " + util::iso_local(time(nullptr)) +
+                ". A date said without a year means the next time it comes round: call again with the "
+                "right year. If the user really means a day that has gone, say the calendar only takes "
+                "coming events");
+}
+
 std::string t_calendar_add(const json &a, Context &) {
     CalEvent e;
-    e.title = str_arg(a, "title");
-    if (e.title.empty()) return fail("title is required");
-    if (!util::parse_local(str_arg(a, "start"), e.start)) return fail("start must look like 2026-03-14 18:30");
     std::string err;
+    if (clean_text(str_arg(a, "title")).empty()) return fail("title is required: a short name for the event");
+    if (!event_text_args(a, e, err)) return fail(err);
+    const std::string start = str_arg(a, "start");
+    if (start.empty()) return fail("start is required: the day, and the time unless it is an all-day event");
+    if (!util::parse_local(start, e.start)) return fail(bad_time("start", start));
     if (!repeat_arg(a, e.repeat, err)) return fail(err);
     e.all_day = bool_arg(a, "all_day", false);
     if (e.all_day) e.start = day_start(e.start);
@@ -358,19 +491,11 @@ std::string t_calendar_add(const json &a, Context &) {
         e.start = util::make_local(year, f.month, std::min(f.day, util::days_in_month(year, f.month)), f.hour, f.minute);
     }
     const std::string end = str_arg(a, "end");
-    if (!end.empty() && !util::parse_local(end, e.end)) return fail("end must look like 2026-03-14 19:30");
+    if (!end.empty() && !util::parse_local(end, e.end)) return fail(bad_time("end", end));
     if (e.end && e.end < e.start) return fail("end is before start");
-    // A year-less date ("the 3rd of April") that has gone by this year is the commonest slip. A
-    // repeating event may start in the past: a birthday is entered with its birth year.
-    if (e.repeat.empty() && e.start < (e.all_day ? day_start(time(nullptr)) : time(nullptr) - 12 * 3600))
-        return fail("that start is in the past; now is " + util::iso_local(time(nullptr)) +
-                    ". A date said without a year means the next time it comes round: call again with the "
-                    "right year. If the user really means a day that has gone, say the calendar only takes "
-                    "coming events");
-    e.notes = str_arg(a, "notes");
-    double remind;
-    if (num_arg(a, "remind_minutes_before", remind)) { if (remind >= 0) e.remind_min = static_cast<int>(remind); }
-    else if (e.all_day && e.repeat == "yearly") e.remind_min = 0;   // a birthday nobody is told about is no use
+    if (in_the_past(e)) return past_error();
+    if (!given(a, "remind_minutes_before") && e.all_day && e.repeat == "yearly")
+        e.remind_min = 0;   // a birthday nobody is told about is no use
     e.id = Store::get().add_event(e);
     e.created = time(nullptr);
     return json{{"saved", event_json(e)}}.dump();
@@ -389,14 +514,19 @@ std::string t_calendar_list(const json &a, Context &) {
     const std::string search = plain_words(str_arg(a, "search"));
     time_t from = time(nullptr) - 3600, to = from + 14 * 86400;
     const std::string f = str_arg(a, "from"), t = str_arg(a, "to");
-    if (!f.empty() && !util::parse_local(f, from)) return fail("from must look like 2026-03-14");
+    if (!f.empty() && !util::parse_local(f, from)) return fail(bad_time("from", f, true));
     if (!t.empty()) {
-        if (!util::parse_local(t, to)) return fail("to must look like 2026-03-21");
+        if (!util::parse_local(t, to)) return fail(bad_time("to", t, true));
         if (t.size() <= 10) to = util::add_local_days(to, 1);  // a bare date means "through the end of that day"
     } else if (!f.empty()) to = from + 14 * 86400;
     else if (!search.empty()) to = from + 366 * 86400;   // a name can be looked for a whole year ahead
+    if (to <= from) return fail("to is before from; give the earlier day as from");
+    // Every result stays in the conversation and is sent with each later request, so a long range
+    // (or a daily event over a year) is cut short with a note rather than sent whole.
+    constexpr size_t kMaxListed = 40;
     json arr = json::array();
     std::vector<int> seen;
+    size_t more = 0;
     for (auto &e : Store::get().events_between(from, to)) {
         if (!search.empty()) {
             // Every word asked for has to appear; a repeating event is reported once, at its next time.
@@ -407,43 +537,45 @@ std::string t_calendar_list(const json &a, Context &) {
             if (!match || std::find(seen.begin(), seen.end(), e.id) != seen.end()) continue;
             seen.push_back(e.id);
         }
+        if (arr.size() >= kMaxListed) { ++more; continue; }
         arr.push_back(event_json(e));
     }
     json out = {{"from", util::format_time(from, "%Y-%m-%d")}, {"to", util::format_time(to - 1, "%Y-%m-%d")}, {"events", arr}};
     if (!search.empty() && arr.empty()) out["note"] = "nothing on the calendar matches; try fewer or other words before saying it is not there";
-    return out.dump();
+    if (more) out["note"] = std::to_string(more) + " more events in this range are not listed; ask about a shorter range to see them";
+    return out.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
 std::string t_calendar_update(const json &a, Context &) {
-    double idv;
-    if (!num_arg(a, "id", idv)) return fail("id is required; use calendar_list to find it");
+    int id = 0;
+    std::string err;
+    if (!id_arg(a, "id", id, err, "use calendar_list to find it")) return fail(err);
     for (auto e : Store::get().events()) {
-        if (e.id != static_cast<int>(idv)) continue;
-        const std::string title = str_arg(a, "title"), start = str_arg(a, "start"), end = str_arg(a, "end");
-        if (!title.empty()) e.title = title;
+        if (e.id != id) continue;
+        const std::string start = str_arg(a, "start"), end = str_arg(a, "end");
+        if (!event_text_args(a, e, err)) return fail(err);
+        const time_t old_start = e.start;
         if (!start.empty()) {
-            const time_t old = e.start;
-            if (!util::parse_local(start, e.start)) return fail("start must look like 2026-03-14 18:30");
-            if (e.end && end.empty()) e.end += e.start - old;  // keep the duration when moving
+            if (!util::parse_local(start, e.start)) return fail(bad_time("start", start));
+            if (e.end && end.empty()) e.end += e.start - old_start;  // keep the duration when moving
         }
-        if (!end.empty() && !util::parse_local(end, e.end)) return fail("end must look like 2026-03-14 19:30");
-        if (a.contains("notes")) e.notes = str_arg(a, "notes");
-        double remind;
-        if (num_arg(a, "remind_minutes_before", remind)) e.remind_min = remind < 0 ? -1 : static_cast<int>(remind);
-        std::string err;
+        if (!end.empty() && !util::parse_local(end, e.end)) return fail(bad_time("end", end));
         if (!repeat_arg(a, e.repeat, err)) return fail(err);
         if (a.contains("all_day")) e.all_day = bool_arg(a, "all_day", e.all_day);
         if (e.all_day) { e.start = day_start(e.start); e.end = 0; }
-        Store::get().update_event(e);
+        if (e.end && e.end < e.start) return fail("end is before start");
+        if (e.start != old_start && in_the_past(e)) return past_error();
+        if (!Store::get().update_event(e)) return fail("that event has just been deleted; nothing was changed");
         return json{{"updated", event_json(e)}}.dump();
     }
-    return fail("no event with that id");
+    return fail("no event has id " + std::to_string(id) + "; use calendar_list to find it");
 }
 
 std::string t_calendar_delete(const json &a, Context &) {
-    double idv;
-    if (!num_arg(a, "id", idv)) return fail("id is required; use calendar_list to find it");
-    return Store::get().delete_event(static_cast<int>(idv)) ? "deleted" : fail("no event with that id");
+    int id = 0;
+    std::string err;
+    if (!id_arg(a, "id", id, err, "use calendar_list to find it")) return fail(err);
+    return Store::get().delete_event(id) ? "deleted" : fail("no event has id " + std::to_string(id) + "; use calendar_list to find it");
 }
 
 // ---------------------------------------------------------------- timers
@@ -452,49 +584,67 @@ std::string t_timer(const json &a, Context &) { return timers::run_tool(a); }
 
 // ---------------------------------------------------------------- reminders
 std::string t_reminder_set(const json &a, Context &) {
-    const std::string text = str_arg(a, "text");
+    const std::string text = clean_text(str_arg(a, "text"));
+    if (text.empty()) return fail("text is required: the words to say when the reminder goes off");
+    if (text.size() > 300) return fail("text must be under 300 characters");
     time_t due = 0;
     double minutes;
     const std::string at = str_arg(a, "at");
-    if (num_arg(a, "in_minutes", minutes) && minutes > 0) due = time(nullptr) + static_cast<time_t>(minutes * 60);
-    else if (!at.empty()) {
-        if (!util::parse_local(at, due)) return fail("at must look like 2026-03-14 18:30");
-    } else return fail("give either in_minutes or at");
+    if (num_arg(a, "in_minutes", minutes) && minutes > 0) {
+        if (minutes > 366.0 * 24 * 60) return fail("in_minutes must be within a year; for a set day give at instead");
+        due = time(nullptr) + static_cast<time_t>(std::llround(minutes * 60));
+    } else if (!at.empty()) {
+        if (!util::parse_local(at, due)) return fail(bad_time("at", at));
+        // A date alone would go off at midnight, when nobody wants to be reminded of anything.
+        if (at.find(':') == std::string::npos)
+            return fail("at needs a clock time as well as the day (YYYY-MM-DD HH:MM). If the user gave no time, ask what time");
+    } else if (given(a, "in_minutes")) {
+        return fail("in_minutes must be a number of minutes from now, more than 0");
+    } else return fail("give either in_minutes or at. If the user gave no time at all, ask when");
     if (due <= time(nullptr)) return fail("that time is in the past; the current time is " + util::iso_local(time(nullptr)));
     const int id = Store::get().add_reminder(text, due);
-    return json{{"set", true}, {"id", id}, {"due", util::format_time(due, "%A %Y-%m-%d %H:%M:%S")}, {"text", text}}.dump();
+    return json{{"set", true}, {"id", id}, {"due", util::format_time(due, "%A %Y-%m-%d %H:%M:%S")}, {"text", text}}
+        .dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
 std::string t_reminder_list(const json &, Context &) {
     json arr = json::array();
     for (auto &r : Store::get().reminders())
         arr.push_back({{"id", r.id}, {"due", util::format_time(r.due, "%Y-%m-%d %H:%M")}, {"text", r.text}});
-    return json{{"reminders", arr}}.dump();
+    return json{{"reminders", arr}}.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
 std::string t_reminder_cancel(const json &a, Context &) {
-    double idv;
-    if (!num_arg(a, "id", idv)) return fail("id is required; use reminder_list to find it");
-    return Store::get().delete_reminder(static_cast<int>(idv)) ? "cancelled" : fail("no reminder with that id");
+    int id = 0;
+    std::string err;
+    if (!id_arg(a, "id", id, err, "use reminder_list to find it")) return fail(err);
+    return Store::get().delete_reminder(id) ? "cancelled"
+                                            : fail("no reminder has id " + std::to_string(id) + "; use reminder_list to find it (timers are cancelled with timer)");
 }
 
 // ---------------------------------------------------------------- memory
 std::string t_memory_save(const json &a, Context &) {
-    const std::string text = str_arg(a, "text");
-    if (text.empty()) return fail("text is required");
+    const std::string text = clean_text(str_arg(a, "text"));
+    if (text.empty()) return fail("text is required: the fact to remember");
     if (text.size() > 400) return fail("keep each memory under 400 characters");
-    double idv;
-    if (num_arg(a, "replace_id", idv)) {
-        if (!Store::get().update_memory(static_cast<int>(idv), text)) return fail("no memory with that id");
-        return "updated memory " + std::to_string(static_cast<int>(idv));
+    if (given(a, "replace_id")) {
+        int id = 0;
+        std::string err;
+        if (!id_arg(a, "replace_id", id, err, "memory ids are listed in your instructions")) return fail(err);
+        if (!Store::get().update_memory(id, text)) return fail("no memory has id " + std::to_string(id) + "; memory ids are listed in your instructions");
+        return "updated memory " + std::to_string(id);
     }
+    // The same fact twice would only fill the instructions; say where it already is.
+    for (const auto &m : Store::get().memories())
+        if (util::lower(m.text) == util::lower(text)) return "already saved as memory " + std::to_string(m.id);
     return "saved as memory " + std::to_string(Store::get().add_memory(text));
 }
 
 std::string t_memory_delete(const json &a, Context &) {
-    double idv;
-    if (!num_arg(a, "id", idv)) return fail("id is required; memory ids are listed in your instructions");
-    return Store::get().delete_memory(static_cast<int>(idv)) ? "deleted" : fail("no memory with that id");
+    int id = 0;
+    std::string err;
+    if (!id_arg(a, "id", id, err, "memory ids are listed in your instructions")) return fail(err);
+    return Store::get().delete_memory(id) ? "deleted" : fail("no memory has id " + std::to_string(id) + "; memory ids are listed in your instructions");
 }
 
 // ---------------------------------------------------------------- web
@@ -516,8 +666,8 @@ std::string t_web_search(const json &a, Context &ctx) {
     json results = json::array();
     if (j.contains("results") && j["results"].is_array()) {
         for (const json &r : j["results"]) {
-            results.push_back({{"title", jget(r, "title", std::string())},
-                               {"source", jget(r, "url", std::string())},
+            results.push_back({{"title", util::truncate_utf8(clean_text(jget(r, "title", std::string())), 200)},
+                               {"source", util::truncate_utf8(jget(r, "url", std::string()), 300)},
                                {"text", util::truncate_utf8(jget(r, "content", std::string()), 500)}});
             if (results.size() >= 4) break;
         }
@@ -534,7 +684,7 @@ std::string t_weather(const json &a, Context &ctx) {
     if (where.empty()) return fail("no location given and no home city is set; ask the user where they are");
     double days_d = 3;
     num_arg(a, "days", days_d);
-    const int days = std::max(1, std::min(7, static_cast<int>(days_d)));
+    const int days = clamp_int(days_d, 1, 7);
     Place p;
     std::string err;
     if (!geocode(where, p, err, ctx, country)) return fail(err);
@@ -576,16 +726,21 @@ std::string t_weather(const json &a, Context &ctx) {
 
 std::string t_currency(const json &a, Context &ctx) {
     double amount = 1;
-    num_arg(a, "amount", amount);
+    if (given(a, "amount") && !num_arg(a, "amount", amount)) return fail("amount must be a number, such as 25 or 12.50");
     std::string from = str_arg(a, "from"), to = str_arg(a, "to");
     std::transform(from.begin(), from.end(), from.begin(), ::toupper);
     std::transform(to.begin(), to.end(), to.begin(), ::toupper);
-    if (from.size() != 3 || to.size() != 3) return fail("from and to must be 3-letter currency codes such as GBP, EUR, JPY");
+    // The code goes into the service's address, so only three letters will do.
+    auto code = [](const std::string &c) {
+        return c.size() == 3 && std::all_of(c.begin(), c.end(), [](char x) { return x >= 'A' && x <= 'Z'; });
+    };
+    if (!code(from) || !code(to)) return fail("from and to must be 3-letter currency codes such as GBP, EUR, JPY");
     std::string err;
     const json j = fetch_json("https://open.er-api.com/v6/latest/" + from, err, ctx);
     if (!err.empty()) return fail(err);
-    if (jget(j, "result", std::string()) != "success" || !j.contains("rates") || !j["rates"].contains(to))
-        return fail("no exchange rate available for " + from + " to " + to);
+    if (jget(j, "result", std::string()) != "success" || !j.contains("rates") || !j["rates"].is_object() ||
+        !j["rates"].contains(to) || !j["rates"][to].is_number())
+        return fail("no exchange rate available for " + from + " to " + to + "; check both are real currency codes");
     const double rate = j["rates"][to].get<double>();
     return json{{"amount", amount}, {"from", from}, {"to", to}, {"rate", rate},
                 {"result", fmt_money(amount * rate) + " " + to},
@@ -593,7 +748,7 @@ std::string t_currency(const json &a, Context &ctx) {
 }
 
 std::string t_stock(const json &a, Context &ctx) {
-    std::string symbol = str_arg(a, "symbol");
+    std::string symbol = util::truncate_utf8(str_arg(a, "symbol"), 80, "");
     if (symbol.empty()) return fail("symbol (a ticker or company name) is required");
     const std::vector<std::string> hdr = {"Accept: application/json"};
     std::string err, name;
@@ -613,16 +768,17 @@ std::string t_stock(const json &a, Context &ctx) {
     const json j = fetch_json("https://query1.finance.yahoo.com/v8/finance/chart/" + http::url_encode(symbol) +
                                   "?range=5d&interval=1d", err, ctx, hdr);
     if (!err.empty()) return fail(err);
-    if (!j.contains("chart") || !j["chart"].contains("result") || !j["chart"]["result"].is_array() ||
-        j["chart"]["result"].empty())
+    if (!j.contains("chart") || !j["chart"].is_object() || !j["chart"].contains("result") || !j["chart"]["result"].is_array() ||
+        j["chart"]["result"].empty() || !j["chart"]["result"][0].is_object() || !j["chart"]["result"][0].contains("meta") ||
+        !j["chart"]["result"][0]["meta"].is_object())
         return fail("no price data for '" + symbol + "'; check the ticker");
     const json &m = j["chart"]["result"][0]["meta"];
     const double price = jget(m, "regularMarketPrice", 0.0);
     const double prev = jget(m, "chartPreviousClose", jget(m, "previousClose", 0.0));
-    json out = {{"symbol", jget(m, "symbol", symbol)},
-                {"name", jget(m, "longName", jget(m, "shortName", name))},
+    json out = {{"symbol", util::truncate_utf8(clean_text(jget(m, "symbol", symbol)), 20)},
+                {"name", util::truncate_utf8(clean_text(jget(m, "longName", jget(m, "shortName", name))), 100)},
                 {"price", price}, {"currency", jget(m, "currency", std::string())},
-                {"exchange", jget(m, "fullExchangeName", jget(m, "exchangeName", std::string()))},
+                {"exchange", util::truncate_utf8(clean_text(jget(m, "fullExchangeName", jget(m, "exchangeName", std::string()))), 60)},
                 {"day_high", jget(m, "regularMarketDayHigh", 0.0)}, {"day_low", jget(m, "regularMarketDayLow", 0.0)},
                 {"year_high", jget(m, "fiftyTwoWeekHigh", 0.0)}, {"year_low", jget(m, "fiftyTwoWeekLow", 0.0)}};
     const long long when = jget<long long>(m, "regularMarketTime", 0);
@@ -636,9 +792,29 @@ std::string t_stock(const json &a, Context &ctx) {
 }
 
 // ---------------------------------------------------------------- time
+// "Australia", "Brazil", "Canada", "US": the zone database has a folder of that name because the
+// country spans several zones. Neither one zone nor a town that happens to share the name will do.
+bool several_zones(std::string place) {
+    if (place.empty() || place.find("..") != std::string::npos || place[0] == '/') return false;
+    auto is_dir = [](const std::string &name) {
+        struct stat st;
+        return stat(("/usr/share/zoneinfo/" + name).c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+    };
+    if (is_dir(place)) return true;
+    place = util::lower(place);
+    if (place.size() == 2) return is_dir(util::lower(place) == "us" ? "US" : place);
+    place[0] = static_cast<char>(toupper(static_cast<unsigned char>(place[0])));
+    return is_dir(place);
+}
+
+std::string several_zones_error(const std::string &place) {
+    return fail(place + " has more than one time zone; ask the user which city or state they mean");
+}
+
 std::string t_world_time(const json &a, Context &ctx) {
     const std::string place = str_arg(a, "place");
     if (place.empty()) return fail("place is required (a city or an IANA zone such as Asia/Tokyo)");
+    if (several_zones(place)) return several_zones_error(place);
     std::string zone = place, label = place, err;
     if (!util::timezone_exists(zone)) {
         Place p;
@@ -649,7 +825,7 @@ std::string t_world_time(const json &a, Context &ctx) {
     }
     time_t t = time(nullptr);
     const std::string at = str_arg(a, "local_time");
-    if (!at.empty() && !util::parse_local(at, t)) return fail("local_time must look like 2026-03-14 18:30");
+    if (!at.empty() && !util::parse_local(at, t)) return fail(bad_time("local_time", at));
     return json{{"place", label}, {"timezone", zone},
                 {"time_there", util::format_time_in(t, "%A %Y-%m-%d %H:%M (UTC%z)", zone)},
                 {"time_here", util::format_time(t, "%A %Y-%m-%d %H:%M (UTC%z)")}}.dump();
@@ -658,6 +834,7 @@ std::string t_world_time(const json &a, Context &ctx) {
 std::string t_set_timezone(const json &a, Context &ctx) {
     const std::string place = str_arg(a, "place");
     if (place.empty()) return fail("place is required (a city or an IANA zone such as Europe/Lisbon)");
+    if (several_zones(place)) return several_zones_error(place);
     std::string zone = place, err;
     if (!util::timezone_exists(zone)) {
         Place p;
@@ -792,23 +969,36 @@ std::string t_breathe(const json &a, Context &ctx) {
 // With ZB_DRY_RUN the choice of things is checked without switching anything in the house.
 std::string t_smart_home(const json &a, Context &) { return home::tool_run(a, dry_run()); }
 
-std::string t_tv_remote(const json &a, Context &) {
+std::string t_tv_remote(const json &a, Context &ctx) {
     const std::string key = util::lower(str_arg(a, "key"));
-    if (key.empty()) return fail("key is required");
-    double repeat = 1;
-    num_arg(a, "repeat", repeat);
+    if (key.empty()) return fail("key is required: the one button to press, such as power or volume_up");
+    double repeat_d = 1;
+    if (given(a, "repeat") && !num_arg(a, "repeat", repeat_d)) return fail("repeat must be a number of presses, such as 5");
+    const int repeat = clamp_int(repeat_d, 1, ir::kMaxRepeat);
     std::string brand = util::lower(str_arg(a, "brand"));
+    const auto known = ir::brands();
+    auto listed = [](const std::vector<std::string> &names) {
+        std::string out;
+        for (const auto &n : names) out += (out.empty() ? "" : ", ") + n;
+        return out;
+    };
+    if (!brand.empty() && std::find(known.begin(), known.end(), brand) == known.end())
+        return fail("unknown TV brand '" + util::truncate_utf8(brand, 30) + "'; use one of " + listed(known) +
+                    ", or leave brand out to send every brand's code");
     Settings &s = Settings::get();
-    if (!brand.empty() && brand != s.tv_brand) {  // remember a brand the user mentions
-        const auto known = ir::brands();
-        if (std::find(known.begin(), known.end(), brand) != known.end()) { s.tv_brand = brand; s.save(); }
-    }
+    if (!brand.empty() && brand != s.tv_brand) { s.tv_brand = brand; s.save(); }   // remember a brand the user mentions
     if (brand.empty()) brand = s.tv_brand;
-    const std::string err = ir::send(brand, key, static_cast<int>(repeat));
-    if (!err.empty()) return fail(err);
-    return "sent '" + key + "'" + (repeat > 1 ? " x" + std::to_string(static_cast<int>(repeat)) : "") + " (" +
+    const std::string err = ir::send(brand, key, repeat, ctx.cancel);
+    if (!err.empty()) {
+        const auto keys = ir::keys();
+        if (std::find(keys.begin(), keys.end(), key) == keys.end() && err.compare(0, 11, "no code for") == 0)
+            return fail(err + "; the keys are " + listed(keys));
+        return fail(err);
+    }
+    return "sent '" + key + "'" + (repeat > 1 ? " x" + std::to_string(repeat) : "") + " (" +
            (brand.empty() || brand == "auto" ? "all known brands" : brand) +
-           "). The device cannot see whether the TV reacted.";
+           "). The device cannot see whether the TV reacted." +
+           (repeat_d > ir::kMaxRepeat ? " At most " + std::to_string(ir::kMaxRepeat) + " presses are sent at a time." : "");
 }
 
 // ---------------------------------------------------------------- device
@@ -826,23 +1016,28 @@ std::string t_device(const json &a, Context &) {
                     {"spoken_replies", s.speak_replies}, {"timezone", s.timezone.empty() ? util::system_timezone() : s.timezone}};
         const int batt = read_int_file("/sys/class/power_supply/bq27220-0/capacity", -1);
         if (batt >= 0) out["battery_percent"] = batt;
-        const proc::Result wifi = proc::run({"nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL", "dev", "wifi"}, "", 4000);
+        // The list Network Manager already has: asking it to scan again takes seconds, and on this
+        // radio a scan also interrupts Bluetooth audio.
+        const proc::Result wifi = proc::run({"nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL", "dev", "wifi", "list", "--rescan", "no"}, "", 4000);
         for (auto &line : util::split(wifi.out, '\n'))
             if (line.compare(0, 4, "yes:") == 0) out["wifi"] = line.substr(4);
-        return out.dump();
+        return out.dump(-1, ' ', false, json::error_handler_t::replace);
     }
-    double value;
+    double value = 0;
     const bool has_value = num_arg(a, "value", value);
     if (setting == "volume" || setting == "brightness") {
-        if (!has_value) return fail("value (0 to 100) is required");
-        const int v = std::max(0, std::min(100, static_cast<int>(value)));
+        if (!has_value) return fail("value is required: a number from 0 to 100");
+        const int v = clamp_int(value, 0, 100);
         if (setting == "volume") { s.volume = v; if (!dry_run()) audio::set_volume(v); }
-        else { s.brightness = std::max(5, v); display::set_brightness(s.brightness); }
+        else { s.brightness = std::max(5, v); if (!dry_run()) display::set_brightness(s.brightness); }
         s.save();
         return setting + " set to " + std::to_string(setting == "volume" ? s.volume : s.brightness) + "%";
     }
     if (setting == "spoken_replies") {
-        s.speak_replies = a.contains("on") ? bool_arg(a, "on", true) : (has_value ? value != 0 : !s.speak_replies);
+        // Said up front in "say", the outcome has to be what was asked for, never a toggle.
+        if (a.contains("on") && (a["on"].is_boolean() || a["on"].is_string())) s.speak_replies = bool_arg(a, "on", true);
+        else if (has_value) s.speak_replies = value != 0;
+        else return fail("on is required for spoken_replies: true to speak answers aloud, false for text only");
         s.save();
         return std::string("spoken replies ") + (s.speak_replies ? "on" : "off");
     }
@@ -1059,6 +1254,144 @@ std::vector<Tool> build() {
     return list;
 }
 
+// ---------------------------------------------------------------- what the runner checks
+// A tool's own schema properties, or null when it has none here: its schema is made at run time
+// (smart_home, radio) and it checks its own arguments.
+const json *properties_of(const Tool &t) {
+    const auto it = t.parameters.find("properties");
+    return it != t.parameters.end() && it->is_object() && !it->empty() ? &*it : nullptr;
+}
+
+// What was sent, in words, for an error that says so.
+std::string sent_text(const json &v) {
+    if (v.is_array()) return "a list";
+    if (v.is_object()) return "an object";
+    if (v.is_boolean()) return v.get<bool>() ? "true" : "false";
+    if (v.is_string()) return "'" + util::truncate_utf8(clean_text(v.get<std::string>()), 40) + "'";
+    return v.dump();
+}
+
+// Each argument against the type the tool's schema gives it, before the tool runs, so that every
+// tool answers a wrong type the same way: which argument, what it must be, what was sent. A yes or
+// no sent as "true", "yes" or 1 is taken as meant, an enum value in other capitals becomes the
+// listed one, and empty text for a number counts as not given. Ranges, dates and which names
+// exist stay with each tool. Returns "" when the arguments may go to the tool; `unknown` collects
+// names the schema does not have.
+std::string check_args(const json &props, json &args, std::vector<std::string> &unknown) {
+    std::vector<std::string> drop;
+    for (auto it = args.begin(); it != args.end(); ++it) {
+        const std::string key = it.key();
+        json &v = it.value();
+        const auto p = props.find(key);
+        if (p == props.end()) {
+            if (key != "say") unknown.push_back(key);   // a confirmation offered to a tool that takes none is harmless
+            continue;
+        }
+        if (v.is_null()) continue;
+        const std::string type = jget(*p, "type", std::string());
+        if (type == "string") {
+            if (v.is_string()) {
+                const auto values = p->find("enum");
+                if (values != p->end() && values->is_array())
+                    for (const auto &e : *values)
+                        if (e.is_string() && util::lower(e.get<std::string>()) == util::lower(util::trim(v.get<std::string>()))) v = e;
+            } else if (!v.is_number()) {   // a number is taken as its digits
+                return key + " must be text, not " + sent_text(v);
+            }
+        } else if (type == "number" || type == "integer") {
+            const bool id = key == "id" || (key.size() > 3 && key.compare(key.size() - 3, 3, "_id") == 0);
+            const std::string must = id ? key + " must be a whole number such as 12, taken from an earlier result"
+                                        : key + " must be a number, such as 5";
+            if (v.is_string()) {
+                const std::string s = util::trim(v.get<std::string>());
+                if (s.empty()) { drop.push_back(key); continue; }
+                char *end = nullptr;
+                const double d = strtod(s.c_str(), &end);
+                if (end == s.c_str() || !std::isfinite(d)) return must + "; " + sent_text(v) + " is not one";
+            } else if (v.is_number()) {
+                if (!std::isfinite(v.get<double>())) return must + "; " + sent_text(v) + " is not one";
+            } else {
+                return must + ", not " + sent_text(v);
+            }
+        } else if (type == "boolean") {
+            if (v.is_boolean()) continue;
+            const std::string s = v.is_string() ? util::lower(util::trim(v.get<std::string>())) : v.is_number() ? v.dump() : "?";
+            if (s.empty()) drop.push_back(key);
+            else if (s == "true" || s == "yes" || s == "on" || s == "1") v = true;
+            else if (s == "false" || s == "no" || s == "off" || s == "0") v = false;
+            else return key + " must be true or false, not " + sent_text(v);
+        }
+    }
+    for (const auto &k : drop) args.erase(k);
+    return "";
+}
+
+// "(this tool has no argument called 'minutes'; its arguments are text, in_minutes, at)", for an
+// error that may come from a misnamed argument.
+std::string unknown_note(const json &props, const std::vector<std::string> &unknown) {
+    if (unknown.empty()) return "";
+    std::string names, have;
+    for (const auto &u : unknown) names += (names.empty() ? "'" : ", '") + util::truncate_utf8(clean_text(u), 30) + "'";
+    for (auto it = props.begin(); it != props.end(); ++it)
+        if (it.key() != "say") have += (have.empty() ? "" : ", ") + it.key();
+    return " (this tool has no argument called " + names + "; its arguments are " + have + ")";
+}
+
+// An example of the arguments, for an error about their form: {"expression": "..."}.
+std::string example_args(const Tool &t) {
+    const json *props = properties_of(t);
+    if (!props) return "{\"action\": \"...\"}";
+    std::string key;
+    const auto req = t.parameters.find("required");
+    if (req != t.parameters.end() && req->is_array() && !req->empty() && (*req)[0].is_string()) key = (*req)[0].get<std::string>();
+    if (key.empty() || !props->contains(key)) key = props->begin().key();
+    const std::string type = jget(props->at(key), "type", std::string());
+    return "{\"" + key + "\": " + (type == "number" || type == "integer" ? "5" : type == "boolean" ? "true" : "\"...\"") + "}";
+}
+
+// Edit distance, for suggesting the tool a misspelt name meant.
+size_t distance(const std::string &a, const std::string &b) {
+    std::vector<size_t> row(b.size() + 1);
+    for (size_t j = 0; j <= b.size(); ++j) row[j] = j;
+    for (size_t i = 1; i <= a.size(); ++i) {
+        size_t diag = row[0];
+        row[0] = i;
+        for (size_t j = 1; j <= b.size(); ++j) {
+            const size_t up = row[j];
+            row[j] = std::min({row[j] + 1, row[j - 1] + 1, diag + (a[i - 1] == b[j - 1] ? 0 : 1)});
+            diag = up;
+        }
+    }
+    return row[b.size()];
+}
+
+std::string no_such_tool(const std::string &name) {
+    std::vector<std::string> offered;
+    for (const auto &t : schema()) offered.push_back(jget(t["function"], "name", std::string()));
+    const std::string asked = util::lower(util::truncate_utf8(clean_text(name), 40));
+    std::string best;
+    size_t best_d = 4;
+    for (const auto &n : offered) {
+        const size_t d = distance(asked, n);
+        if (d < best_d) { best_d = d; best = n; }
+    }
+    if (!best.empty()) return fail("there is no tool called '" + asked + "'; the one meant is probably " + best);
+    std::string all;
+    for (const auto &n : offered) all += (all.empty() ? "" : ", ") + n;
+    return fail("there is no tool called '" + asked + "'; the tools are " + all);
+}
+
+// One shape for every failure: "ERROR: what was wrong. What to do." A tool that answered with a
+// JSON object holding "error" gets the same shape, its other fields kept after it.
+std::string one_shape(const std::string &result) {
+    if (result.empty() || result[0] != '{' || result.find("\"error\"") == std::string::npos) return result;
+    json j = json::parse(result, nullptr, false);
+    if (!j.is_object() || !j.contains("error") || !j["error"].is_string() || j["error"].get<std::string>().empty()) return result;
+    const std::string what = j["error"].get<std::string>();
+    j.erase("error");
+    return fail(what + (j.empty() ? "" : ". " + j.dump(-1, ' ', false, json::error_handler_t::replace)));
+}
+
 }  // namespace
 
 const std::vector<Tool> &all() {
@@ -1096,11 +1429,15 @@ const Tool *find(const std::string &name) {
     return nullptr;
 }
 
+bool failed(const std::string &result) {
+    return result.compare(0, 5, "ERROR") == 0 || result.compare(0, 9, "{\"error\"") == 0;
+}
+
 std::string confirmation(const std::string &name, const std::string &raw_args, const std::string &result) {
     if (std::find_if(std::begin(kConfirmable), std::end(kConfirmable), [&](const char *n) { return name == n; }) ==
         std::end(kConfirmable))
         return "";
-    if (result.compare(0, 5, "ERROR") == 0 || result.compare(0, 9, "{\"error\"") == 0) return "";
+    if (failed(result)) return "";
     const json args = json::parse(raw_args.empty() ? "{}" : raw_args, nullptr, false);
     if (!args.is_object()) return "";
     // These return something the model has not seen yet (the track that started, the battery
@@ -1126,13 +1463,40 @@ std::string confirmation(const std::string &name, const std::string &raw_args, c
 
 std::string run(const std::string &name, const std::string &raw_args, Context &ctx) {
     const Tool *tool = find(name);
-    if (!tool) return fail("there is no tool called '" + name + "'");
-    json args = json::parse(raw_args.empty() ? "{}" : raw_args, nullptr, false);
-    if (args.is_discarded() || !args.is_object()) return fail("the arguments were not valid JSON; send a JSON object");
+    if (!tool) return no_such_tool(name);
+    const std::string raw = util::trim(raw_args).empty() ? "{}" : raw_args;
+    json args;
     try {
-        return util::sanitize_utf8(tool->run(args, ctx));
+        args = json::parse(raw);
+    } catch (const json::parse_error &e) {
+        // Most often the call was cut off part way (the reply ran out of room): the parser then
+        // stops past the end. Otherwise say where it broke.
+        const size_t at = e.byte > 0 ? std::min<size_t>(e.byte, raw.size()) - 1 : 0;
+        const std::string where = e.byte > raw.size() ? "they stop before the object is closed"
+                                                      : "they break off at character " + std::to_string(at + 1) + ", near '" +
+                                                            util::truncate_utf8(clean_text(raw.substr(at > 10 ? at - 10 : 0, 20)), 20) + "'";
+        return fail("the arguments were not valid JSON (" + where + "). Send the call again with one complete JSON object, e.g. " +
+                    example_args(*tool));
+    }
+    if (!args.is_object())
+        return fail("the arguments must be one JSON object of named values, e.g. " + example_args(*tool) + ", not " + sent_text(args));
+    const json *props = properties_of(*tool);
+    std::vector<std::string> unknown;
+    if (props) {
+        const std::string wrong = check_args(*props, args, unknown);
+        if (!wrong.empty()) return fail(wrong + unknown_note(*props, unknown));
+    }
+    try {
+        std::string result = one_shape(util::sanitize_utf8(tool->run(args, ctx)));
+        if (props && failed(result)) result += unknown_note(*props, unknown);
+        return result;
     } catch (const std::exception &e) {
-        return fail(std::string("the tool failed: ") + e.what());
+        // nlohmann's messages begin with a code in brackets: "[json.exception.type_error.302] type must be ..."
+        std::string what = e.what();
+        const size_t close = what.find("] ");
+        if (!what.empty() && what[0] == '[' && close != std::string::npos) what.erase(0, close + 2);
+        return fail(name + " failed unexpectedly (" + util::truncate_utf8(clean_text(what), 120) +
+                    "). If its arguments are right, tell the user it did not work rather than calling it again");
     }
 }
 

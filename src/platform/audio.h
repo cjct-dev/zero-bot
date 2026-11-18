@@ -58,6 +58,10 @@ private:
 
 std::string wav_from_pcm(const std::vector<int16_t> &pcm, int rate);
 void set_volume(int percent);                     // system output volume, 0..100
+// The same without waiting: the mixer command runs on a thread of its own, and when several
+// settings arrive meanwhile (a held key, a settings row pressed repeatedly) only the newest is
+// applied. For the UI thread.
+void set_volume_async(int percent);
 // Which microphone the recorder uses. With `builtin` (the default) it asks for the device's own
 // microphone by name, so that connecting Bluetooth headphones neither moves recording to the
 // headset nor makes the system drop the headphones into phone-call mode. Otherwise it takes

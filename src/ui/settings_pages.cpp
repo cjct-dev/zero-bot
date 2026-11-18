@@ -389,8 +389,10 @@ void open_remote(Menu &menu) {
             menu.choose("TV brand", ir::brands(), S().tv_brand, [](const std::string &b) { S().tv_brand = b; S().save(); });
         }));
         items.push_back(MenuItem::action("Test: send power", [&menu] {
-            const std::string err = ir::send(S().tv_brand, "power", 1);
-            menu.toast(err.empty() ? "Power sent" : err);
+            // With "Any" every brand's code goes out in turn, which takes about half a second.
+            const std::string brand = S().tv_brand;
+            background([brand] { return ir::send(brand, "power", 1); },
+                       [&menu](const std::string &err) { menu.toast(err.empty() ? "Power sent" : err); });
         }));
         items.push_back(MenuItem::header("Buttons learned from your remote"));
         const auto names = ir::learned();
@@ -830,7 +832,7 @@ void open_status(Menu &menu) {
     background(
         [] {
             std::string text = "Zero Bot " ZB_VERSION "\n";
-            const proc::Result wifi = proc::run({"nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL", "dev", "wifi"}, "", 5000);
+            const proc::Result wifi = proc::run({"nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL", "dev", "wifi", "list", "--rescan", "no"}, "", 5000);
             std::string net = "Wi-Fi: not connected";
             for (auto &line : util::split(wifi.out, '\n'))
                 if (line.compare(0, 4, "yes:") == 0) {
@@ -1109,7 +1111,7 @@ void open_settings(Menu &menu, const SettingsHooks &hooks) {
         items.push_back(MenuItem::header("Device"));
         items.push_back(MenuItem::val("Volume", [] { return std::to_string(S().volume) + "%"; }, nullptr, [](int dir) {
             S().volume = clampi(S().volume + dir * 5, 0, 100);
-            audio::set_volume(S().volume);
+            audio::set_volume_async(S().volume);   // the mixer command takes up to 3 s
             S().save();
         }));
         items.push_back(MenuItem::val("Brightness", [] { return std::to_string(S().brightness) + "%"; }, nullptr, [](int dir) {

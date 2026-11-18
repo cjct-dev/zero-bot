@@ -25,6 +25,7 @@ void SpeechQueue::enqueue(const std::string &sentence) {
     const std::string clean = prompt::for_speech(sentence);
     if (clean.empty()) return;
     std::lock_guard<std::mutex> lk(mtx_);
+    if (ended_) ++answer_;      // the first sentence of a new answer
     queue_.push_back(clean);
     ended_ = false;
     working_ = true;
@@ -52,10 +53,16 @@ void SpeechQueue::stop() {
 
 bool SpeechQueue::active() { return working_; }
 
+void SpeechQueue::failed(int answer, const std::string &reason) {
+    if (answer == reported_ || !on_failure_) return;   // one note per answer, not one per sentence
+    reported_ = answer;
+    on_failure_(reason);
+}
+
 void SpeechQueue::run() {
     for (;;) {
         std::string sentence;
-        int gen;
+        int gen, answer;
         {
             std::unique_lock<std::mutex> lk(mtx_);
             cv_.wait(lk, [&] { return !queue_.empty() || stop_flag_ || (ended_ && working_); });
@@ -88,6 +95,7 @@ void SpeechQueue::run() {
             }
             sentence = queue_.front();
             queue_.pop_front();
+            answer = answer_;
         }
         std::string pcm, err;
         std::atomic<bool> cancel{false};
@@ -100,10 +108,14 @@ void SpeechQueue::run() {
         const bool stale = generation_ != gen;
         cancel = true;
         watcher.join();
-        if (!ok || stale || pcm.empty()) continue;
+        if (stale) continue;
+        if (!ok || pcm.empty()) {
+            failed(answer, ok ? "the speech service sent no audio" : err);
+            continue;
+        }
         if (!stream_open_) {
             audio::Music::get().hold(audio::Music::kSpeech, true);
-            if (!speaker().begin(llm::kTtsRate)) continue;
+            if (!speaker().begin(llm::kTtsRate)) { failed(answer, "the speaker could not be opened"); continue; }
             std::lock_guard<std::mutex> lk(mtx_);
             stream_open_ = true;
             playing_ = true;

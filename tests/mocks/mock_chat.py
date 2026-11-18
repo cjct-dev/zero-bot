@@ -8,13 +8,19 @@ reply to each request follows SCRIPT, a JSON file:
 
   {"user":  [["words in the user's message", {"tool": "name", "args": {...}} | {"text": "..."}], ...],
    "after": [["start of a tool result", {"text": "..."} | {"tool": ...}], ...],
+   "note":  [["words in one of the app's automatic notes", {"text": "..."} | {"tool": ...}], ...],
    "default": {"text": "OK."}}
 
-The newest message decides: a user message is matched by the first "user" rule whose words it
-contains (case does not matter), a tool result by the first "after" rule it starts with. A rule's
-value may also be a list, used one entry per match in turn (the last one repeats). A question
-about a photo (the look tool) arrives as a user message whose content is a list of parts; its
-text parts are what the rules see.
+The newest message decides: an automatic note from the app (a system message, or a user message
+carrying "(Automatic note") by the first "note" rule whose words it contains, then a user message
+by the first "user" rule whose words it contains (case does not matter), a tool result by the
+first "after" rule it starts with. A rule's value may also be a list, used one entry per match in
+turn (the last one repeats). A question about a photo (the look tool) arrives as a user message
+whose content is a list of parts; its text parts are what the rules see.
+
+Besides text and a tool call (whose arguments may be given as "raw" text, to send a malformed
+call; {"tools": [{"tool": ..., "args": ...}, ...]} makes several calls in one reply), a reply may be {"status": 503}: that HTTP status with a JSON error, or {"sse_error": "..."}:
+an error inside the stream, as a service that is overloaded sends one.
 
 usage: mock_chat.py SCRIPT LOG
 """
@@ -49,6 +55,11 @@ def pick(kind, key, value):
 
 def decide(messages):
     last = messages[-1] if messages else {}
+    text = said(last) if last.get("role") in ("system", "user") else ""
+    if last.get("role") == "system" or "(Automatic note" in text:
+        for words, value in SCRIPT.get("note", []):
+            if words.lower() in text.lower():
+                return pick("note", words, value)
     if last.get("role") == "tool":
         result = last.get("content") or ""
         for prefix, value in SCRIPT.get("after", []):
@@ -63,12 +74,17 @@ def decide(messages):
 
 
 def events(reply):
-    if "tool" in reply:
-        CALLS[0] += 1
-        call = {"index": 0, "id": "call_%d" % CALLS[0], "type": "function",
-                "function": {"name": reply["tool"], "arguments": json.dumps(reply.get("args", {}), ensure_ascii=False)}}
-        return [{"choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [call]}}]},
+    if "tool" in reply or "tools" in reply:
+        calls = []
+        for i, one in enumerate(reply.get("tools") or [reply]):
+            CALLS[0] += 1
+            args = one["raw"] if "raw" in one else json.dumps(one.get("args", {}), ensure_ascii=False)
+            calls.append({"index": i, "id": "call_%d" % CALLS[0], "type": "function",
+                          "function": {"name": one["tool"], "arguments": args}})
+        return [{"choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": calls}}]},
                 {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}]
+    if "sse_error" in reply:
+        return [{"error": {"message": reply["sse_error"]}}]
     return [{"choices": [{"index": 0, "delta": {"role": "assistant", "content": reply.get("text", "")}}]},
             {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}]
 
@@ -83,9 +99,12 @@ class Handler(BaseHTTPRequestHandler):
             with open(LOG, "a") as f:
                 f.write(json.dumps(body, ensure_ascii=False) + "\n")
             reply = decide(body.get("messages", []))
-            raw = ("".join("data: %s\n\n" % json.dumps(e, ensure_ascii=False) for e in events(reply)) + "data: [DONE]\n\n").encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
+            if "status" in reply:
+                raw = json.dumps({"error": {"message": "scripted failure %d" % reply["status"]}}).encode()
+            else:
+                raw = ("".join("data: %s\n\n" % json.dumps(e, ensure_ascii=False) for e in events(reply)) + "data: [DONE]\n\n").encode()
+        self.send_response(reply.get("status", 200))
+        self.send_header("Content-Type", "application/json" if "status" in reply else "text/event-stream")
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Connection", "close")
         self.end_headers()

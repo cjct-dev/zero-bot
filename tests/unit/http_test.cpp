@@ -1,12 +1,15 @@
 // The http::Request options smart-home drivers use, against the local peer in http_peer.py:
 // no_redirect, timeout_ms, digest credentials, insecure, a pinned public key, the peer's
 // certificate, a client certificate, and the defaults of a request to a device (no redirects to
-// elsewhere, no proxy). Started by http_peer.py, which passes:
+// elsewhere, no proxy); and send_retrying, which sends a read again only after a failure on the
+// way, inside its time budget. Started by http_peer.py, which passes:
 //   http_test HTTP_PORT HTTPS_PORT HTTPS_CLIENT_PORT PIN CLIENT_CERT_FILE CLIENT_KEY_FILE PROXY_PORT
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 
 #include "core/util.h"
 #include "net/http.h"
@@ -145,6 +148,96 @@ int main(int argc, char **argv) {
     unsetenv("http_proxy");
     unsetenv("https_proxy");
     check(peer_saw() == "away=0 proxy=1", "the proxy saw only the internet request, the other host nothing", peer_saw());
+
+    // ---- send_retrying: only failures on the way are sent again, inside the time given
+    auto tries = [&](const std::string &key) {
+        http::Request q;
+        q.url = plain + "/tries/" + key;
+        q.timeout_ms = 3000;
+        return http::send(q).body;
+    };
+    auto retrying = [&](const std::string &path, http::Retry retry) {
+        http::Request q;
+        q.url = plain + path;
+        q.timeout_ms = 3000;
+        return http::send_retrying(q, retry);
+    };
+    http::Retry quick;
+    quick.pause_ms = 50;
+    quick.min_ms = 100;
+    int resends = 0;
+    quick.before_resend = [&] { ++resends; };
+    res = retrying("/flaky/a/1", quick);
+    check(res.status == 200 && res.body == "fine" && tries("a") == "2" && resends == 1, "a 503 is sent once more, and then works",
+          seen(res) + ", tries " + tries("a"));
+    res = retrying("/flaky/b/5", quick);
+    check(res.status == 503 && tries("b") == "2", "at most `attempts` sends in all", seen(res) + ", tries " + tries("b"));
+    res = retrying("/status/404/c", quick);
+    check(res.status == 404 && tries("c") == "1", "a 404 is not sent again", seen(res) + ", tries " + tries("c"));
+    res = retrying("/status/400/c2", quick);
+    check(res.status == 400 && tries("c2") == "1", "nor a 400", seen(res) + ", tries " + tries("c2"));
+    res = retrying("/status/429/d", quick);
+    check(res.status == 429 && tries("d") == "2", "a 429 is sent again", seen(res) + ", tries " + tries("d"));
+    res = retrying("/status/501/d2", quick);
+    check(res.status == 501 && tries("d2") == "1", "a 501 (never going to work) is not", seen(res) + ", tries " + tries("d2"));
+    res = retrying("/hangup/e", quick);
+    check(!res.error.empty() && res.sent && tries("e") == "2", "a connection closed without an answer is sent again", seen(res) + ", tries " + tries("e"));
+    {
+        http::Request q;
+        q.url = plain + "/slowcount/f";
+        q.timeout_ms = 300;
+        res = http::send_retrying(q, quick);
+        check(res.error == "timed out" && res.sent && tries("f") == "1", "a timeout once the request went out is not sent again",
+              seen(res) + ", tries " + tries("f"));
+    }
+    {
+        http::Request q;
+        q.url = "http://127.0.0.1:1/nothing-listens";
+        q.timeout_ms = 2000;
+        res = http::send(q);
+        check(res.error == "no connection" && !res.sent && http::transient(res), "a refused connection: not sent, and worth another try",
+              seen(res));
+    }
+    {
+        http::Retry slow = quick;
+        slow.attempts = 5;
+        slow.pause_ms = 500;
+        slow.budget_ms = 1500;
+        slow.min_ms = 300;
+        const auto start = std::chrono::steady_clock::now();
+        res = retrying("/flaky/g/9", slow);
+        const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        check(res.status == 503 && tries("g") == "2" && s < 1.5, "no send starts once the budget is nearly spent",
+              seen(res) + ", tries " + tries("g") + ", " + std::to_string(s) + " s");
+    }
+    {
+        std::atomic<bool> stop{false};
+        http::Request q;
+        q.url = plain + "/flaky/h/9";
+        q.timeout_ms = 3000;
+        q.cancel = &stop;
+        http::Retry patient = quick;
+        patient.attempts = 3;
+        patient.pause_ms = 3000;
+        patient.budget_ms = 20000;
+        std::thread stopper([&] { std::this_thread::sleep_for(std::chrono::milliseconds(200)); stop = true; });
+        const auto start = std::chrono::steady_clock::now();
+        res = http::send_retrying(q, patient);
+        stopper.join();
+        const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        check(res.error == "cancelled" && s < 1.0 && tries("h") == "1", "cancelling ends the pause at once", seen(res) + ", " + std::to_string(s) + " s");
+    }
+    {
+        http::Response t;
+        t.status = 500;
+        bool all = http::transient(t);
+        t.status = 408; all = all && http::transient(t);
+        t.status = 505; all = all && !http::transient(t);
+        t.status = 0; t.error = "timed out"; t.sent = false; all = all && http::transient(t);
+        t.sent = true; all = all && !http::transient(t);
+        t.error = "cancelled"; t.sent = false; all = all && !http::transient(t);
+        check(all, "transient(): 500 and 408 yes, 505 no, a timeout only before the request went out, a cancel never", "");
+    }
 
     printf("%s  http options (%d checks)\n", g_failed ? "FAIL" : "ok  ", g_checks);
     return g_failed ? 1 : 0;

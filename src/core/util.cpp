@@ -188,7 +188,18 @@ std::string system_timezone() {
 
 bool timezone_exists(const std::string &iana) {
     if (iana.empty() || iana.find("..") != std::string::npos || iana[0] == '/') return false;
-    return access(("/usr/share/zoneinfo/" + iana).c_str(), R_OK) == 0;
+    // A zone is a compiled zone file. The folder also holds directories named like countries
+    // ("Australia", "Brazil", "Canada") and tables ("zone.tab"), which the C library cannot load:
+    // TZ set to one of them silently means UTC.
+    const std::string path = "/usr/share/zoneinfo/" + iana;
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    FILE *f = fopen(path.c_str(), "rbe");
+    if (!f) return false;
+    char magic[4] = {};
+    const bool tzif = fread(magic, 1, 4, f) == 4 && memcmp(magic, "TZif", 4) == 0;
+    fclose(f);
+    return tzif;
 }
 
 std::string format_time(time_t t, const char *fmt) {
@@ -221,6 +232,9 @@ bool parse_local(const std::string &text, time_t &out) {
     if (n < 3 || y < 1900 || mo < 1 || mo > 12 || d < 1 || d > 31) return false;
     if (n < 5) { h = n == 4 ? h : 0; mi = 0; }
     if (n < 6) s = 0;
+    // Only real dates and clock times: mktime would quietly make 31 February into 3 March and
+    // 25:00 into one o'clock the next day.
+    if (d > days_in_month(y, mo) || h < 0 || h > 23 || mi < 0 || mi > 59 || s < 0 || s > 59) return false;
     std::lock_guard<std::mutex> lk(g_tz_mtx);
     struct tm tmv;
     memset(&tmv, 0, sizeof(tmv));

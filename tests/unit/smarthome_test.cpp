@@ -86,6 +86,7 @@ struct FakeDriver : home::Driver {
     std::map<std::string, std::vector<home::Thing>> listing;   // what enumerate() answers, by device id
     std::map<std::string, json> live;                          // state by "device/thing"
     std::set<std::string> broken;                              // devices that do not answer
+    std::map<std::string, std::string> refusing;               // devices that answer every change with this error
     std::vector<std::string> log;                              // one line per apply / apply_many
     std::mutex mtx;
     int delay_ms = 0;
@@ -186,6 +187,7 @@ struct FakeDriver : home::Driver {
         busy(d.id);
         std::lock_guard<std::mutex> lk(mtx);
         if (broken.count(d.id)) { err = "it did not answer"; return false; }
+        if (refusing.count(d.id)) { err = refusing[d.id]; return false; }
         if (deadline_ms <= 0 || deadline_ms > 2500) { err = "bad deadline"; return false; }
         log.push_back("apply " + d.id + "/" + t.id + " " + change_text(c));
         remember(d.id + "/" + t.id, t, c);
@@ -204,7 +206,7 @@ struct FakeDriver : home::Driver {
     }
     void reset() {
         std::lock_guard<std::mutex> lk(mtx);
-        listing.clear(); live.clear(); broken.clear(); log.clear();
+        listing.clear(); live.clear(); broken.clear(); refusing.clear(); log.clear();
         delay_ms = 0; many = false; wants_pairing = false; account_pairing = false; reject.clear(); unpair_unreached = false;
         slow_device.clear(); slow_ms = 0;
         active = 0; most = 0; device_active.clear(); device_most = 0;
@@ -2151,6 +2153,141 @@ void test_names_and_colours() {
     CHECK(hue > 20 && hue < 40 && sat2 > 40 && sat2 < 70);
 }
 
+// What the stand-in scan reports, and how often it ran. Answering it "moves" the devices: the
+// fake driver's broken ones answer again from then on.
+std::vector<discovery::Device> g_scan_answer;
+int g_scans = 0;
+bool stand_in_scan(std::vector<discovery::Device> &found) {
+    ++g_scans;
+    found = g_scan_answer;
+    std::lock_guard<std::mutex> lk(g_fake->mtx);
+    for (const auto &f : found)
+        if (f.ip != "127.0.0.1") g_fake->broken.erase(f.id);
+    return true;
+}
+
+discovery::Device found_at(const std::string &id, const std::string &ip, int port = 9) {
+    discovery::Device d;
+    d.id = id;
+    d.kind = "fake";
+    d.ip = ip;
+    d.port = port;
+    d.info = {{"from", "the short scan"}};
+    return d;
+}
+
+const home::Saved *saved(const std::string &device_id) {
+    static home::NetworkEntry e;
+    e = home::entry(g_net.id());
+    for (const auto &d : e.devices)
+        if (d.id == device_id) return &d;
+    return nullptr;
+}
+
+void test_moved_devices() {
+    Section s("a device that moved: looked for once, only its address saved, and only a change that comes out the same resent");
+    g_fake->reset();
+    home::testing::set_scan(stand_in_scan);
+    const uint32_t fire = home::kPower | home::kTransport | home::kVolumeStep | home::kSource | home::kKeys;
+    auto home_with_tv = [&] {
+        write_home({device("fake:tv", {thing("tv", "Bedroom TV", "tv", fire, "Bedroom", {{"on", false}})}),
+                    device("fake:plug", {thing("p", "Desk lamp", "plug", home::kPower, "Study")})});
+        g_clock += 60000;
+        g_scans = 0;
+        g_fake->calls.clear();
+    };
+    auto applies = [&] { return std::count(g_fake->calls.begin(), g_fake->calls.end(), "apply fake:tv"); };
+
+    // Switching on: the same however often it is done, so it is sent again at the new address.
+    home_with_tv();
+    g_fake->broken = {"fake:tv"};
+    g_scan_answer = {found_at("fake:tv", "127.0.0.2"), found_at("fake:plug", "127.0.0.3", 0), found_at("fake:new", "127.0.0.4")};
+    std::string r = run({{"action", "on"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(r == R"({"now":"on","target":"Bedroom TV"})", r);
+    CHECK_MSG(applies() == 2 && g_scans == 1, std::to_string(applies()) + " applies, " + std::to_string(g_scans) + " scans");
+    const home::Saved *tv = saved("fake:tv");
+    CHECK_MSG(tv && tv->ip == "127.0.0.2" && tv->port == 9 && !tv->info.count("from"), tv ? tv->ip + " " + json(tv->info).dump() : "gone");
+    const home::Saved *plug = saved("fake:plug");
+    CHECK_MSG(plug && plug->ip == "127.0.0.3" && plug->port == 9, plug ? plug->ip + ":" + std::to_string(plug->port) : "gone");   // no port given: kept
+    CHECK_MSG(!saved("fake:new"), "a short scan in the middle of a command added a device");
+
+    // A volume step (relative) is not sent a second time by itself: had the first reached the TV
+    // after all, it would happen twice. The new address is saved all the same.
+    for (const json &change : {json{{"action", "set"}, {"target", "Bedroom TV"}, {"volume_step", 3}},
+                               json{{"action", "press"}, {"target", "Bedroom TV"}, {"key", "down"}},
+                               json{{"action", "next"}, {"target", "Bedroom TV"}},
+                               // Some TVs have one play/pause toggle: a pause sent twice plays again.
+                               json{{"action", "pause"}, {"target", "Bedroom TV"}},
+                               json{{"action", "play"}, {"target", "Bedroom TV"}}}) {
+        home_with_tv();
+        g_fake->broken = {"fake:tv"};
+        g_scan_answer = {found_at("fake:tv", "127.0.0.2")};
+        r = run(change);
+        CHECK_MSG(starts(r, "ERROR: could not change \"Bedroom TV\": it had moved to a new address") && has(r, "Nothing was changed") &&
+                      has(r, "never sent a second time"),
+                  r);
+        CHECK_MSG(applies() == 1, change.dump() + ": " + std::to_string(applies()) + " applies");
+        tv = saved("fake:tv");
+        CHECK(tv && tv->ip == "127.0.0.2");
+    }
+
+    // Not anywhere else on the network: said so, and nothing sent again.
+    home_with_tv();
+    g_fake->broken = {"fake:tv"};
+    g_scan_answer = {};
+    r = run({{"action", "on"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": it did not answer; it was not found at another address on the network "
+                   "either (it may be switched off at the wall, or out of Wi-Fi range). Tell the user",
+              r);
+    CHECK(applies() == 1 && saved("fake:tv")->ip == "127.0.0.1");
+    // Still announcing itself where it was: not switched off, so the error does not say it is.
+    home_with_tv();
+    g_fake->broken = {"fake:tv"};
+    g_scan_answer = {found_at("fake:tv", "127.0.0.1")};
+    r = run({{"action", "off"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(has(r, "still announces itself on the network at the same address") && !has(r, "switched off at the wall"), r);
+    CHECK(applies() == 1);
+
+    // The device answered, only with a refusal: it is not "busy or starting up", whatever the scan says.
+    home_with_tv();
+    g_fake->broken.clear();
+    g_fake->refusing["fake:tv"] = "the TV answered with error code -1501";
+    g_scan_answer = {found_at("fake:tv", "127.0.0.1")};
+    r = run({{"action", "off"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": the TV answered with error code -1501. Tell the user", r);
+    CHECK(applies() == 1);
+    g_fake->refusing.clear();
+
+    // One scan serves a second device that stops answering within 20 seconds.
+    home_with_tv();
+    g_fake->broken = {"fake:tv", "fake:plug"};
+    g_scan_answer = {found_at("fake:tv", "127.0.0.2"), found_at("fake:plug", "127.0.0.3")};
+    r = run({{"action", "on"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(!starts(r, "ERROR"), r);
+    {
+        std::lock_guard<std::mutex> lk(g_fake->mtx);
+        g_fake->broken = {"fake:plug"};   // the lamp stops answering too: the TV's scan is still fresh enough to look it up in
+    }
+    g_clock += 5000;
+    r = run({{"action", "on"}, {"target", "Desk lamp"}});
+    CHECK_MSG(g_scans == 1, std::to_string(g_scans) + " scans; " + r);
+
+    // Reading is always asked again at a new address.
+    home_with_tv();
+    g_fake->broken = {"fake:tv"};
+    g_scan_answer = {found_at("fake:tv", "127.0.0.2")};
+    r = run({{"action", "status"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(starts(r, R"({"state":)") && g_scans == 1, r);
+
+    // On the stand-in test network with no stand-in scan, nothing is ever scanned for.
+    home::testing::set_scan(nullptr);
+    home_with_tv();
+    g_fake->broken = {"fake:tv"};
+    r = run({{"action", "on"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": it did not answer. Tell the user", r);
+    g_fake->broken.clear();
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -2195,6 +2332,7 @@ int main(int argc, char **argv) {
     test_discovery();
     test_discovery_hue();
     test_names_and_colours();
+    test_moved_devices();
 
     const std::string rm = "rm -rf '" + dir + "'";
     if (system(rm.c_str()) != 0) fprintf(stderr, "could not remove %s\n", dir.c_str());

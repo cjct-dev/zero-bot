@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include <algorithm>
+#include <chrono>
 #include <unistd.h>
 
 #include "core/settings.h"
@@ -50,6 +51,27 @@ std::string api_error(const http::Response &res) {
 }
 
 std::string dump(const json &j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); }
+
+// An error the service sent inside a stream that says it is busy for the moment, rather than
+// that the request was wrong.
+bool busy_message(const std::string &error) {
+    const std::string e = util::lower(error);
+    for (const char *w : {"overload", "rate limit", "try again", "temporarily", "unavailable", "capacity", "busy"})
+        if (e.find(w) != std::string::npos) return true;
+    return false;
+}
+
+// Reading from the service is safe to repeat: a request that failed on the way (no connection, a
+// dropped one, an overloaded or failing server) is sent again after a short pause, within the
+// request's own time limit. `attempts` counts the first send.
+http::Retry service_retry(int attempts, long budget_s) {
+    http::Retry r;
+    r.attempts = attempts;
+    r.budget_ms = budget_s * 1000;
+    r.min_ms = std::min<long>(15000, r.budget_ms / 4);
+    r.pause_ms = 400;
+    return r;
+}
 
 // Re-encodes a 16-bit mono WAV (as produced by the recorder) to MP3. False if that is not possible.
 bool wav_to_mp3(const std::string &wav, std::string &mp3) {
@@ -185,31 +207,32 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
             handle_line(line);
         }
     };
-    http::Response res = http::send(req);
+    auto reset = [&] {
+        pending.clear();
+        held.clear();
+        thinking = answer_over = false;
+        out = ChatResult();
+    };
+    // Upstream hiccups (5xx, dropped connections, a service that says it is overloaded) are common
+    // on mobile links. As long as nothing has been passed on yet, the call is tried again, twice at
+    // most and all within its own three minutes: a timeout once the request had gone out is not
+    // repeated, since that would double the wait.
+    const auto started = std::chrono::steady_clock::now();
+    http::Retry retry = service_retry(3, req.timeout_s);
+    retry.again = [&](const http::Response &r) {
+        if (!out.content.empty() || !out.tool_calls.empty()) return false;
+        return r.ok() ? !out.error.empty() && busy_message(out.error) : http::transient(r);
+    };
+    retry.before_resend = reset;
+    http::Response res = http::send_retrying(req, retry);
     if (sent_effort && res.status == 400 && out.content.empty() && out.tool_calls.empty()) {
         effort_rejected = true;
         body.erase("reasoning_effort");
         req.body = dump(body);
-        pending.clear();
-        held.clear();
-        thinking = answer_over = false;
-        out = ChatResult();
-        res = http::send(req);
-    }
-    // Upstream hiccups (5xx, dropped connections) are common on mobile links. If nothing has
-    // been produced yet, try again a couple of times before giving up.
-    for (int attempt = 0; attempt < 2; ++attempt) {
-        const bool transient = res.error != "cancelled" && (res.status >= 500 || res.status == 429 || res.status == 0 ||
-                                                            (!res.error.empty() && res.error != "timed out"));
-        if (res.ok() && out.error.empty()) break;
-        if (!transient || !out.content.empty() || !out.tool_calls.empty()) break;
-        if (opt.cancel && opt.cancel->load()) break;
-        usleep((attempt + 1) * 400 * 1000);
-        pending.clear();
-        held.clear();
-        thinking = answer_over = false;
-        out = ChatResult();
-        res = http::send(req);
+        reset();
+        const long spent_s = static_cast<long>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count());
+        retry.budget_ms = std::max(1L, req.timeout_s - spent_s) * 1000;
+        res = http::send_retrying(req, retry);
     }
     if (!pending.empty()) handle_line(pending);
     filter_text("", true);
@@ -251,11 +274,12 @@ std::string transcribe(const std::string &wav, std::string &err, std::atomic<boo
     build(use_mp3);
     req.timeout_s = 60;
     req.cancel = cancel;
-    http::Response res = http::send(req);
+    // What the user said is lost if this fails, and transcribing it twice changes nothing.
+    http::Response res = http::send_retrying(req, service_retry(3, req.timeout_s));
     if (use_mp3 && (res.status == 400 || res.status == 415 || res.status == 422)) {
         mp3_rejected = true;
         build(false);
-        res = http::send(req);
+        res = http::send_retrying(req, service_retry(2, req.timeout_s));
     }
     if (!res.ok()) { err = api_error(res); return ""; }
     const json j = json::parse(res.body, nullptr, false);
@@ -280,7 +304,7 @@ bool synthesize(const std::string &text, std::string &pcm, std::string &err, std
                          {"response_format", format}});
         req.timeout_s = 60;
         req.cancel = cancel;
-        return http::send(req);
+        return http::send_retrying(req, service_retry(2, req.timeout_s));
     };
     if (want_opus) {
         const http::Response res = fetch("opus");

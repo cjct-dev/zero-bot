@@ -1,8 +1,11 @@
 #include "net/http.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <thread>
 
 #include <curl/curl.h>
 
@@ -166,6 +169,15 @@ Response send(const Request &req) {
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     res.status = status;
+    // Whether the peer can have seen the request: bytes of it went out, or a connection to it was
+    // made (a TLS set-up that then failed counts too, to be safe). A request that never got that
+    // far may be sent again whatever it was. (The pre-transfer time is no guide: curl reports one
+    // for a refused connection too.)
+    long request_bytes = 0;
+    curl_off_t connect_us = 0;
+    curl_easy_getinfo(curl, CURLINFO_REQUEST_SIZE, &request_bytes);
+    curl_easy_getinfo(curl, CURLINFO_CONNECT_TIME_T, &connect_us);
+    res.sent = request_bytes > 0 || connect_us > 0 || status > 0;
     if (rc == CURLE_ABORTED_BY_CALLBACK) res.error = "cancelled";
     else if (rc == CURLE_OPERATION_TIMEDOUT) res.error = "timed out";
     else if (rc == CURLE_COULDNT_RESOLVE_HOST || rc == CURLE_COULDNT_CONNECT) res.error = "no connection";
@@ -184,6 +196,40 @@ Response send(const Request &req) {
     if (headers) curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     return res;
+}
+
+bool transient(const Response &res) {
+    if (res.error == "cancelled") return false;
+    if (res.error == "timed out") return !res.sent;   // the connection was never made: no time was spent waiting for an answer
+    if (!res.error.empty()) return true;               // no connection, a dropped one, a failed TLS set-up
+    const long s = res.status;
+    return s == 408 || s == 429 || (s >= 500 && s <= 599 && s != 501 && s != 505);
+}
+
+Response send_retrying(Request req, const Retry &retry) {
+    using clock = std::chrono::steady_clock;
+    const auto start = clock::now();
+    auto left_ms = [&] {
+        return retry.budget_ms - static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - start).count());
+    };
+    const long own_ms = req.timeout_ms > 0 ? req.timeout_ms : req.timeout_s * 1000;
+    int pause = retry.pause_ms;
+    Response res;
+    for (int attempt = 1;; ++attempt) {
+        req.timeout_ms = std::max(1L, std::min(own_ms, left_ms()));
+        res = send(req);
+        const bool again = retry.again ? retry.again(res) : !res.ok() && transient(res);
+        if (!again || attempt >= retry.attempts || left_ms() - pause < retry.min_ms) return res;
+        for (int waited = 0; waited < pause; waited += 50) {
+            if (req.cancel && req.cancel->load()) {
+                res.error = "cancelled";
+                return res;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        pause *= 2;
+        if (retry.before_resend) retry.before_resend();
+    }
 }
 
 std::string url_encode(const std::string &s) {

@@ -205,6 +205,24 @@ void set_volume(int percent) {
     proc::run({"wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", buf}, "", 3000);
 }
 
+void set_volume_async(int percent) {
+    static std::atomic<int> wanted{-1};
+    static std::atomic<bool> worker{false};
+    wanted = std::max(0, std::min(100, percent));
+    if (worker.exchange(true)) return;
+    std::thread([] {
+        for (;;) {
+            const int v = wanted.exchange(-1);
+            if (v < 0) {
+                worker = false;
+                if (wanted < 0 || worker.exchange(true)) return;   // nothing arrived meanwhile
+                continue;
+            }
+            set_volume(v);
+        }
+    }).detach();
+}
+
 void set_mic_gain(int percent) {
     if (percent < 0) percent = 0;
     if (percent > 300) percent = 300;

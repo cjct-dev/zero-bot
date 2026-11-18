@@ -26,6 +26,7 @@ const Pattern &pattern(const std::string &id) {
 
 int clamp_minutes(double minutes) {
     if (!(minutes >= 0.5)) return kDefaultMinutes;   // also catches NaN
+    if (minutes > 20) return 20;                      // before rounding: lround(1e300) is not a number of minutes
     return std::max(1, std::min(20, static_cast<int>(std::lround(minutes))));
 }
 

@@ -113,8 +113,6 @@ struct App {
     std::string level_text;
     unsigned long level_until = 0, settings_dirty_at = 0;
     bool muted = false;
-    std::atomic<int> volume_wanted{-1};
-    std::atomic<bool> volume_worker{false};
     unsigned long esc_down = 0;
     bool esc_armed = false;
     unsigned long last_activity = 0;
@@ -142,13 +140,21 @@ struct App {
             uiq::post([this, pattern, minutes] { breath_pattern = pattern; breath_minutes = minutes; });
         };
         ev.image = [this](const std::string &jpeg) {
-            // Runs on the agent thread: shrink the photo so the screen only decodes a thumbnail.
-            // Each thumbnail gets its own name because the image cache is keyed by path.
+            // Called on the agent thread as the photo is taken: shrink it so the screen only
+            // decodes a thumbnail. Starting ffmpeg takes one to three seconds on the device, so it
+            // runs beside the request instead of holding the photo back from the service, on a
+            // copy, since the next photo replaces this one. Each thumbnail gets its own name
+            // because the image cache is keyed by path.
             static std::atomic<int> serial{0};
-            const std::string thumb = util::cache_dir() + "/thumb_" + std::to_string(serial++ % 8) + "_" +
-                                      std::to_string(time(nullptr)) + ".png";
-            const auto res = proc::run({"ffmpeg", "-v", "error", "-y", "-i", jpeg, "-vf", "scale=128:-2", thumb}, "", 8000);
-            if (res.ok()) uiq::post([this, thumb] { chat.add_image(thumb); });
+            const std::string base = util::cache_dir() + "/thumb_" + std::to_string(serial++ % 8) + "_" + std::to_string(time(nullptr));
+            std::string data;
+            if (!util::read_file(jpeg, data) || !util::write_file_atomic(base + ".jpg", data)) return;
+            std::thread([this, base] {
+                const std::string thumb = base + ".png";
+                const auto res = proc::run({"ffmpeg", "-v", "error", "-y", "-i", base + ".jpg", "-vf", "scale=128:-2", thumb}, "", 8000);
+                unlink((base + ".jpg").c_str());
+                if (res.ok()) uiq::post([this, thumb] { chat.add_image(thumb); });
+            }).detach();
         };
         Agent::get().start(ev);
     }
@@ -279,21 +285,7 @@ struct App {
 
     // Applies the newest volume off the UI thread; the mixer command takes a moment, and a held
     // key asks for many steps in a row.
-    void apply_volume(int percent) {
-        volume_wanted = percent;
-        if (volume_worker.exchange(true)) return;
-        std::thread([this] {
-            for (;;) {
-                const int v = volume_wanted.exchange(-1);
-                if (v < 0) {
-                    volume_worker = false;
-                    if (volume_wanted < 0 || volume_worker.exchange(true)) return;   // nothing arrived meanwhile
-                    continue;
-                }
-                audio::set_volume(v);
-            }
-        }).detach();
-    }
+    void apply_volume(int percent) { audio::set_volume_async(percent); }
 
     static std::string level_bar(const char *label, int percent) {
         std::string bar;
@@ -1102,8 +1094,7 @@ int run_app(const std::string &shots_dir, bool keydump) {
     display::set_brightness(s.brightness);
     audio::set_mic_gain(s.mic_gain);
     audio::set_mic_builtin(s.mic_builtin);
-    const int volume = s.volume;
-    std::thread([volume] { audio::set_volume(volume); }).detach();
+    audio::set_volume_async(s.volume);
 
     app.wire_agent();
     app.welcome();

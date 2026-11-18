@@ -47,6 +47,7 @@ struct Response {
     std::string error;                       // transport-level failure, empty if none
     std::string peer_cert_pem;               // with want_peer_cert: the peer's own certificate
     std::string content_type;                // the answer's Content-Type header, as sent ("" if none)
+    bool sent = false;                       // a connection was made and the request went out on it
     bool ok() const { return error.empty() && status >= 200 && status < 300; }
     std::string describe() const;            // short human-readable failure reason
 };
@@ -54,5 +55,26 @@ struct Response {
 void global_init();
 Response send(const Request &req);
 std::string url_encode(const std::string &s);
+
+// Whether a failed request may simply be sent again: the connection could not be made or broke,
+// or the server said it is overloaded or failing for the moment (408, 429, 5xx but 501 and 505).
+// Never a refusal or any other 4xx, a cancellation, or a timeout once the request had gone out
+// (its time is up, and waiting again would double it).
+bool transient(const Response &res);
+
+// For requests that are safe to repeat and nothing else: reading, searching, asking the AI
+// service. Never for one that changes something, logs in or pairs. Sends `req`, and again after a
+// pause while the failure is transient (or `again` says so), at most `attempts` times, all inside
+// `budget_ms` from the first send: each send's timeout is cut to what is left, and no new send
+// starts with less than `min_ms` left. Cancelling during a pause ends it at once ("cancelled").
+struct Retry {
+    int attempts = 2;
+    long budget_ms = 20000;
+    long min_ms = 2000;
+    int pause_ms = 500;                                  // before the first resend, doubled for each later one
+    std::function<bool(const Response &)> again;         // default: !ok() && transient()
+    std::function<void()> before_resend;                 // forget what on_data collected from the failed send
+};
+Response send_retrying(Request req, const Retry &retry);
 
 }  // namespace http

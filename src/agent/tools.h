@@ -32,7 +32,14 @@ const Tool *find(const std::string &name);
 // the call failed or its result has to be read by the model first.
 std::string confirmation(const std::string &name, const std::string &raw_args, const std::string &result);
 
-// Runs a tool by name with the model's raw argument text. Never throws.
+// Whether a result reports a failure ("ERROR: ..."). A "CONFIRM: ..." is not one: nothing was
+// done, but only because the user's answer is awaited.
+bool failed(const std::string &result);
+
+// Runs a tool by name with the model's raw argument text. Never throws. The arguments are checked
+// against the tool's schema first (types, with yes/no and capitals taken as meant), and every
+// failure comes back in one shape, "ERROR: what was wrong. What to do", naming the argument and
+// what was sent.
 std::string run(const std::string &name, const std::string &raw_args, Context &ctx);
 
 }  // namespace tools
