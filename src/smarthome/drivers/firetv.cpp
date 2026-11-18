@@ -1710,6 +1710,18 @@ private:
             if (final) break;
         }
         if (dial_ok || dial_refused_by_tv || connected) wakes_.forget(who);   // it is on the network
+        if (!dial_ok && !dial_refused_by_tv && connected) {
+            // The DIAL request reached the TV, whose answer did not come within the deadline. From
+            // deep standby the owner's TV answered later than the 2.5 s a change has, and came on all
+            // the same (twice on 2026-11-18); "not replying" then made the assistant offer an infrared
+            // power toggle, whose codes were another TV's. So the TV is taken to be starting up:
+            // switching on alone is done, and a command in the next minute that finds the API silent
+            // says it is still starting. The rest of a change still needs the API.
+            s.wake_accepted(Clock::now());
+            if (alone) return true;
+            err = detail::woken_error(Woken::NotServing, true);
+            return false;
+        }
         if (!dial_ok) {
             if (dial_refused_by_tv)
                 err = kNotServing;

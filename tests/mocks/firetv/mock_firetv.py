@@ -45,7 +45,8 @@ Config keys for /reset and /set (all optional):
   notjson, wrongtypes, truncated, silent, close, 500, 400, 404, 405, badutf8, hugeheader; the
   DIAL wake is "POST /apps/FireTVRemote", and a fault there means the TV did not take the wake),
   fault_after ({"POST /v1/FireTV": 2}: that many requests to the endpoint are answered normally
-  first), starting_s and starting_mode (see the starting state), late (seconds: every command -
+  first), dial_late (seconds: the DIAL wake is taken at once but answered only this much later, as
+  the owner's TV did from deep standby), starting_s and starting_mode (see the starting state), late (seconds: every command -
   a key, a media action, an app launch - is carried out at once and answered only after this
   long, like a busy TV), slow_tls_every (N: every Nth TLS handshake on the API port waits
   slow_tls_s seconds, 0.3 by default, before it starts).
@@ -485,6 +486,10 @@ class Tv:
             elif state == "awake":
                 # Assumed, not documented: a DIAL wake also lights a screen that action=sleep darkened.
                 self.stats["display"] = "on"
+        # The owner's TV from deep standby (2026-11-18): it takes the wake at once but answers late.
+        late = float(self.cfg.get("dial_late") or 0)
+        if late > 0:
+            time.sleep(late)
         # 201 with a Location, as captured in the forum thread (post 25).
         conn.sendall(b"HTTP/1.1 201 Created\r\nContent-Type: text/plain\r\nLocation: http://127.0.0.1:%d/apps/FireTVRemote/run"
                      b"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n" % self.dial.port)
