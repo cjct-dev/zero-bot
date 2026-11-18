@@ -354,6 +354,7 @@ std::vector<Device> merge(const Seen &seen) {
         // protocol announced from the same address (a HomeKit or Matter port is not it).
         const std::string mac = wiz_mac(w.second);
         Device &d = take(w.first, "wiz", "wiz");
+        if (d.kind != "wiz") continue;   // a Tapo device that also answered keeps its own id and port
         d.id = "wiz:" + mac;
         d.port = 0;
         d.mac = lower_mac(mac.substr(0, 2) + ":" + mac.substr(2, 2) + ":" + mac.substr(4, 2) + ":" + mac.substr(6, 2) + ":" +

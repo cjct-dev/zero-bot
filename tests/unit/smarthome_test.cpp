@@ -2004,6 +2004,13 @@ void test_wiz_discovery() {
     CHECK(plug && plug->kind == "wiz" && plug->model == "ESP25_SOCKET_01");
     for (const char *ip : {"192.0.2.80", "192.0.2.81", "192.0.2.82", "192.0.2.83", "192.0.2.84", "192.0.2.85", "192.0.2.86"})
         CHECK_MSG(!at(ip), std::string(ip) + " is not a WiZ answer");
+    // A device that answers TP-Link's query as well (Tapo ranks first) keeps its Tapo id and port.
+    const std::string tapo_answer = std::string(16, '\0') +
+        R"({"result":{"device_id":"80225A0B","device_model":"P110","mac":"AA-BB-CC-00-00-0A","mgt_encrypt_schm":{"encrypt_type":"KLAP","http_port":80}}})";
+    const auto mixed = discovery::devices_from({{"tapo", "192.0.2.90", tapo_answer}, {"wiz", "192.0.2.90", answer}});
+    CHECK_MSG(mixed.size() == 1 && mixed[0].kind == "tapo" && mixed[0].id == "tapo:80225a0b" && mixed[0].port == 80 &&
+                  mixed[0].mac == "aa:bb:cc:00:00:0a",
+              mixed.empty() ? std::string("nothing") : mixed[0].kind + " " + mixed[0].id + " port " + std::to_string(mixed[0].port));
     const auto wiz = make_wiz_driver();
     CHECK(bulb && wiz->claims(bulb->kind, bulb->info) && both && wiz->claims(both->kind, both->info));
     CHECK(!wiz->claims("tapo", {}) && !wiz->claims("homekit", {}));
