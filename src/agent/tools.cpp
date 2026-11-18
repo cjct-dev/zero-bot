@@ -471,6 +471,32 @@ std::string past_error() {
                 "coming events");
 }
 
+// The confirmation the model wrote ("Added, every Tuesday at 7am") names a weekday that the date it
+// chose does not fall on (2026-11-23, a Monday). That is a slip in its own date arithmetic, made
+// often enough on some weekdays to fail a scored case six times in six, so the call is refused,
+// naming the nearest date that is that weekday, before anything is saved or said. Only English
+// names, and only when `say` names exactly one weekday ("Tuesdays and Thursdays" is left alone).
+std::string weekday_slip(const json &a, time_t when, const char *field) {
+    static const char *const names[] = {"sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"};
+    static const char *const shown[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+    const std::string say = util::lower(str_arg(a, "say"));
+    int named = -1;
+    for (int i = 0; i < 7; ++i) {
+        if (say.find(names[i]) == std::string::npos) continue;
+        if (named >= 0) return "";
+        named = i;
+    }
+    if (named < 0) return "";
+    const int is = atoi(util::format_time(when, "%w").c_str());
+    if (is == named) return "";
+    int diff = (named - is + 7) % 7;   // days forward to the weekday said
+    if (diff > 3) diff -= 7;           // or back, when that is nearer
+    const time_t nearest = util::add_local_days(when, diff);
+    return std::string(field) + " " + util::format_time(when, "%Y-%m-%d") + " is a " + shown[is] + ", but say calls it " +
+           shown[named] + ". The nearest " + shown[named] + " is " + util::format_time(nearest, "%Y-%m-%d") +
+           ": send the call again with that date, or fix say if the date was right";
+}
+
 std::string t_calendar_add(const json &a, Context &) {
     CalEvent e;
     std::string err;
@@ -493,6 +519,7 @@ std::string t_calendar_add(const json &a, Context &) {
     const std::string end = str_arg(a, "end");
     if (!end.empty() && !util::parse_local(end, e.end)) return fail(bad_time("end", end));
     if (e.end && e.end < e.start) return fail("end is before start");
+    if (const std::string slip = weekday_slip(a, e.start, "start"); !slip.empty()) return fail(slip);
     if (in_the_past(e)) return past_error();
     if (!given(a, "remind_minutes_before") && e.all_day && e.repeat == "yearly")
         e.remind_min = 0;   // a birthday nobody is told about is no use
@@ -564,6 +591,8 @@ std::string t_calendar_update(const json &a, Context &) {
         if (a.contains("all_day")) e.all_day = bool_arg(a, "all_day", e.all_day);
         if (e.all_day) { e.start = day_start(e.start); e.end = 0; }
         if (e.end && e.end < e.start) return fail("end is before start");
+        if (!start.empty())
+            if (const std::string slip = weekday_slip(a, e.start, "start"); !slip.empty()) return fail(slip);
         if (e.start != old_start && in_the_past(e)) return past_error();
         if (!Store::get().update_event(e)) return fail("that event has just been deleted; nothing was changed");
         return json{{"updated", event_json(e)}}.dump();
@@ -598,6 +627,7 @@ std::string t_reminder_set(const json &a, Context &) {
         // A date alone would go off at midnight, when nobody wants to be reminded of anything.
         if (at.find(':') == std::string::npos)
             return fail("at needs a clock time as well as the day (YYYY-MM-DD HH:MM). If the user gave no time, ask what time");
+        if (const std::string slip = weekday_slip(a, due, "at"); !slip.empty()) return fail(slip);
     } else if (given(a, "in_minutes")) {
         return fail("in_minutes must be a number of minutes from now, more than 0");
     } else return fail("give either in_minutes or at. If the user gave no time at all, ask when");

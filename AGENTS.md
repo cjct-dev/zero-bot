@@ -384,6 +384,10 @@ key, real audio), say so plainly rather than implying it was.
 - A "past" escape-hatch parameter on the calendar tool was used by the model to bypass the
   check it was meant to refine. Do not give the model a way round a guard.
 - Give tools the allowed names as an `enum` (smart-home devices) rather than describing them.
+- The model's own weekday arithmetic slips: on a Wednesday, "every Tuesday" was saved on Monday 23
+  November six times in six while the confirmation said Tuesday. The calendar and reminder tools
+  refuse a call whose `say` names one weekday the date is not (`weekday_slip`), naming the nearest
+  date that is; the model corrects it at once. Check what a confirmation claims against what is saved.
 - Text that came from the network or a device (names, descriptions) is untrusted: strip
   control characters, cap the length, pass it as data.
 - Models send `1e300`, `"nan"` and numbers where text was meant. Converting a double that is not

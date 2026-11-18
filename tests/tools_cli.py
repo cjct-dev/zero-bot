@@ -156,6 +156,18 @@ def run_all(root):
     error(c, "calendar_add", {"title": "Past", "start": "2020-01-01 10:00"}, "in the past")
     error(c, "calendar_add", {"start": "2030-01-10 10:00"}, "title is required")
     error(c, "calendar_add", {"title": "No start"}, "start is required")
+    # A confirmation naming a weekday the date is not (the model's "every Tuesday" with a Monday).
+    error(c, "calendar_add", {"title": "Bins", "start": "2030-12-02 07:00", "repeat": "weekly",
+                              "say": "Bin collection added, every Tuesday at 7am."},
+          "2030-12-02 is a Monday, but say calls it Tuesday", "nearest Tuesday is 2030-12-03")
+    error(c, "calendar_add", {"title": "Market", "start": "2030-12-08 09:00", "say": "The market is on Saturday."},
+          "nearest Saturday is 2030-12-07")   # back a day when that is nearer
+    ok(c, "calendar_add", {"title": "Bins", "start": "2030-12-03 07:00", "repeat": "weekly",
+                           "say": "Bin collection added, every Tuesday at 7am."}, '"saved"')
+    ok(c, "calendar_add", {"title": "Gym", "start": "2030-12-02 18:00", "say": "Gym on Mondays and Tuesdays."}, '"saved"')
+    ok(c, "calendar_add", {"title": "Call", "start": "2030-12-02 18:00", "say": "Added the call for 2 December."}, '"saved"')
+    error(c, "reminder_set", {"text": "Bins out", "at": "2030-12-02 19:00", "say": "I'll remind you on Tuesday evening."},
+          "at 2030-12-02 is a Monday, but say calls it Tuesday")
     error(c, "calendar_add", {"title": "x" * 500, "start": "2030-01-10 10:00"}, "under 120 characters")
     error(c, "calendar_add", {"title": "Soon", "start": "2030-01-10 10:00", "remind_minutes_before": 1e300}, "at most a year")
     error(c, "calendar_add", {"title": "Weird", "start": "2030-01-10 10:00", "repeat": "fortnightly"}, "repeat must be one of")
