@@ -53,7 +53,8 @@ src/smarthome/      discovery (mDNS, SSDP, TP-Link broadcast); driver.h, the con
                     tool.cpp (the smart_home tool); color.h (colour names and conversions);
                     drivers/ (one per family; registry.cpp lists them); Tapo transport (tapo)
 src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
-                    pages, the keys and their guide (key_guide), breathing screen, alarm banner, theme
+                    pages, the keys and their guide (key_guide), when the screen dims and goes off
+                    (screen_idle), breathing screen, alarm banner, theme
 tests/              scored agent test set (needs a live service), device-free unit tests
                     (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit, Hue, keys,
                     radio, tools), Tapo, Fire TV, HomeKit and Hue end to end (tapo_e2e.py,
@@ -184,7 +185,8 @@ What exists:
   storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it keeps everything
   it writes in a temporary folder of its own, so running it by hand is safe too) and
   `tests/unit/key_guide_test.cpp` (what each key does on the chat screen, and that the key guide
-  says so), `tests/unit/radio_test.cpp` (the station file, names and nicknames, the tool absent
+  says so), `tests/unit/screen_idle_test.cpp` (when the screen dims and goes off, what keeps it lit
+  and what wakes it), `tests/unit/radio_test.cpp` (the station file, names and nicknames, the tool absent
   without stations, the check of a stream against `tests/unit/radio_peer.py`, the player's live
   mode against a stand-in `ffplay`) and `tests/unit/tools_test.cpp` (the calculator, dates and
   zones that do not exist, helper programs: cancelling, time limits, no inherited descriptors),
@@ -430,6 +432,14 @@ key, real audio), say so plainly rather than implying it was.
   `theme::fit_width` after setting their text; `--shots` checks a bubble of that length with
   `theme::label_fits`. When a word seems to go missing, the activity log's tool arguments show
   what the model actually received.
+- Screen off (`display::screen_off`): the panel's own blanking is not used. Its driver
+  (panel-mipi-dbi, write-only ST7789V) only switches the backlight off for it, and resets and sets
+  up the panel again on every wake because it cannot read back whether the panel is on. The app
+  draws black once, then stops LVGL drawing: invalidation off, and the display's refresh timer
+  given a callback that does nothing (LVGL resumes that timer for any change of layout, a label's
+  new text, even when nothing is to be drawn). Waking marks the whole screen, refreshes once, then
+  switches the backlight on. `--shots` checks the frame itself: black, unchanged while off, and
+  exactly what the objects show after a waking key, which does nothing else.
 
 **Power**
 - The fuel gauge (`/sys/class/power_supply/bq27220-0/`) reports `current_now` in µA: positive

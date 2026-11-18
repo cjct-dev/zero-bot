@@ -1,5 +1,6 @@
 #include "core/settings.h"
 
+#include <algorithm>
 #include <cstdlib>
 
 Settings &Settings::get() {
@@ -13,7 +14,7 @@ json Settings::to_json() const {
     return {
         {"api_base", api_base}, {"api_key", api_key}, {"llm_model", llm_model}, {"vision_model", vision_model},
         {"stt_model", stt_model}, {"tts_model", tts_model}, {"tts_voice", tts_voice}, {"speak_replies", speak_replies}, {"fast_mode", fast_mode}, {"compress_audio", compress_audio}, {"phone_fallback", phone_fallback}, {"setup_done", setup_done},
-        {"search_key", search_key}, {"volume", volume}, {"brightness", brightness}, {"mic_gain", mic_gain},
+        {"search_key", search_key}, {"volume", volume}, {"brightness", brightness}, {"screen_off_min", screen_off_min}, {"mic_gain", mic_gain},
         {"agent_name", agent_name}, {"user_name", user_name}, {"home_city", home_city}, {"home_country", home_country}, {"date_order", date_order}, {"camera_flip", camera_flip}, {"mic_builtin", mic_builtin}, {"timezone", timezone},
         {"units", units}, {"tv_brand", tv_brand}, {"music_dir", music_dir},
     };
@@ -36,6 +37,7 @@ void Settings::from_json(const json &j) {
     search_key = jget(j, "search_key", search_key);
     volume = jget(j, "volume", volume);
     brightness = jget(j, "brightness", brightness);
+    screen_off_min = std::max(0, std::min(24 * 60, jget(j, "screen_off_min", screen_off_min)));
     mic_gain = jget(j, "mic_gain", mic_gain);
     agent_name = jget(j, "agent_name", agent_name);
     user_name = jget(j, "user_name", user_name);

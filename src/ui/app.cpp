@@ -31,6 +31,7 @@
 #include "ui/chat_view.h"
 #include "ui/key_guide.h"
 #include "ui/menu.h"
+#include "ui/screen_idle.h"
 #include "ui/settings_pages.h"
 #include "ui/theme.h"
 
@@ -75,7 +76,6 @@ void sample_home() {
 
 constexpr unsigned long kDoubleTapMs = 450;     // two presses this close together count as a double tap
 constexpr unsigned long kEscHoldMs = 1200;      // hold ESC this long to leave the app
-constexpr unsigned long kDimAfterMs = 45000;    // idle time before the backlight dims
 constexpr double kMinSpeechSeconds = 0.4;
 constexpr double kMaxSpeechSeconds = 90;
 
@@ -115,8 +115,7 @@ struct App {
     bool muted = false;
     unsigned long esc_down = 0;
     bool esc_armed = false;
-    unsigned long last_activity = 0;
-    bool dimmed = false;
+    screen::Idle idle;                // when the screen dims and goes off (screen_idle.h)
     unsigned long last_tick = 0, last_second = 0, last_indicators = 0, last_model_try = 0;
     std::atomic<bool> selecting_models{false};
     std::atomic<bool> connecting_phone{false};
@@ -368,9 +367,12 @@ struct App {
 
     void handle_key(const KeyEvent &ev) {
         const unsigned long now = display::now_ms();
-        if (ev.state != 0) {
-            last_activity = now;
-            if (dimmed) { display::set_brightness(Settings::get().brightness); dimmed = false; }
+        // A key on a dark screen only wakes it, whatever is showing (the chat, typing, settings, the
+        // key guide), and its repeats and its release go no further either.
+        if (ev.state != 0 && wake_screen(now)) {
+            spent_key = ev.key;
+            spent_text = ev.text;
+            return;
         }
 
         // A ringing alarm takes the next key press, whatever the key and whatever is on screen (the
@@ -552,7 +554,7 @@ struct App {
         if (!ended.empty()) timers_ended(ended);
         alarm.tick(now_ms);
         sync_banner();
-        if (alarm.ringing()) last_activity = now_ms;   // the screen stays lit while it rings
+        if (alarm.ringing()) wake_screen(now_ms);      // on at once, and lit while it rings
         // Under a menu or the breathing exercise the status bar cannot be seen; changing it would
         // only make the screen redraw what is hidden. It catches up when they close.
         if (menu.open() || breath.active()) return;
@@ -579,8 +581,7 @@ struct App {
             // What the user says next may be about it: "give it five more minutes".
             Agent::get().add_context("The timer \"" + e.label + "\" ended at " + at + " and its alarm rang.");
         }
-        last_activity = display::now_ms();
-        if (dimmed) { display::set_brightness(Settings::get().brightness); dimmed = false; }
+        wake_screen(display::now_ms());
         if (!names.empty() && Settings::get().speak_replies && !muted) Agent::get().say("Time's up: " + names + ".");
     }
 
@@ -598,9 +599,33 @@ struct App {
             chat.add_alert(text);
             audio::chime(2);
             if (Settings::get().speak_replies) Agent::get().say("Reminder. " + text);
-            last_activity = display::now_ms();
-            if (dimmed) { display::set_brightness(Settings::get().brightness); dimmed = false; }
+            wake_screen(display::now_ms());
         }
+    }
+
+    // ------------------------------------------------------------ the screen's light
+    // From one light to another, as screen_idle.h decides: dimmed, off (drawn black, nothing drawn,
+    // backlight off), or lit at the brightness setting.
+    void set_light(screen::Light from, screen::Light to) {
+        if (from == to) return;
+        if (to == screen::Light::Off) { display::screen_off(); return; }
+        const int percent = to == screen::Light::Dimmed ? screen::kDimPercent : Settings::get().brightness;
+        if (from == screen::Light::Off) display::screen_on(percent);   // redrawn before the light comes on
+        else display::set_brightness(percent);
+    }
+
+    // A key, an alarm, a reminder, a request: the screen lit from now on. True when it was off.
+    bool wake_screen(unsigned long now) {
+        const screen::Light was = idle.use(now);
+        set_light(was, screen::Light::Lit);
+        return was == screen::Light::Off;
+    }
+
+    // Every second: dims, then goes off after the minutes set, unless something is going on that
+    // the user is watching or waiting for. Music and radio play on with the screen off.
+    void tick_screen(unsigned long now, bool busy) {
+        const screen::Light was = idle.light();
+        set_light(was, idle.update(now, busy, Settings::get().screen_off_min));
     }
 
     void periodic() {
@@ -612,7 +637,7 @@ struct App {
             chat.tick();
             menu.tick();
             if (breath.active()) {
-                last_activity = now;                       // the screen stays lit for the whole exercise
+                wake_screen(now);                          // the screen stays lit for the whole exercise
                 if (breath.tick(now)) audio::chime(1);     // a soft note when the last breath is done
             }
             update_timers(now);
@@ -622,7 +647,7 @@ struct App {
             !Agent::get().has_pending() && !SpeechQueue::get().active()) {
             if (menu.open()) menu.close();
             if (chat.typing()) chat.typing_end();
-            if (dimmed) { display::set_brightness(Settings::get().brightness); dimmed = false; }
+            wake_screen(now);
             breath.start(breath_pattern, breath_minutes);
             breath_minutes = 0;
             if (banner.visible()) banner.raise();         // the exercise came forward; an alarm stays in front
@@ -635,12 +660,11 @@ struct App {
             last_second = now;
             check_alerts();
             const bool active = recorder.active() || Agent::get().state() != AgentState::Idle;
-            if (active) last_activity = now;
             // Belt and braces: whatever happened to a request, music is never left waiting for
             // an answer that is not coming.
             if (!active && !Agent::get().busy() && !Agent::get().has_pending() && !SpeechQueue::get().active() && !connecting_phone)
                 audio::Music::get().hold(audio::Music::kExchange | audio::Music::kSpeech, false);
-            if (!dimmed && now - last_activity > kDimAfterMs) { display::set_brightness(10); dimmed = true; }
+            tick_screen(now, active || Agent::get().busy() || Agent::get().has_pending() || SpeechQueue::get().active());
         }
         if (now - last_model_try >= 15000) {   // covers starting up before Wi-Fi has connected
             last_model_try = now;
@@ -735,6 +759,81 @@ struct App {
         chat.typing_begin("remind me at 7 to call the hot");
         chat.set_status(s.agent_name, theme::kFaint);
         snap("typing");
+        {
+            // Unused for the minutes set under Device, the screen dims, then goes off: drawn black,
+            // then nothing more drawn however much changes. A key wakes it to what it shows now and
+            // does nothing else, whatever is on screen: not ENTER (it would send the text being
+            // typed), not a letter (typed), not SPACE or a key in settings or the key guide, nor
+            // their repeats or releases. The next press works as usual.
+            const int minutes = s.screen_off_min;
+            s.screen_off_min = 5;
+            chat.set_now_playing("");
+            auto go_dark = [&] {
+                const unsigned long t = display::now_ms();
+                wake_screen(t);
+                tick_screen(t + screen::kDimAfterMs - 1, false);
+                const bool lit = idle.light() == screen::Light::Lit;
+                tick_screen(t + screen::kDimAfterMs, false);
+                const bool dim = idle.light() == screen::Light::Dimmed && !display::screen_is_off();
+                tick_screen(t + 5 * 60000UL - 1, false);
+                const bool still = !display::screen_is_off();
+                tick_screen(t + 5 * 60000UL, false);
+                return lit && dim && still && display::screen_is_off() && display::frame_black();
+            };
+            auto press = [&](Key k, const char *text, std::initializer_list<int> states) {
+                KeyEvent ev; ev.key = k; ev.text = text;
+                for (int st : states) { ev.state = st; handle_key(ev); }
+            };
+            const std::string typed = chat.typing_text();
+            bool dark = go_dark();                                     // checked on the frame itself: no image of it
+            // While it is off: a new time, a countdown, a title that scrolls. None of it is drawn.
+            const unsigned long drawn = display::refreshes();
+            chat.set_indicators(true, false, 67, false, "18:43");
+            chat.set_timer(timers::badge({1800000300}, 1800000001));
+            chat.set_now_playing("Harbour Classic FM · Morning concert with a long title");
+            for (int i = 0; i < 20; ++i) {
+                chat.tick();
+                menu.tick();
+                lv_timer_handler();
+                usleep(20000);
+            }
+            const bool nothing_drawn = display::refreshes() == drawn && display::frame_black();
+            press(Key::Enter, "", {1, 0});
+            const bool woke = !display::screen_is_off() && display::frame_current() && chat.typing() && chat.typing_text() == typed;
+            chat.set_indicators(true, false, 68, false, "18:42");
+            chat.set_timer("");
+            chat.set_now_playing("");
+            dark = go_dark() && dark;
+            press(Key::Char, "w", {1, 2, 2, 0});
+            bool swallowed = !display::screen_is_off() && chat.typing_text() == typed;
+            press(Key::Char, "w", {1, 0});
+            const bool next_typed = chat.typing_text() == typed + "w";
+            press(Key::Backspace, "", {1, 0});
+            chat.typing_end();
+            dark = go_dark() && dark;
+            press(Key::Char, " ", {1, 0});
+            swallowed = swallowed && !display::screen_is_off() && !menu.open();
+            press(Key::Char, " ", {1, 0});                              // settings, on "Assistant"
+            dark = go_dark() && dark;
+            press(Key::Down, "", {1, 2, 0});
+            swallowed = swallowed && menu.open() && menu.selected() == "Assistant";
+            press(Key::Char, " ", {1, 0});                              // closes them
+            press(Key::Char, "h", {1, 0});                              // the key guide
+            dark = go_dark() && dark;
+            press(Key::Down, "", {1, 0});
+            dark = go_dark() && dark;
+            press(Key::Esc, "", {1, 0});
+            swallowed = swallowed && menu.open() && menu.title() == kKeyGuideTitle && menu.first_shown() == 0;
+            press(Key::Esc, "", {1, 0});
+            if (!dark || !nothing_drawn || !woke || !swallowed || !next_typed || menu.open() || display::screen_is_off()) {
+                fprintf(stderr, "the screen did not go off, drew while off, or a waking key did more than wake it "
+                                "(dark %d, nothing drawn %d, woke %d, swallowed %d, next typed %d)\n",
+                        dark, nothing_drawn, woke, swallowed, next_typed);
+                failed = true;
+            }
+            s.screen_off_min = minutes;
+            chat.set_now_playing("Dancing Queen · ABBA");          // as it was, for the frames to come
+        }
         chat.typing_end();
 
         chat.add_alert("Check the oven");
@@ -876,10 +975,19 @@ struct App {
         {
             // The same through the app's own path: a timer that has just ended rings (silently,
             // as when the user has muted the device), and a key press silences it and goes no further.
+            // The screen was off: the alarm turns it on at once.
             muted = true;
+            const int minutes = s.screen_off_min;
+            s.screen_off_min = 5;
+            const unsigned long t = display::now_ms();
+            wake_screen(t);
+            tick_screen(t + 5 * 60000UL, false);
+            const bool was_off = display::screen_is_off();
+            s.screen_off_min = minutes;
             Store::get().add_timer("Eggs", 1, time(nullptr) - 5);
             update_timers(display::now_ms());
-            const bool rang = alarm.ringing() && banner.visible() && audio::Music::get().holding(audio::Music::kAlarm);
+            const bool rang = was_off && !display::screen_is_off() && alarm.ringing() && banner.visible() &&
+                              audio::Music::get().holding(audio::Music::kAlarm);
             KeyEvent key; key.key = Key::Char; key.text = "a"; key.state = 1;
             handle_key(key);
             snap("timer-silenced");
@@ -1102,7 +1210,7 @@ int run_app(const std::string &shots_dir, bool keydump) {
     if (!s.setup_done) app.run_setup();
     input::set_dump(keydump);
     input::start();
-    app.last_activity = display::now_ms();
+    app.idle.use(display::now_ms());
 
     while (!g_exit) {
         KeyEvent ev;
@@ -1118,7 +1226,7 @@ int run_app(const std::string &shots_dir, bool keydump) {
     app.recorder.cancel();
     Agent::get().cancel();
     audio::Music::get().stop();
-    display::set_brightness(s.brightness);
+    display::screen_on(s.brightness);              // drawn again if it was off, for the clean screen below
     // Leave a clean screen for the launcher to draw over.
     lv_obj_clean(screen);
     lv_refr_now(nullptr);

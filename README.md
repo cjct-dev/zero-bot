@@ -55,6 +55,7 @@ needs a [Tavily](https://tavily.com) key.
 | **H** | Show every key and what it does (also in settings, and under *Settings → Keys*). |
 | **fn**+**S** / **fn**+**D** | Volume down / up. **fn**+**A** mutes and unmutes. |
 | **fn**+**U** / **fn**+**I** | Screen brightness down / up. |
+| Any key, screen off | Turns the screen back on, and does nothing else. |
 | **fn**+**Q** / **fn**+**W** / **fn**+**E** | Music: pause or resume / previous track / next track. With a radio station on: pause or resume / previous station in your list / next station. |
 
 The bottom of the screen names the keys you need most; **H** lists the rest.
@@ -70,7 +71,7 @@ You do not have to wait for it to finish:
 
 The dot in the top-left corner shows what it is doing: red while the microphone is live, amber
 while it is working, teal while it is speaking. The screen dims after 45 seconds without use
-and wakes on any key.
+and goes off after five minutes (see *Screen off after* below); any key wakes it.
 
 ### Timers
 
@@ -169,7 +170,7 @@ settings from any page.
 | Section | What is there |
 |---|---|
 | Assistant | Language, vision, speech-to-text and text-to-speech models; voice; spoken replies on/off; fast replies; the assistant's name |
-| Device | Volume, brightness, microphone gain, time zone, start at power-on, internet via phone, microphone, flip camera image, home city and country, your name, date order, units |
+| Device | Volume, brightness, screen off after, microphone gain, time zone, start at power-on, internet via phone, microphone, flip camera image, home city and country, your name, date order, units |
 | Your data | Calendar (edit, add, delete, delete all), reminders and timers (cancel one or all), memory (edit, add, delete, forget everything), TV remote, smart home (devices by room, setting up, the Tapo account), music library, radio stations (what was read from your list, play one to try it), start a new conversation |
 | AI service | Address, API key, web search key, compress audio |
 | About | Status and connection test, the setup guide again, exit to launcher |
@@ -191,6 +192,14 @@ the model reasons on every step, which is a second or two slower.
 before the request reaches the model, fills in the year (the next time that date comes round),
 and uses the same order when it shows dates and when you type one into the calendar editor. Dates
 are always shown and spoken with the month as a word, so a misheard date is easy to catch.
+
+*Screen off after* (under *Device*: never, 1, 2, 5, 10 or 15 minutes; 5 by default) switches the
+screen off when the device has not been used for that long, against burn-in: it is drawn black,
+nothing more is drawn, and the backlight goes off. Music and the radio keep playing. Any key turns
+it back on, exactly as it was (the chat, a settings page, text being typed), and does nothing else,
+so a stray press is harmless. It stays on while you are talking, while a request is worked on or
+its answer spoken, during a breathing exercise and while a timer's alarm rings; an alarm or a
+reminder turns it on at once.
 
 ### Calendar
 
@@ -489,7 +498,7 @@ service to check that a change needing your yes waits for one.
 src/agent/      the conversation loop, prompt, tools, speech queue and service client
 src/core/       settings, calendar/reminder/timer/memory store, timers, music library, radio stations, utilities
 src/platform/   display, keyboard, audio, camera, infrared, subprocess helpers
-src/ui/         chat screen, menus, settings pages, alarm banner, app controller
+src/ui/         chat screen, menus, settings pages, alarm banner, screen off, app controller
 src/net/        HTTP client (libcurl)
 src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers
 scripts/        toolchain setup, packaging, deployment

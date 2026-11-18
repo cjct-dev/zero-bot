@@ -26,6 +26,7 @@ struct Settings {
     // Device
     int volume = 70;
     int brightness = 80;
+    int screen_off_min = 5;      // minutes unused before the screen goes off (against burn-in); 0 = never
     int mic_gain = 100;
 
     // Personalisation

@@ -23,4 +23,14 @@ void set_brightness(int percent) {
 #endif
 }
 
+void backlight_off() {
+#if !ZB_DESKTOP
+    // 0 switches the PWM backlight off (the launcher's screen was found at 0 too). Not bl_power: the
+    // launcher writes only the brightness, so a bl_power left off by an app that crashed would keep
+    // the screen dark until a restart.
+    std::ofstream f("/sys/class/backlight/backlight/brightness");
+    if (f) f << 0;
+#endif
+}
+
 }  // namespace display
