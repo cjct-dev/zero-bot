@@ -433,12 +433,14 @@ key, real audio), say so plainly rather than implying it was.
 - A "past" escape-hatch parameter on the calendar tool was used by the model to bypass the
   check it was meant to refine. Do not give the model a way round a guard.
 - Give tools the allowed names as an `enum` (smart-home devices) rather than describing them.
-- A boundary rule in one tool's description is not seen where it matters. tv_remote's said "if a listed
-  TV does not answer over the network, say so rather than trying this", yet after every network error of
-  a listed TV (35 runs in 35) the reply offered the infrared remote, and a "yes" then sent another TV's
-  codes (ZB-072). The rule also had to be in the description of the tool whose error is being reported
-  (smart_home), worded without the other tool's name: with it, replies told the user to "try the
-  tv_remote tool".
+- A rule in a tool's description is not always heeded where it matters, and words added to a
+  description move routing elsewhere. tv_remote's said "if a listed TV does not answer over the network,
+  say so rather than trying this", yet after every network error of a listed TV (35 runs in 35) the reply
+  offered the infrared remote, and a "yes" then sent another TV's codes (ZB-072). The rule added to both
+  tools' descriptions cut the offers to 3 in 55, but drew TV key presses ("press ok on the tv") to the
+  infrared remote (5 runs in 50, none in 30 before), and naming tv_remote there made replies tell the user
+  to "try the tv_remote tool". Said once in the TV's failure result (`control.cpp`), where it applies, it
+  left the prompt and tools byte for byte as they were: 2 offers in 55 and no infrared call.
 - The model's own weekday arithmetic slips: on a Wednesday, "every Tuesday" was saved on Monday 23
   November six times in six while the confirmation said Tuesday. The calendar and reminder tools
   refuse a call whose `say` names one weekday the date is not (`weekday_slip`), naming the nearest
