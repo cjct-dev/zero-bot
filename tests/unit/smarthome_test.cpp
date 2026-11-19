@@ -959,6 +959,16 @@ void test_commands() {
     r = run({{"action", "on"}, {"target", "Living room TV"}});
     // A TV that does not answer: the infrared remote is not to be offered (ZB-072); for other things it is not mentioned.
     CHECK_MSG(r == "ERROR: could not change \"Living room TV\": it did not answer. Tell the user" + std::string(kNoInfrared), r);
+    // The same rule where a TV fails among things that changed, and where a TV's state cannot be read (ZB-078).
+    r = run({{"action", "off"}, {"target", "everything"}});
+    CHECK_MSG(has(r, R"("changed":2)") && has(r, "\"Living room TV: it did not answer; tell the user" + std::string(kNoInfrared) + "\""), r);
+    r = run({{"action", "status"}, {"target", "Living room TV"}});
+    CHECK_MSG(r == "ERROR: could not read \"Living room TV\": it did not answer. Tell the user" + std::string(kNoInfrared), r);
+    g_fake->broken = {"fake:hub"};
+    r = run({{"action", "off"}, {"target", "everything"}});
+    CHECK_MSG(has(r, R"("failed":[)") && !has(r, "infrared"), r);   // a light that failed: not mentioned
+    r = run({{"action", "status"}, {"target", "Kitchen light"}});
+    CHECK_MSG(starts(r, "ERROR: could not read \"Kitchen light\"") && !has(r, "infrared"), r);
     write_home(lights_home());
     g_fake->broken = {"fake:bridge"};
     r = run({{"action", "off"}, {"target", "Bedroom"}});

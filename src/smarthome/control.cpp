@@ -25,6 +25,14 @@ constexpr int kStalledMs = kApplyDeadlineMs / 2;   // a change that took this lo
 constexpr int kReadDeadlineMs = 4000;       // per device, for reading its things
 constexpr size_t kWorkers = 4;              // threads a command for several devices may use
 constexpr size_t kMaxAtOnce = 8;            // more things than this in one command need a yes
+
+// After a TV did not answer, the reply offered the infrared remote every time, and a yes sent the codes
+// of the one brand in settings, which may be another TV's (ZB-072). Said in the result, where it applies:
+// in the tools' descriptions it was not heeded, and it drew TV key presses to the infrared remote. Used
+// for a change that failed, a TV that failed among several things, and a TV whose state could not be read.
+std::string no_infrared(const Thing &t) {
+    return t.type == "tv" ? ", without offering the infrared remote instead (it may send another TV's codes)" : "";
+}
 constexpr size_t kStatusMax = 30;           // things listed by a status of everything
 constexpr unsigned long kAnswerWithinMs = 3 * 60 * 1000;   // a yes must come within this
 constexpr double kMinC = 5, kMaxC = 30;     // heating targets are clamped to this range
@@ -845,7 +853,7 @@ std::string status(const std::string &network_id, const NetworkEntry &e, const s
     if (r.scope == Scope::Thing) {
         const Item *m = members[0];
         const std::string key = key_of(m->device_id, m->thing.id);
-        if (errors.count(key)) return fail("could not read " + in_quotes(m->label) + ": " + errors[key] + ". Tell the user");
+        if (errors.count(key)) return fail("could not read " + in_quotes(m->label) + ": " + errors[key] + ". Tell the user" + no_infrared(m->thing));
         return dump({{"target", m->label}, {"state", value(m)}});
     }
     if (everything) {
@@ -1134,19 +1142,14 @@ std::string execute(const Command &cmd, bool dry_run) {
     const Step *first_failure = nullptr;
     for (const auto &s : steps) {
         if (s.ok) { ++changed; continue; }
-        failed.push_back(s.item->label + ": " + s.err);
+        // A TV among the things that failed: the same rule, in its own line of the list (ZB-078).
+        failed.push_back(s.item->label + ": " + s.err + (s.item->thing.type == "tv" ? "; tell the user" + no_infrared(s.item->thing) : ""));
         if (!first_failure) first_failure = &s;
     }
     json now = change_json(base);
     if (base.on && now.size() == 1) now = *base.on ? "on" : "off";
     if (base.transport) { now.erase("transport"); now["playback"] = *base.transport; }
-    // After a TV did not answer, the reply offered the infrared remote every time, and a yes sent the codes
-    // of the one brand in settings, which may be another TV's (ZB-072). Said here, where it applies; in
-    // the tools' descriptions it was not heeded, and it drew TV key presses to the infrared remote.
-    const auto tell = [](const Step &s) {
-        return std::string(". Tell the user") +
-               (s.item->thing.type == "tv" ? ", without offering the infrared remote instead (it may send another TV's codes)" : "");
-    };
+    const auto tell = [](const Step &s) { return ". Tell the user" + no_infrared(s.item->thing); };
     if (r.scope == Scope::Thing) {
         if (!changed) return fail("could not change " + in_quotes(r.label) + ": " + steps[0].err + tell(steps[0]));
         return dump({{"target", r.label}, {"now", now}});
