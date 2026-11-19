@@ -290,9 +290,13 @@ What exists:
 - **Measurement switches** (`src/agent/experiment.h`; compiled into the `cli` build only, CMake option
   `ZB_EXPERIMENTS`): `ZB_EXP_TRACE=file` appends a JSON line per model call (purpose, timings, token
   counts the service reports, size sent) and per request (first sentence, tools, guards, second look);
-  no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`. The runners' `--trace`
-  puts each turn's trace into `--json`; `tests/exp_report.py` summarises and compares such files.
-  With no `ZB_EXP_*` variable set nothing sent or done changes (checked in `agent_loop_test.py`).
+  no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`. Variants measured against
+  the default, none of them adopted: `ZB_EXP_TOOLS=say1|lean` (shorter tool text),
+  `ZB_EXP_DECIDE=parallel|required|required_held` (deciding without the second look); an unknown value
+  stops the run. The runners' `--trace` puts each turn's trace into `--json`; `tests/exp_report.py`
+  summarises such files and `tests/exp_compare.py` compares a variant with a baseline case by case and by
+  tag (repeat the same cases on both sides before pooling). With no `ZB_EXP_*` variable set nothing sent
+  or done changes (checked in `agent_loop_test.py`).
 - **Screens**: `build/sim/zero_bot --shots out/` and look at the PNGs. Every UI change should
   be checked this way before it goes to the device. The script in `App::render_shots` walks
   the menus by counting key presses, so adding a settings row shifts later screenshots: fix
