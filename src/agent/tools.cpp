@@ -125,6 +125,9 @@ json fetch_json(const std::string &url, std::string &err, Context &ctx, const st
     req.headers = headers;
     req.timeout_s = 20;
     req.cancel = ctx.cancel;
+    // The test sets' stand-in web (ZB_EXP_WEB, experiment builds only) is reached directly: no proxy,
+    // and a redirect is not followed off this computer.
+    req.local = experiment::stand_in(url);
     if (!post_body.empty()) { req.method = "POST"; req.body = post_body; }
     http::Retry retry;
     retry.attempts = 2;
@@ -172,7 +175,7 @@ bool in_region(const json &r, const std::string &region_in) {
 // does not exist there still resolves to its best-known namesake.
 bool geocode(const std::string &query, Place &out, std::string &err, Context &ctx, const std::string &country = "") {
     const std::string base = "https://geocoding-api.open-meteo.com/v1/search?language=en&count=";
-    json j = fetch_json(base + (country.empty() ? "1" : "10") + "&name=" + http::url_encode(query), err, ctx);
+    json j = fetch_json(experiment::web(base + (country.empty() ? "1" : "10") + "&name=" + http::url_encode(query)), err, ctx);
     if (!err.empty()) return false;
     size_t pick = 0;
     if (!country.empty() && j.contains("results") && j["results"].is_array())
@@ -191,7 +194,7 @@ bool geocode(const std::string &query, Place &out, std::string &err, Context &ct
                                        tries < 3;
          cut = name.rfind(' ', cut - 1), ++tries) {
         const std::string region = util::trim(name.substr(cut + 1));
-        j = fetch_json(base + "8&name=" + http::url_encode(util::trim(name.substr(0, cut))), err, ctx);
+        j = fetch_json(experiment::web(base + "8&name=" + http::url_encode(util::trim(name.substr(0, cut)))), err, ctx);
         if (!err.empty()) return false;
         if (!j.contains("results") || !j["results"].is_array()) continue;
         for (size_t i = 0; i < j["results"].size(); ++i) {
@@ -688,7 +691,7 @@ std::string t_web_search(const json &a, Context &ctx) {
                     "not be looked up. Tell the user that; if you answer from memory, say it may be out of date");
     const json body = {{"query", query}, {"search_depth", "basic"}, {"include_answer", true}, {"max_results", 5}};
     std::string err;
-    const json j = fetch_json("https://api.tavily.com/search", err, ctx,
+    const json j = fetch_json(experiment::web("https://api.tavily.com/search"), err, ctx,
                               {"Content-Type: application/json", "Authorization: Bearer " + key}, body.dump());
     if (!err.empty()) return fail(err);
     json out = json::object();
@@ -726,7 +729,7 @@ std::string t_weather(const json &a, Context &ctx) {
              "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m"
              "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset%s",
              p.lat, p.lon, days, imperial ? "&temperature_unit=fahrenheit&wind_speed_unit=mph" : "");
-    const json j = fetch_json(url, err, ctx);
+    const json j = fetch_json(experiment::web(url), err, ctx);
     if (!err.empty()) return fail(err);
     const std::string deg = imperial ? "F" : "C", wind = imperial ? " mph" : " km/h";
     json out = {{"place", p.name + (p.country.empty() ? "" : ", " + p.country)}};
@@ -894,22 +897,45 @@ void radio_hint(const json &a, json &out) {
                        : "A radio station is played with the radio tool, not from the music library.";
 }
 
+// With ZB_DRY_RUN nothing plays, but the music tool keeps a pretend queue of what it would have played,
+// so that "next" and "now_playing" answer as they would with a player (the test sets ask for a song
+// and then skip it). Without ZB_DRY_RUN it is never touched.
+struct DryQueue {
+    std::mutex mtx;
+    std::vector<std::string> paths;
+    size_t at = 0;
+    std::string current() { return at < paths.size() ? paths[at] : std::string(); }
+};
+DryQueue &dry_queue() { static DryQueue q; return q; }
+
 std::string t_music(const json &a, Context &ctx) {
     const std::string action = util::lower(str_arg(a, "action"));
     audio::Music &player = audio::Music::get();
     MusicLibrary &lib = MusicLibrary::get();
-    if (action == "stop") { if (!dry_run()) player.stop(); return "music stopped"; }
+    DryQueue &dry = dry_queue();
+    std::unique_lock<std::mutex> dry_lock(dry.mtx, std::defer_lock);
+    if (dry_run()) dry_lock.lock();
+    if (action == "stop") {
+        if (!dry_run()) player.stop();
+        else dry.paths.clear();
+        return "music stopped";
+    }
     if (action == "next") {
+        if (dry_run()) {
+            if (dry.current().empty()) return fail("nothing is playing");
+            if (++dry.at >= dry.paths.size()) dry.paths.clear();   // past the last track, as the player stops
+            return "skipped to the next track";
+        }
         if (!player.playing()) return fail("nothing is playing");
         if (player.live()) return fail("a radio station is playing, not a list of songs; another station is started with radio");
         player.next();
         return "skipped to the next track";
     }
     if (action == "now_playing") {
-        if (player.live())
+        if (!dry_run() && player.live())
             return json{{"radio_station", player.title()},
                         {"note", "a live station: the stream does not say which programme or song is on"}}.dump();
-        const std::string cur = player.current();
+        const std::string cur = dry_run() ? dry.current() : player.current();
         if (cur.empty()) return "nothing is playing";
         const Track t = lib.lookup(cur);
         return json{{"title", t.title}, {"artist", t.artist}, {"album", t.album}}.dump();
@@ -963,6 +989,9 @@ std::string t_music(const json &a, Context &ctx) {
         // lifts the hold), so the song does not begin, stop for the reply and begin again.
         if (ctx.in_conversation) player.hold(audio::Music::kExchange, true);
         player.play(paths);
+    } else {
+        dry.paths = paths;
+        dry.at = 0;
     }
     const Track &first = found[0];
     return json{{"now_playing", first.title + (first.artist.empty() ? "" : " by " + first.artist)},

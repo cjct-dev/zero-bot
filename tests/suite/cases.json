@@ -3837,6 +3837,12 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "list"
    },
@@ -3863,6 +3869,12 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
    {
     "kind": "timer_action",
     "action": "list"
@@ -3891,6 +3903,12 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "list"
    },
@@ -3918,6 +3936,12 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "list"
    }
@@ -3944,8 +3968,18 @@
   ],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "cancel"
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": []
    }
   ],
   "env": {},
@@ -3970,8 +4004,18 @@
   ],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "cancel"
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": []
    }
   ],
   "env": {},
@@ -3996,8 +4040,18 @@
   ],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "cancel"
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": []
    }
   ],
   "env": {},
@@ -4022,8 +4076,18 @@
   ],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "cancel"
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": []
    }
   ],
   "env": {},
@@ -4046,6 +4110,12 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "add_time"
    },
@@ -4054,6 +4124,12 @@
     "tool": "timer",
     "key": "minutes",
     "num": 5
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": [
+     900
+    ]
    }
   ],
   "env": {},
@@ -4075,6 +4151,12 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
    {
     "kind": "timer_becomes",
     "seconds": 720,
@@ -4100,6 +4182,12 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
    {
     "kind": "timer_becomes",
     "seconds": 900,
@@ -4127,9 +4215,27 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 1200,
+    "label": null,
+    "turn": 0
+   },
+   {
+    "kind": "timer",
+    "seconds": 300,
+    "label": null,
+    "turn": 1
+   },
+   {
     "kind": "cancelled",
     "want": "tea",
     "keep": "stud"
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": [
+     1200
+    ]
    }
   ],
   "env": {},
@@ -4153,9 +4259,27 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 2700,
+    "label": null,
+    "turn": 0
+   },
+   {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 1
+   },
+   {
     "kind": "cancelled",
     "want": "stud",
     "keep": "pasta"
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": [
+     600
+    ]
    }
   ],
   "env": {},
@@ -4178,6 +4302,18 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "timer",
+    "seconds": 300,
+    "label": null,
+    "turn": 0
+   },
+   {
+    "kind": "timer",
+    "seconds": 720,
+    "label": null,
+    "turn": 1
+   },
    {
     "kind": "timer_action",
     "action": "list"
@@ -5152,13 +5288,22 @@
   "must_not": [],
   "checks": [
    {
-    "kind": "at",
-    "day": "tomorrow",
-    "times": [
-     "10:00"
+    "kind": "moved",
+    "first": [
+     "tomorrow",
+     [
+      "09:00",
+      "21:00"
+     ]
     ],
-    "tools": "reminder_set|calendar_add",
-    "weekly": false
+    "then": [
+     "tomorrow",
+     [
+      "10:00"
+     ]
+    ],
+    "what": "reminder",
+    "title": "bank"
    }
   ],
   "env": {},
@@ -5179,7 +5324,18 @@
    "reminder_list"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "at",
+    "day": "tomorrow",
+    "times": [
+     "09:00"
+    ],
+    "tools": "reminder_set|calendar_add",
+    "weekly": false,
+    "turn": 0
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -6298,13 +6454,21 @@
   "must_not": [],
   "checks": [
    {
-    "kind": "at",
-    "day": "next:4",
-    "times": [
-     "20:30"
+    "kind": "moved",
+    "first": [
+     "next:4",
+     [
+      "20:00"
+     ]
     ],
-    "tools": "calendar_update|calendar_add",
-    "weekly": false
+    "then": [
+     "next:4",
+     [
+      "20:30"
+     ]
+    ],
+    "what": "dinner",
+    "title": "dinner"
    }
   ],
   "env": {},
@@ -6327,13 +6491,21 @@
   "must_not": [],
   "checks": [
    {
-    "kind": "at",
-    "day": "next:3",
-    "times": [
-     "14:00"
+    "kind": "moved",
+    "first": [
+     "next:3",
+     [
+      "13:00"
+     ]
     ],
-    "tools": "calendar_update|calendar_add",
-    "weekly": false
+    "then": [
+     "next:3",
+     [
+      "14:00"
+     ]
+    ],
+    "what": "lunch",
+    "title": "lunch"
    }
   ],
   "env": {},
@@ -6356,13 +6528,21 @@
   "must_not": [],
   "checks": [
    {
-    "kind": "at",
-    "day": "date:12-04",
-    "times": [
-     "10:00"
+    "kind": "moved",
+    "first": [
+     "date:12-03",
+     [
+      "10:00"
+     ]
     ],
-    "tools": "calendar_update|calendar_add",
-    "weekly": false
+    "then": [
+     "date:12-04",
+     [
+      "10:00"
+     ]
+    ],
+    "what": "dentist appointment",
+    "title": "dentist"
    }
   ],
   "env": {},
@@ -6383,7 +6563,22 @@
    "calendar_delete"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "at",
+    "day": "next:2",
+    "times": [
+     "18:00"
+    ],
+    "tools": "calendar_add",
+    "weekly": false,
+    "turn": 0
+   },
+   {
+    "kind": "events_saved",
+    "n": 0
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -6401,6 +6596,16 @@
   "must": [],
   "must_not": [],
   "checks": [
+   {
+    "kind": "at",
+    "day": "next:2",
+    "times": [
+     "18:00"
+    ],
+    "tools": "calendar_add",
+    "weekly": false,
+    "turn": 0
+   },
    {
     "kind": "answer",
     "re": "yoga",
@@ -6427,6 +6632,12 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "yearly",
+    "md": "06-02",
+    "year": 1955,
+    "turn": 0
+   },
    {
     "kind": "answer",
     "re": "june",
@@ -6840,6 +7051,12 @@
   ],
   "checks": [
    {
+    "kind": "memory",
+    "has": "shellfish",
+    "lacks": [],
+    "turn": 0
+   },
+   {
     "kind": "answer",
     "re": "shellfish|allerg",
     "what": null
@@ -6865,6 +7082,12 @@
    "memory_save"
   ],
   "checks": [
+   {
+    "kind": "memory",
+    "has": "golf",
+    "lacks": [],
+    "turn": 0
+   },
    {
     "kind": "answer",
     "re": "golf",
@@ -6892,6 +7115,12 @@
   ],
   "checks": [
    {
+    "kind": "memory",
+    "has": "\\b42\\b|forty[- ]two",
+    "lacks": [],
+    "turn": 0
+   },
+   {
     "kind": "answer",
     "re": "\\b42\\b|forty[- ]two",
     "what": null
@@ -6918,6 +7147,12 @@
   ],
   "checks": [
    {
+    "kind": "memory",
+    "has": "vegetarian",
+    "lacks": [],
+    "turn": 0
+   },
+   {
     "kind": "answer",
     "re": "vegetarian|meat-free|meatless|veg",
     "what": null
@@ -6942,7 +7177,20 @@
    "memory_delete"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "memory",
+    "has": "vegetarian",
+    "lacks": [],
+    "turn": 0
+   },
+   {
+    "kind": "memory_lacks",
+    "re": [
+     "vegetarian"
+    ]
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -9775,9 +10023,7 @@
   "turns": [
    "skip this song"
   ],
-  "must": [
-   "music"
-  ],
+  "must": [],
   "must_not": [],
   "checks": [
    {
@@ -9786,12 +10032,16 @@
     "key": "action",
     "any": [
      "next"
-    ]
+    ],
+    "made": true
    }
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "tried": [
+   "music"
+  ]
  },
  {
   "name": "music-012",
@@ -9801,9 +10051,7 @@
   "turns": [
    "next track please"
   ],
-  "must": [
-   "music"
-  ],
+  "must": [],
   "must_not": [],
   "checks": [
    {
@@ -9812,12 +10060,16 @@
     "key": "action",
     "any": [
      "next"
-    ]
+    ],
+    "made": true
    }
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "tried": [
+   "music"
+  ]
  },
  {
   "name": "music-013",
@@ -9991,6 +10243,13 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "arg",
+    "tool": "music",
+    "key": "action",
+    "is": "play",
+    "turn": 0
+   },
    {
     "kind": "arg",
     "tool": "music",
@@ -12639,18 +12898,20 @@
   "turns": [
    "turn on the fan heater"
   ],
-  "must": [
-   "smart_home"
-  ],
+  "must": [],
   "must_not": [],
   "checks": [
    {
-    "kind": "home_asked"
+    "kind": "home_asked",
+    "name": "heater"
    }
   ],
   "env": {},
   "home": "eval",
-  "steer": null
+  "steer": null,
+  "tried": [
+   "smart_home"
+  ]
  },
  {
   "name": "home-046",
@@ -12661,18 +12922,20 @@
   "turns": [
    "switch the fan heater on please"
   ],
-  "must": [
-   "smart_home"
-  ],
+  "must": [],
   "must_not": [],
   "checks": [
    {
-    "kind": "home_asked"
+    "kind": "home_asked",
+    "name": "heater"
    }
   ],
   "env": {},
   "home": "eval",
-  "steer": null
+  "steer": null,
+  "tried": [
+   "smart_home"
+  ]
  },
  {
   "name": "home-047",
@@ -12690,6 +12953,11 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
    {
     "kind": "home_call",
     "action": "on",
@@ -12724,6 +12992,11 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
+   {
     "kind": "home_call",
     "action": "on",
     "targets": [
@@ -12756,6 +13029,11 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
    {
     "kind": "home_call",
     "action": "on",
@@ -12790,6 +13068,11 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
+   {
     "kind": "home_call",
     "action": "on",
     "targets": [
@@ -12821,8 +13104,14 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
+   {
     "kind": "home_not_switched",
-    "name": "Fan heater"
+    "name": "Fan heater",
+    "turn": "all"
    }
   ],
   "env": {},
@@ -12844,8 +13133,14 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
+   {
     "kind": "home_not_switched",
-    "name": "Fan heater"
+    "name": "Fan heater",
+    "turn": "all"
    }
   ],
   "env": {},
@@ -12867,8 +13162,14 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
+   {
     "kind": "home_not_switched",
-    "name": "Fan heater"
+    "name": "Fan heater",
+    "turn": "all"
    }
   ],
   "env": {},
@@ -12890,8 +13191,14 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
+   {
     "kind": "home_not_switched",
-    "name": "Fan heater"
+    "name": "Fan heater",
+    "turn": "all"
    }
   ],
   "env": {},
@@ -12914,11 +13221,29 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "sun"
+    ],
+    "turn": 0
+   },
+   {
+    "kind": "asks",
+    "name": "lamp",
+    "turn": 0
+   },
+   {
     "kind": "home_not_switched",
-    "name": "Bedroom lamp"
+    "name": "Bedroom lamp",
+    "turn": "all"
    }
   ],
-  "env": {},
+  "env": {
+   "ZB_EXP_WEB": "@web/default",
+   "ZB_SEARCH_KEY": "stand-in"
+  },
   "home": "eval",
   "steer": null
  },
@@ -12934,18 +13259,37 @@
    "look up when the sun sets today",
    "turn on the bedroom lamp"
   ],
-  "must": [
-   "smart_home"
-  ],
+  "must": [],
   "must_not": [],
   "checks": [
    {
-    "kind": "home_asked"
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "sun"
+    ],
+    "turn": 0
+   },
+   {
+    "kind": "home_asked",
+    "name": "lamp"
+   },
+   {
+    "kind": "home_not_switched",
+    "name": "Bedroom lamp",
+    "turn": "all"
    }
   ],
-  "env": {},
+  "env": {
+   "ZB_EXP_WEB": "@web/default",
+   "ZB_SEARCH_KEY": "stand-in"
+  },
   "home": "eval",
-  "steer": null
+  "steer": null,
+  "tried": [
+   "smart_home"
+  ]
  },
  {
   "name": "home-057",
@@ -13770,9 +14114,7 @@
   "turns": [
    "turn the tv up a bit"
   ],
-  "must": [
-   "smart_home"
-  ],
+  "must": [],
   "must_not": [
    "tv_remote",
    "device"
@@ -13793,7 +14135,10 @@
    "ZB_DRY_RUN": null
   },
   "home": "tv_silent",
-  "steer": null
+  "steer": null,
+  "tried": [
+   "smart_home"
+  ]
  },
  {
   "name": "home-083",
@@ -13806,9 +14151,7 @@
   "turns": [
    "turn the tv down"
   ],
-  "must": [
-   "smart_home"
-  ],
+  "must": [],
   "must_not": [
    "tv_remote",
    "device"
@@ -13829,7 +14172,10 @@
    "ZB_DRY_RUN": null
   },
   "home": "tv_closed",
-  "steer": null
+  "steer": null,
+  "tried": [
+   "smart_home"
+  ]
  },
  {
   "name": "home-084",
@@ -14271,8 +14617,18 @@
   ],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "cancel"
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": []
    }
   ],
   "env": {},
@@ -15182,10 +15538,13 @@
   "must_not": [],
   "checks": [
    {
-    "kind": "arg",
-    "tool": "device",
-    "key": "value",
-    "num": 30
+    "kind": "device_set",
+    "setting": "volume",
+    "value": 30
+   },
+   {
+    "kind": "music_playing",
+    "genre": "jazz"
    }
   ],
   "env": {},
@@ -15532,15 +15891,28 @@
    "when is discord's ipo",
    "and what time would trading start uk time"
   ],
-  "must": [
-   "web_search|world_time"
-  ],
+  "must": [],
   "must_not": [],
   "checks": [
    {
-    "kind": "answer",
-    "re": "\\b\\d{1,2}(:\\d\\d)?\\s*(am|pm|a\\.m\\.|p\\.m\\.)|\\b\\d{1,2}:\\d\\d\\b|o'?clock|\\b(noon|midday)\\b|in the (morning|afternoon|evening)",
-    "what": "a time of day"
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "discord"
+    ],
+    "turn": 0
+   },
+   {
+    "kind": "unannounced_time",
+    "usual": [
+     "09:30",
+     "13:30",
+     "14:30",
+     "16:00",
+     "20:00",
+     "21:00"
+    ]
    },
    {
     "kind": "not_answer",
@@ -15548,7 +15920,10 @@
     "what": "ask which company"
    }
   ],
-  "env": {},
+  "env": {
+   "ZB_EXP_WEB": "@web/events",
+   "ZB_SEARCH_KEY": "stand-in"
+  },
   "home": null,
   "steer": null
  },
@@ -15564,15 +15939,21 @@
    "when is the next apple product launch event",
    "what time is that in uk time"
   ],
-  "must": [
-   "web_search|world_time"
-  ],
+  "must": [],
   "must_not": [],
   "checks": [
    {
-    "kind": "answer",
-    "re": "\\b\\d{1,2}(:\\d\\d)?\\s*(am|pm|a\\.m\\.|p\\.m\\.)|\\b\\d{1,2}:\\d\\d\\b|o'?clock|\\b(noon|midday)\\b|in the (morning|afternoon|evening)",
-    "what": "a time of day"
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "apple"
+    ],
+    "turn": 0
+   },
+   {
+    "kind": "event_time",
+    "event": "product_launch"
    },
    {
     "kind": "not_answer",
@@ -15580,7 +15961,10 @@
     "what": "ask which event"
    }
   ],
-  "env": {},
+  "env": {
+   "ZB_EXP_WEB": "@web/events",
+   "ZB_SEARCH_KEY": "stand-in"
+  },
   "home": null,
   "steer": null
  },

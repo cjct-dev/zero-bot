@@ -24,6 +24,11 @@ struct AgentEvents {   // called from worker threads
     std::function<void(const std::string &jpeg_path)> image;
     std::function<void(const std::string &pattern, int minutes)> breathe;   // show a breathing exercise once the reply is spoken
     std::function<void(const std::string &message)> error;
+#if ZB_EXPERIMENTS
+    // The command line's records for the test sets (cli build only): each tool call as it finishes,
+    // with the model's call id, its arguments and the whole result, before any cut for the model.
+    std::function<void(const std::string &id, const std::string &name, const std::string &args, const std::string &result)> tool_done;
+#endif
 };
 
 class Agent {
@@ -49,12 +54,15 @@ public:
     std::string detail();       // e.g. the tool currently running
     bool busy() const { return busy_; }
     bool has_pending();         // a request has been handed over but not yet picked up
-    size_t history_size();
 
     // Runs one request to completion on the calling thread and returns the final answer
     // (used by the command-line test mode).
     std::string run_blocking(const std::string &text);
-    json history_snapshot();
+    // A copy of the history. With `gone`, also how many messages have left it since the agent started
+    // (trimmed from its front, or cleared with the conversation), taken under the same lock: the copy's
+    // first message is message number *gone of the whole run, so a caller can tell exactly where a
+    // request's messages begin however the history was trimmed meanwhile.
+    json history_snapshot(size_t *gone = nullptr);
     // DIAGNOSTICS (temporary, ZB-051; core/activity.h): the conversation from its start, as the
     // model saw it, for saving when the user asks: the messages trimmed from the model's context
     // (shortened) and then the context itself, copied under the lock. `dropped` is set to how
@@ -76,6 +84,7 @@ private:
     std::condition_variable cv_;
     std::deque<Input> inputs_;
     json history_ = json::array();
+    size_t history_gone_ = 0;               // see history_snapshot (guarded by mtx_)
     std::atomic<bool> busy_{false};
     std::atomic<bool> cancel_{false};       // whole run
     std::atomic<bool> round_cancel_{false}; // current model call

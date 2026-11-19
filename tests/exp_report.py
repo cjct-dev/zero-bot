@@ -12,6 +12,11 @@ usage: tests/exp_report.py RUN.json [RUN.json ...] [--tags] [--cases N] [--markd
 
 Several files are pooled for the latency and token figures; pass rates are given per file, and the
 cases that passed in one file and failed in another are listed as flaky.
+
+Every latency figure has the completion rate beside it: a turn counts as completed when it started,
+did not time out and ended with an answer and a time. A percentile is taken over the completed turns
+only, so a variant that loses its slowest requests to time-outs reads faster than it is; read the
+"completed" column with it (tests/exp_compare.py compares latency on the turns completed on both sides).
 """
 import argparse
 import json
@@ -59,8 +64,31 @@ def turn_trace(t):
     return calls, (reqs[0] if reqs else None), [e for e in tr if e.get("ev") == "tts"]
 
 
+def passed(r):
+    """The run passed: its outcome (when recorded) is "pass", it has a list of problems and it is empty, and
+    it is not unscorable. Anything else, a damaged record included, is no pass."""
+    return r.get("outcome", "pass") == "pass" and isinstance(r.get("problems"), list) and not r["problems"] \
+        and not r.get("unscorable")
+
+
+def completed(t):
+    """The turn ran to an answer: started, not timed out, with a time and an answer (agent_eval.py's
+    timing summary counts the same way; results saved before "unstarted" and "timed_out" have neither)."""
+    return not t.get("unstarted") and not t.get("timed_out") and t.get("total") is not None and bool(t.get("answer"))
+
+
+def done(turns):
+    """'completed/all (rate)' for a list of turns."""
+    n = len(turns)
+    k = sum(1 for t in turns if completed(t))
+    return "%d/%d (%.0f%%)" % (k, n, 100.0 * k / n) if n else "-"
+
+
 def kind(t, calls):
-    """What a turn was: no tool, a tool confirmed with one call, a tool then an answer, or more."""
+    """What a turn was: no tool, a tool confirmed with one call, a tool then an answer, or more; or a
+    turn never started (an earlier one timed out)."""
+    if t.get("unstarted"):
+        return "not started"
     if not t["tools"]:
         return "no tool"
     # The parallel check (E3, ZB_EXP_DECIDE=parallel) runs beside the deciding call: not a step of the answer.
@@ -78,21 +106,23 @@ def usage(c, key):
 
 
 class Table:
-    def __init__(self, markdown):
+    def __init__(self, markdown, out=None):
         self.md = markdown
+        self.out = out          # None: standard output
 
     def __call__(self, head, rows):
+        say = lambda line: print(line, file=self.out or sys.stdout)
         if self.md:
-            print("| " + " | ".join(head) + " |")
-            print("|" + "---|" * len(head))
+            say("| " + " | ".join(head) + " |")
+            say("|" + "---|" * len(head))
             for r in rows:
-                print("| " + " | ".join(str(x) for x in r) + " |")
+                say("| " + " | ".join(str(x) for x in r) + " |")
         else:
             w = [max(len(str(x)) for x in col) for col in zip(head, *rows)] if rows else [len(h) for h in head]
-            print("  ".join(str(h).ljust(n) for h, n in zip(head, w)))
+            say("  ".join(str(h).ljust(n) for h, n in zip(head, w)))
             for r in rows:
-                print("  ".join(str(x).ljust(n) for x, n in zip(r, w)))
-        print()
+                say("  ".join(str(x).ljust(n) for x, n in zip(r, w)))
+        say("")
 
 
 def main():
@@ -109,10 +139,10 @@ def main():
     print("## Pass rates\n")
     rows = []
     for name, res in runs:
-        ok = sum(1 for r in res if not r["problems"])
-        turns = sum(len(r["turns"]) for r in res)
-        rows.append([name, "%d/%d" % (ok, len(res)), "%.1f%%" % (100.0 * ok / max(1, len(res))), turns])
-    table(["file", "passed", "rate", "turns"], rows)
+        ok = sum(1 for r in res if passed(r))
+        turns = [t for r in res for t in r["turns"]]
+        rows.append([name, "%d/%d" % (ok, len(res)), "%.1f%%" % (100.0 * ok / max(1, len(res))), len(turns), done(turns)])
+    table(["file", "passed", "rate", "turns", "completed"], rows)
 
     if a.tags:
         tags = {}
@@ -120,7 +150,7 @@ def main():
             for r in res:
                 for t in r.get("tags", []):
                     ok, n = tags.setdefault(t, {}).get(name, (0, 0))
-                    tags[t][name] = (ok + (not r["problems"]), n + 1)
+                    tags[t][name] = (ok + passed(r), n + 1)
         if tags:
             print("## By tag (the first tag of a suite case is its category)\n")
             names = [n for n, _ in runs]
@@ -137,7 +167,7 @@ def main():
     outcome = {}
     for name, res in runs:
         for r in res:
-            outcome.setdefault(r["case"], []).append(not r["problems"])
+            outcome.setdefault(r["case"], []).append(passed(r))
     flaky = sorted(c for c, v in outcome.items() if any(v) and not all(v))
     always = sorted(c for c, v in outcome.items() if not any(v))
     print("## Cases\n")
@@ -145,11 +175,11 @@ def main():
     print("passed and failed (%d): %s\n" % (len(flaky), ", ".join("%s %d/%d" % (c, sum(outcome[c]), len(outcome[c])) for c in flaky) or "-"))
     if a.cases:
         for name, res in runs:
-            bad = [r for r in res if r["problems"]][:a.cases]
+            bad = [r for r in res if not passed(r)][:a.cases]
             if bad:
                 print("failures in %s:" % name)
                 for r in bad:
-                    print("  %-22s %s" % (r["case"], "; ".join(r["problems"])[:240]))
+                    print("  %-22s %s" % (r["case"], "; ".join(map(str, r.get("problems") or [r.get("outcome", "no problems listed")]))[:240]))
                 print()
 
     # ---------------------------------------------------------------- latency
@@ -163,17 +193,20 @@ def main():
     rows = []
     for k in ["all"] + sorted(by_kind):
         items = [x for v in by_kind.values() for x in v] if k == "all" else by_kind[k]
-        firsts = [x[0]["first"] for x in items]
-        totals = [x[0]["total"] for x in items]
-        sent = [x[2]["first_sentence_ms"] / 1000.0 for x in items if x[2] and x[2].get("first_sentence_ms", -1) >= 0]
-        tts = [(x[2]["first_sentence_ms"] + x[3][0]["tts_first_ms"]) / 1000.0 for x in items
+        # Percentiles over the completed turns only; the "completed" column says how many those are.
+        ran = [x for x in items if completed(x[0])]
+        firsts = [x[0]["first"] for x in ran]
+        totals = [x[0]["total"] for x in ran]
+        sent = [x[2]["first_sentence_ms"] / 1000.0 for x in ran if x[2] and x[2].get("first_sentence_ms", -1) >= 0]
+        tts = [(x[2]["first_sentence_ms"] + x[3][0]["tts_first_ms"]) / 1000.0 for x in ran
                if x[2] and x[3] and x[2].get("first_sentence_ms", -1) >= 0]
-        rows.append([k, len(items), fmt(med(firsts)), fmt(p90(firsts)), fmt(med(sent)), fmt(p90(sent)), fmt(med(totals)), fmt(p90(totals))]
+        rows.append([k, len(items), done([x[0] for x in items]), fmt(med(firsts)), fmt(p90(firsts)), fmt(med(sent)), fmt(p90(sent)),
+                     fmt(med(totals)), fmt(p90(totals))]
                     + ([fmt(med(tts)), fmt(p90(tts))] if any(x[3] for x in items) else []))
-    head = ["turns", "n", "first words med", "p90", "first sentence med", "p90", "total med", "p90"]
-    if any(len(r) > 8 for r in rows):
+    head = ["turns", "n", "completed", "first words med", "p90", "first sentence med", "p90", "total med", "p90"]
+    if any(len(r) > 9 for r in rows):
         head += ["first spoken med", "p90"]
-        rows = [r + ["-", "-"] if len(r) == 8 else r for r in rows]
+        rows = [r + ["-", "-"] if len(r) == 9 else r for r in rows]
     table(head, rows)
 
     if not traced:
@@ -197,12 +230,12 @@ def main():
             continue
         ttfb = [c["ttfb_ms"] / 1000.0 for c in cs if c.get("ttfb_ms", -1) >= 0]
         gen = [(c["done_ms"] - c["ttfb_ms"]) / 1000.0 for c in cs if c.get("ttfb_ms", -1) >= 0]
-        done = [c["done_ms"] / 1000.0 for c in cs]
+        call_s = [c["done_ms"] / 1000.0 for c in cs]
         pt = [usage(c, "prompt_tokens") for c in cs]
         ct = [usage(c, "completion_tokens") for c in cs]
         cached = [usage(c, "cached") for c in cs]
         share = sum(x or 0 for x in cached) / max(1, sum(x or 0 for x in pt))
-        rows.append([p, len(cs), fmt(med(ttfb)), fmt(p90(ttfb)), fmt(med(gen)), fmt(med(done)), fmt(p90(done)),
+        rows.append([p, len(cs), fmt(med(ttfb)), fmt(p90(ttfb)), fmt(med(gen)), fmt(med(call_s)), fmt(p90(call_s)),
                      fmt(med(pt), "", 0), fmt(med(ct), "", 0), "%.0f%%" % (100 * share),
                      fmt(med([c["body_bytes"] / 1000.0 for c in cs])), sum(1 for c in cs if c.get("attempts", 1) > 1),
                      sum(1 for c in cs if c.get("outcome") == "error")])
@@ -226,10 +259,10 @@ def main():
         ct = [sum(usage(c, "completion_tokens") or 0 for c in x[1]) for x in items]
         cached = [sum(usage(c, "cached") or 0 for c in x[1]) for x in items]
         up = [sum(c.get("body_bytes", 0) for c in x[1]) for x in items]
-        rows.append([k, len(items), fmt(med(n), "", 0), fmt(sum(n) / len(n), "", 2), fmt(med(pt), "", 0), fmt(sum(pt) / len(pt), "", 0),
-                     "%.0f%%" % (100.0 * sum(cached) / max(1, sum(pt))), fmt(med(ct), "", 0), fmt(med(up) / 1000.0),
-                     fmt(med(up) / UPLOAD_RATE), fmt(sum(up) / len(up) / UPLOAD_RATE)])
-    table(["turns", "n", "calls med", "calls mean", "prompt tok med", "prompt tok mean", "cached", "completion tok med",
+        rows.append([k, len(items), done([x[0] for x in items]), fmt(med(n), "", 0), fmt(sum(n) / len(n), "", 2), fmt(med(pt), "", 0),
+                     fmt(sum(pt) / len(pt), "", 0), "%.0f%%" % (100.0 * sum(cached) / max(1, sum(pt))), fmt(med(ct), "", 0),
+                     fmt(med(up) / 1000.0), fmt(med(up) / UPLOAD_RATE), fmt(sum(up) / len(up) / UPLOAD_RATE)])
+    table(["turns", "n", "completed", "calls med", "calls mean", "prompt tok med", "prompt tok mean", "cached", "completion tok med",
            "kB sent med", "upload s at 10 kB/s med", "mean"], rows)
 
     # ---------------------------------------------------------------- second look, guards, tools

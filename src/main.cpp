@@ -1,9 +1,12 @@
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "agent/agent.h"
@@ -66,6 +69,7 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
     ev.user_message = [](const std::string &t, bool steering) { printf("%s %s\n", steering ? "[steer]" : "[user]", t.c_str()); };
     static std::chrono::steady_clock::time_point t0;
     static bool first_text;
+    static double first_at;
     auto since = [] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
     // Stands in for the user speaking again mid-request, so the steering path can be tested.
     static std::string steer;
@@ -80,7 +84,8 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
     ev.answer_delta = [since](const std::string &) {
         if (!first_text) {
             first_text = true;
-            printf("[first words +%.1fs]\n", since());
+            first_at = since();
+            printf("[first words +%.1fs]\n", first_at);
         }
     };
     ev.answer_begin = [] {
@@ -89,12 +94,107 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
     ev.answer_discard = [] { first_text = false; puts("[draft withdrawn]"); };
     ev.error = [](const std::string &m) { printf("[error] %s\n", m.c_str()); };
     ev.image = [](const std::string &p) { printf("[photo] %s\n", p.c_str()); };
+#if ZB_EXPERIMENTS
+    // The evaluator's records (tests/agent_eval.py; cli build only). With ZB_EVAL_RECORDS=FILE they go to
+    // that file, a channel of their own, one JSON object a line, so nothing the model says can pass for
+    // one: each request's start and end (its number, the times, the answer), every tool call of it as the
+    // call finishes, whole (from the request's own events: trimming the history hides none, nothing is
+    // cut), errors, steering, the saved state after it, "/new", and the end of the run. Each turn's end lists
+    // the calls of every model response in it, from the history, so each call record can be matched to the
+    // response that asked for it. Every record carries its time since the run began ("mono") and the wall
+    // clock ("wall"), to set it beside a simulated device's log. Without the file the call and state records
+    // are printed as "[call] {...}" and "[state] {...}" lines, as before.
+    static FILE *records = nullptr;
+    static std::mutex records_mtx;
+    static int request_no = 0, call_no = 0;
+    static const auto run_began = std::chrono::steady_clock::now();
+    if (const char *path = getenv("ZB_EVAL_RECORDS"); path && *path && !(records = fopen(path, "we"))) {
+        fprintf(stderr, "cannot write the records file named by ZB_EVAL_RECORDS: %s\n", strerror(errno));
+        return 2;
+    }
+    static const auto record = [](json r) {
+        r["v"] = 2;
+        r["mono"] = std::chrono::duration<double>(std::chrono::steady_clock::now() - run_began).count();
+        r["wall"] = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+        const std::string line = r.dump(-1, ' ', false, json::error_handler_t::replace);
+        std::lock_guard<std::mutex> lk(records_mtx);
+        fprintf(records, "%s\n", line.c_str());
+        fflush(records);
+    };
+    ev.error = [](const std::string &m) {
+        printf("[error] %s\n", m.c_str());
+        if (records) record({{"ev", "error"}, {"turn", request_no}, {"message", m}});
+    };
+    ev.user_message = [](const std::string &t, bool steering) {
+        printf("%s %s\n", steering ? "[steer]" : "[user]", t.c_str());
+        if (records && steering) record({{"ev", "steer"}, {"turn", request_no}, {"text", t}});
+    };
+    ev.tool_done = [](const std::string &id, const std::string &name, const std::string &args, const std::string &result) {
+        json rec = {{"id", id}, {"name", name}, {"args", args}, {"result", result}};
+        if (records) {
+            rec["ev"] = "call";
+            rec["turn"] = request_no;
+            rec["n"] = ++call_no;
+            record(rec);
+            return;
+        }
+        printf("[call] %s\n", rec.dump(-1, ' ', false, json::error_handler_t::replace).c_str());
+        fflush(stdout);
+    };
+    // What the calendar, reminders (timers among them) and memory files hold, and the saved state of every
+    // smart-home thing (its name, room and state; nothing else of the file). A file that does not exist is
+    // null and named in "absent"; one that cannot be read, or holds something of the wrong shape, is null
+    // and named in "unreadable": the scorer tells both from an empty list.
+    auto state_record = [] {
+        json st = {{"now", static_cast<long long>(time(nullptr))}}, unreadable = json::array(), absent = json::array();
+        for (const char *name : {"reminders", "calendar", "memory", "smarthome"}) {
+            const std::string path = util::data_dir() + "/" + name + ".json";
+            const std::string key = std::string(name) == "smarthome" ? "home" : name;
+            std::string text;
+            struct stat sb;
+            st[key] = json();
+            if (stat(path.c_str(), &sb) != 0 && errno == ENOENT) { absent.push_back(key); continue; }
+            json j = util::read_file(path, text) ? json::parse(text, nullptr, false) : json(json::value_t::discarded);
+            if (key != "home") {
+                if (j.is_discarded() || !j.is_array()) unreadable.push_back(key);
+                else st[key] = std::move(j);
+                continue;
+            }
+            json things = json::array();
+            const json *nets = j.is_object() ? &j["networks"] : nullptr;
+            if (!nets || !nets->is_object()) { unreadable.push_back(key); continue; }
+            for (const auto &net : nets->items())
+                for (const auto &d : util::jget(net.value(), "devices", json::array()))
+                    for (const auto &t : util::jget(d, "things", json::array()))
+                        things.push_back({{"device", util::jget(d, "id", std::string())}, {"name", util::jget(t, "name", std::string())},
+                                          {"room", util::jget(t, "room", std::string())}, {"state", util::jget(t, "state", json::object())}});
+            st[key] = std::move(things);
+        }
+        if (!unreadable.empty()) st["unreadable"] = unreadable;
+        if (!absent.empty()) st["absent"] = absent;
+        if (records) record({{"ev", "state"}, {"turn", request_no}, {"state", st}});
+        else printf("[state] %s\n", st.dump(-1, ' ', false, json::error_handler_t::replace).c_str());
+    };
+    // What this build can do for the test runners, which refuse a binary without it (tests/agent_eval.py
+    // probe_binary): these records, the stand-in web (ZB_EXP_WEB), and refusing hardware (ZB_EXP_NO_HARDWARE).
+    if (records) record({{"ev", "start"}, {"caps", {"records", "web", "no_hardware"}}});
+#endif
     Agent &agent = Agent::get();
     agent.start(ev);
     auto one = [&](const std::string &text) {
-        const size_t before = agent.history_size();
+        // Where this request's messages will begin, counted over the whole run: the history only grows at
+        // its end and loses messages at its front, and the agent counts those it loses.
+        size_t gone = 0;
+        const size_t held = agent.history_snapshot(&gone).size();   // sets gone: read it only after this statement
+        const size_t begins = held + gone;
+#if ZB_EXPERIMENTS
+        ++request_no;
+        call_no = 0;
+        if (records) record({{"ev", "turn_start"}, {"turn", request_no}, {"text", text}});
+#endif
         t0 = std::chrono::steady_clock::now();
         first_text = false;
+        first_at = -1;
         // Stands in for the user pressing the talk key while the request is being worked on.
         std::thread talker;
         if (!talk_over.empty()) {
@@ -116,13 +216,30 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
         const std::string answer = agent.run_blocking(text);
         if (talker.joinable()) talker.join();
         const double total = since();
-        const json hist = agent.history_snapshot();
-        for (size_t i = before; i < hist.size(); ++i) {
+        const json hist = agent.history_snapshot(&gone);
+        size_t tool_calls = 0;
+#if ZB_EXPERIMENTS
+        json responses = json::array();   // the calls of each model response in this request, for the records
+#endif
+        for (size_t i = begins > gone ? begins - gone : 0; i < hist.size(); ++i) {
             const json &m = hist[i];
-            if (m.contains("tool_calls"))
-                for (auto &c : m["tool_calls"])
+            if (m.contains("tool_calls")) {
+#if ZB_EXPERIMENTS
+                json asked = json::array();
+#endif
+                for (auto &c : m["tool_calls"]) {
+                    ++tool_calls;
                     printf("  -> %s %s\n", c["function"]["name"].get<std::string>().c_str(),
                            c["function"]["arguments"].get<std::string>().c_str());
+#if ZB_EXPERIMENTS
+                    asked.push_back({{"id", util::jget(c, "id", std::string())}, {"name", c["function"]["name"]},
+                                     {"args", c["function"]["arguments"]}});
+#endif
+                }
+#if ZB_EXPERIMENTS
+                responses.push_back(asked);
+#endif
+            }
             else if (util::jget(m, "role", std::string()) == "tool")
                 printf("  <- %s\n", util::truncate_utf8(m["content"].get<std::string>(), 300).c_str());
             else if (util::jget(m, "role", std::string()) == "user")
@@ -130,6 +247,14 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
             else if (util::jget(m, "role", std::string()) == "assistant" && i + 1 < hist.size())
                 printf("  = %s\n", util::truncate_utf8(util::jget(m, "content", std::string()), 160).c_str());
         }
+#if ZB_EXPERIMENTS
+        state_record();   // before the answer, whose text runs to the next prompt
+        if (records)
+            record({{"ev", "turn_end"}, {"turn", request_no}, {"total", total}, {"first", first_at >= 0 ? json(first_at) : json()},
+                    {"answer", answer}, {"tool_calls", tool_calls}, {"responses", responses}});
+#else
+        (void)tool_calls;
+#endif
         printf("[answer %.1fs] %s\n", total, answer.c_str());
         fflush(stdout);
     };
@@ -137,7 +262,13 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
     if (chat) {
         std::string line;
         while (printf("> "), fflush(stdout), std::getline(std::cin, line)) {
-            if (line == "/new") { agent.reset_conversation(); continue; }
+            if (line == "/new") {
+                agent.reset_conversation();
+#if ZB_EXPERIMENTS
+                if (records) record({{"ev", "new"}});
+#endif
+                continue;
+            }
             // DIAGNOSTICS (temporary, ZB-051): what SPACE twice does on the chat screen.
             if (line == "/save") {
                 size_t dropped = 0;
@@ -150,6 +281,9 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
         }
     }
     experiment::wait_probes(30000);   // speech probes of the experiments' trace (ZB_EXP_TTS_PROBE) still running
+#if ZB_EXPERIMENTS
+    if (records) record({{"ev", "end"}, {"turns", request_no}});
+#endif
     return 0;
 }
 

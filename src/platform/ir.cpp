@@ -10,6 +10,7 @@
 
 #include <linux/lirc.h>
 
+#include "agent/experiment.h"
 #include "core/util.h"
 
 namespace ir {
@@ -209,6 +210,8 @@ std::string transmit(Pulses pulses, int carrier) {
     if (pulses.empty()) return "nothing to send";
     if (pulses.size() % 2 == 0) pulses.pop_back();  // must start and end with a mark
     if (getenv("ZB_DRY_RUN")) return "";
+    // A test run (ZB_EXP_NO_HARDWARE, experiment builds only) never sends a code into the room.
+    if (std::string off = experiment::no_infrared(); !off.empty()) return off;
     const int fd = open_lirc(true);
     if (fd < 0) return "no infrared transmitter available";
     uint32_t mode = LIRC_MODE_PULSE, freq = static_cast<uint32_t>(carrier);

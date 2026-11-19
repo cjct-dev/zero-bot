@@ -38,7 +38,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.dont_write_bytecode = True   # importing agent_eval leaves no __pycache__ in tests/
-from agent_eval import TURN_RE, parse_turn   # noqa: E402  (the scored set's transcript parser)
+from agent_eval import TURN_RE, parse_turn, turns_from_records   # noqa: E402  (the scored set's parsers)
 
 _ap = argparse.ArgumentParser(description="The request loop against a scripted chat service.")
 _ap.add_argument("app", nargs="?", default=os.path.join(HERE, "..", "build", "cli", "zero_bot"))
@@ -76,10 +76,17 @@ def check(name, ok, detail=""):
 class Run:
     """What one run of the app printed and sent."""
 
-    def __init__(self, out, requests):
+    def __init__(self, out, requests, records=None, said=(), process=None):
         self.out = out
         self.requests = requests                       # [{"n", "rule", "body"}]
-        self.turns = [parse_turn(seg) for seg in TURN_RE.split(out)[1:]] or [parse_turn(out)]
+        self.records = records
+        self.record_problems = []
+        # The turns as the scorer reads them: from the records file (ZB_EVAL_RECORDS) when the run wrote
+        # one, else from what it printed.
+        if records is not None:
+            self.turns, self.record_problems = turns_from_records(records, {"turns": list(said)}, process or {})
+        if records is None or self.record_problems:
+            self.turns = [parse_turn(seg) for seg in TURN_RE.split(out)[1:]] or [parse_turn(out)]
 
     @property
     def answer(self):
@@ -167,15 +174,21 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
             with open(state + "/photo.jpg", "wb") as f:
                 f.write(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9")
             e["ZB_FAKE_CAMERA"] = state + "/photo.jpg"
+        e["ZB_EVAL_RECORDS"] = state + "/records.jsonl"   # the scorer's records, on a channel of their own
         e.update(env or {})
         cmd = [APP] + (["--ask", ask] if ask is not None else ["--chat"]) + list(extra)
         stdin = "" if ask is not None else "\n".join(said or []) + "\n"
         try:
-            out = subprocess.run(cmd, input=stdin, env=e, capture_output=True, text=True, timeout=timeout).stdout
+            p = subprocess.run(cmd, input=stdin, env=e, capture_output=True, text=True, timeout=timeout)
+            out, process = p.stdout, {"exit": p.returncode, "timeout": False}
         except subprocess.TimeoutExpired as ex:
             out = (ex.stdout.decode() if isinstance(ex.stdout, bytes) else ex.stdout or "") + "\n[TIMED OUT]\n"
+            process = {"exit": None, "timeout": True}
         requests = [json.loads(l) for l in open(log)] if os.path.exists(log) else []
-        r = Run(out, requests)
+        records = open(e["ZB_EVAL_RECORDS"], encoding="utf-8").read() if os.path.exists(e["ZB_EVAL_RECORDS"]) else None
+        r = Run(out, requests, records, [ask] if ask is not None else [x for x in said or [] if x.strip() and x != "/save"], process)
+        if r.record_problems or records is None:
+            check("the run's records file is there and reads as the scorer reads it (%s)" % (ask or "chat"), False, r.record_problems or "no file")
         r.trace_text = open(state + "/trace.jsonl").read() if os.path.exists(state + "/trace.jsonl") else ""
         r.trace = [json.loads(l) for l in r.trace_text.splitlines() if l.strip()]
         if VERBOSE: print(repr(r))
@@ -620,6 +633,64 @@ def history_trimmed():
           [b["messages"][1]["role"] for b in r.bodies()])
     last = json.dumps(r.messages(len(r.requests))) if r.requests else ""
     check(n + ": the oldest turns are gone, the newest kept", "turn 1 hello" not in last and "turn 24 timer" in last, "")
+    # The scorer's evidence survives the trimming: each turn's own call records, and the printed lines too.
+    timer_turns = [i for i, t in enumerate(r.turns) if "timer" in said[i]]
+    check(n + ": every timer turn has its call record, with its id and whole result",
+          all([c["name"] for c in r.turns[i].get("calls", [])] == ["timer"] and r.turns[i]["calls"][0]["id"] and
+              r.turns[i]["calls"][0]["result"].startswith("{") for i in timer_turns) and
+          not any(r.turns[i].get("calls") for i in range(len(said)) if i not in timer_turns), [r.turns[i].get("calls") for i in timer_turns])
+    check(n + ": the printed call lines are not lost to the trimming either", r.out.count("  -> timer ") == len(timer_turns),
+          r.out.count("  -> timer "))
+    check(n + ": each turn ends with the saved state", all(isinstance(t.get("state"), dict) and "reminders" in t["state"] for t in r.turns), "")
+
+
+@scenario
+def history_repeats():
+    # Identical turns (the same words within a minute, the same call, result and reply) once the history
+    # is being trimmed: where a turn's messages begin is counted by the agent, not guessed from where the
+    # old history and the new one overlap (which identical turns make ambiguous), so no turn loses its lines.
+    script = {"rules": [{"when": {"said": "same again", "last": "user"}, "reply": dict(calls(XMAS), no_ids=True)}], "default": {"text": "Noted."}}
+    said = ["same again"] * 25
+    r = run(script, said=said, timeout=120)
+    n = "history of identical turns"
+    check(n + ": all %d turns answered" % len(said), len(r.turns) == len(said) and all(t["answer"] == "Noted." for t in r.turns), r)
+    sizes = [len(b["messages"]) for b in r.bodies()]
+    check(n + ": the history was trimmed", any(b < a for a, b in zip(sizes, sizes[1:])), sizes)
+    check(n + ": each turn printed its own call line, once", r.out.count("  -> date_info ") == len(said), r.out.count("  -> date_info "))
+    check(n + ": each turn's records hold its own call", all([c["name"] for c in t.get("calls", [])] == ["date_info"] for t in r.turns),
+          [t.get("calls") for t in r.turns])
+
+
+@scenario
+def dry_run_music_queue():
+    # With ZB_DRY_RUN nothing plays, but the music tool keeps a pretend queue: "next" moves along it and
+    # "now_playing" names its song, as with a player; past the last song, and after "stop", nothing plays.
+    import agent_eval
+    library = tempfile.mkdtemp(prefix="zb-loop-music-")
+    try:
+        agent_eval.make_music_library(library)
+        step = {"play abba": {"action": "play", "artist": "abba"}, "whats on": {"action": "now_playing"},
+                "skip": {"action": "next"}, "stop it": {"action": "stop"}}
+        script = {"rules": [{"when": {"said": w, "last": "user"}, "reply": calls(("music", a))} for w, a in step.items()],
+                  "default": {"text": "Okay."}}
+        said = ["play abba", "whats on", "skip", "whats on", "skip", "skip", "skip", "play abba", "stop it", "whats on"]
+        r = run(script, said=said, settings={"music_dir": library})
+    finally:
+        shutil.rmtree(library, ignore_errors=True)
+    n = "dry-run music queue"
+    res = [t["results"][0] if t["results"] else None for t in r.turns]
+    check(n + ": one call a turn", len(res) == len(said) and all(x is not None for x in res), res)
+    if len(res) != len(said): return
+    def title(x):
+        try: return json.loads(x).get("title")
+        except (ValueError, AttributeError): return None
+    played = json.loads(res[0]).get("now_playing", "") if res[0].startswith("{") else ""
+    check(n + ": play queues the three ABBA songs", '"queued_tracks":3' in res[0] and played.endswith(" by ABBA"), res[0])
+    check(n + ": now_playing names the first song", title(res[1]) and played.startswith(title(res[1])), (res[1], played))
+    check(n + ": next moves to the queue's next song", res[2] == "skipped to the next track" and title(res[3]) not in (None, title(res[1])),
+          res[2:4])
+    check(n + ": past the last song nothing plays", res[4] == res[5] == "skipped to the next track" and res[6].startswith("ERROR"), res[4:7])
+    check(n + ": after stop nothing plays", res[8] == "music stopped" and res[9] == "nothing is playing", res[7:])
 
 
 # ------------------------------------------------------------------ saved conversations (DIAGNOSTICS, temporary)

@@ -176,6 +176,63 @@ decoding are loaded at run time with `dlopen` and are optional.
 
 ## 6. Testing
 
+**Start with `tests/run.py`.** It runs the tests below in groups and prints one line per group (its
+count and seconds), then a short summary; each group's full output goes to
+`build/test-runs/<date-time>/<group>.log`. `--list` shows the groups, what each needs and the
+profiles; `--plan` says what would run and why, and runs nothing; `--build` builds what the chosen
+groups need first. Which to use:
+
+- After a change, before committing: `tests/run.py --profile change` picks the groups that cover the
+  files changed since `main` (working tree included; `--base REF` for another start). Code the device
+  build shares also gets `sim-build`, which compiles the sim build: the no-experiments side of
+  `experiment.h` and `#if !ZB_CLI_ONLY` compile nowhere else. For a change to what the model is told
+  (prompt, a tool's description or schema, the loop) it also prints which live cases to run five
+  times (suite tags; the scored set's `radio_*` for the radio, with `--scored-only`); `--live` runs them.
+- To see that everything offline still passes: `tests/run.py --profile quick` (about 5 minutes; it
+  leaves out Fire TV's end-to-end test and the live sets). `--profile offline` includes Fire TV.
+- Named groups: `tests/run.py --groups unit,hue`; a live check:
+  `tests/run.py --groups live-suite --tags timer --repeat 5 --no-search`; a variant against a
+  baseline: `--exp ZB_EXP_TOOLS=lean --baseline B.json` (inherited `ZB_EXP_*` are never passed on).
+- Before a release: `tests/run.py --profile release --baseline EVAL.json,SUITE.json` (or `--groups
+  release`, the same mode) builds (unless `--no-build`: then a build older than any input stops it),
+  runs every offline group, every case of both live sets once, then the gate of `tests/exp_compare.py`
+  with `--release`. It refuses `--tags`, `--sample`, `--skip-tags`, `--only`, `--scored-only`,
+  `--fast` and `--exp`; `--no-search` is the declared exception. Live cases run only on a cli build
+  that is an experiments build, whose hardware guard holds and which writes the records. It does not
+  start without a baseline that covers the roster (below): record one with
+  `tests/run.py --groups live-scored,live-suite` (its `eval.json` and `suite.json`).
+
+`ZB_EVAL_WRAPPER` prefixes every live run (a lock, or a script that sets the service's variables);
+live runs always use `--jobs 1`. `--no-search` leaves out what needs the real web search (cases on
+the stand-in web stay). Groups never inherit switches that change what they test (`ZB_UPDATE_SHOTS`,
+`ZB_UPDATE_SNAPSHOTS`, `ZB_UNIT_*`, `HUE_E2E_ONLY`, `ZB_FAST_MODE`, `ZB_EXP_*`). A new test script
+gets a line in the group table at the top of `tests/run.py`, and a rule in its path map for the
+files it covers.
+
+**The gate's verdicts** (`tests/exp_compare.py`, `--self-test` in the runner group): *fails* (an
+interval wholly below 0, overall, for a set or a tag; a case with 6+ runs a side that lost half its
+passes; a critical case, the smart-home questions, refusals after a web page and the stale yes,
+that did not pass every run), *incomplete* (a set it must judge has no compared case; in a release,
+results without the manifest fields, under 90% of a set compared, a critical case missing),
+*inconclusive* (the overall interval's lower end below the tolerable loss, `--tolerance`, 1.5 per 100
+by default, or repeats unbalanced between the sides) or *passes*. A failure outranks the rest. Each
+result carries a manifest: `case_hash` (the compiled case), `scorer` (the scorer's version) and
+`trace`; only cases whose three agree on both sides are compared, the rest are counted by reason, and
+results without them are compared by name only (the report says so). A record that is not valid (no
+list of problems, an outcome its problems contradict, a `trace` its turns contradict) and an unscorable
+run never count as a pass or as a zero: a case with no scorable run on a side is left out, and an
+invalid record, an unscorable run of a critical case or over 2% unscorable runs make the verdict
+*incomplete*. **A release is measured against the roster**, every case defined in this tree (the scored
+set's `CASES` and `cases.json`, by name and current `case_hash`, with the critical cases read from the
+definitions), never against the cases the results happen to hold: the variant needs a scorable run of
+every case as defined now by the current scorer, 90% of each set must be compared, and every critical
+case compared and passing; a critical case cannot be left out. The baseline's provenance must match:
+the same `case_hash`, `scorer`, `trace` and, where recorded, `fixtures`. **Trace policy:** the runner
+always passes `--trace`, which adds `stream_options.include_usage` to what is sent, so a baseline for
+the gate must be traced too; traced against untraced pairs are left out. A live run whose cases
+failed passes only under a gate verdict of *passes* that compared its set (`gate.json` in the run
+folder). The rest of this section describes each test.
+
 What exists:
 
 - **Device-free tests**: `tests/run_unit.sh` (g++, nothing else) builds and runs
@@ -205,7 +262,8 @@ What exists:
   tools through `tests/tools_cli.py` (good, wrong and hostile arguments, each in a fresh state
   folder). `ZB_UPDATE_SNAPSHOTS=1`
   rewrites the snapshots: read the diff before committing it. `ZB_BUILD_WRAPPER=cmd` runs each
-  compile through `cmd`.
+  compile through `cmd`. `ZB_UNIT_BUILD_ONLY=1` builds the programs and stops;
+  `ZB_UNIT_SKIP_SCRIPTS=1` leaves out `tools_cli.py` and `agent_loop_test.py` (the runner's own groups).
 - **Tapo end to end**: `tests/tapo_e2e.py` runs `build/cli/zero_bot` against two simulated plugs
   (`tests/mocks/mock_tapo.py`, a TPAP P110 and a KLAP P304M) on ports the system picks.
 - **Fire TV end to end**: `tests/firetv_e2e.py` runs `build/unit/firetv_cli` (built by
@@ -272,7 +330,32 @@ What exists:
   previous code before blaming a change. Cases run with `ZB_DRY_RUN`, except those that must reach a
   device (`env=LIVE`: a paired Fire TV on 127.0.0.1 that does not answer, `TV_SILENT_HOME` and
   `TV_CLOSED_HOME`, for what is said after a network error); those get stand-ins that do nothing for
-  the programs that would change the PC (volume, sound, camera, network).
+  the programs that would change the PC (volume, sound, camera, network). What earns a pass: a change
+  counts only when its call worked (no `ERROR`, not waiting for a yes) and the saved state shows it,
+  and a compound request is checked part by part (`must`: the change worked; `tried`: only attempted,
+  for routing and failure cases). The evidence is not read from what the answer prints: the `cli` build
+  writes a records file named by `ZB_EVAL_RECORDS` (one JSON object per line: turn start and end with
+  times, the answer, every tool call whole, the saved state after each turn, errors, `/new`, the end of
+  the run), from the turn's own events, so a trimmed history hides nothing and an answer that quotes a
+  record changes nothing. The parser checks the records as it reads; anything missing, out of order or
+  unreadable makes the run **unscorable**, which is counted apart and never a pass. Saved runs from
+  before fall back on the readable lines. Every result carries `case_hash`, `scorer`, `trace`, `set`
+  and `outcome`, which the gate uses to compare like with like. `--validate` (here and in
+  `agent_suite.py`) compiles every case offline. Both sets run each case with the stand-in music
+  library, a fixture camera photo (`tests/mocks/camera/sign.jpg`) and a temporary home. A check looks at
+  the last turn, at the one
+  `on_turn` names, at `every_turn` (a later turn cannot hide an earlier mistake), or at the whole
+  conversation (`chk_moved_item`: one saved, then exactly one at the new time). Numbers keep their
+  sign and times their am or pm. A run that times out counts once, in the turn it stopped in; later
+  turns are "not started", and the summary gives the completion rate and the time to the first
+  sentence (with `--trace`) beside the time to the first text. `web(fixture)` in a case's env sends
+  web search, forecasts and place names to a stand-in (`tests/mocks/fake_web.py`, through the `cli`
+  build's `ZB_EXP_WEB`, honoured only for an `http://127.x` address and compiled out of the device
+  build): canned answers, search without a key, forecasts (`rain59`, `rain60`, `rainmissing`) and event
+  times (`events`: one published, one not announced). **The scorer's own test**: `tests/scorer_test.py`
+  (offline, no service) feeds deliberately wrong transcripts that must fail and right ones that must
+  pass, one per check, each asserting its problem text; run it after any change to a check, and add a
+  wrong transcript for any new kind of mistake.
 - **Generated request set**: `tests/suite/generate.py` (fixed seed) writes `tests/suite/cases.json`,
   about 570 requests in categories (timer, reminder, calendar, weather, home, route, ...) with
   feature tags (`asr`, `lang-xx`, `uk`, `us`, `followup`, `compound`, `notool`, `clarify`,
@@ -283,7 +366,9 @@ What exists:
   prints pass rates per tag and the slowest cases. Checks are declarative (`"kind"` in the file,
   compiled by `KINDS` in the runner) and accept every right answer: a timer or a reminder for "in
   20 minutes", several right tools, any of the right numbers. A check looks at the last turn
-  unless it names another (`"turn"`); `long_ok` lists the turns that may answer at length, which
+  unless it names another (`"turn"`: a number, or `"all"` for every turn; `moved` looks at the whole
+  conversation), and checks of changes read the saved state as the scored set's do (`timers_saved`,
+  `events_saved`, `memory`, `memory_lacks`); `long_ok` lists the turns that may answer at length, which
   the owner wants for analytical follow-ups (so `max_words` is for simple factual turns only;
   `max_calls` caps a tool, such as searches in a row). The `dialogue` category holds threads of
   several turns generalised from saved conversations (`tests/suite/from_conversation.py` drafts
@@ -298,17 +383,23 @@ What exists:
   test on a PC, never `--discover`), `ZB_TEST_TETHER=1` (the radio acts as on a phone's
   connection).
 - **Measurement switches** (`src/agent/experiment.h`; compiled into the `cli` build only, CMake option
-  `ZB_EXPERIMENTS`): `ZB_EXP_TRACE=file` appends a JSON line per model call (purpose, timings, token
-  counts the service reports, size sent) and per request (first sentence, tools, guards, second look);
-  no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`. Variants measured against
+  `ZB_EXPERIMENTS`, which CMake refuses outside the `cli` build): `ZB_EXP_TRACE=file` appends a JSON
+  line per model call (purpose, timings, token counts the service reports, size sent) and per request
+  (first sentence, tools, guards, second look); no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`. Variants measured against
   the default, none of them adopted: `ZB_EXP_TOOLS=say1|lean` (shorter tool text),
   `ZB_EXP_DECIDE=parallel|required|required_held` (deciding without the second look); an unknown value
-  stops the run. The runners' `--trace` puts each turn's trace into `--json`; `tests/exp_report.py`
-  summarises such files and `tests/exp_compare.py` compares a variant with a baseline case by case and by
-  tag (repeat the same cases on both sides before pooling), and ends with the no-regression gate (exit
-  status 1 when it fails): an interval wholly below 0, overall or for a tag, or a case that lost 4 of 6
-  runs; a tag's point estimate alone is noise at these sizes. `--skip-tags search` while web search is
-  unavailable. With no `ZB_EXP_*` variable set nothing sent or done changes (checked in `agent_loop_test.py`).
+  stops the run. `ZB_EXP_WEB` (the stand-in web) takes only plain decimal `http://127.a.b.c[:port][/path]`
+  and sends to the address it read, as `local`: no proxy, no redirect followed.
+  **The hardware guard:** `ZB_EXP_NO_HARDWARE=1`, which the live sets' runners set for every case, makes
+  the camera refuse unless `ZB_FAKE_CAMERA` names a picture, and the infrared transmitter refuse, so a
+  test run never sends a real photo to the service or a code into the room (`tests/tools_cli.py`
+  checks it, and the stand-in's proxy and redirect rules). The runners' `--trace` puts each turn's trace
+  into `--json`; `tests/exp_report.py` summarises such files (completion beside every latency figure)
+  and `tests/exp_compare.py` compares a variant with a baseline case by case and by tag (repeat the same
+  cases the same number of times on both sides before pooling), and ends with the gate's verdict
+  (above; exit status 0 passes, 1 fails, 3 inconclusive, 4 incomplete). A tag's point estimate alone is
+  noise at these sizes. With no `ZB_EXP_*` variable set nothing sent or done changes (checked in
+  `agent_loop_test.py`).
 - **Screens**: `build/sim/zero_bot --shots out/` and look at the PNGs. Every UI change should
   be checked this way before it goes to the device. The script in `App::render_shots` walks
   the menus by counting key presses, so adding a settings row shifts later screenshots: fix
