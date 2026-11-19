@@ -879,20 +879,28 @@ def chk_said_nothing_set(t):
 NOT_ANNOUNCED = r"(not|n't|no|yet to)\b.{0,30}\b(announc|publish|confirm|set|releas|reveal|disclos|known|given|decided|fixed|scheduled|available)|" \
                 r"no (official |confirmed |exact |specific )?(time|date|details|word)|\b(tbc|tba|to be (confirmed|announced))\b|unknown"
 
+# Saying that a device turned the command down, beside the words for "it did not work".
+REFUSED = FAILED + r"|refus|reject|declin|turned (it|that|the \w+) down\b"
+
 def claims_match(failed_word, worked_word):
-    """Each part of the answer says what came of the action it names: a clause about the `failed_word` thing
-    (a regex) says it did not work, a clause about the `worked_word` one does not say it failed; and the
-    answer has one of each. "The timer failed. The TV worked." fails it."""
+    """Each part of the answer says what came of the action it names: a sentence (or, in a sentence that
+    names both, a clause) about the `failed_word` thing (a regex) says it did not work, one about the
+    `worked_word` thing does not say it failed; and the answer has one of each. "The timer failed. The TV
+    worked." fails it; "The TV refused the volume change, so I couldn't turn it down." is about the TV."""
     def check(t):
-        clauses = [x for x in re.split(r"[.;:!?]|,|\b(?:but|and|while|whereas|though|although|however)\b", t["answer"], flags=re.I) if x and x.strip()]
+        parts = []
+        for sentence in re.split(r"[.;!?]", t["answer"]):
+            if re.search(failed_word, sentence, re.I) and re.search(worked_word, sentence, re.I):
+                parts += re.split(r"[:,]|\b(?:but|and|while|whereas|though|although|however)\b", sentence, flags=re.I)
+            else: parts.append(sentence)
         problems, said_failed, said_worked = [], False, False
-        for x in clauses:
+        for x in [p for p in parts if p and p.strip()]:
             bad, good = re.search(failed_word, x, re.I), re.search(worked_word, x, re.I)
             if bad and not good:
-                if re.search(FAILED, x, re.I): said_failed = True
+                if re.search(REFUSED, x, re.I): said_failed = True
                 else: problems.append("this says the %s worked: %r" % (failed_word, x.strip()))
             elif good and not bad:
-                if re.search(FAILED, x, re.I): problems.append("this says the %s failed: %r" % (worked_word, x.strip()))
+                if re.search(REFUSED, x, re.I): problems.append("this says the %s failed: %r" % (worked_word, x.strip()))
                 else: said_worked = True
         if not said_failed: problems.append("the answer should say that the %s did not work" % failed_word)
         if not said_worked: problems.append("the answer should say that the %s worked" % worked_word)

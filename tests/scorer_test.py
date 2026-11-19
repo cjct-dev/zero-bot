@@ -671,6 +671,13 @@ def tv_refused_once():
     got = with_log(swapped)
     check("tv refused once (A6): 'The timer failed. The TV worked.' fails on its claims", got[0] == "fail" and
           all("turn 1:" in p for p in got[1]) and any("says the pasta|timer failed" in p for p in got[1]), got)
+    for answer in ("Pasta timer is set for 10 minutes. The TV refused the volume change, so I couldn't turn it down.",
+                   "I couldn't turn the TV down, but your pasta timer is running.",
+                   "Your 10-minute pasta timer is set; the TV didn't respond to the volume change.",
+                   "Your pasta timer is set. The TV, sadly, did not respond to the volume change."):
+        ok = list(turns)
+        ok[0] = dict(turns[0], answer=answer)
+        check("tv refused once: %r passes" % answer, with_log(ok) == ("pass", []), with_log(ok))
     one_moment = list(turns)
     one_moment[2] = dict(turns[2], answer="One moment: you have two timers running.")
     got = with_log(one_moment)
