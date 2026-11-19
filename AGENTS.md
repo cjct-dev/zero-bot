@@ -183,20 +183,43 @@ profiles; `--plan` says what would run and why, and runs nothing; `--build` buil
 groups need first. Which to use:
 
 - After a change, before committing: `tests/run.py --profile change` picks the groups that cover the
-  files changed since `main` (working tree included; `--base REF` for another start). For a change
-  to what the model is told (prompt, a tool's description or schema, the loop) it also prints which
-  suite tags to run five times; `--live` runs them.
+  files changed since `main` (working tree included; `--base REF` for another start). Code the device
+  build shares also gets `sim-build`, which compiles the sim build: the no-experiments side of
+  `experiment.h` and `#if !ZB_CLI_ONLY` compile nowhere else. For a change to what the model is told
+  (prompt, a tool's description or schema, the loop) it also prints which live cases to run five
+  times (suite tags; the scored set's `radio_*` for the radio, with `--scored-only`); `--live` runs them.
 - To see that everything offline still passes: `tests/run.py --profile quick` (about 5 minutes; it
   leaves out Fire TV's end-to-end test and the live sets). `--profile offline` includes Fire TV.
 - Named groups: `tests/run.py --groups unit,hue`; a live check:
-  `tests/run.py --groups live-suite --tags timer --repeat 5 --no-search`.
-- Before a release: `tests/run.py --profile release --baseline earlier-suite.json` runs every
-  offline group, the scored set and the suite once, then the gate of `tests/exp_compare.py`.
+  `tests/run.py --groups live-suite --tags timer --repeat 5 --no-search`; a variant against a
+  baseline: `--exp ZB_EXP_TOOLS=lean --baseline B.json` (inherited `ZB_EXP_*` are never passed on).
+- Before a release: `tests/run.py --profile release --baseline EVAL.json,SUITE.json` runs every
+  offline group on fresh builds (`--build` makes them; a stale one fails), the scored set and the
+  suite once, then the gate of `tests/exp_compare.py` with `--release`. It does not start without a
+  baseline of both sets recorded by the current runners: record one with
+  `tests/run.py --groups live-scored,live-suite` (its `eval.json` and `suite.json`).
 
 `ZB_EVAL_WRAPPER` prefixes every live run (a lock, or a script that sets the service's variables);
-live runs always use `--jobs 1`. `--no-search` leaves out what needs web search. A new test script
+live runs always use `--jobs 1`. `--no-search` leaves out what needs the real web search (cases on
+the stand-in web stay). Groups never inherit switches that change what they test (`ZB_UPDATE_SHOTS`,
+`ZB_UPDATE_SNAPSHOTS`, `ZB_UNIT_*`, `HUE_E2E_ONLY`, `ZB_FAST_MODE`, `ZB_EXP_*`). A new test script
 gets a line in the group table at the top of `tests/run.py`, and a rule in its path map for the
-files it covers. The rest of this section describes each test.
+files it covers.
+
+**The gate's verdicts** (`tests/exp_compare.py`, `--self-test` in the runner group): *fails* (an
+interval wholly below 0, overall, for a set or a tag; a case with 6+ runs a side that lost half its
+passes; a critical case, the smart-home questions, refusals after a web page and the stale yes,
+that did not pass every run), *incomplete* (a set it must judge has no compared case; in a release,
+results without the manifest fields, under 90% of a set compared, a critical case missing),
+*inconclusive* (the overall interval's lower end below the tolerable loss, `--tolerance`, 1.5 per 100
+by default, or repeats unbalanced between the sides) or *passes*. A failure outranks the rest. Each
+result carries a manifest: `case_hash` (the compiled case), `scorer` (the scorer's version) and
+`trace`; only cases whose three agree on both sides are compared, the rest are counted by reason, and
+results without them are compared by name only (the report says so). **Trace policy:** the runner
+always passes `--trace`, which adds `stream_options.include_usage` to what is sent, so a baseline for
+the gate must be traced too; traced against untraced pairs are left out. A live run whose cases
+failed passes only under a gate verdict of *passes* that compared its set (`gate.json` in the run
+folder). The rest of this section describes each test.
 
 What exists:
 
@@ -344,12 +367,17 @@ What exists:
   no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`. Variants measured against
   the default, none of them adopted: `ZB_EXP_TOOLS=say1|lean` (shorter tool text),
   `ZB_EXP_DECIDE=parallel|required|required_held` (deciding without the second look); an unknown value
-  stops the run. The runners' `--trace` puts each turn's trace into `--json`; `tests/exp_report.py`
-  summarises such files and `tests/exp_compare.py` compares a variant with a baseline case by case and by
-  tag (repeat the same cases on both sides before pooling), and ends with the no-regression gate (exit
-  status 1 when it fails): an interval wholly below 0, overall or for a tag, or a case that lost 4 of 6
-  runs; a tag's point estimate alone is noise at these sizes. `--skip-tags search` while web search is
-  unavailable. With no `ZB_EXP_*` variable set nothing sent or done changes (checked in `agent_loop_test.py`).
+  stops the run. `ZB_EXP_WEB` (the stand-in web) is sent `local`: no proxy, no redirect followed.
+  **The hardware guard:** `ZB_EXP_NO_HARDWARE=1`, which the live sets' runners set for every case, makes
+  the camera refuse unless `ZB_FAKE_CAMERA` names a picture, and the infrared transmitter refuse, so a
+  test run never sends a real photo to the service or a code into the room (`tests/tools_cli.py`
+  checks it, and the stand-in's proxy and redirect rules). The runners' `--trace` puts each turn's trace
+  into `--json`; `tests/exp_report.py` summarises such files (completion beside every latency figure)
+  and `tests/exp_compare.py` compares a variant with a baseline case by case and by tag (repeat the same
+  cases the same number of times on both sides before pooling), and ends with the gate's verdict
+  (above; exit status 0 passes, 1 fails, 3 inconclusive, 4 incomplete). A tag's point estimate alone is
+  noise at these sizes. With no `ZB_EXP_*` variable set nothing sent or done changes (checked in
+  `agent_loop_test.py`).
 - **Screens**: `build/sim/zero_bot --shots out/` and look at the PNGs. Every UI change should
   be checked this way before it goes to the device. The script in `App::render_shots` walks
   the menus by counting key presses, so adding a settings row shifts later screenshots: fix
