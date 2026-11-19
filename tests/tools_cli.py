@@ -412,6 +412,18 @@ def guards(root):
             check("a request to the stand-in uses no proxy", not trap.seen, trap.seen)
             ok(g, "web_search", {"query": "xylophone repair guild"}, '"results"',
                ZB_EXP_WEB="http://127.0.0.1:%s/default/" % line[2], ZB_SEARCH_KEY="stand-in")
+            # A forecast day without a rain chance says so where the figure would be (left out, the model
+            # made one up: scored case review_rain_missing); a day with one is shown as before.
+            for fixture, tomorrow in (("rain59", ", rain chance 59%"), ("rain60", ", rain chance 60%"),
+                                      ("rainmissing", ", rain chance not given")):
+                out = ok(g, "weather", {"location": "York", "days": 2}, '"forecast"', ZB_EXP_WEB="http://127.0.0.1:%s/%s" % (line[2], fixture))
+                try:
+                    days = json.loads(out).get("forecast", [])
+                except ValueError:
+                    days = []
+                check("weather (%s): today's rain chance, then tomorrow's line ends '%s'" % (fixture, tomorrow),
+                      len(days) == 2 and days[0].endswith("%") and days[1].endswith(tomorrow) and
+                      ("not given" in out) == (fixture == "rainmissing"), days)
         del trap.seen[:]
         error(g, "web_search", {"query": "when does the sun set"}, "HTTP 302", ZB_EXP_WEB=trap.url + "/redirect", ZB_SEARCH_KEY="stand-in")
         check("a redirect from the stand-in is not followed", len(trap.seen) == 1 and not any("/landed" in s for s in trap.seen), trap.seen)

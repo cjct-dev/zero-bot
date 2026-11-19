@@ -806,11 +806,14 @@ std::string t_weather(const json &a, Context &ctx) {
         for (size_t i = 0; i < d["time"].size(); ++i) {
             auto at = [&](const char *k) -> json { return d.contains(k) && i < d[k].size() ? d[k][i] : json(); };
             const json hi = at("temperature_2m_max"), lo = at("temperature_2m_min"), rain = at("precipitation_probability_max");
+            // A day without a rain chance says so: left out, the model filled the gap with a figure
+            // of its own ("60% or more") and set a reminder that hung on it (scored case
+            // review_rain_missing, three runs in three).
             arr.push_back(d["time"][i].get<std::string>() + ": " +
                           weather_text(at("weather_code").is_number() ? at("weather_code").get<int>() : -1) + ", " +
                           (lo.is_number() ? fmt1(lo.get<double>()) : "?") + " to " +
                           (hi.is_number() ? fmt1(hi.get<double>()) : "?") + deg +
-                          (rain.is_number() ? ", rain chance " + std::to_string(rain.get<int>()) + "%" : ""));
+                          (rain.is_number() ? ", rain chance " + std::to_string(rain.get<int>()) + "%" : ", rain chance not given"));
         }
         out["forecast"] = arr;
     }
