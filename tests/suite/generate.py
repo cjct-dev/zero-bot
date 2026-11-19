@@ -609,7 +609,7 @@ for text, cat, must, checks, lang in [
         ("metti un timer di cinque minuti", "timer", ["timer"], [timer(300)], "it"),
         ("che tempo fa a roma domani", "weather", ["weather"], [arg_has("weather", "location", "rom")], "it"),
         ("quanto fa 12 per 15", "calc", [], [number(180)], "it"),
-        ("qual é a capital da austrália", "notool", [], [ans(r"canberra")], "pt"),
+        ("qual é a capital da austrália", "notool", [], [ans(r"canberra|camberra")], "pt"),   # Camberra: the Portuguese spelling
         ("põe um temporizador de dez minutos", "timer", ["timer"], [timer(600)], "pt"),
         ("como está o tempo em lisboa", "weather", ["weather"], [arg_has("weather", "location", "lisbo")], "pt"),
         ("zet een timer voor drie minuten", "timer", ["timer"], [timer(180)], "nl"),

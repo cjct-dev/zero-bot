@@ -17,7 +17,9 @@ Other options as in tests/agent_eval.py: --bin, --repeat, --jobs (keep 1 for tim
 experiments' trace of each turn in --json: model calls, tokens, timings; tests/exp_report.py). It needs
 ZB_API_BASE and ZB_API_KEY (and model names in ZB_EVAL_LLM_MODEL etc.); cases tagged "search" are
 left out without ZB_SEARCH_KEY. Every case starts from an empty state with ZB_DRY_RUN, as in the
-scored set. The summary gives the pass rate per tag and the slowest cases.
+scored set, and a small stand-in music library (MUSIC_LIBRARY: tags only, no sound) unless
+ZB_EVAL_MUSIC_DIR names a folder; ZB_EVAL_MUSIC_DIR= (empty) gives an empty library, as runs before
+2026-11-19 had. The summary gives the pass rate per tag and the slowest cases.
 
 Checks are declarative in cases.json ({"kind": ...}); KINDS below compiles each one. Expected
 dates, times, amounts and ages are worked out when the case runs. A check looks at the last turn,
@@ -85,6 +87,38 @@ def stamps_for(day, times):
     return [s for hhmm in times for s in ev.stamps(days_for(day), hhmm)]
 
 
+# The suite's music library: the artists, titles and genres its music cases ask for, plus a few
+# others to choose from. Each file holds an ID3v2.3 tag and no sound (ZB_DRY_RUN plays nothing).
+MUSIC_LIBRARY = [
+    ("ABBA", "Gold", "Pop", ["Dancing Queen", "Waterloo", "Mamma Mia"]),
+    ("Queen", "A Night at the Opera", "Rock", ["Bohemian Rhapsody", "You're My Best Friend"]),
+    ("Queen", "Jazz", "Rock", ["Don't Stop Me Now"]),
+    ("The Beatles", "Abbey Road", "Rock", ["Here Comes the Sun", "Come Together"]),
+    ("Pink Floyd", "Wish You Were Here", "Rock", ["Wish You Were Here", "Shine On You Crazy Diamond"]),
+    ("Fleetwood Mac", "Rumours", "Rock", ["Dreams", "Go Your Own Way"]),
+    ("Miles Davis", "Kind of Blue", "Jazz", ["So What", "Blue in Green"]),
+    ("Ella Fitzgerald", "Ella Sings Gershwin", "Jazz", ["Summertime", "Someone to Watch Over Me"]),
+    ("Brian Eno", "Ambient 1: Music for Airports", "Ambient", ["1/1", "2/1"]),
+    ("Ludovico Einaudi", "Una Mattina", "Classical", ["Nuvole Bianche", "Una Mattina"]),
+]
+
+
+def make_music_library(folder):
+    def frame(fid, text):
+        body = b"\x00" + text.encode("latin-1")
+        return fid.encode() + len(body).to_bytes(4, "big") + b"\x00\x00" + body
+    for artist, album, genre, titles in MUSIC_LIBRARY:
+        d = os.path.join(folder, artist, album)
+        os.makedirs(d, exist_ok=True)
+        for n, title in enumerate(titles, 1):
+            tag = b"".join(frame(f, v) for f, v in (("TIT2", title), ("TPE1", artist), ("TALB", album), ("TCON", genre)))
+            size = bytes([(len(tag) >> 21) & 0x7f, (len(tag) >> 14) & 0x7f, (len(tag) >> 7) & 0x7f, len(tag) & 0x7f])
+            name = "%02d %s.mp3" % (n, title.replace("/", "-"))
+            with open(os.path.join(d, name), "wb") as f:
+                f.write(b"ID3\x03\x00\x00" + size + tag)
+    return folder
+
+
 def says_date(text, d):
     t = text.lower()
     if d.isoformat() in t: return True
@@ -93,7 +127,12 @@ def says_date(text, d):
         bool(re.search(r"\b(%s|%s)\b" % (month, month[:3]), t) and re.search(r"\b%s\b" % ev.words(d.day), t))
 
 
+# "4 pounds 50 pence", "3 dollars and 25 cents": an amount in words is the same as 4.50 or 3.25.
+MONEY_WORDS = re.compile(r"\b(\d+) (?:pounds?|dollars?|euros?)(?:,? and)? (\d{1,2}) ?(?:pence|p|cents?)\b", re.I)
+
+
 def says_number(text, values, tol):
+    text = MONEY_WORDS.sub(lambda m: "%s.%02d" % (m.group(1), int(m.group(2))), text)
     for v in values:
         if ev.says_about(text, v, tol): return True
         if float(v).is_integer() and ev.says_int(text, int(v)): return True
@@ -421,6 +460,8 @@ def main():
     # An empty home folder: the music library (~/Music unless ZB_EVAL_MUSIC_DIR names one) and anything
     # else under the home of whoever runs this stay out of the results.
     home = tempfile.mkdtemp(prefix="zb-suite-home-")
+    if "ZB_EVAL_MUSIC_DIR" not in os.environ:
+        os.environ["ZB_EVAL_MUSIC_DIR"] = make_music_library(os.path.join(home, "Music"))
     env = dict(os.environ, ZB_DRY_RUN="1", ZB_NO_AUDIO="1", HOME=home)
     if os.environ.get("ZB_EVAL_CAMERA"): env["ZB_FAKE_CAMERA"] = os.environ["ZB_EVAL_CAMERA"]
     if args.fast is not None: env["ZB_FAST_MODE"] = args.fast

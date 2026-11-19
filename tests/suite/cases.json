@@ -14886,7 +14886,7 @@
   "checks": [
    {
     "kind": "answer",
-    "re": "canberra",
+    "re": "canberra|camberra",
     "what": null
    }
   ],

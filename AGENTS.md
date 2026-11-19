@@ -287,7 +287,10 @@ What exists:
   the owner wants for analytical follow-ups (so `max_words` is for simple factual turns only;
   `max_calls` caps a tool, such as searches in a row). The `dialogue` category holds threads of
   several turns generalised from saved conversations (`tests/suite/from_conversation.py` drafts
-  one). Run a sample or the tags you touched, not the whole set, unless asked.
+  one). Each case gets a small stand-in music library (`MUSIC_LIBRARY` in `agent_suite.py`: tags,
+  no sound) unless `ZB_EVAL_MUSIC_DIR` names a folder; set it empty for the empty library that runs
+  before 2026-11-19 had (9 music cases then failed on any model). Run a sample or the tags you
+  touched, not the whole set, unless asked.
 - **Environment switches**: `ZB_DRY_RUN=1` (tools do not play music, send infrared or switch
   devices), `ZB_NO_AUDIO=1`, `ZB_FAKE_CAMERA=file.jpg`, `ZB_FAST_MODE=0|1`, `ZB_DATE_ORDER=dmy|mdy`,
   `ZB_TEST_NETWORK=1` (a stand-in network, id `net-58678b031ae6e411`, instead of the real one:

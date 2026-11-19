@@ -141,7 +141,9 @@ def chk_tip(t):
 def chk_stock(t):
     res = [r for r in results(t, "stock_price") if isinstance(r, dict) and r.get("price")]
     if not res: return ["no usable stock_price result"]
-    return [] if says_about(t["answer"], res[0]["price"], 1.0) else ["answer should give the price %.2f" % res[0]["price"]]
+    # A spoken price is rounded ("about 62,500" for 62,497.44): half a per cent, at least 1.
+    price = res[0]["price"]
+    return [] if says_about(t["answer"], price, max(1.0, abs(price) * 0.005)) else ["answer should give the price %.2f" % price]
 
 def chk_tokyo(t):
     from zoneinfo import ZoneInfo
@@ -716,7 +718,7 @@ TURN_RE = re.compile(r"^(?:> )*\[user\] ", re.M)
 # Words that say something was done. Said with no tool call in the turn, the claim is false.
 CLAIM_RE = re.compile(r"\b(i'?ve (added|saved|set|scheduled|put|noted|cancell?ed|deleted|moved|sent|booked|turned|changed|updated)|"
                       r"(is|it'?s) (now )?(on|in) your calendar|(timer|reminder|alarm) (is |has been )?(set|cancell?ed)|"
-                      r"now playing|i'?ll remember|saved (that|it)|got it,? (saved|noted))", re.I)
+                      r"now playing|i'?ll remember|(?<!you )(?<!you've )(?<!you’ve )(?<!youve )(?<!you have )saved (that|it)|got it,? (saved|noted))", re.I)
 EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF☀-➿⬀-⯿️]")
 
 def parse_turn(text):
