@@ -161,8 +161,7 @@ void test_saving(const std::string &root) {
     check(activity::saved_toast(none) == "Nothing to save yet", "and the toast says so");
     check(activity::saved_count() == 0, "nothing saved yet");
 
-    Settings::get().api_key = "sk-secret-0123456789";
-    Settings::get().search_key = "tvly-secret-987654";
+    Settings::update([](Settings &s) { s.api_key = "sk-secret-0123456789"; s.search_key = "tvly-secret-987654"; }, false);
     json msgs = sample();
     msgs[2]["content"] = "an answer that quotes sk-secret-0123456789 and tvly-secret-987654";
     umask(022);
@@ -211,12 +210,16 @@ void test_saving(const std::string &root) {
           "pruning leaves files it did not write alone");
     check(activity::saved_count() == activity::kMaxSaved, "and does not count them");
     const size_t saves = activity::saved_count();
-    util::write_file_atomic(dir + "/2026-11-18-120000.json.tmp", "{");   // a save cut short
+    util::write_file_atomic(dir + "/2026-11-18-120000.json.tmp", "{");          // a save cut short, before 0.4.6
+    util::write_file_atomic(dir + "/2026-11-18-120001.json.tmp.Ab12Cd", "{");   // and since (a temporary file of its own)
+    util::write_file_atomic(dir + "/notes.json.tmp.Ab12Cd", "{");
     const size_t deleted_with_others = activity::delete_saved();
     check(deleted_with_others == saves && activity::saved_count() == 0 && exists(dir + "/notes.json") &&
               exists(dir + "/2026-11-18-120000-copy.json") && exists(dir + "/notes.json.tmp") &&
-              !exists(dir + "/2026-11-18-120000.json.tmp"),
+              exists(dir + "/notes.json.tmp.Ab12Cd") && !exists(dir + "/2026-11-18-120000.json.tmp") &&
+              !exists(dir + "/2026-11-18-120001.json.tmp.Ab12Cd"),
           "delete removes every save and half-written save, and nothing else");
+    unlink((dir + "/notes.json.tmp.Ab12Cd").c_str());
     unlink((dir + "/notes.json").c_str());
     unlink((dir + "/2026-11-18-120000-copy.json").c_str());
     unlink((dir + "/notes.json.tmp").c_str());

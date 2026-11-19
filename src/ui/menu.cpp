@@ -188,6 +188,10 @@ void Menu::settle() {
 
 std::string Menu::title() const { return stack_.empty() ? std::string() : stack_.back().page.title; }
 
+bool Menu::in_guide() const {
+    return std::any_of(stack_.begin(), stack_.end(), [](const Frame &f) { return f.page.guide; });
+}
+
 int Menu::first_shown() const { return stack_.empty() ? 0 : stack_.back().scroll; }
 
 std::string Menu::selected() const {

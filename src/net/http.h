@@ -20,6 +20,9 @@ struct Request {
     long timeout_s = 60;
     long connect_timeout_s = 10;
     std::atomic<bool> *cancel = nullptr;    // set to true from another thread to abort
+    // A second flag that aborts as well: the caller's own (ESC), beside one the request's own code
+    // sets (the radio's check ends a stream once enough has come, through `cancel`).
+    std::atomic<bool> *cancel_too = nullptr;
     // When set, body bytes are handed over as they arrive instead of being collected.
     std::function<void(const char *, size_t)> on_data;
 

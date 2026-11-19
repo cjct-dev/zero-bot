@@ -12,6 +12,20 @@ void set_brightness(int percent);            // device backlight (5 to 100); no-
 void backlight_off();                        // device backlight off until set_brightness; no-op elsewhere
 unsigned long now_ms();
 
+// The backlight a crash puts back. The launcher does not restore it when an app ends, so an app that
+// crashed while the screen was off left it dark (dimmed: at 10 %) until a brightness key or a
+// reboot. While `percent` is set (5 to 100), a fatal signal (SIGSEGV, SIGBUS, SIGFPE, SIGILL,
+// SIGABRT, SIGTRAP, SIGSYS, SIGQUIT, SIGHUP) writes it to the backlight before the process ends as
+// it would have; -1 when the screen is lit as set (nothing to put back). The first call installs
+// the handler (not for a signal the app was started with ignored, such as a hang-up under nohup:
+// that stays ignored). SIGKILL cannot be caught: after one, the backlight stays as it was.
+void restore_after_crash(int percent);
+namespace detail {
+// The file a crash writes the brightness to: the device's backlight (none on a desktop build); the
+// test points it at a file of its own.
+void set_backlight_file(const char *path);
+}
+
 // The screen off: drawn black once, then nothing more is drawn or sent to the panel (changes are
 // kept, not drawn), and the backlight off. screen_on draws everything as it now is before the
 // backlight comes back at `percent` (it sets the brightness when the screen was not off, too).

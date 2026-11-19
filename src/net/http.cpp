@@ -43,7 +43,8 @@ size_t header_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
 
 int progress_cb(void *userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
     auto *ctx = static_cast<Ctx *>(userdata);
-    return (ctx->req->cancel && ctx->req->cancel->load()) ? 1 : 0;
+    const http::Request &req = *ctx->req;
+    return (req.cancel && req.cancel->load()) || (req.cancel_too && req.cancel_too->load()) ? 1 : 0;
 }
 }  // namespace
 
@@ -221,7 +222,7 @@ Response send_retrying(Request req, const Retry &retry) {
         const bool again = retry.again ? retry.again(res) : !res.ok() && transient(res);
         if (!again || attempt >= retry.attempts || left_ms() - pause < retry.min_ms) return res;
         for (int waited = 0; waited < pause; waited += 50) {
-            if (req.cancel && req.cancel->load()) {
+            if ((req.cancel && req.cancel->load()) || (req.cancel_too && req.cancel_too->load())) {
                 res.error = "cancelled";
                 return res;
             }

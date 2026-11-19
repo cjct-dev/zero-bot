@@ -71,7 +71,9 @@ Threads: the UI thread runs LVGL and the main loop in `ui/app.cpp`. The agent ha
 thread (`Agent::worker`), speech has one (`SpeechQueue::run`), keys are read on one, music has
 one per queue. Anything a worker wants on screen goes through `uiq::post()`; never touch LVGL
 from another thread. Slow work started from a menu uses `background(work, done)` in
-`settings_pages.cpp`.
+`settings_pages.cpp`. The settings are read on every thread and changed by the UI and by tools:
+`Settings::get()` returns a snapshot (a read-only copy taken under a lock), and every change goes
+through `Settings::update([](Settings &s) { ... })`, which makes it under that lock and saves.
 
 State on disk (all under the user's home, mode 0600 where they hold secrets):
 `~/.config/zero-bot/settings.json`, `~/.config/zero-bot/radio.json` (the user's own stations,
@@ -148,7 +150,9 @@ Things in that loop that exist for a reason; do not remove them without re-runni
     that, so "try again" works.
   - *Never silence.* "Done" in a reply after tool calls that all failed or wait for a yes is
     withdrawn once, like the guard for no tool at all (`claims_done`: an offer put as a question,
-    "Shall I put it in for next year?", is not withdrawn; it is often the right answer then). An
+    "Shall I put it in for next year?", is not withdrawn; it is often the right answer then; the
+    radio's and music's own confirmations, "Here is X." or "X is playing", are claims too, but not in
+    a sentence that says no or asks: "Nothing is playing right now" is the honest answer to "skip"). An
     empty reply goes back to the model once, then an answer is made in code. When the service is
     lost after tools ran, the user hears the confirmations of the calls that worked and that the
     rest could not be finished.
@@ -560,7 +564,12 @@ key, real audio), say so plainly rather than implying it was.
   given a callback that does nothing (LVGL resumes that timer for any change of layout, a label's
   new text, even when nothing is to be drawn). Waking marks the whole screen, refreshes once, then
   switches the backlight on. `--shots` checks the frame itself: black, unchanged while off, and
-  exactly what the objects show after a waking key, which does nothing else.
+  exactly what the objects show after a waking key, which does nothing else. The launcher does not
+  put the backlight back when an app ends, so while the screen is dimmed or off a fatal signal
+  writes the brightness setting back (`display::restore_after_crash`, only calls safe in a signal
+  handler) before the process ends as it would have. A modifier tapped on its own, and a key the
+  app has no use for, reach `handle_key` as a `Key::None` press (`LoneModifier`): it wakes the
+  screen and does nothing else.
 
 **Power**
 - The fuel gauge (`/sys/class/power_supply/bq27220-0/`) reports `current_now` in µA: positive
@@ -615,7 +624,9 @@ it in `README.md`.
 **A setting.** Add the field to `Settings` (`src/core/settings.{h,cpp}`: member, `to_json`,
 `from_json`), a row under its section's header in `open_settings` (each header is a page of its
 own, opened from the top page; a new header is a new section), the setup guide if a new user
-needs it, and a line in the README's settings table. Fix the screenshot key-press counts.
+needs it, and a line in the README's settings table. Fix the screenshot key-press counts. Rows read
+the value with `S()` and change it with `change(...)` (`Settings::update`), never by writing to a
+copy.
 
 **A key.** Chat-screen keys outside the input line are decided in `keyguide::chat_key`
 (`src/ui/key_guide.cpp`); add the key's line to the guide there too (`H` shows it), and keep the
@@ -679,7 +690,9 @@ a later run; no retries of its own of a change (the shared layer resends one onl
 new address, and only when it comes out the same if made twice; `http::send_retrying` is for
 the internet, not for devices); an error for a device that did not answer reads as one ("did not
 answer", "timed out", "could not connect"), which is what makes the layer look for it at a new
-address; honour `Device::port`; deadlines of about 2.5 s for a change and 4 s for listing;
+address (a device that spends half its 2.5 s and then did not answer is not asked again for its
+other things in that command: the shared layer gives them the same answer); honour
+`Device::port`; deadlines of about 2.5 s for a change and 4 s for listing;
 no threads, sockets or connections of its own between calls; errors are short sentences. Use
 the `http::Request` options (`local`, `timeout_ms`, `insecure`, `pinned_pubkey`, `want_peer_cert`,
 digest, client certificate) and `color.h` rather than private copies. Set `local` on every

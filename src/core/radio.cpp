@@ -140,6 +140,7 @@ Check check_at(const std::string &url, std::atomic<bool> *cancel, int depth) {
     req.timeout_ms = 8000;
     req.connect_timeout_ms = 5000;
     req.cancel = &enough;
+    req.cancel_too = cancel;   // ESC ends the check at once, also while nothing arrives at all
     // Body bytes of a good answer arrive here; a stream never ends, so the transfer is ended once
     // enough has come (or the request has been cancelled).
     req.on_data = [&](const char *p, size_t n) {

@@ -41,6 +41,9 @@ struct MenuPage {
     // scroll it, ENTER or ESC goes back. `top` is the row shown first.
     bool reading = false;
     int top = 0;
+    // A page of the first-run setup guide. Outside a text field SPACE closes settings, but not the
+    // guide or a page opened from it: a new user takes SPACE for "select", and left the guide.
+    bool guide = false;
 };
 
 class Menu {
@@ -65,6 +68,7 @@ public:
     void problem(const std::string &title, const std::string &text);   // wrapped text that stays until ESC
     size_t depth() const { return stack_.size(); }
     bool editing() const { return editing_; }   // a text field is open: every key types
+    bool in_guide() const;          // a page of the setup guide is open, on top or under the one shown
     std::string title() const;      // the top page's title, and the label of the row the cursor
     std::string selected() const;   // is on ("" with no page): for the checks in --shots
     int first_shown() const;        // the row at the top of the screen (for --shots)

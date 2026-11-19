@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <mutex>
 #include <regex>
@@ -52,18 +53,23 @@ bool read_file(const std::string &path, std::string &out) {
 bool write_file_atomic(const std::string &path, const std::string &data, int mode) {
     const size_t slash = path.rfind('/');
     if (slash != std::string::npos) make_dirs(path.substr(0, slash));
-    const std::string tmp = path + ".tmp";
-    FILE *fp = fopen(tmp.c_str(), "wb");
-    if (!fp) return false;
-    fchmod(fileno(fp), static_cast<mode_t>(mode));
+    // A temporary file of its own beside the file (NAME.tmp.XXXXXX): two threads saving one file at
+    // once each write a whole copy, and the last to finish is the one kept. With one shared
+    // NAME.tmp, one could rename the other's half-written copy into place.
+    std::string tmp = path + ".tmp.XXXXXX";
+    const int fd = mkostemp(&tmp[0], O_CLOEXEC);
+    if (fd < 0) return false;
+    fchmod(fd, static_cast<mode_t>(mode));
+    FILE *fp = fdopen(fd, "wb");
+    if (!fp) { close(fd); unlink(tmp.c_str()); return false; }
     // Every step has to work before the new file takes the old one's place: on a full disk a
     // small file's data only fails to go in at the flush, and a short file would replace a whole one.
     bool ok = fwrite(data.data(), 1, data.size(), fp) == data.size();
     ok = fflush(fp) == 0 && ok;
     if (ok && fsync(fileno(fp)) != 0 && errno != EINVAL) ok = false;   // EINVAL: a file system that cannot sync
     ok = fclose(fp) == 0 && ok;
-    if (!ok) { unlink(tmp.c_str()); return false; }
-    return rename(tmp.c_str(), path.c_str()) == 0;
+    if (!ok || rename(tmp.c_str(), path.c_str()) != 0) { unlink(tmp.c_str()); return false; }
+    return true;
 }
 
 json load_json(const std::string &path, const json &fallback) {

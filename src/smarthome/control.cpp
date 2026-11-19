@@ -5,6 +5,7 @@
 // devices fans out over at most four threads, all joined before the command returns.
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -20,6 +21,7 @@ namespace home {
 namespace {
 
 constexpr int kApplyDeadlineMs = 2500;      // per device, for a change
+constexpr int kStalledMs = kApplyDeadlineMs / 2;   // a change that took this long and had no answer: the device has stalled
 constexpr int kReadDeadlineMs = 4000;       // per device, for reading its things
 constexpr size_t kWorkers = 4;              // threads a command for several devices may use
 constexpr size_t kMaxAtOnce = 8;            // more things than this in one command need a yes
@@ -644,14 +646,27 @@ void apply_device(const std::string &network_id, const Saved &saved, std::vector
                 for (auto *s : todo) { s->ok = ok; s->err = ok ? "" : err; }
             }
         }
-        if (!handled)
+        if (!handled) {
+            // A device that spent most of its time on a change and then did not answer is not asked
+            // again for each of its other things in this command: a stalled four-relay device cost
+            // 2.5 s a relay, and only then was it looked for. A quick "did not answer" (a refused
+            // connection, a bridge reporting one lamp out of reach) is asked thing by thing as before.
+            std::string stalled;
             for (size_t k = 0; k < todo.size(); ++k) {
                 if (k > 0 && !still_on(network_id, why)) {
                     for (size_t j = k; j < todo.size(); ++j) todo[j]->err = why;
                     return;
                 }
+                if (!stalled.empty()) { todo[k]->err = stalled; continue; }
+                const auto started = std::chrono::steady_clock::now();
                 todo[k]->ok = call_apply(drv, dev, todo[k]->item->thing, todo[k]->change, todo[k]->err);
+                const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+                // unreachable() also lets "answered with error code ..." through (another device may
+                // have the address); a device that answered, however slowly, has not stalled.
+                if (!todo[k]->ok && took.count() >= kStalledMs && unreachable(todo[k]->err) && !answered(todo[k]->err))
+                    stalled = todo[k]->err;
             }
+        }
         // No answer at the saved address: the router may have given the device a new one. Sent
         // there once more, and only when the device has turned up at another address, so the first
         // cannot have reached it; and only a change that comes out the same if it did after all.

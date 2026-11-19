@@ -162,6 +162,7 @@ void reader_thread() {
         return;
     }
     Decoder dec;
+    LoneModifier lone;
     int repeat_code = -1;
     KeyEvent repeat_ev;
     int timeout = -1;
@@ -178,16 +179,24 @@ void reader_thread() {
         if (ie.type != EV_KEY) continue;
         if (g_dump) fprintf(stderr, "[key] code=%d value=%d\n", ie.code, ie.value);
         const bool down = ie.value != 0;
+        bool modifier = true;
         switch (ie.code) {
-            case KEY_LEFTSHIFT: case KEY_RIGHTSHIFT: dec.shift = down; continue;
-            case KEY_LEFTCTRL: case KEY_RIGHTCTRL: dec.ctrl = down; continue;
-            case KEY_FN: dec.fn = down; continue;
-            case KEY_CAPSLOCK: if (ie.value == 1) dec.caps = !dec.caps; continue;
-            default: break;
+            case KEY_LEFTSHIFT: case KEY_RIGHTSHIFT: dec.shift = down; break;
+            case KEY_LEFTCTRL: case KEY_RIGHTCTRL: dec.ctrl = down; break;
+            case KEY_FN: dec.fn = down; break;
+            case KEY_CAPSLOCK: if (ie.value == 1) dec.caps = !dec.caps; break;
+            default: modifier = false; break;
         }
         if (ie.value == 2) continue;  // we generate our own repeats
+        // A modifier tapped on its own, or a key the app has no use for (alt, fn+digit): a Key::None
+        // press, which wakes the screen and does nothing else.
+        if (lone.step(modifier, down)) { KeyEvent tap; push(tap); }
+        if (modifier) continue;
         KeyEvent ev;
-        if (!dec.decode(ie.code, ev)) continue;
+        if (!dec.decode(ie.code, ev)) {
+            if (down) { KeyEvent unknown; push(unknown); }
+            continue;
+        }
         ev.state = down ? 1 : 0;
         push(ev);
         if (down && repeats(ev.key)) {

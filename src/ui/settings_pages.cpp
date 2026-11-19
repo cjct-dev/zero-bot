@@ -33,7 +33,11 @@ namespace ui {
 
 namespace {
 
-Settings &S() { return Settings::get(); }
+// The settings as they are now: a copy that cannot be written to (settings.h). The agent's tools
+// change settings too, so every change here goes through change(): made under the settings' lock,
+// then saved. It returns the settings after the change.
+const Settings S() { return Settings::get(); }
+Settings change(const std::function<void(Settings &)> &fn) { return Settings::update(fn); }
 
 std::string or_dash(const std::string &s) { return s.empty() ? "not set" : s; }
 
@@ -91,10 +95,10 @@ void pick_model(Menu &menu, const std::string &title, const std::string &mode, s
             if (allow_default) options.push_back(same);
             for (auto &m : r.first)
                 if (!labelled || m.mode == mode) options.push_back(m.id);
-            const std::string current = (S().*field).empty() && allow_default ? same : S().*field;
+            const std::string now = S().*field;
+            const std::string current = now.empty() && allow_default ? same : now;
             menu.choose(title, options, current, [field, same](const std::string &pick) {
-                S().*field = pick == same ? "" : pick;
-                S().save();
+                change([&](Settings &s) { s.*field = pick == same ? "" : pick; });
             });
         });
 }
@@ -388,7 +392,7 @@ void open_remote(Menu &menu) {
     page.build = [&menu]() {
         std::vector<MenuItem> items;
         items.push_back(MenuItem::val("TV brand", [] { return S().tv_brand == "auto" ? std::string("Any (tries all)") : S().tv_brand; }, [&menu] {
-            menu.choose("TV brand", ir::brands(), S().tv_brand, [](const std::string &b) { S().tv_brand = b; S().save(); });
+            menu.choose("TV brand", ir::brands(), S().tv_brand, [](const std::string &b) { change([&b](Settings &s) { s.tv_brand = b; }); });
         }));
         items.push_back(MenuItem::action("Test: send power", [&menu] {
             // With "Any" every brand's code goes out in turn, which takes about half a second.
@@ -922,22 +926,27 @@ struct Setup {
     size_t base_depth = 0;
 
     void finish() {
-        S().setup_done = true;
-        S().save();
+        change([](Settings &s) { s.setup_done = true; });
         while (menu.depth() > base_depth) menu.pop();
         if (on_finish) on_finish();
+    }
+
+    // Every page of the guide is marked as one: SPACE does not close it (Menu::in_guide).
+    void show(MenuPage page) {
+        page.guide = true;
+        menu.push(std::move(page));
     }
 
     MenuItem edit(const std::string &label, std::string Settings::*field, const std::string &help, bool secret = false) {
         Menu &m = menu;
         return MenuItem::val(label, [field, secret] {
-            const std::string &v = S().*field;
+            const std::string v = S().*field;
             return v.empty() ? std::string("not set") : (secret ? masked(v) : short_address(v));
         }, [&m, label, field, help, secret] {
             m.edit_text(label, secret ? "" : S().*field, secret, [field](const std::string &t) {
-                if (util::trim(t).empty()) return;
-                S().*field = util::trim(t);
-                S().save();
+                const std::string v = util::trim(t);
+                if (v.empty()) return;
+                change([&](Settings &s) { s.*field = v; });
             }, help);
         });
     }
@@ -951,7 +960,7 @@ struct Setup {
             std::vector<MenuItem> items;
             Menu::add_paragraph(items, "All optional. You can change these later in settings (SPACE).");
             items.push_back(MenuItem::val("Speak replies", [] { return on_off(S().speak_replies); }, nullptr,
-                                          [](int) { S().speak_replies = !S().speak_replies; S().save(); }));
+                                          [](int) { change([](Settings &s) { s.speak_replies = !s.speak_replies; }); }));
             if (autostart::supported())
                 items.push_back(MenuItem::val("Start at power-on", [] { return on_off(autostart::enabled()); }, nullptr,
                                               [](int) { autostart::set(!autostart::enabled()); }));
@@ -960,7 +969,7 @@ struct Setup {
             items.push_back(MenuItem::action("Finish", [self] { self->finish(); }));
             return items;
         };
-        menu.push(std::move(page));
+        show(std::move(page));
     }
 
     // Step 5: about the user.
@@ -979,19 +988,18 @@ struct Setup {
                 m.edit_text("Time zone", S().timezone, false, [&m](const std::string &t) {
                     const std::string zone = util::trim(t);
                     if (!zone.empty() && !util::timezone_exists(zone)) { m.toast("Unknown zone. Example: Europe/Lisbon"); return; }
-                    S().timezone = zone;
-                    S().save();
+                    change([&zone](Settings &s) { s.timezone = zone; });
                     util::apply_timezone(zone);
                 }, "A zone such as Europe/London. Leave blank to follow the system clock. Later you can just say \"I'm in Tokyo\".");
             }));
             items.push_back(MenuItem::val("Dates", [] { return S().month_first() ? std::string("Month first") : std::string("Day first"); }, nullptr,
-                                          [](int) { S().date_order = S().month_first() ? "dmy" : "mdy"; util::set_month_first(S().month_first()); S().save(); }));
+                                          [](int) { util::set_month_first(change([](Settings &s) { s.date_order = s.month_first() ? "dmy" : "mdy"; }).month_first()); }));
         items.push_back(MenuItem::val("Units", [] { return S().units == "imperial" ? std::string("Imperial") : std::string("Metric"); }, nullptr,
-                                          [](int) { S().units = S().units == "imperial" ? "metric" : "imperial"; S().save(); }));
+                                          [](int) { change([](Settings &s) { s.units = s.units == "imperial" ? "metric" : "imperial"; }); }));
             items.push_back(MenuItem::action("Continue", [self] { self->step_extras(); }));
             return items;
         };
-        menu.push(std::move(page));
+        show(std::move(page));
     }
 
     // Step 4: models, pre-filled from what the service offers.
@@ -1012,7 +1020,7 @@ struct Setup {
             items.push_back(MenuItem::action("Continue", [self] { self->step_you(); }));
             return items;
         };
-        menu.push(std::move(page));
+        show(std::move(page));
     }
 
     // Step 3: the AI service. "Test and continue" proves the address and key before moving on.
@@ -1037,13 +1045,13 @@ struct Setup {
                     },
                     [self, &m](const std::pair<std::vector<llm::ModelInfo>, std::string> &r) {
                         if (!r.second.empty()) { m.problem("That did not work", r.second); return; }
-                        Settings &st = S();
-                        for (auto &model : r.first) {
-                            if (st.llm_model.empty() && (model.mode == "chat" || model.mode.empty())) st.llm_model = model.id;
-                            if (st.stt_model.empty() && model.mode == "audio_transcription") st.stt_model = model.id;
-                            if (st.tts_model.empty() && model.mode == "audio_speech") st.tts_model = model.id;
-                        }
-                        st.save();
+                        change([&r](Settings &st) {
+                            for (auto &model : r.first) {
+                                if (st.llm_model.empty() && (model.mode == "chat" || model.mode.empty())) st.llm_model = model.id;
+                                if (st.stt_model.empty() && model.mode == "audio_transcription") st.stt_model = model.id;
+                                if (st.tts_model.empty() && model.mode == "audio_speech") st.tts_model = model.id;
+                            }
+                        });
                         m.toast("Connected: " + std::to_string(r.first.size()) + " models available");
                         self->step_models();
                     });
@@ -1051,7 +1059,7 @@ struct Setup {
             items.push_back(MenuItem::action("Skip this step", [self] { self->step_models(); }));
             return items;
         };
-        menu.push(std::move(page));
+        show(std::move(page));
     }
 
     // Step 2: is there an internet connection?
@@ -1081,7 +1089,7 @@ struct Setup {
             items.push_back(MenuItem::action("Continue without internet", [self] { self->step_service(); }));
             return items;
         };
-        menu.push(std::move(page));
+        show(std::move(page));
     }
 
     void step_welcome() {
@@ -1097,7 +1105,7 @@ struct Setup {
             items.push_back(MenuItem::action("Skip for now", [self] { self->finish(); }));
             return items;
         };
-        menu.push(std::move(page));
+        show(std::move(page));
     }
 
     std::shared_ptr<Setup> keep;   // set by open_setup; keeps the guide alive while its pages exist
@@ -1124,7 +1132,7 @@ void open_settings(Menu &menu, const SettingsHooks &hooks) {
         std::vector<MenuItem> items;
         auto text_setting = [&menu](const std::string &label, std::string Settings::*field, const std::string &help = "") {
             return MenuItem::val(label, [field] { return or_dash(S().*field); }, [&menu, label, field, help] {
-                menu.edit_text(label, S().*field, false, [field](const std::string &t) { S().*field = util::trim(t); S().save(); }, help);
+                menu.edit_text(label, S().*field, false, [field](const std::string &t) { const std::string v = util::trim(t); change([&](Settings &s) { s.*field = v; }); }, help);
             });
         };
 
@@ -1139,38 +1147,31 @@ void open_settings(Menu &menu, const SettingsHooks &hooks) {
                                       [&menu] { pick_model(menu, "Text to speech", "audio_speech", &Settings::tts_model, false); }));
         items.push_back(text_setting("Voice", &Settings::tts_voice, "The voice name your speech service expects."));
         items.push_back(MenuItem::val("Speak replies", [] { return on_off(S().speak_replies); }, nullptr,
-                                      [](int) { S().speak_replies = !S().speak_replies; S().save(); }));
+                                      [](int) { change([](Settings &s) { s.speak_replies = !s.speak_replies; }); }));
         items.push_back(MenuItem::val("Fast replies", [] { return on_off(S().fast_mode); }, nullptr,
-                                      [](int) { S().fast_mode = !S().fast_mode; S().save(); }));
+                                      [](int) { change([](Settings &s) { s.fast_mode = !s.fast_mode; }); }));
         items.push_back(text_setting("Assistant name", &Settings::agent_name));
 
         items.push_back(MenuItem::header("Device"));
         items.push_back(MenuItem::val("Volume", [] { return std::to_string(S().volume) + "%"; }, nullptr, [](int dir) {
-            S().volume = clampi(S().volume + dir * 5, 0, 100);
-            audio::set_volume_async(S().volume);   // the mixer command takes up to 3 s
-            S().save();
+            const int volume = change([dir](Settings &s) { s.volume = clampi(s.volume + dir * 5, 0, 100); }).volume;
+            audio::set_volume_async(volume);   // the mixer command takes up to 3 s
         }));
         items.push_back(MenuItem::val("Brightness", [] { return std::to_string(S().brightness) + "%"; }, nullptr, [](int dir) {
-            S().brightness = clampi(S().brightness + dir * 10, 10, 100);
-            display::set_brightness(S().brightness);
-            S().save();
+            display::set_brightness(change([dir](Settings &s) { s.brightness = clampi(s.brightness + dir * 10, 10, 100); }).brightness);
         }));
         // Against burn-in: after this long unused the screen goes off; any key wakes it (screen_idle.h).
         items.push_back(MenuItem::val("Screen off after", [] { return screen::off_label(S().screen_off_min); }, nullptr, [](int dir) {
-            S().screen_off_min = screen::step_off_choice(S().screen_off_min, dir);
-            S().save();
+            change([dir](Settings &s) { s.screen_off_min = screen::step_off_choice(s.screen_off_min, dir); });
         }));
         items.push_back(MenuItem::val("Microphone gain", [] { return std::to_string(S().mic_gain) + "%"; }, nullptr, [](int dir) {
-            S().mic_gain = clampi(S().mic_gain + dir * 20, 20, 300);
-            audio::set_mic_gain(S().mic_gain);
-            S().save();
+            audio::set_mic_gain(change([dir](Settings &s) { s.mic_gain = clampi(s.mic_gain + dir * 20, 20, 300); }).mic_gain);
         }));
         items.push_back(MenuItem::val("Time zone", [] { return S().timezone.empty() ? util::system_timezone() : S().timezone; }, [&menu] {
             menu.edit_text("Time zone", S().timezone, false, [&menu](const std::string &t) {
                 const std::string zone = util::trim(t);
                 if (!zone.empty() && !util::timezone_exists(zone)) { menu.toast("Unknown zone. Example: Europe/Lisbon"); return; }
-                S().timezone = zone;
-                S().save();
+                change([&zone](Settings &s) { s.timezone = zone; });
                 util::apply_timezone(zone);
             }, "A zone such as Europe/Lisbon or Asia/Tokyo. Leave blank to follow the system. You can also just tell the assistant where you are.");
         }));
@@ -1194,18 +1195,18 @@ void open_settings(Menu &menu, const SettingsHooks &hooks) {
             });
         }));
         items.push_back(MenuItem::val("Use phone when offline", [] { return on_off(S().phone_fallback); }, nullptr,
-                                      [](int) { S().phone_fallback = !S().phone_fallback; S().save(); }));
+                                      [](int) { change([](Settings &s) { s.phone_fallback = !s.phone_fallback; }); }));
         items.push_back(MenuItem::val("Microphone", [] { return S().mic_builtin ? std::string("Built-in") : std::string("System default"); }, nullptr,
-                                      [](int) { S().mic_builtin = !S().mic_builtin; S().save(); audio::set_mic_builtin(S().mic_builtin); }));
+                                      [](int) { audio::set_mic_builtin(change([](Settings &s) { s.mic_builtin = !s.mic_builtin; }).mic_builtin); }));
         items.push_back(MenuItem::val("Flip camera image", [] { return on_off(S().camera_flip); }, nullptr,
-                                      [](int) { S().camera_flip = !S().camera_flip; S().save(); }));
+                                      [](int) { change([](Settings &s) { s.camera_flip = !s.camera_flip; }); }));
         items.push_back(text_setting("Home city", &Settings::home_city, "Used for weather when you do not name a place."));
         items.push_back(text_setting("Home country", &Settings::home_country, "Tells apart cities that share a name."));
         items.push_back(text_setting("Your name", &Settings::user_name));
         items.push_back(MenuItem::val("Dates", [] { return S().month_first() ? std::string("Month first") : std::string("Day first"); }, nullptr,
-                                  [](int) { S().date_order = S().month_first() ? "dmy" : "mdy"; util::set_month_first(S().month_first()); S().save(); }));
+                                  [](int) { util::set_month_first(change([](Settings &s) { s.date_order = s.month_first() ? "dmy" : "mdy"; }).month_first()); }));
         items.push_back(MenuItem::val("Units", [] { return S().units == "imperial" ? std::string("Imperial") : std::string("Metric"); }, nullptr,
-                                      [](int) { S().units = S().units == "imperial" ? "metric" : "imperial"; S().save(); }));
+                                      [](int) { change([](Settings &s) { s.units = s.units == "imperial" ? "metric" : "imperial"; }); }));
 
         items.push_back(MenuItem::header("Your data"));
         items.push_back(MenuItem::val("Calendar", [] { return std::to_string(Store::get().events().size()) + " events"; },
@@ -1244,23 +1245,23 @@ void open_settings(Menu &menu, const SettingsHooks &hooks) {
 
         items.push_back(MenuItem::header("AI service"));
         items.push_back(MenuItem::val("Address", [] { return or_dash(short_address(S().api_base)); }, [&menu] {
-            menu.edit_text("Service address", S().api_base, false, [](const std::string &t) { S().api_base = util::trim(t); S().save(); },
+            menu.edit_text("Service address", S().api_base, false, [](const std::string &t) { const std::string v = util::trim(t); change([&v](Settings &s) { s.api_base = v; }); },
                            "The base address of an OpenAI-compatible service, ending in /v1.");
         }));
         items.push_back(MenuItem::val("API key", [] { return S().api_key.empty() ? std::string("not set") : masked(S().api_key); }, [&menu] {
             menu.edit_text("API key", "", true, [&menu](const std::string &t) {
-                if (util::trim(t).empty()) { menu.toast("Key left unchanged"); return; }
-                S().api_key = util::trim(t);
-                S().save();
+                const std::string v = util::trim(t);
+                if (v.empty()) { menu.toast("Key left unchanged"); return; }
+                change([&v](Settings &s) { s.api_key = v; });
             }, "Typed text is shown while you enter it. Leave blank to keep the current key.");
         }));
         items.push_back(MenuItem::val("Web search key", [] { return S().search_key.empty() ? std::string("not set") : masked(S().search_key); }, [&menu] {
-            menu.edit_text("Web search key", "", true, [](const std::string &t) { S().search_key = util::trim(t); S().save(); },
+            menu.edit_text("Web search key", "", true, [](const std::string &t) { const std::string v = util::trim(t); change([&v](Settings &s) { s.search_key = v; }); },
                            "A Tavily API key enables the web search tool. Leave blank to turn web search off.");
         }));
 
         items.push_back(MenuItem::val("Compress audio", [] { return on_off(S().compress_audio); }, nullptr,
-                                      [](int) { S().compress_audio = !S().compress_audio; S().save(); }));
+                                      [](int) { change([](Settings &s) { s.compress_audio = !s.compress_audio; }); }));
 
         items.push_back(MenuItem::header("About"));
         items.push_back(MenuItem::action("Status and connection test", [&menu] { open_status(menu); }));

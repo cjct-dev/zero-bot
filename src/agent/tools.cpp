@@ -872,9 +872,7 @@ std::string t_set_timezone(const json &a, Context &ctx) {
         if (p.timezone.empty() || !util::timezone_exists(p.timezone)) return fail("no time zone known for " + place);
         zone = p.timezone;
     }
-    Settings &s = Settings::get();
-    s.timezone = zone;
-    s.save();
+    Settings::update([&](Settings &s) { s.timezone = zone; });
     util::apply_timezone(zone);
     return json{{"timezone", zone}, {"local_time_now", util::format_time(time(nullptr), "%A %Y-%m-%d %H:%M")},
                 {"note", "Calendar entries keep their absolute moment, so they now show in the new zone."}}.dump();
@@ -1015,9 +1013,9 @@ std::string t_tv_remote(const json &a, Context &ctx) {
     if (!brand.empty() && std::find(known.begin(), known.end(), brand) == known.end())
         return fail("unknown TV brand '" + util::truncate_utf8(brand, 30) + "'; use one of " + listed(known) +
                     ", or leave brand out to send every brand's code");
-    Settings &s = Settings::get();
-    if (!brand.empty() && brand != s.tv_brand) { s.tv_brand = brand; s.save(); }   // remember a brand the user mentions
-    if (brand.empty()) brand = s.tv_brand;
+    const std::string saved_brand = Settings::get().tv_brand;
+    if (!brand.empty() && brand != saved_brand) Settings::update([&](Settings &s) { s.tv_brand = brand; });   // remember a brand the user mentions
+    if (brand.empty()) brand = saved_brand;
     const std::string err = ir::send(brand, key, repeat, ctx.cancel);
     if (!err.empty()) {
         const auto keys = ir::keys();
@@ -1040,7 +1038,7 @@ int read_int_file(const char *path, int fallback) {
 
 std::string t_device(const json &a, Context &) {
     const std::string setting = util::lower(str_arg(a, "setting"));
-    Settings &s = Settings::get();
+    const Settings s = Settings::get();
     if (setting.empty() || setting == "status") {
         json out = {{"volume_percent", s.volume}, {"brightness_percent", s.brightness},
                     {"spoken_replies", s.speak_replies}, {"timezone", s.timezone.empty() ? util::system_timezone() : s.timezone}};
@@ -1058,18 +1056,22 @@ std::string t_device(const json &a, Context &) {
     if (setting == "volume" || setting == "brightness") {
         if (!has_value) return fail("value is required: a number from 0 to 100");
         const int v = clamp_int(value, 0, 100);
-        if (setting == "volume") { s.volume = v; if (!dry_run()) audio::set_volume(v); }
-        else { s.brightness = std::max(5, v); if (!dry_run()) display::set_brightness(s.brightness); }
-        s.save();
-        return setting + " set to " + std::to_string(setting == "volume" ? s.volume : s.brightness) + "%";
+        const Settings now = Settings::update([&](Settings &st) {
+            if (setting == "volume") st.volume = v;
+            else st.brightness = std::max(5, v);
+        });
+        if (setting == "volume") { if (!dry_run()) audio::set_volume(v); }
+        else if (!dry_run()) display::set_brightness(now.brightness);
+        return setting + " set to " + std::to_string(setting == "volume" ? now.volume : now.brightness) + "%";
     }
     if (setting == "spoken_replies") {
         // Said up front in "say", the outcome has to be what was asked for, never a toggle.
-        if (a.contains("on") && (a["on"].is_boolean() || a["on"].is_string())) s.speak_replies = bool_arg(a, "on", true);
-        else if (has_value) s.speak_replies = value != 0;
+        bool on;
+        if (a.contains("on") && (a["on"].is_boolean() || a["on"].is_string())) on = bool_arg(a, "on", true);
+        else if (has_value) on = value != 0;
         else return fail("on is required for spoken_replies: true to speak answers aloud, false for text only");
-        s.save();
-        return std::string("spoken replies ") + (s.speak_replies ? "on" : "off");
+        Settings::update([on](Settings &st) { st.speak_replies = on; });
+        return std::string("spoken replies ") + (on ? "on" : "off");
     }
     return fail("setting must be status, volume, brightness or spoken_replies");
 }

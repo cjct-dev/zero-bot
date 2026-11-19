@@ -117,8 +117,9 @@ void rgbw_to_hs(const int rgb[3], int white, int &hue, int &saturation);
 // that text sent along. `unix_time` is passed in so that tests can fix it.
 std::string datagram(const std::string &method, const std::string &params, const std::string &key, long long unix_time);
 // 32 hex characters to 16 bytes; false for anything else. White space around and inside is
-// ignored. A whole exported file (JSON holding "udp_signing_key" somewhere) is accepted too.
-bool parse_key(const std::string &text, std::string &key);
+// ignored. A whole exported file (JSON holding "udp_signing_key" somewhere) is accepted too, when
+// it holds one key; an export of several homes with different keys is refused (`several` set).
+bool parse_key(const std::string &text, std::string &key, bool *several = nullptr);
 
 // The things one device yields, with capabilities and addressing but no state yet.
 std::vector<home::Thing> things_for(const Model &m, const std::string &mac, bool metering, bool signed_firmware);

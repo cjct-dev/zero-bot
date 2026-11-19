@@ -20,7 +20,8 @@ public:
     void add_tool(const std::string &label);
     void add_note(const std::string &text, uint32_t color);
     void add_alert(const std::string &text);
-    void add_image(const std::string &image_path);
+    // With `owned`, the file is the row's own (a photo's thumbnail): it is deleted with the row.
+    void add_image(const std::string &image_path, bool owned = false);
     void clear();
     void scroll(int dy);
     bool empty() const { return count_ == 0; }
@@ -61,6 +62,7 @@ private:
     lv_obj_t *timer_ = nullptr, *timer_label_ = nullptr;
     std::string status_name_ = "Zero", indicators_, timer_text_;   // what each part of the status bar shows
     uint32_t status_color_ = 0xFFFFFFFF;     // no colour: the first call sets it
+    uint32_t busy_color_ = 0xFFFFFFFF;       // the busy dot's colour; none until the footer turns busy
     int timer_w_ = 0, give_way_ = 0;          // the countdown's width, taken from the now-playing text's room
     bool playing_still_ = false;             // the now-playing text never scrolls (a station's name)
     lv_obj_t *foot_label_ = nullptr, *foot_dot_ = nullptr, *wave_ = nullptr, *input_ = nullptr, *prompt_ = nullptr;

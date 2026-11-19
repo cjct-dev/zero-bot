@@ -282,19 +282,24 @@ Outcome call(Target &t, const std::string &method, const std::string &params, co
     return Outcome::Ok;
 }
 
-// "udp_signing_key" wherever it sits in the WiZ app's export, should someone paste the whole file.
-std::string find_key_in(const json &j, int depth = 0) {
-    if (depth > 8) return {};
+// Every "udp_signing_key" wherever it sits in the WiZ app's export, should someone paste the whole
+// file: one per home, so an export of several homes holds several.
+void keys_in(const json &j, std::vector<std::string> &found, int depth = 0) {
+    if (depth > 8 || found.size() > 16) return;
     if (j.is_object()) {
         const std::string direct = jstr(j, "udp_signing_key");
-        if (!direct.empty()) return direct;
+        if (!direct.empty()) found.push_back(direct);
     }
     if (j.is_object() || j.is_array())
-        for (const auto &child : j) {
-            const std::string found = find_key_in(child, depth + 1);
-            if (!found.empty()) return found;
-        }
-    return {};
+        for (const auto &child : j) keys_in(child, found, depth + 1);
+}
+
+// The 32 hex digits of a key as typed, without white space and in small letters ("" if not one).
+std::string key_hex(const std::string &typed) {
+    std::string hex;
+    for (const unsigned char c : typed)
+        if (!std::isspace(c)) hex += static_cast<char>(std::tolower(c));
+    return hex.size() == 32 && is_hex(hex) ? hex : std::string();
 }
 
 }  // namespace
@@ -459,15 +464,28 @@ void rgbw_to_hs(const int rgb[3], int white, int &hue, int &saturation) {
     saturation = std::clamp(static_cast<int>(std::lround(sat * 100)), 0, 100);
 }
 
-bool parse_key(const std::string &text, std::string &key) {
+bool parse_key(const std::string &text, std::string &key, bool *several) {
+    if (several) *several = false;
     if (text.size() > 65536) return false;
-    std::string candidate = text;
+    std::string hex = key_hex(text);
     const json pasted = json::parse(text, nullptr, false);
-    if (pasted.is_object() || pasted.is_array()) candidate = find_key_in(pasted);
-    std::string hex;
-    for (const unsigned char c : candidate)
-        if (!std::isspace(c)) hex += static_cast<char>(c);
-    if (hex.size() != 32 || !is_hex(hex)) return false;
+    if (pasted.is_object() || pasted.is_array()) {
+        // The one key the file holds. Several different ones (a home each) are not guessed between:
+        // the first try of a key may be its only one.
+        std::vector<std::string> found;
+        keys_in(pasted, found);
+        hex.clear();
+        for (const auto &k : found) {
+            const std::string h = key_hex(k);
+            if (h.empty() || h == hex) continue;
+            if (!hex.empty()) {
+                if (several) *several = true;
+                return false;
+            }
+            hex = h;
+        }
+    }
+    if (hex.empty()) return false;
     key.clear();
     for (size_t i = 0; i < 32; i += 2) key += static_cast<char>(std::stoi(hex.substr(i, 2), nullptr, 16));
     return true;
@@ -634,8 +652,11 @@ public:
             return false;
         }
         std::string key;
-        if (!detail::parse_key(input, key)) {
-            err = "That is not a WiZ signing key: it is 32 characters, each 0 to 9 or a to f.";
+        bool several = false;
+        if (!detail::parse_key(input, key, &several)) {
+            err = several ? "That export holds the keys of more than one WiZ home. Type the udp_signing_key of the home these "
+                            "devices are in, by itself: 32 characters, each 0 to 9 or a to f."
+                          : "That is not a WiZ signing key: it is 32 characters, each 0 to 9 or a to f.";
             return false;
         }
         // Typed again: one more try, even for the key that was refused.

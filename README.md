@@ -118,8 +118,9 @@ instead, see [Building](#building).
 
 The first time you open Zero Bot it walks you through five short steps: checking the internet
 connection, entering the AI service's address and key (with a live test), confirming the models
-it found, a few details about you, and optional extras. **ESC** steps back, and you can skip it
-and run it again later from *Settings → About → Run the setup guide again*.
+it found, a few details about you, and optional extras. **ENTER** chooses (**SPACE** does not
+close the guide), **ESC** steps back, and you can skip it and run it again later from *Settings →
+About → Run the setup guide again*.
 
 ![Setup: welcome](docs/screenshots/setup-welcome.png) ![Setup: AI service](docs/screenshots/setup-service.png)
 
@@ -198,10 +199,10 @@ are always shown and spoken with the month as a word, so a misheard date is easy
 screen off when the device has not been used for that long, against burn-in: it is drawn black,
 nothing more is drawn, and the backlight goes off. Music and the radio keep playing. Any key turns
 it back on, exactly as it was (the chat, a settings page, text being typed), and does nothing else,
-so a stray press is harmless (a modifier such as **fn** or shift on its own is not read as a key:
-press another). It stays on while you are talking, while a request is worked on or
-its answer spoken, during a breathing exercise and while a timer's alarm rings; an alarm or a
-reminder turns it on at once.
+so a stray press is harmless (**fn** or shift tapped on its own wakes it too). It stays on while
+you are talking, while a request is worked on or its answer spoken, during a breathing exercise
+and while a timer's alarm rings; an alarm or a reminder turns it on at once. If the app should
+crash while the screen is off or dimmed, the backlight is put back at the brightness you set.
 
 ### Calendar
 
