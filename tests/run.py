@@ -825,7 +825,8 @@ def key_line(text):
     if len(counts) > 1:
         return "%d checks, %d failed (%d parts)" % (sum(a for a, _ in counts), sum(b for _, b in counts), len(counts))
     for pattern in (r"^gate: .*", r"^\d+/\d+ passed[^|]*", r".*\d+ checks, \d+ failed.*", r".*\d+ screens, \d+ differ.*",
-                    r".*(up to date|OUT OF DATE).*", r"^no cases selected$"):
+                    r".*(up to date|OUT OF DATE).*", r"^no cases selected$", r"^ninja: no work to do\.?$",
+                    r"^\[\d+/\d+\] Linking .*"):
         for l in reversed(lines):
             m = re.match(pattern, l)
             if m:
@@ -1368,6 +1369,8 @@ def self_test():
     check("counts add up", key_line("x: 3 checks, 0 failed\ny: 2 passed, 1 failed\n") == "6 checks, 1 failed (2 parts)",
           key_line("x: 3 checks, 0 failed\ny: 2 passed, 1 failed\n"))
     check("screens", key_line("56 screens, 0 differ\n") == "56 screens, 0 differ")
+    check("a build", key_line("[1/2] Building x\n[2/2] Linking CXX executable zero_bot\n(exit 0)\n") ==
+          "[2/2] Linking CXX executable zero_bot" and key_line("ninja: no work to do.\n(exit 0)\n") == "ninja: no work to do.")
     check("live", key_line("PASS x\n\n2/2 passed (100%) | per request: total median 3.1s\n") == "2/2 passed (100%)")
     check("gate", key_line("## Gate\n\nFAIL  timer -12\ngate: fails\n") == "gate: fails")
     check("cases", key_line("601 cases; tags: a 1\ncases.json is up to date (601 cases)\n")
