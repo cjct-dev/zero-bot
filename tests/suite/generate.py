@@ -700,7 +700,10 @@ for text, tags in [("what time uk time is the stripe o.p.o.", ["asr"]),
 # must be), the listing's is not (no time of day may be given for it, except as what usually happens).
 EVENTS_WEB = {"ZB_EXP_WEB": "@web/events", "ZB_SEARCH_KEY": "stand-in"}
 case("dialogue", ["when is discord's ipo", "and what time would trading start uk time"], tags=["uk", "search"], env=EVENTS_WEB,
-     checks=[on_turn(0, arg_has("web_search", "query", "discord")), simple("unannounced_time"),
+     checks=[on_turn(0, arg_has("web_search", "query", "discord")),
+             # The exchange's usual hours may be given as such: 9:30 to 16:00 in New York, 14:30 to 21:00 in the UK
+             # (13:30 to 20:00 in the weeks the clocks change on different dates).
+             simple("unannounced_time", usual=["09:30", "13:30", "14:30", "16:00", "20:00", "21:00"]),
              nans(r"which company|what company", "ask which company")])
 case("dialogue", ["when is the next apple product launch event", "what time is that in uk time"], tags=["uk", "search"], env=EVENTS_WEB,
      checks=[on_turn(0, arg_has("web_search", "query", "apple")), simple("event_time", event="product_launch"),

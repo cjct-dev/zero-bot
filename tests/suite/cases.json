@@ -15903,7 +15903,15 @@
     "turn": 0
    },
    {
-    "kind": "unannounced_time"
+    "kind": "unannounced_time",
+    "usual": [
+     "09:30",
+     "13:30",
+     "14:30",
+     "16:00",
+     "20:00",
+     "21:00"
+    ]
    },
    {
     "kind": "not_answer",

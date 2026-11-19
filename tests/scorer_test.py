@@ -764,6 +764,13 @@ def event_times():
     passes("unannounced: 'not announced yet' passes", ipo, first, {"answer": "No time has been announced yet."})
     passes("unannounced: what would usually happen, said as such, passes", ipo, first,
            {"answer": "It hasn't been announced. If it lists in New York, trading would open at 9:30 am Eastern, 2:30 pm UK time."})
+    passes("unannounced: a condition with the usual time passes", ipo, first,
+           {"answer": "So if Discord lists, trading would start at 2:30pm UK time, when the New York exchange opens."})
+    trips("unannounced: a wrong usual time fails, however hedged", ipo,
+          [first, {"answer": "It hasn't been announced. Once it's set, NYSE trading opens at 8am UK time, or 9am in winter."}],
+          "the usual time given is wrong (08:00, 09:00")
+    check("unannounced: clock times read", suite.clock_times("from 9:30am to 2:30 pm, 14:30, noon, 9 p.m.") == {"09:30", "14:30", "12:00", "21:00"},
+          suite.clock_times("from 9:30am to 2:30 pm, 14:30, noon, 9 p.m."))
     trips("unannounced (A9): 'Could it be noon?' fails", ipo, [first, {"answer": "Could it be noon?"}], "the answer ")
     check("unannounced: ... on both counts", "should say the time has not been announced" in str(verdict(ipo, first, {"answer": "Could it be noon?"})))
     got = verdict(ipo, first, {"answer": "It's not confirmed, but it should start at 2:30 pm UK time."})

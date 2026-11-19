@@ -373,23 +373,45 @@ def k_event_time(s):
 
 
 def k_unannounced_time(s):
-    """For an event whose time is not published: the answer says so, and gives no time of day for it except
-    as what usually happens ("usually 9:30"): any other time is a guess."""
+    """For an event whose time is not published: the answer says so, or puts the time as a condition ("if it
+    lists, trading would start at..."); it gives no time of day for the event except as what usually
+    happens ("the exchange opens at 9:30"), and with "usual" (times as "HH:MM", in any zone the answer may
+    use), such a usual time must be one of those: a wrong opening time is a wrong answer, however hedged."""
+    usual = set(s.get("usual", []))
     def check(t):
         a = t["answer"]
-        problems = [] if re.search(ev.NOT_ANNOUNCED, a, re.I) else ["the answer should say the time has not been announced"]
+        problems = [] if re.search(ev.NOT_ANNOUNCED, a, re.I) or re.search(CONDITIONAL, a, re.I) else \
+            ["the answer should say the time has not been announced"]
         for sentence in re.split(r"(?<=[.!?])\s+", a):
-            if re.search(TIME_OF_DAY, sentence, re.I) and not re.search(USUALLY, sentence, re.I):
+            if not re.search(TIME_OF_DAY, sentence, re.I): continue
+            if not re.search(USUALLY, sentence, re.I):
                 problems.append("the answer gives a time the search did not: %r" % sentence.strip())
+            elif usual and not clock_times(sentence) <= usual:
+                problems.append("the usual time given is wrong (%s; it is one of %s): %r"
+                                % (", ".join(sorted(clock_times(sentence) - usual)), ", ".join(sorted(usual)), sentence.strip()))
         return problems
     return check
 
 
+def clock_times(text):
+    """The clock times in a text, as "HH:MM" (24-hour): "2:30pm" and "14:30" are "14:30"; noon is "12:00"."""
+    out = set()
+    for m in re.finditer(r"\b(\d{1,2})(?:[:.](\d\d))?\s*(am|pm|a\.m\.|p\.m\.)|\b(\d{1,2}):(\d\d)\b|\b(noon|midday|midnight)\b", text, re.I):
+        if m.group(6): out.add("00:00" if m.group(6).lower() == "midnight" else "12:00")
+        elif m.group(3):
+            h = int(m.group(1)) % 12 + (12 if m.group(3).lower().startswith("p") else 0)
+            out.add("%02d:%s" % (h, m.group(2) or "00"))
+        else: out.add("%02d:%s" % (int(m.group(4)), m.group(5)))
+    return out
+
+
 TIME_OF_DAY = r"\b\d{1,2}(:\d\d)?\s*(am|pm|a\.m\.|p\.m\.)|\b\d{1,2}:\d\d\b|o'?clock|\b(noon|midday|midnight)\b"
+# A time put as a condition: "if it lists, trading would start at...", "once it is set, it will...".
+CONDITIONAL = r"\b(if|once|when)\b[^.!?]*\b(would|will)\b"
 # What usually happens, or would if it went ahead ("if it lists in New York, trading would open at 9:30"),
 # rather than a time given for this event.
 USUALLY = r"\b(usually|typically|normally|generally|traditionally|tends? to|historically|in the past|previous|regular|standard|" \
-          r"open(s|ing)? (at|from)|opening (time|bell|hours?))\b|\bif\b[^.!?]*\bwould\b"
+          r"open(s|ing)? (at|from)|opening (time|bell|hours?))\b|" + CONDITIONAL
 
 
 def k_home_call(s): return ev.home_call(s["action"], s.get("targets"), **s.get("values", {}))
