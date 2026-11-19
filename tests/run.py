@@ -81,7 +81,7 @@ def _gate_cmd(o, run):
 GROUPS = [
     dict(name="runner", secs=2, needs=[], cmds=[py("tests/run.py", "--self-test")],
          about="this runner: the path map, the profiles, --plan, the summaries"),
-    dict(name="unit", secs=90, needs=[], uses=["cli"], timeout=2400,
+    dict(name="unit", secs=60, needs=[], uses=["cli"], timeout=2400,
          cmds=[["sh", "tests/run_unit.sh"]], env={"ZB_UNIT_SKIP_SCRIPTS": "1"},
          about="tests/run_unit.sh: the C++ unit tests (the first build takes about 7 min), and the timer "
                "and radio tools through build/cli"),
@@ -93,24 +93,24 @@ GROUPS = [
          about="the live sets' scoring, checked offline on saved answers"),
     dict(name="tools", secs=2, needs=["cli"], cmds=[pyi("tests/tools_cli.py", "build/cli/zero_bot")],
          about="the offline tools through the cli build: good, wrong and hostile arguments"),
-    dict(name="loop", secs=35, needs=["cli"],
+    dict(name="loop", secs=30, needs=["cli"],
          cmds=[py("tests/home_chat_e2e.py"), py("tests/selfheal_chat_e2e.py"),
                pyi("tests/agent_loop_test.py", "-q", "build/cli/zero_bot")],
          about="the request loop against scripted and fake services: home_chat_e2e, selfheal_chat_e2e, "
                "agent_loop_test"),
-    dict(name="tapo", secs=5, needs=["cli"], cmds=[py("tests/tapo_e2e.py")],
+    dict(name="tapo", secs=2, needs=["cli"], cmds=[py("tests/tapo_e2e.py")],
          about="Tapo end to end against two simulated plugs"),
-    dict(name="wiz", secs=15, needs=["unit:wiz_cli", "cli"], cmds=[py("tests/wiz_e2e.py")],
+    dict(name="wiz", secs=12, needs=["unit:wiz_cli", "cli"], cmds=[py("tests/wiz_e2e.py")],
          about="WiZ end to end against simulated lights and plugs"),
-    dict(name="kasa", secs=15, needs=["unit:kasa_cli", "cli"], cmds=[py("tests/kasa_e2e.py")],
+    dict(name="kasa", secs=12, needs=["unit:kasa_cli", "cli"], cmds=[py("tests/kasa_e2e.py")],
          about="Kasa end to end against simulated plugs, strip, dimmer, bulbs"),
-    dict(name="shelly", secs=20, needs=["unit:shelly_cli", "cli"], cmds=[py("tests/shelly_e2e.py")],
+    dict(name="shelly", secs=15, needs=["unit:shelly_cli", "cli"], cmds=[py("tests/shelly_e2e.py")],
          about="Shelly end to end against simulated Gen1 and Gen2+ devices"),
-    dict(name="hue", secs=40, needs=["unit:hue_cli", "cli"], cmds=[py("tests/hue_e2e.py")],
+    dict(name="hue", secs=36, needs=["unit:hue_cli", "cli"], cmds=[py("tests/hue_e2e.py")],
          about="Hue end to end against a simulated bridge"),
-    dict(name="homekit", secs=55, needs=["unit:homekit_cli"], cmds=[py("tests/homekit_e2e.py")],
+    dict(name="homekit", secs=51, needs=["unit:homekit_cli"], cmds=[py("tests/homekit_e2e.py")],
          about="HomeKit end to end against a simulated bridge"),
-    dict(name="screens", secs=15, needs=["sim"], cmds=[pyi("tests/shots_compare.py")],
+    dict(name="screens", secs=10, needs=["sim"], cmds=[pyi("tests/shots_compare.py")],
          about="every screen rendered by the sim build and compared with tests/golden/shots/"),
     dict(name="firetv", secs=330, needs=["unit:firetv_cli"], slow=True, timeout=1500,
          cmds=[py("tests/firetv_e2e.py")],
@@ -131,7 +131,7 @@ LIVE = [g["name"] for g in GROUPS if g.get("live")]
 PROFILES = {
     "quick": ("every offline group but the slow ones; leaves out firetv (about 5 min) and the live sets",
               [n for n in OFFLINE if not BY_NAME[n].get("slow")]),
-    "offline": ("every offline group, firetv included (about 12 min)", OFFLINE),
+    "offline": ("every offline group, firetv included (about 10 min)", OFFLINE),
     "change": ("the groups that cover the files changed against --base (default main), the working tree "
                "included; for a change to what the model is told, which live suite tags to run five "
                "times (run only with --live)", None),
@@ -147,6 +147,7 @@ DRIVERS = list(FAMILIES)
 QUICK = "<quick>"
 PATH_RULES = [
     (r"^(docs/|licenses/|LICENSE$|[^/]*\.md$|.*/README[^/]*$|\.gitignore$)", [], "documentation"),
+    (r"^(.*/)?__pycache__/|.*\.pyc$", [], "Python's bytecode cache"),
     (r"^(scripts/|packaging/|extras/|\.github/)", [], "packaging and deployment: no offline test covers it"),
     (r"^tests/run\.py$", ["runner"], "this runner"),
     (r"^tests/scorer_test\.py$", ["scorer"], "the scorer's own test"),
@@ -302,10 +303,42 @@ def search_free_eval_cases(only):
             bool(re.search(r"\blook (it )?up\b|\bsearch\b|\bgoogle\b", said, re.I))
 
     keep = [c["name"] for c in cases if picked(c, wanted) and not needs_search(c)]
-    if not keep or [c["name"] for c in cases if picked(c, keep)] != keep:
+    if keep and [c["name"] for c in cases if picked(c, keep)] != keep:
         return None
     left_out = [c["name"] for c in cases if picked(c, wanted) and needs_search(c)]
     return keep, left_out
+
+
+PER_CASE = 3.6   # seconds a live case takes at --jobs 1 (whole runs: 480 s for 123, 2100 s for 601)
+
+
+def live_count(name, o):
+    """How many cases a live group will run with these options, or None when that cannot be told."""
+    sys.path.insert(0, HERE)
+    try:
+        if name == "live-suite":
+            import agent_suite as su
+            with open(os.path.join(HERE, "suite", "cases.json"), encoding="utf-8") as f:
+                cases = json.load(f)
+            return len(su.selected(cases, argparse.Namespace(tags=o.tags, skip_tags=skip_tags(o), only=o.only,
+                                                              sample=o.sample, seed=o.seed)))
+        free = search_free_eval_cases(o.only) if o.no_search else None
+        if free is not None:
+            return len(free[0])
+        import agent_eval as ev
+        words = [w for w in o.only.split(",") if w]
+        return sum(1 for c in ev.CASES if not words or any(w in c["name"] for w in words))
+    except Exception:  # a set that cannot be read here: the whole run's time stands
+        return None
+    finally:
+        if sys.path and sys.path[0] == HERE:
+            sys.path.pop(0)
+
+
+def group_secs(name, o):
+    g = BY_NAME[name]
+    n = live_count(name, o) if g.get("live") else None
+    return g["secs"] if n is None else max(5, n * PER_CASE * max(1, o.repeat))
 
 
 def live_prefix():
@@ -318,7 +351,7 @@ def eval_command(o, run):
     only = o.only
     if o.no_search:
         free = search_free_eval_cases(o.only)
-        if free:
+        if free and free[0]:
             only = ",".join(free[0])
     if only:
         cmd += ["--only", only]
@@ -552,19 +585,28 @@ def print_plan(chosen, why, notes, advice, o, out=None):
     if o.build:
         builds = presets_needed(chosen)
         print("build first: %s" % (", ".join(builds) or "nothing"), file=out)
-    total = sum(BY_NAME[n]["secs"] for n in chosen)
-    print("would run %d groups, about %s:" % (len(chosen), duration(total)), file=out)
+    total = sum(group_secs(n, o) for n in chosen)
+    print("would run %s, about %s:" % (plural(len(chosen), "group"), duration(total)), file=out)
     for n in chosen:
         g = BY_NAME[n]
         flags = []
         if g.get("file") and not os.path.exists(os.path.join(ROOT, g["file"])):
             flags.append("skipped: %s is not in this tree" % g["file"])
-        print("  %-12s ~%-6s %s%s" % (n, duration(g["secs"]), why.get(n, ""),
+        count = live_count(n, o) if g.get("live") else None
+        if count == 0:
+            flags.append("skipped: no case of this set is selected")
+        elif count:
+            flags.append(plural(count, "case") + (" x%d" % o.repeat if o.repeat > 1 else ""))
+        print("  %-12s ~%-6s %s%s" % (n, duration(group_secs(n, o)), why.get(n, ""),
                                      ("; " + "; ".join(flags)) if flags else ""), file=out)
         for c in commands_of(g, o, "<run>"):
             print("      " + command_text(c), file=out)
     for line in live_notes(o, chosen) + advice_lines(advice, o):
         print(line, file=out)
+
+
+def plural(n, word):
+    return "%d %s%s" % (n, word, "" if n == 1 else "s")
 
 
 def duration(s):
@@ -664,6 +706,8 @@ def run_group(group, o, run, gate_follows, warnings):
     name = group["name"]
     if group.get("file") and not os.path.exists(os.path.join(ROOT, group["file"])):
         return "skip", "%s is not in this tree" % group["file"], 0
+    if group.get("live") and live_count(name, o) == 0:
+        return "skip", "no case of this set is selected", 0
     problem = missing(group, o, run)
     logpath = os.path.join(run, name + ".log")
     if problem:
@@ -716,8 +760,8 @@ def execute(chosen, why, notes, advice, o):
     rel = os.path.relpath(run, ROOT)
     with open(os.path.join(run, "plan.txt"), "w") as f:
         print_plan(chosen, why, notes, advice, o, out=f)
-    total = sum(BY_NAME[n]["secs"] for n in chosen)
-    print("%d groups, about %s; logs in %s/" % (len(chosen), duration(total), rel))
+    total = sum(group_secs(n, o) for n in chosen)
+    print("%s, about %s; logs in %s/" % (plural(len(chosen), "group"), duration(total), rel))
     for line in live_notes(o, chosen):
         print(line)
     rows, warnings, broken = [], {}, set()
@@ -862,6 +906,7 @@ def self_test():
     check("the scorer", groups("tests/agent_eval.py") == ["cases", "scorer"], groups("tests/agent_eval.py"))
     check("the build", groups("CMakeLists.txt") == PROFILES["quick"][1])
     check("an unknown path", groups("somewhere/new.txt") == PROFILES["quick"][1])
+    check("bytecode", groups("tests/__pycache__/run.cpython-314.pyc") == [])
     check("several paths add up", groups("src/ui/app.cpp", "tests/suite/x.py") == ["unit", "cases", "screens"])
     for _, gs, _ in PATH_RULES:
         for g in gs:
@@ -916,6 +961,11 @@ def self_test():
         check("no-search leaves out the scored set's search cases", "search" in left and "search_news" in left and
               "search" not in keep, left)
         check("no-search keeps the case that runs without a key", "search_no_key" in keep)
+
+    n = live_count("live-suite", parse(["--only", "timer-001,calc-001", "--no-search"]))
+    check("a live subset's size", n in (None, 2), n)
+    if n is not None:
+        check("a live subset's time", group_secs("live-suite", parse(["--only", "timer-001", "--repeat", "3"])) < 60)
 
     # The summaries.
     check("one count", key_line("ok a\nhue e2e: 193 checks, 0 failed\n") == "hue e2e: 193 checks, 0 failed")
