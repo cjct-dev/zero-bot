@@ -674,7 +674,8 @@ def tv_refused_once():
     for answer in ("Pasta timer is set for 10 minutes. The TV refused the volume change, so I couldn't turn it down.",
                    "I couldn't turn the TV down, but your pasta timer is running.",
                    "Your 10-minute pasta timer is set; the TV didn't respond to the volume change.",
-                   "Your pasta timer is set. The TV, sadly, did not respond to the volume change."):
+                   "Your pasta timer is set. The TV, sadly, did not respond to the volume change.",
+                   "Your pasta timer is set. The TV refused the volume change."):
         ok = list(turns)
         ok[0] = dict(turns[0], answer=answer)
         check("tv refused once: %r passes" % answer, with_log(ok) == ("pass", []), with_log(ok))
