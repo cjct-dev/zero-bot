@@ -6,7 +6,10 @@ temporary state folder (HOME and the XDG folders), with ZB_DRY_RUN (no music, in
 is used), ZB_NO_AUDIO, ZB_TEST_NETWORK and no AI service configured. Each result must be the right
 one or an ERROR sentence that says what to change, the program must not crash, and nothing may be
 written outside the state folder. Tools that need the internet (weather, currency, stocks, web
-search, a place looked up by name, the photo's description) are not run here.
+search, a place looked up by name, the photo's description) are not run here, except web search against
+the local stand-in (tests/mocks/fake_web.py) to check the experiments' guards: ZB_EXP_NO_HARDWARE keeps
+the camera and the infrared transmitter out of a test run, a bad ZB_EXP_WEB stops the run cleanly, and a
+request to the stand-in takes no proxy and follows no redirect.
 
 usage: tests/tools_cli.py [path/to/zero_bot]          (default: build/cli/zero_bot)
 """
@@ -42,7 +45,11 @@ class State:
         env = {k: v for k, v in os.environ.items() if not k.startswith("ZB_") and k not in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME")}
         env.update(HOME=self.dir + "/home", XDG_CONFIG_HOME=self.dir + "/config", XDG_DATA_HOME=self.dir + "/data",
                    XDG_CACHE_HOME=self.dir + "/cache", ZB_DRY_RUN="1", ZB_NO_AUDIO="1", ZB_TEST_NETWORK="1", TZ="UTC")
-        env.update(extra)
+        for k, v in extra.items():   # None leaves a variable out
+            if v is None:
+                env.pop(k, None)
+            else:
+                env[k] = v
         return env
 
     def run(self, name, args, **extra):
@@ -284,6 +291,103 @@ def run_all(root):
 
     # ---- nothing outside the state folder: the smart-home tool on an empty test network
     error(s, "smart_home", {"action": "on", "target": "lamp"}, "no smart-home device")
+
+    guards(root)
+
+
+class Trap:
+    """A local HTTP server that records every request line and answers a redirect to itself; used as a
+    proxy that must not be used and as a stand-in whose redirect must not be followed."""
+    def __init__(self):
+        import http.server
+        import threading
+        seen = self.seen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def answer(self):
+                seen.append(self.requestline)
+                n = int(self.headers.get("Content-Length") or 0)
+                if n:
+                    self.rfile.read(n)
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.1:%d/landed" % self.server.server_address[1])
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            do_GET = do_POST = answer
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = "http://127.0.0.1:%d" % self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def guards(root):
+    """The experiments' guards in the cli build (src/agent/experiment.h; none of it is in the device
+    build): ZB_EXP_NO_HARDWARE keeps the camera and the infrared transmitter out of a test run,
+    ZB_EXP_WEB refuses what is not a local address without crashing, and a request to the stand-in web
+    goes straight to it (no proxy) and follows no redirect."""
+    g = State(root, "guards")
+    # The camera: under the switch a camera program that works is never started; ZB_FAKE_CAMERA still is.
+    cam_bin, marker = g.dir + "/bin", g.dir + "/camera-used"
+    os.makedirs(cam_bin)
+    with open(cam_bin + "/rpicam-jpeg", "w") as f:
+        f.write('#!/bin/sh\ntouch "%s"\nfor a; do out="$a"; done\nhead -c 4000 /dev/zero > "$out"\n' % marker)
+    os.chmod(cam_bin + "/rpicam-jpeg", stat.S_IRWXU)
+    path = cam_bin + ":" + os.environ.get("PATH", "/usr/bin:/bin")
+    ask = {"question": "what is this?"}
+    error(g, "look", ask, "the camera is switched off for this test run", "do not describe a photo", PATH=path,
+          ZB_EXP_NO_HARDWARE="1")
+    check("ZB_EXP_NO_HARDWARE: the camera program is not started", not os.path.exists(marker))
+    out = expect(g, "look", ask, PATH=path)
+    check("without ZB_EXP_NO_HARDWARE the same camera program is used", os.path.exists(marker) and "switched off" not in out, out)
+    picture = g.dir + "/sign.jpg"
+    with open(picture, "wb") as f:
+        f.write(b"\xff\xd8" + b"\x00" * 3000 + b"\xff\xd9")
+    out = expect(g, "look", ask, ZB_EXP_NO_HARDWARE="1", ZB_FAKE_CAMERA=picture)
+    check("ZB_EXP_NO_HARDWARE: ZB_FAKE_CAMERA still gives the picture", "switched off" not in out and "could not be analysed" in out, out)
+
+    # Infrared, without ZB_DRY_RUN: refused under the switch. Only where this computer has no transmitter,
+    # so that a broken guard cannot send a code into the room.
+    if not any(n.startswith("lirc") for n in os.listdir("/dev")):
+        error(g, "tv_remote", {"key": "power", "brand": "lg"}, "infrared transmitter is switched off for this test run",
+              ZB_DRY_RUN=None, ZB_EXP_NO_HARDWARE="1")
+    else:
+        print("(this computer has an infrared device: the infrared guard was not tried)")
+
+    # ZB_EXP_WEB: a value too short to hold an address stops the run with a sentence, not a crash.
+    for bad in ("abc", "http:/", "http://", "http://127.example.net", "http://10.0.0.1"):
+        p = subprocess.run([APP, "--tool", "web_search", '{"query": "x"}'], env=g.env(ZB_EXP_WEB=bad, ZB_SEARCH_KEY="k"),
+                           capture_output=True, timeout=60)
+        text = (p.stdout + p.stderr).decode("utf-8", "replace")
+        check("ZB_EXP_WEB=%s is refused" % bad, p.returncode == 2 and "is not an http://127.x address" in text, (p.returncode, text[:200]))
+
+    # The stand-in web is reached directly, whatever proxy the environment names, and a redirect is not
+    # followed: tests/mocks/fake_web.py answers the search, the trap must see nothing.
+    trap = Trap()
+    web = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "fake_web.py")], stdin=subprocess.PIPE,
+                           stdout=subprocess.PIPE, text=True)
+    try:
+        line = web.stdout.readline().split()
+        check("the stand-in web starts", line[:2] == ["WEB", "listening"], line)
+        proxy = dict(http_proxy=trap.url, https_proxy=trap.url, HTTPS_PROXY=trap.url, ALL_PROXY=trap.url, all_proxy=trap.url,
+                     no_proxy=None, NO_PROXY=None, ZB_SEARCH_KEY="stand-in")
+        if line[:2] == ["WEB", "listening"]:
+            ok(g, "web_search", {"query": "xylophone repair guild"}, '"results"',
+               ZB_EXP_WEB="http://127.0.0.1:%s/default" % line[2], **proxy)
+            check("a request to the stand-in uses no proxy", not trap.seen, trap.seen)
+        del trap.seen[:]
+        error(g, "web_search", {"query": "when does the sun set"}, "HTTP 302", ZB_EXP_WEB=trap.url + "/redirect", ZB_SEARCH_KEY="stand-in")
+        check("a redirect from the stand-in is not followed", len(trap.seen) == 1 and not any("/landed" in s for s in trap.seen), trap.seen)
+    finally:
+        trap.close()
+        web.stdin.close()
+        web.wait(timeout=10)
 
 
 if __name__ == "__main__":

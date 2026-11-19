@@ -125,6 +125,9 @@ json fetch_json(const std::string &url, std::string &err, Context &ctx, const st
     req.headers = headers;
     req.timeout_s = 20;
     req.cancel = ctx.cancel;
+    // The test sets' stand-in web (ZB_EXP_WEB, experiment builds only) is reached directly: no proxy,
+    // and a redirect is not followed off this computer.
+    req.local = experiment::stand_in(url);
     if (!post_body.empty()) { req.method = "POST"; req.body = post_body; }
     http::Retry retry;
     retry.attempts = 2;

@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "agent/experiment.h"
 #include "core/util.h"
 #include "platform/proc.h"
 
@@ -19,6 +20,8 @@ std::string capture(const std::string &jpeg_path, int width, int height, bool up
         if (!util::read_file(fake, data)) return "camera test image not found";
         return util::write_file_atomic(jpeg_path, data) ? "" : "could not save the photo";
     }
+    // A test run (ZB_EXP_NO_HARDWARE, experiment builds only) never takes a real photo.
+    if (std::string off = experiment::no_camera(); !off.empty()) return off;
     if (!proc::have("rpicam-jpeg")) return "this device has no camera";
     // The CardputerZero's sensor is mounted the other way up from how the device is held.
     const auto res = proc::run({"rpicam-jpeg", "-n", "-t", "700", "--width", std::to_string(width), "--height",

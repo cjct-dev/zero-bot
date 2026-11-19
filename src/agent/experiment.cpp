@@ -77,18 +77,23 @@ const Switches &get() {
             // Only a stand-in on this computer: the switch must never send a search or a key elsewhere.
             r.web = w;
             // The host must be a 127.a.b.c address written out ("http://127.example.net" is not one).
-            const size_t host_end = r.web.find_first_of(":/", 7);
-            const std::string host = r.web.substr(7, host_end == std::string::npos ? std::string::npos : host_end - 7);
-            int parts = 0, a = -1, b = -1, c = -1, d = -1;
-            char rest = 0;
-            parts = sscanf(host.c_str(), "%d.%d.%d.%d%c", &a, &b, &c, &d, &rest);
-            const bool loopback = parts == 4 && a == 127 && b >= 0 && b < 256 && c >= 0 && c < 256 && d >= 0 && d < 256;
-            if (r.web.compare(0, 7, "http://") != 0 || !loopback || r.web.find_first_of("@?#") != std::string::npos) {
+            // The scheme is checked first: a value shorter than "http://" has no host to read.
+            bool loopback = false;
+            if (r.web.size() > 7 && r.web.compare(0, 7, "http://") == 0) {
+                const size_t host_end = r.web.find_first_of(":/", 7);
+                const std::string host = r.web.substr(7, host_end == std::string::npos ? std::string::npos : host_end - 7);
+                int a = -1, b = -1, c = -1, d = -1;
+                char rest = 0;
+                const int parts = sscanf(host.c_str(), "%d.%d.%d.%d%c", &a, &b, &c, &d, &rest);
+                loopback = parts == 4 && a == 127 && b >= 0 && b < 256 && c >= 0 && c < 256 && d >= 0 && d < 256;
+            }
+            if (!loopback || r.web.find_first_of("@?#") != std::string::npos) {
                 fprintf(stderr, "ZB_EXP_WEB=%s is not an http://127.x address\n", w);
                 exit(2);
             }
             while (!r.web.empty() && r.web.back() == '/') r.web.pop_back();
         }
+        r.no_hardware = env_on("ZB_EXP_NO_HARDWARE");
         return r;
     }();
     return s;
@@ -99,6 +104,20 @@ std::string web(const std::string &url) {
     const size_t scheme = url.find("://");
     if (base.empty() || scheme == std::string::npos) return url;
     return base + "/" + url.substr(scheme + 3);
+}
+
+bool stand_in(const std::string &url) {
+    const std::string &base = get().web;
+    return !base.empty() && url.size() > base.size() && url.compare(0, base.size(), base) == 0 && url[base.size()] == '/';
+}
+
+std::string no_camera() {
+    return get().no_hardware ? "the camera is switched off for this test run (ZB_EXP_NO_HARDWARE): set ZB_FAKE_CAMERA to a picture"
+                             : "";
+}
+
+std::string no_infrared() {
+    return get().no_hardware ? "the infrared transmitter is switched off for this test run (ZB_EXP_NO_HARDWARE)" : "";
 }
 
 void trace(json event) {
