@@ -199,6 +199,7 @@ void Agent::reset_conversation() {
     cancel();
     {
         std::lock_guard<std::mutex> lk(mtx_);
+        history_gone_ += history_.size();
         history_ = json::array();
         earlier_ = json::array();   // DIAGNOSTICS (temporary)
         earlier_dropped_ = 0;
@@ -238,13 +239,9 @@ std::string Agent::detail() {
     return detail_;
 }
 
-size_t Agent::history_size() {
+json Agent::history_snapshot(size_t *gone) {
     std::lock_guard<std::mutex> lk(mtx_);
-    return history_.size();
-}
-
-json Agent::history_snapshot() {
-    std::lock_guard<std::mutex> lk(mtx_);
+    if (gone) *gone = history_gone_;
     return history_;
 }
 
@@ -361,6 +358,7 @@ void Agent::trim_history() {
             json kept = json::array();
             for (size_t i = start; i < history_.size(); ++i) kept.push_back(history_[i]);
             history_ = std::move(kept);
+            history_gone_ += start;
         }
         for (const auto &m : history_) user_messages += util::jget(m, "role", std::string()) == "user";
     }

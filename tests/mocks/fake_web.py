@@ -20,7 +20,8 @@ FIXTURES.json adds to or replaces the fixtures below: {"NAME": FIXTURE, ...}. A 
               "now": {"code": 3, "temp": 7, "feels": 5, "wind": 12, "humidity": 80}
   "search":   [{"match": "regex", "answer": "summary", "results": [{"title", "url", "content"}]}, ...]
               the first rule whose regex is found in the query (any case) answers; with none, a
-              result that says nothing was found
+              result that says nothing was found. "{date:NAME}" and "{time:NAME}" in the text are an
+              event of EVENTS, worked out on the day (event_time), so the scorer can expect its time.
 """
 import datetime
 import json
@@ -45,6 +46,28 @@ WEEK = [{"code": 3, "min": 6, "max": 11, "rain": 20}, {"code": 61, "min": 5, "ma
         {"code": 80, "min": 6, "max": 10, "rain": 70}, {"code": 1, "min": 3, "max": 9, "rain": 5},
         {"code": 3, "min": 4, "max": 10, "rain": 25}]
 NOW = {"code": 3, "temp": 8, "feels": 6, "wind": 14, "humidity": 78}
+# Events whose time a search gives, worked out from the day the test runs, so they always lie ahead: the
+# first such weekday at least `ahead` days away, at that time in that zone. tests/agent_suite.py's
+# event_time check imports event_time to know the answer.
+EVENTS = {"product_launch": {"zone": "America/Los_Angeles", "weekday": 1, "ahead": 14, "time": "10:00", "zone_name": "Pacific Time (PT)"}}
+
+
+def event_time(name, today=None):
+    from zoneinfo import ZoneInfo
+    e = EVENTS[name]
+    d = (today or datetime.date.today()) + datetime.timedelta(days=e["ahead"])
+    d += datetime.timedelta(days=(e["weekday"] - d.weekday()) % 7)
+    return datetime.datetime.combine(d, datetime.time(int(e["time"][:2]), int(e["time"][3:])), ZoneInfo(e["zone"]))
+
+
+def fill(text):
+    def one(m):
+        when = event_time(m.group(2))
+        if m.group(1) == "date": return when.strftime("%A %-d %B %Y")
+        return when.strftime("%-I:%M %p").lower().replace("am", "a.m.").replace("pm", "p.m.") + " " + EVENTS[m.group(2)]["zone_name"]
+    return re.sub(r"\{(date|time):(\w+)\}", one, text)
+
+
 SEARCH = [
     {"match": r"sun ?set", "answer": "Sunset in London today is at 4:05 pm.",
      "results": [{"title": "Sunrise and sunset times, London", "url": "https://example.org/sun/london",
@@ -58,8 +81,23 @@ def rain_days(today, tomorrow):
     return {"days": days, "now": NOW}
 
 
+# An event with its time published, and one without: what a follow-up "what time is that in UK time" can
+# rest on, and where only "not announced yet" is right.
+EVENT_SEARCH = [
+    {"match": r"apple|product launch|keynote", "answer": "Apple's next product launch event is on {date:product_launch} at {time:product_launch}.",
+     "results": [{"title": "Apple announces its next product launch event", "url": "https://example.org/apple/event",
+                  "content": "Apple will hold its next product launch event on {date:product_launch}, starting at {time:product_launch}, "
+                             "streamed from Apple Park in Cupertino."}]},
+    {"match": r"discord", "answer": "Discord has filed for an initial public offering on the New York Stock Exchange; "
+                                    "the date and the time its shares begin trading have not been announced.",
+     "results": [{"title": "Discord files for IPO", "url": "https://example.org/discord/ipo",
+                  "content": "Discord has filed to list its shares on the New York Stock Exchange. The company has not yet announced "
+                             "a date or a time for the start of trading; neither has the exchange."}]},
+] + SEARCH
+
 FIXTURES = {
     "default": {"places": PLACES, "forecast": {"days": WEEK, "now": NOW}, "search": SEARCH},
+    "events": {"places": PLACES, "forecast": {"days": WEEK, "now": NOW}, "search": EVENT_SEARCH},
     # The forecast-threshold reminder ("if tomorrow's rain chance in York is at least 60%"): tomorrow
     # just under, at, and without a rain chance; today on the other side, so reading the wrong day shows.
     "rain59": {"places": PLACES, "forecast": rain_days(85, 59), "search": SEARCH},
@@ -99,7 +137,8 @@ def forecast(fx, q):
 def search(fx, query):
     for rule in fx.get("search", []):
         if re.search(rule["match"], query, re.I):
-            return {"query": query, "answer": rule.get("answer", ""), "results": rule.get("results", [])}
+            return {"query": query, "answer": fill(rule.get("answer", "")),
+                    "results": [{k: fill(v) for k, v in r.items()} for r in rule.get("results", [])]}
     return {"query": query, "answer": "", "results": [{"title": "No results", "url": "https://example.org/none",
                                                         "content": "Nothing was found for this search."}]}
 
