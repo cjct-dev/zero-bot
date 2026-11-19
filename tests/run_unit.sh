@@ -12,6 +12,9 @@
 #   tests/run_unit.sh                   build into build/unit and run
 #   ZB_UPDATE_SNAPSHOTS=1 tests/run_unit.sh    rewrite tests/snapshots/*.json from the current schema
 #   ZB_BUILD_WRAPPER=cmd tests/run_unit.sh     run each compile through cmd (e.g. a lock on a shared machine)
+#   ZB_UNIT_BUILD_ONLY=1 tests/run_unit.sh     build the test programs (the drivers' *_cli too) and stop
+#   ZB_UNIT_SKIP_SCRIPTS=1 tests/run_unit.sh   leave out tests/tools_cli.py and tests/agent_loop_test.py
+#                                              (tests/run.py runs them as groups of their own)
 #
 # When the command-line build exists (build/cli/zero_bot), the timer and radio tools are also run
 # through it, zero_bot --tool timer '{...}', with a fresh, temporary state folder, the system
@@ -106,6 +109,10 @@ $WRAP $CXX -o "$OUT/core_test" "$OUT/tests_unit_core_test.o" "$(obj_of src/core/
 # DIAGNOSTICS (temporary): saved conversations.
 $WRAP $CXX -o "$OUT/activity_test" "$OUT/tests_unit_activity_test.o" "$(obj_of src/core/activity.cpp)" \
     "$(obj_of src/core/settings.cpp)" "$(obj_of src/core/util.cpp)" -lpthread
+if [ "${ZB_UNIT_BUILD_ONLY:-}" = 1 ]; then
+    echo "built the unit test programs into $OUT (ZB_UNIT_BUILD_ONLY=1: nothing run)"
+    exit 0
+fi
 
 failed=0
 echo "=== smart home"
@@ -249,6 +256,11 @@ radio_expect "a phone's connection" "$(ZB_TEST_TETHER=1 in_radio_state "$cli" --
 radio_expect "stop" "$(in_radio_state "$cli" --tool radio '{"action":"stop"}')" 'radio stopped'
 echo "radio through the command-line build: $passed passed, $radio_failed failed"
 [ "$radio_failed" -eq 0 ] || failed=1
+
+if [ "${ZB_UNIT_SKIP_SCRIPTS:-}" = 1 ]; then
+    echo "=== tests/tools_cli.py and tests/agent_loop_test.py left out (ZB_UNIT_SKIP_SCRIPTS=1)"
+    exit $failed
+fi
 
 echo "=== the other tools that need no network, through the command-line build"
 python3 -I tests/tools_cli.py "$cli" || failed=1

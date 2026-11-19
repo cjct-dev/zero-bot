@@ -176,6 +176,28 @@ decoding are loaded at run time with `dlopen` and are optional.
 
 ## 6. Testing
 
+**Start with `tests/run.py`.** It runs the tests below in groups and prints one line per group (its
+count and seconds), then a short summary; each group's full output goes to
+`build/test-runs/<date-time>/<group>.log`. `--list` shows the groups, what each needs and the
+profiles; `--plan` says what would run and why, and runs nothing; `--build` builds what the chosen
+groups need first. Which to use:
+
+- After a change, before committing: `tests/run.py --profile change` picks the groups that cover the
+  files changed since `main` (working tree included; `--base REF` for another start). For a change
+  to what the model is told (prompt, a tool's description or schema, the loop) it also prints which
+  suite tags to run five times; `--live` runs them.
+- To see that everything offline still passes: `tests/run.py --profile quick` (about 5 minutes; it
+  leaves out Fire TV's end-to-end test and the live sets). `--profile offline` includes Fire TV.
+- Named groups: `tests/run.py --groups unit,hue`; a live check:
+  `tests/run.py --groups live-suite --tags timer --repeat 5 --no-search`.
+- Before a release: `tests/run.py --profile release --baseline earlier-suite.json` runs every
+  offline group, the scored set and the suite once, then the gate of `tests/exp_compare.py`.
+
+`ZB_EVAL_WRAPPER` prefixes every live run (a lock, or a script that sets the service's variables);
+live runs always use `--jobs 1`. `--no-search` leaves out what needs web search. A new test script
+gets a line in the group table at the top of `tests/run.py`, and a rule in its path map for the
+files it covers. The rest of this section describes each test.
+
 What exists:
 
 - **Device-free tests**: `tests/run_unit.sh` (g++, nothing else) builds and runs
@@ -205,7 +227,8 @@ What exists:
   tools through `tests/tools_cli.py` (good, wrong and hostile arguments, each in a fresh state
   folder). `ZB_UPDATE_SNAPSHOTS=1`
   rewrites the snapshots: read the diff before committing it. `ZB_BUILD_WRAPPER=cmd` runs each
-  compile through `cmd`.
+  compile through `cmd`. `ZB_UNIT_BUILD_ONLY=1` builds the programs and stops;
+  `ZB_UNIT_SKIP_SCRIPTS=1` leaves out `tools_cli.py` and `agent_loop_test.py` (the runner's own groups).
 - **Tapo end to end**: `tests/tapo_e2e.py` runs `build/cli/zero_bot` against two simulated plugs
   (`tests/mocks/mock_tapo.py`, a TPAP P110 and a KLAP P304M) on ports the system picks.
 - **Fire TV end to end**: `tests/firetv_e2e.py` runs `build/unit/firetv_cli` (built by
