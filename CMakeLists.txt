@@ -25,6 +25,12 @@ if(ZB_CLI_ONLY)
     option(ZB_EXPERIMENTS "Compile in the ZB_EXP_* measurement switches" ON)
 else()
     option(ZB_EXPERIMENTS "Compile in the ZB_EXP_* measurement switches" OFF)
+    # Not even when asked for, or left ON in a cache: the device and sim binaries never carry them.
+    if(ZB_EXPERIMENTS)
+        message(FATAL_ERROR "ZB_EXPERIMENTS=ON is for the cli build only (ZB_CLI_ONLY=ON); the device and sim builds "
+                            "must not carry the ZB_EXP_* switches. Configure with -DZB_EXPERIMENTS=OFF or delete the "
+                            "build folder's CMakeCache.txt.")
+    endif()
 endif()
 
 if(NOT ZB_CLI_ONLY)

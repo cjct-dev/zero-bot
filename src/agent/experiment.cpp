@@ -51,6 +51,43 @@ void write_line(const json &event) {   // g_mtx held
     fclose(f);
 }
 
+// ZB_EXP_WEB's value as the address requests are sent to, or "" when it is not one: "http://", an IPv4
+// address in plain decimal (four parts, each 0 to 255 with no leading zero, the first 127), then nothing but
+// an optional ":port" (1 to 65535) and a "/path". The address sent is rebuilt from the numbers read, so no
+// other reading of the spelling ("0177.0.0.1" as octal, "127.1" as short form) can choose where it goes.
+std::string stand_in_base(const std::string &v) {
+    if (v.compare(0, 7, "http://") != 0 || v.find_first_of("@?#\\ \t\r\n") != std::string::npos) return "";
+    size_t i = 7;
+    // Up to max_len digits from i, as a number; -1 when there are none, too many, or a leading zero.
+    auto number = [&](size_t max_len) {
+        const size_t start = i;
+        while (i < v.size() && isdigit(static_cast<unsigned char>(v[i])) && i - start <= max_len) ++i;
+        const size_t len = i - start;
+        if (len == 0 || len > max_len || (len > 1 && v[start] == '0')) return -1L;
+        return std::stol(v.substr(start, len));
+    };
+    std::string out = "http://";
+    for (int k = 0; k < 4; ++k) {
+        if (k > 0) {
+            if (i >= v.size() || v[i] != '.') return "";
+            ++i;
+        }
+        const long octet = number(3);
+        if (octet < 0 || octet > 255 || (k == 0 && octet != 127)) return "";
+        out += (k > 0 ? "." : "") + std::to_string(octet);
+    }
+    if (i < v.size() && v[i] == ':') {
+        ++i;
+        const long port = number(5);
+        if (port < 1 || port > 65535) return "";
+        out += ":" + std::to_string(port);
+    }
+    if (i < v.size() && v[i] != '/') return "";   // after the address only a port and a path
+    out += v.substr(i);
+    while (out.size() > 7 && out.back() == '/') out.pop_back();
+    return out;
+}
+
 }  // namespace
 
 // A variant switch: its value, the default when unset, and a stop for a value that is not one (a
@@ -75,23 +112,11 @@ const Switches &get() {
         if (const char *m = getenv("ZB_EXP_CHECK_MODEL")) r.check_model = m;
         if (const char *w = getenv("ZB_EXP_WEB"); w && *w) {
             // Only a stand-in on this computer: the switch must never send a search or a key elsewhere.
-            r.web = w;
-            // The host must be a 127.a.b.c address written out ("http://127.example.net" is not one).
-            // The scheme is checked first: a value shorter than "http://" has no host to read.
-            bool loopback = false;
-            if (r.web.size() > 7 && r.web.compare(0, 7, "http://") == 0) {
-                const size_t host_end = r.web.find_first_of(":/", 7);
-                const std::string host = r.web.substr(7, host_end == std::string::npos ? std::string::npos : host_end - 7);
-                int a = -1, b = -1, c = -1, d = -1;
-                char rest = 0;
-                const int parts = sscanf(host.c_str(), "%d.%d.%d.%d%c", &a, &b, &c, &d, &rest);
-                loopback = parts == 4 && a == 127 && b >= 0 && b < 256 && c >= 0 && c < 256 && d >= 0 && d < 256;
-            }
-            if (!loopback || r.web.find_first_of("@?#") != std::string::npos) {
+            r.web = stand_in_base(w);
+            if (r.web.empty()) {
                 fprintf(stderr, "ZB_EXP_WEB=%s is not an http://127.x address\n", w);
                 exit(2);
             }
-            while (!r.web.empty() && r.web.back() == '/') r.web.pop_back();
         }
         r.no_hardware = env_on("ZB_EXP_NO_HARDWARE");
         return r;
