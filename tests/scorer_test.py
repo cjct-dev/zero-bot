@@ -764,6 +764,16 @@ def am_pm_and_sign():
         passes("local time: '3:00 pm' at 15:00 passes", case("local_time"), {"answer": "It's 3:00 pm."})
     finally:
         ev.today = saved
+    # A saved run is judged at the time it ran (its last turn's start), not when it is scored again (--rescore).
+    ran = one_turn(answer="It's 3:00 pm.")
+    ran["began_wall"] = three_pm.timestamp()
+    check("clock: a run made at 15:00 is scored at 15:00", not [p for p in ev.score(case("local_time"), [ran])
+                                                                 if "local time" in p])
+    ran = one_turn(answer="It's 3:00 pm.")
+    ran["began_wall"] = three_am.timestamp()
+    check("clock: the same answer from a run made at 03:00 fails", [p for p in ev.score(case("local_time"), [ran])
+                                                                     if "local time" in p] != [])
+    check("clock: scoring leaves the clock as it was", ev.SCORING_AT is None)
     check("sign: '-12' is not 12", not ev.says_int("It will be -12 degrees.", 12))
     check("sign: '−12' (minus sign) is not 12", not ev.says_int("It will be −12 degrees.", 12))
     check("sign: 'minus twelve' is not 12", not ev.says_int("It will be minus twelve.", 12))
@@ -777,6 +787,12 @@ def am_pm_and_sign():
     check("sign: 'minus twelve' is -12", ev.says_int("It will be minus twelve.", -12))
     k = suite.KINDS["number"]({"values": [12], "tol": 0.01})
     check("sign: the suite's number check fails '-12' for 12", k(one_turn(answer="That comes to -12.")) != [])
+    k = suite.KINDS["number"]({"values": [4.5], "tol": 0.01})
+    for said in ("That's 4 pounds 50 each.", "That's 4 pounds 50 pence each.", "£4.50 each.", "4 dollars and 50 cents."):
+        check("money in words: %r is 4.5" % said, k(one_turn(answer=said)) == [])
+    check("money in words: '4 pounds each' is not 4.5", k(one_turn(answer="That's 4 pounds each.")) != [])
+    check("money in words: '2 dollars 5 times' is not 2.05",
+          suite.KINDS["number"]({"values": [2.05], "tol": 0.001})(one_turn(answer="2 dollars 5 times.")) != [])
     trips("calc (A9): -409.5 is not 409.5", case("calc"), [{"answer": "That is -409.5."}], "answer should give 409.5")
     passes("calc: 409.5 passes", case("calc"), {"answer": "That is 409.5."})
     c = case("review_new_year")

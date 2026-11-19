@@ -115,7 +115,15 @@ def says_time(text, when, slack_min=2, affirmed=False):
                 if right_half(text, m.end(), t.hour) and ok(m): return True
     return False
 
-def today(): return datetime.datetime.now()
+# The time a check means by "now": while a run is scored, the moment its last turn began (from its records),
+# so scoring later (--rescore) judges "what time is it" and "tomorrow" as when the run happened. Runs without
+# that time (saved before the records file) use the clock, so rescore them on the day they ran.
+SCORING_AT = None
+def clock(): return SCORING_AT if SCORING_AT is not None else time.time()
+def today(): return datetime.datetime.fromtimestamp(clock())
+def now_in(zone):
+    from zoneinfo import ZoneInfo
+    return datetime.datetime.fromtimestamp(clock(), ZoneInfo(zone))
 
 def next_weekday(wd):
     """Dates 'friday' can reasonably mean today: the next one, or a week on if today is that day."""
@@ -326,7 +334,7 @@ def chk_stock(t):
 
 def chk_tokyo(t):
     from zoneinfo import ZoneInfo
-    return [] if says_time(t["answer"], datetime.datetime.now(ZoneInfo("Asia/Tokyo"))) else ["answer should give the current time in Tokyo"]
+    return [] if says_time(t["answer"], now_in("Asia/Tokyo")) else ["answer should give the current time in Tokyo"]
 
 def chk_local_time(t):
     return [] if says_time(t["answer"], today()) else ["answer should give the current local time"]
@@ -1344,7 +1352,7 @@ CASES = [
 # The scorer's version, in every result (with the case's hash and whether it was traced), so that a
 # comparison of two runs knows when their verdicts are comparable. Raise it when what a check accepts
 # changes.
-SCORER_VERSION = "2026-11-19.2"
+SCORER_VERSION = "2026-11-19.4"
 
 TOOL_RE = re.compile(r"^\s+-> (\w+) (.*)$")
 RESULT_RE = re.compile(r"^\s+<- (.*)$")
@@ -1756,6 +1764,16 @@ def timing_summary(results):
 
 def score(c, turns):
     """Problems with one run's turns; "unscorable: " starts those that a lack of evidence caused."""
+    global SCORING_AT
+    began = [t.get("began_wall") for t in turns if t.get("began_wall") is not None]
+    SCORING_AT = began[-1] if began else None
+    try:
+        return _score(c, turns)
+    finally:
+        SCORING_AT = None
+
+
+def _score(c, turns):
     problems = []
     # Turns whose answer may run long (analytical follow-ups; "long_ok" in the suite's cases).
     long_ok = {i % len(turns) for i in c.get("long_ok", ())} if turns else set()
@@ -2025,7 +2043,7 @@ def main():
     ap.add_argument("--fast", default=None, help="force fast mode on (1) or off (0)")
     ap.add_argument("--jobs", type=int, default=1, help="cases to run at once (timings are only comparable at 1)")
     ap.add_argument("--json", default="", help="write full results to this file")
-    ap.add_argument("--rescore", default="", help="score a results file written by --json again instead of running (same day; clock-time checks will fail)")
+    ap.add_argument("--rescore", default="", help="score a results file written by --json again instead of running (judged at the time each run happened; results saved before the records file: the same day only)")
     ap.add_argument("--trace", action="store_true", help="record the experiments' trace (cli build, ZB_EXP_TRACE) into each turn of --json")
     ap.add_argument("--validate", action="store_true", help="check the cases as written and exit (non-zero on any problem)")
     args = ap.parse_args()

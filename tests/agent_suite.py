@@ -13,7 +13,7 @@ Select by tag, name or a stratified sample, so a subset can be run:
     tests/agent_suite.py --only timer-00 --repeat 5
 
 Other options as in tests/agent_eval.py: --bin, --repeat, --jobs (keep 1 for timings), --fast 0|1,
---json OUT (full results), --rescore OUT (score saved results again; same day only), --trace (the
+--json OUT (full results), --rescore OUT (score saved results again, judged at the time they ran), --trace (the
 experiments' trace of each turn in --json: model calls, tokens, timings; tests/exp_report.py).
 --validate compiles every case offline (kinds, nested ones too, what each needs, regular expressions,
 the turns checks look at, homes, the stand-in web's fixtures) and exits non-zero on a problem. It needs
@@ -105,11 +105,12 @@ def says_date(text, d):
 
 
 # "4 pounds 50 pence", "3 dollars and 25 cents": an amount in words is the same as 4.50 or 3.25.
-MONEY_WORDS = re.compile(r"\b(\d+) (?:pounds?|dollars?|euros?)(?:,? and)? (\d{1,2}) ?(?:pence|p|cents?)\b", re.I)
+# The minor unit may be left unsaid ("4 pounds 50 each"), but then two digits: "2 dollars 5 times" is not 2.05.
+MONEY_WORDS = re.compile(r"\b(\d+) (?:pounds?|dollars?|euros?)(?:,? and)? (?:(\d{1,2}) ?(?:pence|p|cents?)|(\d{2}))\b(?![.,]\d)", re.I)
 
 
 def says_number(text, values, tol):
-    text = MONEY_WORDS.sub(lambda m: "%s.%02d" % (m.group(1), int(m.group(2))), text)
+    text = MONEY_WORDS.sub(lambda m: "%s.%02d" % (m.group(1), int(m.group(2) or m.group(3))), text)
     for v in values:
         if ev.says_about(text, v, tol): return True
         if float(v).is_integer() and ev.says_int(text, int(v)): return True
@@ -278,7 +279,7 @@ def k_stock_answer(s): return ev.chk_stock
 
 def k_time_in(s):
     from zoneinfo import ZoneInfo
-    return lambda t: [] if ev.says_time(t["answer"], datetime.datetime.now(ZoneInfo(s["zone"]))) else \
+    return lambda t: [] if ev.says_time(t["answer"], ev.now_in(s["zone"])) else \
         ["answer should give the current time in " + s["zone"]]
 
 
@@ -598,7 +599,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=1, help="cases at once (timings are only comparable at 1)")
     ap.add_argument("--fast", default=None, help="force fast mode on (1) or off (0)")
     ap.add_argument("--json", default="", help="write full results to this file")
-    ap.add_argument("--rescore", default="", help="score a results file written by --json again (same day only)")
+    ap.add_argument("--rescore", default="", help="score a results file written by --json again (judged at the time each run happened)")
     ap.add_argument("--list", action="store_true", help="list the selected cases and tag counts, run nothing")
     ap.add_argument("--trace", action="store_true", help="record the experiments' trace (cli build, ZB_EXP_TRACE) into each turn of --json")
     ap.add_argument("--slowest", type=int, default=10, help="how many of the slowest cases to list")
