@@ -41,7 +41,8 @@ The gate's verdict, and the exit status:
                     compared; a set named by --require has no compared case; and with --release, a
                     set without results on either side, a record without the manifest fields, fewer
                     than --min-coverage (default 90%) of a set's variant cases compared, or a critical
-                    case the baseline has and the variant lacks
+                    case the baseline has and the variant lacks (unless --not-run names it: a case the run
+                    left out on purpose, as tests/run.py --no-search does)
 A failure outranks the other verdicts, then incomplete, then inconclusive. --verdict writes the verdict,
 its reasons and what was compared per set as JSON (tests/run.py reads it). --release is what
 tests/run.py's release profile passes, with --require scored,suite.
@@ -227,6 +228,7 @@ def compare(a, base_res, var_res, load_problems=(), out=None):
     skip = {t for t in a.skip_tags.split(",") if t}
     keep = lambda c, side: not skip & set(side[c]["tags"])
     require = [s for s in a.require.split(",") if s]
+    not_run = {c for c in a.not_run.split(",") if c}
     for s in require:
         if s not in SETS:
             incomplete.append("--require names %r, which is not a test set (%s)" % (s, ", ".join(SETS)))
@@ -264,6 +266,9 @@ def compare(a, base_res, var_res, load_problems=(), out=None):
         say("left out, %s (%d): %s" % (why, len(cs), ", ".join(cs[:12]) + (", ..." if len(cs) > 12 else "")))
     if skip:
         say("left out: cases tagged %s" % ", ".join(sorted(skip)))
+    if not_run:
+        say("not run by the variant on purpose (--not-run, %d): %s" % (len(not_run), ", ".join(sorted(not_run)[:12])
+                                                                       + (", ..." if len(not_run) > 12 else "")))
     if legacy:
         notes.append("no case hashes: comparison by name only for %d of %d cases (results from before the manifest "
                      "fields; a changed case or scorer cannot be seen)" % (len(legacy), len(compared)))
@@ -290,7 +295,7 @@ def compare(a, base_res, var_res, load_problems=(), out=None):
             if x["baseline_cases"] and x["variant_cases"] and x["compared"] < a.min_coverage * x["variant_cases"]:
                 incomplete.append("%s: only %d of the variant's %d cases compared (at least %.0f%% needed)"
                                   % (s, x["compared"], x["variant_cases"], 100 * a.min_coverage))
-        lost = sorted(c for c in B if critical(c, B[c]["tags"]) and keep(c, B) and c not in V)
+        lost = sorted(c for c in B if critical(c, B[c]["tags"]) and keep(c, B) and c not in V and c not in not_run)
         if lost:
             incomplete.append("critical cases the variant did not run: " + ", ".join(lost))
     if not compared:
@@ -452,6 +457,8 @@ def parse(argv):
     ap.add_argument("--require", default="", help="sets that must be compared: scored, suite")
     ap.add_argument("--release", action="store_true", help="both sets, manifest fields, coverage and critical cases required")
     ap.add_argument("--min-coverage", type=float, default=MIN_COVERAGE)
+    ap.add_argument("--not-run", default="", help="cases the variant left out on purpose (tests/run.py --no-search): "
+                                                   "a critical one among them does not make a release incomplete")
     ap.add_argument("--verdict", default="", help="write the verdict as JSON to this file")
     ap.add_argument("--self-test", action="store_true")
     return ap.parse_args(argv)
@@ -612,6 +619,9 @@ def self_test():
     v, _ = gate(side() + [rec("home_after_web_no")], side(), "--release")
     check("a release missing a critical case is incomplete", v["verdict"] == "incomplete" and
           "home_after_web_no" in " ".join(v["incomplete"]), v["incomplete"])
+    v, text = gate(side() + [rec("home_after_web_no")], side(), "--release", "--not-run", "home_after_web_no")
+    check("... unless the run left it out on purpose (no search), which is said", v["verdict"] == "passes" and
+          "not run by the variant on purpose (--not-run, 1): home_after_web_no" in text, v)
     v, _ = gate([], side())
     check("nothing to compare is incomplete", v["verdict"] == "incomplete", v)
 
