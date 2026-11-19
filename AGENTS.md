@@ -305,8 +305,10 @@ What exists:
   `ZB_EXP_DECIDE=parallel|required|required_held` (deciding without the second look); an unknown value
   stops the run. The runners' `--trace` puts each turn's trace into `--json`; `tests/exp_report.py`
   summarises such files and `tests/exp_compare.py` compares a variant with a baseline case by case and by
-  tag (repeat the same cases on both sides before pooling). With no `ZB_EXP_*` variable set nothing sent
-  or done changes (checked in `agent_loop_test.py`).
+  tag (repeat the same cases on both sides before pooling), and ends with the no-regression gate (exit
+  status 1 when it fails): an interval wholly below 0, overall or for a tag, or a case that lost 4 of 6
+  runs; a tag's point estimate alone is noise at these sizes. `--skip-tags search` while web search is
+  unavailable. With no `ZB_EXP_*` variable set nothing sent or done changes (checked in `agent_loop_test.py`).
 - **Screens**: `build/sim/zero_bot --shots out/` and look at the PNGs. Every UI change should
   be checked this way before it goes to the device. The script in `App::render_shots` walks
   the menus by counting key presses, so adding a settings row shifts later screenshots: fix
