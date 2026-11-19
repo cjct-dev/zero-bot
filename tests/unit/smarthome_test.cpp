@@ -2778,6 +2778,42 @@ void test_moved_devices() {
     r = run({{"action", "off"}, {"target", "Bedroom TV"}});
     CHECK_MSG(has(r, "still announces itself on the network at the same address") && !has(r, "switched off at the wall"), r);
     CHECK(applies() == 1);
+    // "Off" for a device found nowhere: it seems to be off already, which is what was asked; not "switched
+    // off at the wall, or out of Wi-Fi range", which the model passed on as a fault (ZB-075). The search
+    // is still made (a TV that moved and is on can still be switched off).
+    home_with_tv();
+    g_fake->broken = {"fake:tv"};
+    g_scan_answer = {};
+    r = run({{"action", "off"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": it did not answer; it seems to be off already. Tell the user" +
+                       std::string(kNoInfrared),
+              r);
+    CHECK(applies() == 1 && g_scans == 1);
+    // A driver that says so itself (Fire TV in deep standby) gets nothing more, and its closing full stop
+    // is not doubled: "...did not answer.; it was not found" and "...is closed.. Tell the user" were.
+    home_with_tv();
+    g_fake->broken.clear();
+    g_fake->refusing["fake:tv"] = "The TV seems to be off already. It did not answer.";
+    g_scan_answer = {};
+    r = run({{"action", "off"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": The TV seems to be off already. It did not answer. Tell the user" +
+                       std::string(kNoInfrared),
+              r);
+    home_with_tv();
+    g_fake->refusing["fake:tv"] = "The TV did not answer. It may be off or unplugged.";
+    g_scan_answer = {};
+    r = run({{"action", "on"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": The TV did not answer. It may be off or unplugged; it was not found at "
+                   "another address on the network either (it may be switched off at the wall, or out of Wi-Fi range). Tell the user" +
+                       std::string(kNoInfrared),
+              r);
+    home_with_tv();
+    g_fake->refusing["fake:tv"] = "The TV seems to be off already. Its remote control service is closed. ";
+    r = run({{"action", "off"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": The TV seems to be off already. Its remote control service is closed. "
+                   "Tell the user" + std::string(kNoInfrared),
+              r);
+    g_fake->refusing.clear();
 
     // The device answered, only with a refusal: it is not "busy or starting up", whatever the scan says.
     home_with_tv();

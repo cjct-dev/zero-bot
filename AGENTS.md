@@ -150,7 +150,9 @@ Things in that loop that exist for a reason; do not remove them without re-runni
     press or playback control: some TVs toggle play and pause with one command). In the loop, a
     call that failed is not made again unchanged in the same request (`call_key`: tool and
     arguments, "say" aside): the model is told it already failed. What the user says next clears
-    that, so "try again" works.
+    that, so "try again" works. A call refused only for what its `say` claimed, before anything was
+    done (`weekday_slip`, `claims_new`: `Context::say_refused`), is not remembered: it may come again
+    with the say put right, or after the step it lacked.
   - *Never silence.* "Done" in a reply after tool calls that all failed or wait for a yes is
     withdrawn once, like the guard for no tool at all (`claims_done`: an offer put as a question,
     "Shall I put it in for next year?", is not withdrawn; it is often the right answer then; the
@@ -548,6 +550,10 @@ key, real audio), say so plainly rather than implying it was.
   November six times in six while the confirmation said Tuesday. The calendar and reminder tools
   refuse a call whose `say` names one weekday the date is not (`weekday_slip`), naming the nearest
   date that is; the model corrects it at once. Check what a confirmation claims against what is saved.
+  Likewise a cancel or delete whose `say` claims something new: "actually make it 10" got
+  reminder_cancel alone, saying "I'll remind you at 10 instead", three runs in three (suite case
+  reminder-028), and nothing was set. Such a call is refused (`claims_new`) unless something was set
+  or changed earlier in the request (`Context::worked`).
 - Text that came from the network or a device (names, descriptions) is untrusted: strip
   control characters, cap the length, pass it as data.
 - Models send `1e300`, `"nan"` and numbers where text was meant. Converting a double that is not
@@ -633,7 +639,11 @@ key, real audio), say so plainly rather than implying it was.
   (`FireTvDriver::apply` and `press`, `on_lately`), for every part of the change. Its "off already"
   first said "did not answer", so the app searched the network for 2.5 s for a TV in standby; a
   refused port is the device there with the port closed (`Reply::refused`, errno ECONNREFUSED),
-  and only an attempt that timed out reads as "did not answer".
+  and only an attempt that timed out reads as "did not answer". In deep standby the owner's TV lets
+  the port time out, so the search still runs (a TV that moved and is on can still be switched off);
+  for an off change a device found nowhere "seems to be off already" (`after_lookup`), not "switched
+  off at the wall, or out of Wi-Fi range", which the model passed on as a fault (ZB-075). A driver's
+  error is joined to more words without its closing full stop (`clause`).
 - The keyboard's three lights (caps lock, fn, symbols) have no kernel interface: the keypad takes no
   EV_LED events and they are not LED-class devices. The M5Stack keypad driver sets them by writing a
   mode (0 off, 1 blink, 2 fast, 3 on) into registers 0xBD to 0xBF of the M5IOE1 expander, the

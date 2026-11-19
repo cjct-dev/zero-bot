@@ -5,6 +5,7 @@
 // devices fans out over at most four threads, all joined before the command returns.
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -569,14 +570,29 @@ bool answered(const std::string &err) {
            e.find("its answer") != std::string::npos;
 }
 
-// Added to "it did not answer" (`err`) once the device has been looked for on the network.
-const char *after_lookup(Lookup where, const std::string &err) {
+// Added to "it did not answer" (`err`) once the device has been looked for on the network. `off`: the
+// change was to switch it off. A device found nowhere then seems to be off already, which is what the
+// user wants; "switched off at the wall, or out of Wi-Fi range" read as a fault, and the model passed it
+// on for a Fire TV in deep standby (ZB-075). A driver that says so itself ("seems to be off already")
+// gets nothing more.
+const char *after_lookup(Lookup where, const std::string &err, bool off) {
+    if (where == Lookup::NotFound && off)
+        return util::lower(err).find("off already") != std::string::npos ? "" : "; it seems to be off already";
     if (where == Lookup::NotFound)
         return "; it was not found at another address on the network either (it may be switched off at the wall, or out of "
                "Wi-Fi range)";
     if (where == Lookup::StillThere && !answered(err))
         return "; it still announces itself on the network at the same address, so it may be busy or starting up";
     return "";
+}
+
+// A driver's error as a clause, for joining to more words ("; it was not found ...", ". Tell the
+// user"): without its one closing full stop, which made "...service is closed.. Tell the user" and
+// "...did not answer.; it was not found" (ZB-075). An ellipsis is left as it is.
+std::string clause(std::string e) {
+    while (!e.empty() && isspace(static_cast<unsigned char>(e.back()))) e.pop_back();
+    if (!e.empty() && e.back() == '.' && (e.size() < 2 || e[e.size() - 2] != '.')) e.pop_back();
+    return e;
 }
 
 // A change that comes out the same however often it is made (on, 40 %, an input) may be sent a
@@ -602,7 +618,7 @@ bool call_apply(Driver *drv, const Device &dev, const Thing &t, const Change &c,
     } catch (const std::exception &) {
         err = "the device's answer could not be understood";
     }
-    if (err.empty()) err = "it did not do it";
+    err = err.empty() ? "it did not do it" : clause(err);
     return false;
 }
 
@@ -651,7 +667,7 @@ void apply_device(const std::string &network_id, const Saved &saved, std::vector
             }
             if (ok || !err.empty()) {
                 handled = true;
-                for (auto *s : todo) { s->ok = ok; s->err = ok ? "" : err; }
+                for (auto *s : todo) { s->ok = ok; s->err = ok ? "" : clause(err); }
             }
         }
         if (!handled) {
@@ -681,7 +697,7 @@ void apply_device(const std::string &network_id, const Saved &saved, std::vector
         const bool none_ok = std::none_of(todo.begin(), todo.end(), [](const Step *s) { return s->ok; });
         if (attempt > 0 || !none_ok || !unreachable(todo[0]->err)) return;
         const Lookup where = relocate(network_id, dev);   // saves the new address itself
-        for (auto *s : todo) s->err += after_lookup(where, s->err);
+        for (auto *s : todo) s->err += after_lookup(where, s->err, s->change.on == false);
         if (where != Lookup::Moved) return;
         if (!std::all_of(todo.begin(), todo.end(), [](const Step *s) { return repeatable(s->change); })) {
             for (auto *s : todo)
@@ -753,12 +769,12 @@ void read_now(const std::string &network_id, const NetworkEntry &e, const std::v
                 } catch (const std::exception &) {
                     err = "the device's answer could not be understood";
                 }
-                if (!ok && err.empty()) err = "it did not answer";
+                if (!ok) err = err.empty() ? "it did not answer" : clause(err);
                 // Re-discovery is worth its wait only for things asked about by name. Reading
                 // changes nothing, so it is always asked again at a new address.
                 if (ok || attempt > 0 || !detail || !unreachable(err)) break;
                 const Lookup where = relocate(network_id, dev);
-                err += after_lookup(where, err);
+                err += after_lookup(where, err, false);
                 if (where != Lookup::Moved) break;
             }
         }
@@ -1181,7 +1197,7 @@ std::string switch_thing(const std::string &network_id, const std::string &devic
     if (!fit(base, *t, steps[0].change, why)) return fail(capitalised(why) + ".");
     if (getenv("ZB_DRY_RUN")) steps[0].ok = true;
     else run_steps(network_id, e, steps);
-    if (!steps[0].ok) return fail(steps[0].err);
+    if (!steps[0].ok) return fail(capitalised(steps[0].err) + ".");   // shown on screen as a sentence (driver errors come without the full stop)
     Thing changed = *t;
     apply_to_state(steps[0].change, changed);
     std::map<std::string, json> states;

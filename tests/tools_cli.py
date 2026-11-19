@@ -213,8 +213,33 @@ def run_all(root):
     ok(r, "reminder_set", {"text": "Both", "in_minutes": 0, "at": "2030-12-25 10:00"}, "2030-12-25 10:00")
     ok(r, "reminder_list", {}, "Call the bank")
     error(r, "reminder_cancel", {"id": "x"}, "whole number")
+    # A cancel whose confirmation claims a new time it did not set (suite case reminder-028: "at 10
+    # instead" said with reminder_cancel alone) is refused, and nothing is cancelled.
+    for say, word in [("Done — I'll remind you to call the bank tomorrow at 10 instead.", "i'll remind you"),
+                      ("Moved your reminder to 10.", "moved"), ("Your reminder is now at 10.", "now at"),
+                      ("Changed it to 10 o'clock.", "changed it to"), ("I’ve set a new one for 10.", "i've set"),
+                      ("OK, 10 instead.", "instead"), ("Rescheduled for tomorrow.", "rescheduled")]:
+        error(r, "reminder_cancel", {"id": 1, "say": say}, "reminder_cancel only cancels", '("%s")' % word,
+              "nothing was done", "send reminder_set for the new time and this cancel together, in one reply")
+    check("a refused cancel leaves the reminder there", any(x.get("id") == 1 for x in r.file("data", "zero-bot", "reminders.json") or []),
+          r.file("data", "zero-bot", "reminders.json"))
+    for i, say in enumerate(["Cancelled your 9 o'clock reminder.", "Your 9 o'clock reminder is now cancelled.",
+                             "Done, I won't remind you to call the bank.", "Cancelled. Shall I set a new one for 10?",
+                             "Removed the reminder."]):
+        rid = json.loads(ok(r, "reminder_set", {"text": "Keep %d" % i, "in_minutes": 30}, '"set":true'))["id"]
+        ok(r, "reminder_cancel", {"id": rid, "say": say}, "cancelled")
     ok(r, "reminder_cancel", {"id": 1}, "cancelled")
     error(r, "reminder_cancel", {"id": 1}, "no reminder has id 1")
+    # The other cancels and deletes that take a confirmation.
+    ok(r, "timer", {"action": "start", "minutes": 10, "label": "pasta"}, '"started"')
+    error(r, "timer", {"action": "cancel", "say": "Cancelled; your new timer is for 15 minutes."}, "starts no new one", "use add_time")
+    ok(r, "timer", {"action": "cancel", "say": "The pasta timer is cancelled."}, '"cancelled"')
+    eid = json.loads(ok(r, "calendar_add", {"title": "Dentist", "start": "2030-12-03 09:30"}, '"saved"'))["saved"]["id"]
+    error(r, "calendar_delete", {"id": eid, "say": "Moved the dentist to Friday."}, "calendar_delete only deletes", "calendar_update")
+    ok(r, "calendar_delete", {"id": eid, "say": "Deleted the dentist on Tuesday."}, "deleted")
+    mid = ok(r, "memory_save", {"text": "Sister is called Ann"}, "saved as memory ").split()[-1]
+    error(r, "memory_delete", {"id": mid, "say": "Forgotten; I've changed it to Anne."}, "memory_delete only forgets", "replace_id")
+    ok(r, "memory_delete", {"id": mid, "say": "Forgotten."}, "deleted")
 
     # ---- memory
     m = State(root, "memory")
@@ -387,6 +412,18 @@ def guards(root):
             check("a request to the stand-in uses no proxy", not trap.seen, trap.seen)
             ok(g, "web_search", {"query": "xylophone repair guild"}, '"results"',
                ZB_EXP_WEB="http://127.0.0.1:%s/default/" % line[2], ZB_SEARCH_KEY="stand-in")
+            # A forecast day without a rain chance says so where the figure would be (left out, the model
+            # made one up: scored case review_rain_missing); a day with one is shown as before.
+            for fixture, tomorrow in (("rain59", ", rain chance 59%"), ("rain60", ", rain chance 60%"),
+                                      ("rainmissing", ", rain chance not given")):
+                out = ok(g, "weather", {"location": "York", "days": 2}, '"forecast"', ZB_EXP_WEB="http://127.0.0.1:%s/%s" % (line[2], fixture))
+                try:
+                    days = json.loads(out).get("forecast", [])
+                except ValueError:
+                    days = []
+                check("weather (%s): today's rain chance, then tomorrow's line ends '%s'" % (fixture, tomorrow),
+                      len(days) == 2 and days[0].endswith("%") and days[1].endswith(tomorrow) and
+                      ("not given" in out) == (fixture == "rainmissing"), days)
         del trap.seen[:]
         error(g, "web_search", {"query": "when does the sun set"}, "HTTP 302", ZB_EXP_WEB=trap.url + "/redirect", ZB_SEARCH_KEY="stand-in")
         check("a redirect from the stand-in is not followed", len(trap.seen) == 1 and not any("/landed" in s for s in trap.seen), trap.seen)

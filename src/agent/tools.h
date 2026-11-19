@@ -14,6 +14,14 @@ struct Context {
     std::function<void(const std::string &jpeg_path)> on_image;   // a photo was taken
     std::function<void(const std::string &pattern, int minutes)> on_breathe;   // start a breathing exercise on screen
     bool in_conversation = false;   // called from a live request, whose spoken reply is still to come
+    // The calls that worked so far in this request, by name ("timer:start" for a tool with an
+    // action), added by run(); the agent empties it when a new request begins. A confirmation is
+    // judged against what the request has done (a cancel that says "at 10 instead" after the new
+    // reminder was set).
+    std::vector<std::string> worked;
+    // Set by a tool that refused only for what its "say" claims, before doing anything: the same
+    // call may be made again at once with another say, or after the step it lacked.
+    bool say_refused = false;
 };
 
 struct Tool {

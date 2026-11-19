@@ -442,6 +442,46 @@ def tool_error_returned():
 
 
 @scenario
+def cancel_claims_new_time():
+    # Suite case reminder-028: "actually make it 10" answered with reminder_cancel alone, whose "say"
+    # promised a reminder at 10. The cancel is refused and nothing is cancelled; once the new reminder
+    # is set in the same request, the same cancel (same say) goes ahead: a refusal for what "say"
+    # claimed does not count as "this exact call already failed".
+    bank9 = ("reminder_set", {"text": "Call the bank", "at": "2030-12-03 09:00", "say": "I'll remind you at 9."})
+    cancel = ("reminder_cancel", {"id": 1, "say": "Done, I'll remind you to call the bank at 10 instead."})
+    bank10 = ("reminder_set", {"text": "Call the bank", "at": "2030-12-03 10:00", "say": "Your reminder is set for 10."})
+    script = {"rules": [{"when": {"said": "make it 10", "results": 0}, "reply": calls(cancel)},
+                        {"when": {"said": "make it 10", "result": "ERROR"}, "reply": calls(bank10, cancel)},
+                        {"when": {"said": "remind me"}, "reply": calls(bank9)}]}
+    r = run(script, said=["remind me at 9 to call the bank", "actually make it 10"])
+    n = "a cancel whose say claims a new time"
+    res = r.turns[-1]["results"] if r.turns else []
+    check(n + ": refused alone, nothing cancelled", len(res) >= 1 and res[0].startswith("ERROR: reminder_cancel only cancels"), res)
+    check(n + ": after the new reminder is set, the same cancel runs", len(res) == 3 and '"set":true' in res[1] and res[2] == "cancelled", res)
+    check(n + ": both confirmations spoken, with no extra model call", "Your reminder is set for 10." in r.answer and
+          "instead" in r.answer and len(r.requests) == 3, r)
+    # Sent together but the cancel first: refused again (nothing set yet), and once the set has worked the
+    # loop goes back to the model, whose cancel then goes ahead. The 9 o'clock reminder is not left behind.
+    script = {"rules": [{"when": {"said": "make it 10", "results": 0}, "reply": calls(cancel)},
+                        {"when": {"said": "make it 10", "results": 1}, "reply": calls(cancel, bank10)},
+                        {"when": {"said": "make it 10", "results": 3}, "reply": calls(cancel)},
+                        {"when": {"said": "make it 10"}, "reply": {"text": "Done."}},
+                        {"when": {"said": "remind me"}, "reply": calls(bank9)}]}
+    r = run(script, said=["remind me at 9 to call the bank", "actually make it 10"])
+    res = r.turns[-1]["results"] if r.turns else []
+    check(n + ": cancel sent before the set: refused, then made once the set worked", len(res) == 4 and
+          res[1].startswith("ERROR: reminder_cancel only cancels") and '"set":true' in res[2] and res[3] == "cancelled", res)
+    # weekday_slip, put right in say alone: the corrected call is made, not refused as the same call.
+    slip = {"text": "Bins out", "at": "2030-12-02 19:00", "say": "I'll remind you on Tuesday evening."}
+    script = {"rules": [{"when": {"result": "ERROR"}, "reply": calls(("reminder_set", dict(slip, say="I'll remind you on Monday evening.")))}],
+              "default": calls(("reminder_set", slip))}
+    r = run(script, ask="remind me monday evening to put the bins out")
+    res = r.turns[-1]["results"] if r.turns else []
+    check("a weekday slip put right in say alone: the call is made", len(res) == 2 and "is a Monday, but say calls it Tuesday" in res[0]
+          and '"set":true' in res[1] and r.answer == "I'll remind you on Monday evening.", r)
+
+
+@scenario
 def unknown_tool_and_bad_args():
     script = {"rules": [{"when": {"results": 2}, "reply": {"text": "Sorry, something went wrong there."}}],
               "default": {"calls": [{"name": "teleport", "args": {"to": "Lisbon"}}, {"name": "timer", "args": "{not json"}]}}

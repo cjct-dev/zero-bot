@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <random>
+#include <regex>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -480,7 +481,7 @@ std::string past_error() {
 // often enough on some weekdays to fail a scored case six times in six, so the call is refused,
 // naming the nearest date that is that weekday, before anything is saved or said. Only English
 // names, and only when `say` names exactly one weekday ("Tuesdays and Thursdays" is left alone).
-std::string weekday_slip(const json &a, time_t when, const char *field) {
+std::string weekday_slip(const json &a, Context &ctx, time_t when, const char *field) {
     static const char *const names[] = {"sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"};
     static const char *const shown[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
     const std::string say = util::lower(str_arg(a, "say"));
@@ -496,12 +497,47 @@ std::string weekday_slip(const json &a, time_t when, const char *field) {
     int diff = (named - is + 7) % 7;   // days forward to the weekday said
     if (diff > 3) diff -= 7;           // or back, when that is nearer
     const time_t nearest = util::add_local_days(when, diff);
+    ctx.say_refused = true;   // nothing saved: the call may come again with the date or the say put right
     return std::string(field) + " " + util::format_time(when, "%Y-%m-%d") + " is a " + shown[is] + ", but say calls it " +
            shown[named] + ". The nearest " + shown[named] + " is " + util::format_time(nearest, "%Y-%m-%d") +
            ": send the call again with that date, or fix say if the date was right";
 }
 
-std::string t_calendar_add(const json &a, Context &) {
+// A cancel or delete whose confirmation claims more than the call does. In suite case reminder-028
+// ("remind me tomorrow at 9 to call the bank", then "actually make it 10") the model called
+// reminder_cancel alone with say "Done, I'll remind you to call the bank tomorrow at 10 instead":
+// the user heard of a reminder at 10 and had none, three runs in three. Like weekday_slip, the call
+// is refused before anything is cancelled, saying what is missing (`done` says what the tool does,
+// `fix` what to do). The claim stands when something was set or changed earlier in this request
+// (the new reminder first, then the old one cancelled). Only English, only words that say something
+// new was set or moved, and not in a question ("Shall I set a new one for 10?"): "Cancelled your
+// 9 o'clock reminder" and "It is now cancelled" pass.
+std::string claims_new(const json &a, Context &ctx, const std::string &done, const std::string &fix) {
+    static const char *const makers[] = {"reminder_set", "calendar_add", "calendar_update", "timer:start", "timer:add_time", "memory_save"};
+    for (const std::string &w : ctx.worked)
+        if (std::find(std::begin(makers), std::end(makers), w) != std::end(makers)) return "";
+    std::string say = util::lower(str_arg(a, "say"));
+    for (size_t at; (at = say.find("\xE2\x80\x99")) != std::string::npos;) say.replace(at, 3, "'");   // ’ as '
+    static const std::regex claim(
+        "\\b(instead|moved|rescheduled|(changed|updated|switched|pushed|brought) (it |that |this |them |the [a-z]+ )?"
+        "(to|for|back|forward)|now (at|for|due|set (for|to|at))|new (time|date|reminder|event|timer|one) (at|for|on|is)|"
+        "(i've|i have|i'll|i will) (set|added|made|booked|scheduled|moved)|(i'll|i will) remind you|you'll be reminded|"
+        "you will be reminded)\\b");
+    for (size_t from = 0; from < say.size();) {
+        const size_t end = say.find_first_of(".!?", from);
+        const std::string sentence = say.substr(from, end == std::string::npos ? std::string::npos : end - from);
+        std::smatch m;
+        if (!(end != std::string::npos && say[end] == '?') && std::regex_search(sentence, m, claim)) {
+            ctx.say_refused = true;
+            return done + ", but say claims more (\"" + m.str(0) + "\"), so nothing was done. " + fix;
+        }
+        if (end == std::string::npos) break;
+        from = end + 1;
+    }
+    return "";
+}
+
+std::string t_calendar_add(const json &a, Context &ctx) {
     CalEvent e;
     std::string err;
     if (clean_text(str_arg(a, "title")).empty()) return fail("title is required: a short name for the event");
@@ -523,7 +559,7 @@ std::string t_calendar_add(const json &a, Context &) {
     const std::string end = str_arg(a, "end");
     if (!end.empty() && !util::parse_local(end, e.end)) return fail(bad_time("end", end));
     if (e.end && e.end < e.start) return fail("end is before start");
-    if (const std::string slip = weekday_slip(a, e.start, "start"); !slip.empty()) return fail(slip);
+    if (const std::string slip = weekday_slip(a, ctx, e.start, "start"); !slip.empty()) return fail(slip);
     if (in_the_past(e)) return past_error();
     if (!given(a, "remind_minutes_before") && e.all_day && e.repeat == "yearly")
         e.remind_min = 0;   // a birthday nobody is told about is no use
@@ -577,7 +613,7 @@ std::string t_calendar_list(const json &a, Context &) {
     return out.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
-std::string t_calendar_update(const json &a, Context &) {
+std::string t_calendar_update(const json &a, Context &ctx) {
     int id = 0;
     std::string err;
     if (!id_arg(a, "id", id, err, "use calendar_list to find it")) return fail(err);
@@ -596,7 +632,7 @@ std::string t_calendar_update(const json &a, Context &) {
         if (e.all_day) { e.start = day_start(e.start); e.end = 0; }
         if (e.end && e.end < e.start) return fail("end is before start");
         if (!start.empty())
-            if (const std::string slip = weekday_slip(a, e.start, "start"); !slip.empty()) return fail(slip);
+            if (const std::string slip = weekday_slip(a, ctx, e.start, "start"); !slip.empty()) return fail(slip);
         if (e.start != old_start && in_the_past(e)) return past_error();
         if (!Store::get().update_event(e)) return fail("that event has just been deleted; nothing was changed");
         return json{{"updated", event_json(e)}}.dump();
@@ -604,19 +640,32 @@ std::string t_calendar_update(const json &a, Context &) {
     return fail("no event has id " + std::to_string(id) + "; use calendar_list to find it");
 }
 
-std::string t_calendar_delete(const json &a, Context &) {
+std::string t_calendar_delete(const json &a, Context &ctx) {
     int id = 0;
     std::string err;
     if (!id_arg(a, "id", id, err, "use calendar_list to find it")) return fail(err);
+    if (const std::string more = claims_new(a, ctx, "calendar_delete only deletes; it puts nothing at a new time",
+                                            "To move the event, change it with calendar_update (the event is kept); "
+                                            "or send say naming only the deletion");
+        !more.empty())
+        return fail(more);
     return Store::get().delete_event(id) ? "deleted" : fail("no event has id " + std::to_string(id) + "; use calendar_list to find it");
 }
 
 // ---------------------------------------------------------------- timers
 // The actions live in core/timers.cpp, where the unit tests reach them.
-std::string t_timer(const json &a, Context &) { return timers::run_tool(a); }
+std::string t_timer(const json &a, Context &ctx) {
+    if (util::lower(str_arg(a, "action")) == "cancel")
+        if (const std::string more = claims_new(a, ctx, "cancelling a timer starts no new one",
+                                                "To change a running timer, use add_time, or send the new timer's start and "
+                                                "this cancel together, in one reply; or send say naming only the cancellation");
+            !more.empty())
+            return fail(more);
+    return timers::run_tool(a);
+}
 
 // ---------------------------------------------------------------- reminders
-std::string t_reminder_set(const json &a, Context &) {
+std::string t_reminder_set(const json &a, Context &ctx) {
     const std::string text = clean_text(str_arg(a, "text"));
     if (text.empty()) return fail("text is required: the words to say when the reminder goes off");
     if (text.size() > 300) return fail("text must be under 300 characters");
@@ -631,7 +680,7 @@ std::string t_reminder_set(const json &a, Context &) {
         // A date alone would go off at midnight, when nobody wants to be reminded of anything.
         if (at.find(':') == std::string::npos)
             return fail("at needs a clock time as well as the day (YYYY-MM-DD HH:MM). If the user gave no time, ask what time");
-        if (const std::string slip = weekday_slip(a, due, "at"); !slip.empty()) return fail(slip);
+        if (const std::string slip = weekday_slip(a, ctx, due, "at"); !slip.empty()) return fail(slip);
     } else if (given(a, "in_minutes")) {
         return fail("in_minutes must be a number of minutes from now, more than 0");
     } else return fail("give either in_minutes or at. If the user gave no time at all, ask when");
@@ -648,10 +697,15 @@ std::string t_reminder_list(const json &, Context &) {
     return json{{"reminders", arr}}.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
-std::string t_reminder_cancel(const json &a, Context &) {
+std::string t_reminder_cancel(const json &a, Context &ctx) {
     int id = 0;
     std::string err;
     if (!id_arg(a, "id", id, err, "use reminder_list to find it")) return fail(err);
+    if (const std::string more = claims_new(a, ctx, "reminder_cancel only cancels; it sets no new time",
+                                            "To move the reminder, send reminder_set for the new time and this cancel "
+                                            "together, in one reply; or send say naming only the cancellation");
+        !more.empty())
+        return fail(more);
     return Store::get().delete_reminder(id) ? "cancelled"
                                             : fail("no reminder has id " + std::to_string(id) + "; use reminder_list to find it (timers are cancelled with timer)");
 }
@@ -674,10 +728,15 @@ std::string t_memory_save(const json &a, Context &) {
     return "saved as memory " + std::to_string(Store::get().add_memory(text));
 }
 
-std::string t_memory_delete(const json &a, Context &) {
+std::string t_memory_delete(const json &a, Context &ctx) {
     int id = 0;
     std::string err;
     if (!id_arg(a, "id", id, err, "memory ids are listed in your instructions")) return fail(err);
+    if (const std::string more = claims_new(a, ctx, "memory_delete only forgets; it saves nothing new",
+                                            "To change a memory, use memory_save with replace_id; or send say naming "
+                                            "only what was forgotten");
+        !more.empty())
+        return fail(more);
     return Store::get().delete_memory(id) ? "deleted" : fail("no memory has id " + std::to_string(id) + "; memory ids are listed in your instructions");
 }
 
@@ -747,11 +806,14 @@ std::string t_weather(const json &a, Context &ctx) {
         for (size_t i = 0; i < d["time"].size(); ++i) {
             auto at = [&](const char *k) -> json { return d.contains(k) && i < d[k].size() ? d[k][i] : json(); };
             const json hi = at("temperature_2m_max"), lo = at("temperature_2m_min"), rain = at("precipitation_probability_max");
+            // A day without a rain chance says so: left out, the model filled the gap with a figure
+            // of its own ("60% or more") and set a reminder that hung on it (scored case
+            // review_rain_missing, three runs in three).
             arr.push_back(d["time"][i].get<std::string>() + ": " +
                           weather_text(at("weather_code").is_number() ? at("weather_code").get<int>() : -1) + ", " +
                           (lo.is_number() ? fmt1(lo.get<double>()) : "?") + " to " +
                           (hi.is_number() ? fmt1(hi.get<double>()) : "?") + deg +
-                          (rain.is_number() ? ", rain chance " + std::to_string(rain.get<int>()) + "%" : ""));
+                          (rain.is_number() ? ", rain chance " + std::to_string(rain.get<int>()) + "%" : ", rain chance not given"));
         }
         out["forecast"] = arr;
     }
@@ -1525,6 +1587,7 @@ std::string confirmation(const std::string &name, const std::string &raw_args, c
 }
 
 std::string run(const std::string &name, const std::string &raw_args, Context &ctx) {
+    ctx.say_refused = false;
     const Tool *tool = find(name);
     if (!tool) return no_such_tool(name);
     const std::string raw = util::trim(raw_args).empty() ? "{}" : raw_args;
@@ -1552,6 +1615,10 @@ std::string run(const std::string &name, const std::string &raw_args, Context &c
     try {
         std::string result = one_shape(util::sanitize_utf8(tool->run(args, ctx)));
         if (props && failed(result)) result += unknown_note(*props, unknown);
+        else if (!failed(result) && result.compare(0, 7, "CONFIRM") != 0) {
+            const std::string action = util::lower(str_arg(args, "action"));
+            ctx.worked.push_back(action.empty() ? name : name + ":" + action);
+        }
         return result;
     } catch (const std::exception &e) {
         // nlohmann's messages begin with a code in brackets: "[json.exception.type_error.302] type must be ..."
