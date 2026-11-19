@@ -18,7 +18,9 @@ struct Section {
 };
 
 // Every key action, in the order the guide shows them. The last section is the keys in settings.
-const std::vector<Section> &sections();
+// Opened from the first-run setup guide, that section says how to close the guide instead: SPACE
+// does not close it there (a new user presses it to choose), only TAB does.
+const std::vector<Section> &sections(bool in_setup_guide = false);
 
 // What a key does on the chat screen when nothing is being typed or recorded. TAB, ESC and the
 // fn layer's control keys are handled before this is asked; a release does nothing here.

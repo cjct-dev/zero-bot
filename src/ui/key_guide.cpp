@@ -2,7 +2,7 @@
 
 namespace keyguide {
 
-const std::vector<Section> &sections() {
+const std::vector<Section> &sections(bool in_setup_guide) {
     // Keys are named as the README names them. Each line has to fit one row of a 320-pixel
     // screen: the --shots run measures them with the real fonts and fails when one does not.
     static const std::vector<Section> guide = {
@@ -35,7 +35,12 @@ const std::vector<Section> &sections() {
           {"ESC  del", "go back"},
           {"SPACE  TAB", "close settings"}}},
     };
-    return guide;
+    static const std::vector<Section> setup = [] {
+        std::vector<Section> s = guide;
+        s.back().rows.back() = {"TAB", "close the setup guide"};
+        return s;
+    }();
+    return in_setup_guide ? setup : guide;
 }
 
 bool is_guide_key(const KeyEvent &ev) {

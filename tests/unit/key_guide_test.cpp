@@ -146,6 +146,26 @@ void test_guide_matches_keys() {
         if (r.keys == "SPACE") check(r.action.find("TAB twice") != std::string::npos, "SPACE's line mentions TAB twice");
 }
 
+// Opened from the first-run setup guide, the guide does not say SPACE closes it (there SPACE says
+// "Press ENTER to choose"); it names TAB, which does. Everything else is the same guide.
+void test_guide_in_setup() {
+    const auto &plain = keyguide::sections(), &setup = keyguide::sections(true);
+    check(plain.size() == setup.size(), "the setup guide's key guide has the same sections");
+    if (plain.empty() || plain.size() != setup.size()) return;
+    bool says_space = false, says_tab = false;
+    for (const keyguide::Row &r : setup.back().rows) {
+        says_space = says_space || r.keys.find("SPACE") != std::string::npos;
+        says_tab = says_tab || (r.keys == "TAB" && r.action.find("close") != std::string::npos);
+    }
+    check(!says_space, "inside the setup guide no line says SPACE closes it");
+    check(says_tab, "inside the setup guide TAB is named as what closes it");
+    bool closes = false;
+    for (const keyguide::Row &r : plain.back().rows) closes = closes || (r.keys == "SPACE  TAB" && r.action == "close settings");
+    check(closes, "in settings SPACE and TAB still close them");
+    for (size_t i = 0; i + 1 < plain.size(); ++i)
+        check(plain[i].rows.size() == setup[i].rows.size(), "the other sections are unchanged: " + plain[i].title);
+}
+
 // DIAGNOSTICS (temporary, ZB-051): SPACE once opens settings when the window has passed without a
 // second press; SPACE twice saves the conversation, and settings never open on the way.
 void test_double_tap() {
@@ -208,6 +228,7 @@ void test_lone_modifier() {
 int main() {
     test_chat_keys();
     test_guide_matches_keys();
+    test_guide_in_setup();
     test_double_tap();
     test_hints();
     test_lone_modifier();

@@ -1296,7 +1296,7 @@ void open_key_guide(Menu &menu, bool from_settings) {
     page.title = kKeyGuideTitle;
     page.reading = true;
     std::vector<MenuItem> items;
-    const std::vector<keyguide::Section> &sections = keyguide::sections();
+    const std::vector<keyguide::Section> &sections = keyguide::sections(menu.in_guide());
     for (const keyguide::Section &s : sections) {
         if (from_settings && &s == &sections.back()) page.top = static_cast<int>(items.size());   // the keys for settings
         items.push_back(MenuItem::header(s.title));
