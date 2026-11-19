@@ -842,6 +842,12 @@ def self_test():
     check("roster gaps: an untraced baseline for a traced release", any("untraced" in g for g in
           roster_gaps([dict(r, trace=False) for r in FULL], ROSTER, "baseline", MIN_COVERAGE, trace=True)))
     check("roster gaps: a full traced baseline has none", roster_gaps(FULL, ROSTER, "baseline", MIN_COVERAGE, trace=True) == [])
+    untagged = [dict(r, tags=["home"]) if r["case"] == "home-045" else r for r in FULL]
+    failing = [dict(r, tags=["home"], outcome="fail", problems=["switched on without a yes"]) if r["case"] == "home-045" else r
+               for r in FULL]
+    v, _ = gate(untagged, failing, "--release", roster=ROSTER)
+    check("a release judges the critical cases the roster names, whatever the results' tags say", v["verdict"] == "fails" and
+          "critical case home-045" in " ".join(v["failures"]), v["failures"])
     real = load_roster()
     check("the roster holds both sets and the critical cases", len(real["sets"]["scored"]) > 100 and len(real["sets"]["suite"]) > 500
           and "home_ask_first_no" in roster_critical(real) and any(n.startswith("home-") for n in roster_critical(real)),
