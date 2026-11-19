@@ -265,7 +265,10 @@ What exists:
   `ZB_API_BASE`, `ZB_API_KEY`, optionally `ZB_SEARCH_KEY`, and model names in `ZB_EVAL_LLM_MODEL`
   etc. Use `--only`, `--repeat N` (models are not deterministic: repeat a changed case 5 to 8
   times) and `--fast 0|1`. Expect one or two flaky cases; compare against a run of the
-  previous code before blaming a change.
+  previous code before blaming a change. Cases run with `ZB_DRY_RUN`, except those that must reach a
+  device (`env=LIVE`: a paired Fire TV on 127.0.0.1 that does not answer, `TV_SILENT_HOME` and
+  `TV_CLOSED_HOME`, for what is said after a network error); those get stand-ins that do nothing for
+  the programs that would change the PC (volume, sound, camera, network).
 - **Generated request set**: `tests/suite/generate.py` (fixed seed) writes `tests/suite/cases.json`,
   about 570 requests in categories (timer, reminder, calendar, weather, home, route, ...) with
   feature tags (`asr`, `lang-xx`, `uk`, `us`, `followup`, `compound`, `notool`, `clarify`,
@@ -430,6 +433,12 @@ key, real audio), say so plainly rather than implying it was.
 - A "past" escape-hatch parameter on the calendar tool was used by the model to bypass the
   check it was meant to refine. Do not give the model a way round a guard.
 - Give tools the allowed names as an `enum` (smart-home devices) rather than describing them.
+- A boundary rule in one tool's description is not seen where it matters. tv_remote's said "if a listed
+  TV does not answer over the network, say so rather than trying this", yet after every network error of
+  a listed TV (35 runs in 35) the reply offered the infrared remote, and a "yes" then sent another TV's
+  codes (ZB-072). The rule also had to be in the description of the tool whose error is being reported
+  (smart_home), worded without the other tool's name: with it, replies told the user to "try the
+  tv_remote tool".
 - The model's own weekday arithmetic slips: on a Wednesday, "every Tuesday" was saved on Monday 23
   November six times in six while the confirmation said Tuesday. The calendar and reminder tools
   refuse a call whose `say` names one weekday the date is not (`weekday_slip`), naming the nearest

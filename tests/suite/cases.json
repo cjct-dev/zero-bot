@@ -13411,6 +13411,687 @@
   "steer": null
  },
  {
+  "name": "home-072",
+  "tags": [
+   "home",
+   "tv",
+   "route"
+  ],
+  "turns": [
+   "turn the tv down"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "home_step",
+    "sign": -1
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "off"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
+  "name": "home-073",
+  "tags": [
+   "home",
+   "tv",
+   "route"
+  ],
+  "turns": [
+   "turn the tv up"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "home_step",
+    "sign": 1
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "off"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
+  "name": "home-074",
+  "tags": [
+   "home",
+   "tv",
+   "route"
+  ],
+  "turns": [
+   "can you turn the tv down please"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "home_step",
+    "sign": -1
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "off"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
+  "name": "home-075",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "uk"
+  ],
+  "turns": [
+   "turn the telly down"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "home_step",
+    "sign": -1
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "off"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
+  "name": "home-076",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "followup"
+  ],
+  "turns": [
+   "turn the tv up a bit",
+   "okay that worked, now can you turn the tv down"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "home_step",
+    "sign": -1
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "off"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
+  "name": "home-077",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "followup"
+  ],
+  "turns": [
+   "put netflix on the tv",
+   "turn it down a bit"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "home_step",
+    "sign": -1
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "off"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
+  "name": "home-078",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "followup"
+  ],
+  "turns": [
+   "open youtube on the tv",
+   "turn it up"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "home_step",
+    "sign": 1
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "off"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
+  "name": "home-079",
+  "tags": [
+   "home",
+   "tv",
+   "route"
+  ],
+  "turns": [
+   "turn the tv off"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote"
+  ],
+  "checks": [
+   {
+    "kind": "home_call",
+    "action": "off",
+    "targets": [
+     "Living room TV"
+    ],
+    "values": {}
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "set"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
+  "name": "home-080",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "uk"
+  ],
+  "turns": [
+   "switch the telly off"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote"
+  ],
+  "checks": [
+   {
+    "kind": "home_call",
+    "action": "off",
+    "targets": [
+     "Living room TV"
+    ],
+    "values": {}
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "set"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
+  "name": "home-081",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "followup"
+  ],
+  "turns": [
+   "turn the tv up a bit",
+   "now turn the tv off"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote"
+  ],
+  "checks": [
+   {
+    "kind": "home_call",
+    "action": "off",
+    "targets": [
+     "Living room TV"
+    ],
+    "values": {}
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "set"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
+  "name": "home-082",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "offline"
+  ],
+  "turns": [
+   "turn the tv up a bit"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "answer",
+    "re": "couldn'?t|could not|can'?t|cannot|unable|didn'?t|did not|isn'?t|is not|wasn'?t|not (replying|responding|answering|reachable)|no (answer|response|reply)|offline|unreachable|trouble|problem|failed|off or unplugged",
+    "what": "that it did not work"
+   },
+   {
+    "kind": "not_answer",
+    "re": "infra.?red|\\bIR\\b|top (edge )?of (the|this|my) device|point(ing)? (the|this|my) device|remote instead",
+    "what": "offer the infrared remote for a TV the smart home lists"
+   }
+  ],
+  "env": {
+   "ZB_DRY_RUN": null
+  },
+  "home": "tv_silent",
+  "steer": null
+ },
+ {
+  "name": "home-083",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "offline"
+  ],
+  "turns": [
+   "turn the tv down"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "answer",
+    "re": "couldn'?t|could not|can'?t|cannot|unable|didn'?t|did not|isn'?t|is not|wasn'?t|not (replying|responding|answering|reachable)|no (answer|response|reply)|offline|unreachable|trouble|problem|failed|off or unplugged",
+    "what": "that it did not work"
+   },
+   {
+    "kind": "not_answer",
+    "re": "infra.?red|\\bIR\\b|top (edge )?of (the|this|my) device|point(ing)? (the|this|my) device|remote instead",
+    "what": "offer the infrared remote for a TV the smart home lists"
+   }
+  ],
+  "env": {
+   "ZB_DRY_RUN": null
+  },
+  "home": "tv_closed",
+  "steer": null
+ },
+ {
+  "name": "home-084",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "offline",
+   "followup"
+  ],
+  "turns": [
+   "turn on the tv",
+   "turn the volume up"
+  ],
+  "must": [],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "no_call",
+    "tool": "tv_remote",
+    "turn": 0
+   },
+   {
+    "kind": "not_answer",
+    "re": "infra.?red|\\bIR\\b|top (edge )?of (the|this|my) device|point(ing)? (the|this|my) device|remote instead",
+    "what": "offer the infrared remote for a TV the smart home lists",
+    "turn": 0
+   },
+   {
+    "kind": "not_answer",
+    "re": "infra.?red|\\bIR\\b|top (edge )?of (the|this|my) device|point(ing)? (the|this|my) device|remote instead",
+    "what": "offer the infrared remote for a TV the smart home lists"
+   }
+  ],
+  "env": {
+   "ZB_DRY_RUN": null
+  },
+  "home": "tv_silent",
+  "steer": null
+ },
+ {
+  "name": "home-085",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "offline",
+   "followup"
+  ],
+  "turns": [
+   "switch the tv on",
+   "turn it down a bit"
+  ],
+  "must": [],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "no_call",
+    "tool": "tv_remote",
+    "turn": 0
+   },
+   {
+    "kind": "not_answer",
+    "re": "infra.?red|\\bIR\\b|top (edge )?of (the|this|my) device|point(ing)? (the|this|my) device|remote instead",
+    "what": "offer the infrared remote for a TV the smart home lists",
+    "turn": 0
+   },
+   {
+    "kind": "not_answer",
+    "re": "infra.?red|\\bIR\\b|top (edge )?of (the|this|my) device|point(ing)? (the|this|my) device|remote instead",
+    "what": "offer the infrared remote for a TV the smart home lists"
+   }
+  ],
+  "env": {
+   "ZB_DRY_RUN": null
+  },
+  "home": "tv_closed",
+  "steer": null
+ },
+ {
+  "name": "home-086",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "followup"
+  ],
+  "turns": [
+   "turn on the tv",
+   "turn the tv volume up",
+   "okay that worked, and by the way the tv did come on earlier. can we try and turn the tv down now"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "home_step",
+    "sign": -1
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "off"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
+  "name": "home-087",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "asr",
+   "followup"
+  ],
+  "turns": [
+   "turn the tv up a bit",
+   "right that worked, and the t. v. on worked as well. so can you turn the tv down now"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "home_step",
+    "sign": -1
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "off"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
+  "name": "home-088",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "asr"
+  ],
+  "turns": [
+   "um can we try and turn the t. v. down now"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "home_step",
+    "sign": -1
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "off"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
+  "name": "home-089",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "asr"
+  ],
+  "turns": [
+   "turn the t v down a bit"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "home_step",
+    "sign": -1
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "off"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
+  "name": "home-090",
+  "tags": [
+   "home",
+   "tv",
+   "route",
+   "followup"
+  ],
+  "turns": [
+   "press volume up on the tv with the infrared remote",
+   "now turn the tv volume up with the smart home instead",
+   "okay that worked. can we try and turn the tv down now"
+  ],
+  "must": [
+   "smart_home"
+  ],
+  "must_not": [
+   "tv_remote",
+   "device"
+  ],
+  "checks": [
+   {
+    "kind": "home_step",
+    "sign": -1
+   },
+   {
+    "kind": "home_no_action",
+    "actions": [
+     "off"
+    ]
+   }
+  ],
+  "env": {},
+  "home": "tv",
+  "steer": null
+ },
+ {
   "name": "route-001",
   "tags": [
    "route",

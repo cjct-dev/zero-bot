@@ -17,7 +17,9 @@ Each case: {"name", "tags", "turns", "must", "must_not", "checks", "env", "home"
             not a turn), so a middle turn can be held to something too
   long_ok   turns (numbered the same way) whose answer may run longer than the usual cap of 420
             characters: analytical and deeper follow-ups, where a long answer is wanted
-  home      "eval", "tv" or "sockets": a made-up smart home from tests/agent_eval.py
+  home      "eval", "tv" or "sockets": a made-up smart home from tests/agent_eval.py; "tv_silent" and
+            "tv_closed": its TV, not answering over the network (these cases set env ZB_DRY_RUN null,
+            so that the TV on 127.0.0.1 is really asked)
   tags      the category first, then features: asr, lang, lang-xx, uk, us, followup, compound,
             notool, clarify, home, route, search (needs a search key), camera
 Dates and times in checks are relative ("tomorrow", "next:4" for the coming Friday, "date:12-03"
@@ -537,6 +539,40 @@ for text, check in [("turn the tv up a bit", simple("home_step", sign=1)), ("tur
                     ("go back on the tv", home_call("press", ["Living room TV"], key="back")), ("go to the home screen on the tv", home_call("press", ["Living room TV"], key="home")),
                     ("turn the telly down a bit", simple("home_step", sign=-1))]:
     case("home", text, tags=["tv"] + (["uk"] if "telly" in text else []), must=["smart_home"], must_not=["tv_remote", "device"], home="tv", checks=[check])
+# "Turn the TV down" is its volume, not off; "off" still means off (ZB-072).
+STEP_DOWN, STEP_UP, NOT_OFF = simple("home_step", sign=-1), simple("home_step", sign=1), simple("home_no_action", actions=["off"])
+for turns, check, tags in [("turn the tv down", STEP_DOWN, []), ("turn the tv up", STEP_UP, []),
+                           ("can you turn the tv down please", STEP_DOWN, []), ("turn the telly down", STEP_DOWN, ["uk"]),
+                           (["turn the tv up a bit", "okay that worked, now can you turn the tv down"], STEP_DOWN, []),
+                           (["put netflix on the tv", "turn it down a bit"], STEP_DOWN, []), (["open youtube on the tv", "turn it up"], STEP_UP, [])]:
+    case("home", turns, tags=["tv", "route"] + tags, must=["smart_home"], must_not=["tv_remote", "device"], home="tv",
+         checks=[check, NOT_OFF])
+for turns, tags in [("turn the tv off", []), ("switch the telly off", ["uk"]), (["turn the tv up a bit", "now turn the tv off"], [])]:
+    case("home", turns, tags=["tv", "route"] + tags, must=["smart_home"], must_not=["tv_remote"], home="tv",
+         checks=[home_call("off", ["Living room TV"]), simple("home_no_action", actions=["set"])])
+# After a network error for a TV the smart home lists, not the infrared remote: it sends the codes of
+# the one brand in settings, which may be another TV's.
+LIVE = {"ZB_DRY_RUN": None}
+FAILED = (r"couldn'?t|could not|can'?t|cannot|unable|didn'?t|did not|isn'?t|is not|wasn'?t|not (replying|responding|answering|reachable)|"
+          r"no (answer|response|reply)|offline|unreachable|trouble|problem|failed|off or unplugged")
+# Nor is it offered: "I can try the infrared remote instead", "point the top edge of the device at the TV".
+NO_IR_OFFER = nans(r"infra.?red|\bIR\b|top (edge )?of (the|this|my) device|point(ing)? (the|this|my) device|remote instead",
+                   "offer the infrared remote for a TV the smart home lists")
+for turns, home in [("turn the tv up a bit", "tv_silent"), ("turn the tv down", "tv_closed")]:
+    case("home", turns, tags=["tv", "route", "offline"], must=["smart_home"], must_not=["tv_remote", "device"], home=home, env=LIVE,
+         checks=[ans(FAILED, "that it did not work"), NO_IR_OFFER])
+for turns, home in [(["turn on the tv", "turn the volume up"], "tv_silent"), (["switch the tv on", "turn it down a bit"], "tv_closed")]:
+    case("home", turns, tags=["tv", "route", "offline"], must_not=["tv_remote", "device"], home=home, env=LIVE,
+         checks=[on_turn(0, simple("no_call", tool="tv_remote")), on_turn(0, NO_IR_OFFER), NO_IR_OFFER])
+# "Down" in a longer, looser request, after other things were said about the TV.
+for turns, tags in [(["turn on the tv", "turn the tv volume up", "okay that worked, and by the way the tv did come on earlier. "
+                                                                  "can we try and turn the tv down now"], []),
+                    (["turn the tv up a bit", "right that worked, and the t. v. on worked as well. so can you turn the tv down now"], ["asr"]),
+                    ("um can we try and turn the t. v. down now", ["asr"]), ("turn the t v down a bit", ["asr"]),
+                    (["press volume up on the tv with the infrared remote", "now turn the tv volume up with the smart home instead",
+                      "okay that worked. can we try and turn the tv down now"], [])]:
+    case("home", turns, tags=["tv", "route"] + tags, must=["smart_home"], must_not=["tv_remote", "device"], home="tv",
+         checks=[STEP_DOWN, NOT_OFF])
 # Routing: with a home, the other tools must still win their own requests.
 for text, must, must_not, checks, home in [
         ("set a timer for 10 minutes", ["timer"], ["smart_home", "reminder_set"], [timer(600)], H),

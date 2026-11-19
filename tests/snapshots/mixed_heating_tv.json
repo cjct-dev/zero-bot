@@ -1,5 +1,5 @@
 {
-  "description": "Control the user's smart-home devices on this network: switch on or off, dim, set the heating temperature, open or close blinds, set the volume, control playback, change a TV's input or open an app and start scenes, or check their state. Calling this is the only way a device changes. The targets are listed in the target parameter; a room name means the lights in that room. If what the user asks for is not listed, say so instead of picking another.",
+  "description": "Control the user's smart-home devices on this network: switch on or off, dim, set the heating temperature, open or close blinds, set the volume, control playback, change a TV's input or open an app and start scenes, or check their state. Calling this is the only way a device changes. The targets are listed in the target parameter; a room name means the lights in that room. If what the user asks for is not listed, say so instead of picking another. When a TV listed here does not answer, say so without offering infrared instead: the infrared remote may send another TV's codes.",
   "parameters": {
     "properties": {
       "action": {

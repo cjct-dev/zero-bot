@@ -41,7 +41,8 @@ sys.path.insert(0, HERE)
 sys.dont_write_bytecode = True   # importing agent_eval leaves no __pycache__ in tests/
 import agent_eval as ev   # noqa: E402
 
-HOMES = {"eval": ev.EVAL_HOME, "tv": ev.TV_HOME, "sockets": ev.SOCKETS_HOME}
+HOMES = {"eval": ev.EVAL_HOME, "tv": ev.TV_HOME, "sockets": ev.SOCKETS_HOME, "tv_silent": ev.TV_SILENT_HOME,
+         "tv_closed": ev.TV_CLOSED_HOME}
 MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 LANGUAGE = {"es": r"\b(el|la|los|las|de|que|en|hoy|grados|está|minutos|listo|temporizador|tiempo|hace)\b",
@@ -335,6 +336,7 @@ def k_home_switched(s): return ev.home_switched(s["name"])
 def k_home_not_switched(s): return ev.home_not_switched(s["name"])
 def k_home_all_off(s): return ev.home_all_off
 def k_home_step(s): return ev.home_step(s["sign"])
+def k_home_no_action(s): return ev.home_no_action(*s["actions"])
 
 
 KINDS = {name[2:]: f for name, f in globals().items() if name.startswith("k_") and callable(f)}

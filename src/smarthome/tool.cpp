@@ -59,11 +59,12 @@ std::string joined(const std::vector<std::string> &parts) {
 
 json spec_for(const std::vector<Item> &items) {
     uint32_t caps = 0;
-    bool scenes = false, lights = false;
+    bool scenes = false, lights = false, tvs = false;
     for (const auto &i : items) {
         caps |= i.thing.caps;
         scenes = scenes || i.thing.type == "scene";
         lights = lights || is_light(i.thing);
+        tvs = tvs || i.thing.type == "tv";
     }
     const bool brightness = caps & kBrightness, colour = caps & (kColor | kColorTemp), heat = caps & kTargetTemp,
                position = caps & kPosition, volume = caps & kVolume, source = caps & kSource, transport = caps & kTransport,
@@ -139,6 +140,9 @@ json spec_for(const std::vector<Item> &items) {
                       ", or check their state. Calling this is the only way a device changes. The targets are listed in the "
                       "target parameter" + std::string(lights ? "; a room name means the lights in that room" : "") +
                       ". If what the user asks for is not listed, say so instead of picking another.";
+        // The infrared remote sends the codes of the one brand in settings, which may be another TV's.
+        if (tvs) description += " When a TV listed here does not answer, say so without offering infrared instead: the infrared "
+                                "remote may send another TV's codes.";
     }
     return {{"description", description},
             {"parameters", {{"type", "object"}, {"properties", props}, {"required", json::array({"action"})}}}};

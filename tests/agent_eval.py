@@ -19,9 +19,11 @@ summarises such files.
 
 Side effects are disabled (ZB_DRY_RUN): no music plays, no infrared is sent and no smart-home
 device is switched. Every case starts from an empty calendar, memory and settings; the smart-home
-cases start from a made-up home on the stand-in test network (ZB_TEST_NETWORK).
+cases start from a made-up home on the stand-in test network (ZB_TEST_NETWORK). A case that must
+really reach a device (a TV that does not answer, on 127.0.0.1) runs without ZB_DRY_RUN, with
+stand-ins that do nothing for the programs that would change this computer (volume, sound, camera).
 """
-import argparse, concurrent.futures, datetime, json, os, re, shutil, subprocess, sys, tempfile, time
+import argparse, concurrent.futures, datetime, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
 # ---------------------------------------------------------------- helpers for checks
 ONES = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen " \
@@ -358,6 +360,66 @@ def home_step(sign):
         return [] if ok else ["smart_home should set volume_step %s 0, got %s" % (">" if sign > 0 else "<", calls(t, "smart_home"))]
     return check
 
+def home_no_action(*actions):
+    """No smart_home call in the turn with one of these actions ("turn the TV down" is its volume, not "off")."""
+    def check(t):
+        bad = [c for c in calls(t, "smart_home") if str(c.get("action", "")).lower() in actions]
+        return ["smart_home should not %s here, got %s" % (" or ".join(actions), bad)] if bad else []
+    return check
+
+def no_call(tool):
+    return lambda t: ["should not call %s" % tool] if calls(t, tool) else []
+
+def on_turn(n, check):
+    """The check applied to turn n (0 is the first) instead of the last."""
+    def f(t): return check(t)
+    f.turn = n
+    return f
+
+# The same TV, paired over the network, but not answering, for what the assistant does after a
+# network error. It is a Fire TV (the driver really runs: these cases set LIVE) at a port on
+# 127.0.0.1 that either takes connections and closes them unanswered ("silent": the TV is on the
+# network but its remote control service is not replying) or refuses them ("closed": the TV did not
+# answer). The token and key are made up; nothing is ever sent beyond this computer.
+LIVE = {"ZB_DRY_RUN": None}
+_ports, _ports_lock = {}, threading.Lock()
+
+def _tv_port(how):
+    with _ports_lock:
+        if how not in _ports:
+            s = socket.socket()
+            s.bind(("127.0.0.1", 0))   # bound but not listening: connections are refused, and the port stays ours
+            if how == "silent":
+                s.listen(16)
+                def serve(s=s):
+                    while True:
+                        try: s.accept()[0].close()
+                        except OSError: return
+                threading.Thread(target=serve, daemon=True).start()
+            _ports[how] = (s, s.getsockname()[1])
+        return _ports[how][1]
+
+def _offline_tv_home(how):
+    def make():
+        port = _tv_port(how)
+        home = _home(_thing("2", "Floor lamp", "light", POWER | BRIGHT, "Living room", {"on": True, "brightness": 60}))
+        tv = _thing("tv", "Living room TV", "tv", POWER | TRANSPORT | VOLUME_STEP | SOURCE | KEYS, "Living room", {"on": True})
+        tv["ref"] = {"volume": True, "power": True}
+        home["networks"][TEST_NETWORK]["devices"].insert(0, {
+            "id": "fire_tv:eval", "kind": "fire_tv", "name": "Living room TV", "last_ip": "127.0.0.1", "port": port,
+            "info": {"dial_port": str(port)}, "auth": {"token": "made-up-token", "key_pin": "sha256//" + "A" * 43 + "="},
+            "enabled": True, "things": [tv]})
+        return home
+    return make
+
+TV_SILENT_HOME, TV_CLOSED_HOME = _offline_tv_home("silent"), _offline_tv_home("closed")
+# Saying that it did not work.
+FAILED = (r"couldn'?t|could not|can'?t|cannot|unable|didn'?t|did not|isn'?t|is not|wasn'?t|not (replying|responding|answering|reachable)|"
+          r"no (answer|response|reply)|offline|unreachable|trouble|problem|failed|off or unplugged")
+# Offering the infrared remote: "I can try the infrared remote instead", "point the top edge of the device at the TV".
+OFFERS_IR = r"infra.?red|\bIR\b|top (edge )?of (the|this|my) device|point(ing)? (the|this|my) device|remote instead"
+NO_IR_OFFER = not_answer(OFFERS_IR, "offer the infrared remote for a TV the smart home lists")
+
 # Twelve sockets: more than eight things, so switching everything off asks first.
 SOCKETS_HOME = _home(*[_thing("s%d" % i, "Socket %d" % i, "plug", POWER, "", {"on": True}) for i in range(1, 13)])
 
@@ -597,6 +659,32 @@ CASES = [
          checks=[home_call("set", ["Living room TV"], source="netflix")]),
     case("route_own_volume_tv_home", "turn your volume up", must=["device"], must_not=["smart_home", "tv_remote"],
          home=TV_HOME),
+    # "Turn the TV down" is its volume, not off; "off" still means off (ZB-072).
+    case("route_tv_down_plain", "turn the tv down", must=["smart_home"], must_not=["tv_remote", "device"], home=TV_HOME,
+         checks=[home_step(-1), home_no_action("off")]),
+    case("route_tv_up_plain", "turn the tv up", must=["smart_home"], must_not=["tv_remote", "device"], home=TV_HOME,
+         checks=[home_step(+1)]),
+    case("route_tv_down_after_up", ["turn the tv up a bit", "okay that worked, can you turn the tv down now"], must=["smart_home"],
+         must_not=["tv_remote", "device"], home=TV_HOME, checks=[home_step(-1), home_no_action("off")]),
+    case("route_tv_down_it", ["put netflix on the tv", "turn it down a bit"], must=["smart_home"], must_not=["tv_remote", "device"],
+         home=TV_HOME, checks=[home_step(-1), home_no_action("off")]),
+    case("route_tv_down_ramble", ["turn the tv up a bit", "okay that worked, and by the way switching the tv on earlier did work as "
+                                  "well. can we try and turn the tv down now"], must=["smart_home"], must_not=["tv_remote", "device"],
+         home=TV_HOME, checks=[home_step(-1), home_no_action("off")]),
+    case("route_tv_down_asr", "um can we try and turn the t. v. down now", must=["smart_home"], must_not=["tv_remote", "device"],
+         home=TV_HOME, checks=[home_step(-1), home_no_action("off")]),
+    case("route_tv_off_plain", "turn the tv off", must=["smart_home"], must_not=["tv_remote"], home=TV_HOME,
+         checks=[home_call("off", ["Living room TV"]), home_no_action("set")]),
+    case("route_tv_off_after_volume", ["turn the tv up a bit", "now turn the tv off"], must=["smart_home"], must_not=["tv_remote"],
+         home=TV_HOME, checks=[home_call("off", ["Living room TV"]), home_no_action("set")]),
+    # After a network error for a TV the smart home lists, not the infrared remote: it sends the codes
+    # of the one brand in settings, which may be another TV's (ZB-072).
+    case("route_tv_offline_volume", "turn the tv up a bit", must=["smart_home"], must_not=["tv_remote", "device"],
+         home=TV_SILENT_HOME, env=LIVE, checks=[answer(FAILED, "that it did not work"), NO_IR_OFFER]),
+    case("route_tv_offline_followup", ["turn on the tv", "turn the volume up"], must_not=["tv_remote", "device"],
+         home=TV_SILENT_HOME, env=LIVE, checks=[on_turn(0, no_call("tv_remote")), on_turn(0, NO_IR_OFFER), NO_IR_OFFER]),
+    case("route_tv_unplugged_followup", ["switch the tv on", "turn it up a bit"], must_not=["tv_remote", "device"],
+         home=TV_CLOSED_HOME, env=LIVE, checks=[on_turn(0, no_call("tv_remote")), on_turn(0, NO_IR_OFFER), NO_IR_OFFER]),
     case("route_lamp_no_home", "turn on the bedroom lamp", must_not=["tv_remote", "device"],
          checks=[answer(CANNOT + r"|smart.home|set up|settings", "that no lamps are set up")]),
 
@@ -662,11 +750,21 @@ def run_case(binary, base_env, c):
         # The made-up home lives on the stand-in network, where only 127.x addresses could ever be
         # contacted; with ZB_DRY_RUN none is.
         os.makedirs(state + "/data/zero-bot")
-        json.dump(c["home"], open(state + "/data/zero-bot/smarthome.json", "w"))
+        home = c["home"]() if callable(c["home"]) else c["home"]   # a home with a port made when it runs
+        json.dump(home, open(state + "/data/zero-bot/smarthome.json", "w"))
         env["ZB_TEST_NETWORK"] = "1"
     for k, v in c["env"].items():
         if v is None: env.pop(k, None)
         else: env[k] = v
+    if "ZB_DRY_RUN" not in env:
+        # A device is really contacted (on 127.0.0.1 only: ZB_TEST_NETWORK), and so would be whatever
+        # else the model calls: the programs that change this computer are stand-ins that do nothing.
+        stand_ins = state + "/bin"
+        os.makedirs(stand_ins)
+        for name in ("wpctl", "pactl", "amixer", "pw-cat", "pacat", "ffplay", "ffmpeg", "rpicam-jpeg", "nmcli", "iw", "systemctl"):
+            with open(os.path.join(stand_ins, name), "w") as f: f.write("#!/bin/sh\nexit 0\n")
+            os.chmod(os.path.join(stand_ins, name), 0o755)
+        env["PATH"] = stand_ins + os.pathsep + env.get("PATH", "")
     # --trace: the experiments' trace (src/agent/experiment.h; cli build), one file per case.
     trace = state + "/trace.jsonl" if base_env.get("ZB_EVAL_TRACE") else None
     if trace: env["ZB_EXP_TRACE"] = trace
