@@ -145,7 +145,11 @@ def k_not_answer(s): return ev.not_answer(s["re"], s.get("what") or "match /%s/"
 
 
 def k_arg(s):
+    """An argument of a call that worked; with "made", of any call made, whatever came of it (for a request
+    that cannot work in a fresh state, such as skipping a track when nothing plays)."""
     tool, key = s["tool"], s["key"]
+    if s.get("made"):
+        return lambda t: k_arg(dict(s, made=False))(dict(t, results=["made"] * len(t["tools"])))
     if "has" in s:
         subs = [x.lower() for x in s["has"]]
         return lambda t: ev.arg(t, tool, key, lambda v: any(x in str(v).lower() for x in subs), "about " + "/".join(subs))

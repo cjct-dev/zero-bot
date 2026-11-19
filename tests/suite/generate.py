@@ -452,7 +452,9 @@ for text, key, subs in [("play some abba", "artist", ["abba"]), ("play a song by
 for text, action in [("stop the music", "stop"), ("turn the music off", "stop"), ("pause the music", "stop"), ("skip this song", "next"),
                      ("next track please", "next"), ("what song is this", "now_playing"), ("whats playing", "now_playing"),
                      ("what music have i got", "library|search"), ("shuffle my music", "play"), ("play something relaxing", "play|search")]:
-    case("music", text, must=["music"], checks=[{"kind": "arg", "tool": "music", "key": "action", "any": action.split("|")}])
+    # "next" finds nothing playing in a fresh state, so the call made is what counts there (routing).
+    case("music", text, must=["music"], checks=[dict({"kind": "arg", "tool": "music", "key": "action", "any": action.split("|")},
+                                                     **({"made": True} if action == "next" else {}))])
 case("music", "play some aba", tags=["asr"], must=["music"], checks=[arg_is("music", "action", "play")])
 case("music", ["play some abba", "skip this one"], must=["music"], checks=[arg_is("music", "action", "next")])
 case("music", ["put on some jazz", "stop"], must=["music"], checks=[arg_is("music", "action", "stop")])

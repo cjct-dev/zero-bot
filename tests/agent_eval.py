@@ -126,10 +126,17 @@ def attempts(turn, name):
     checks that something was not even tried."""
     return [a for a, _ in _made(turn, name)]
 
+# Tools that change something. A call to one counts only if it worked; a call that reads (a forecast, a
+# search, a rate) counts as made whatever the service answered, since a service that times out or is over
+# its quota is not the model's doing, and the answer's checks catch a made-up reply.
+CHANGES = {"timer", "reminder_set", "reminder_cancel", "calendar_add", "calendar_update", "calendar_delete", "memory_save",
+           "memory_delete", "smart_home", "music", "radio", "device", "tv_remote", "breathe", "set_timezone"}
+
 def calls(turn, name):
-    """Parsed arguments of the calls to `name` (or any of a|b) in this turn that worked: a call whose
-    result is an ERROR, or that waits for a yes, did not do what it asked."""
-    return [a for a, r in _made(turn, name) if worked(r)]
+    """Parsed arguments of the calls to `name` (or any of a|b) in this turn that did what they asked: a
+    change whose result is an ERROR, or that waits for a yes, did not."""
+    return [a for (a, r), n in zip(_made(turn, name), [n for n, _ in turn["tools"] if n in name.split("|")])
+            if worked(r) or n not in CHANGES]
 
 def tried(turn, name):
     """The calls to `name` in this turn and how each went, for a problem's text."""
@@ -1267,9 +1274,10 @@ def timing_summary(results):
     med = lambda v: v[len(v) // 2] if v else float("nan")
     p90 = lambda v: v[min(len(v) - 1, int(len(v) * 0.9))] if v else float("nan")
     return ("per request: total median %.1fs, mean %.1fs, 90th %.1fs, worst %.1fs | first words: median %.1fs, 90th %.1fs | "
-            "first sentence: median %.1fs, 90th %.1fs | completed %d/%d turns, %d timeout%s"
+            "first sentence: %s | completed %d/%d turns, %d timeout%s"
             % (med(totals), sum(totals) / max(1, len(totals)), p90(totals), totals[-1] if totals else 0, med(firsts), p90(firsts),
-               med(sentences), p90(sentences), completed, len(turns), timeouts, "" if timeouts == 1 else "s"))
+               "median %.1fs, 90th %.1fs" % (med(sentences), p90(sentences)) if sentences else "not recorded",
+               completed, len(turns), timeouts, "" if timeouts == 1 else "s"))
 
 def score(c, turns):
     problems = []
