@@ -17,6 +17,7 @@ Each case: {"name", "tags", "turns", "must", "must_not", "checks", "env", "home"
             not a turn), so a middle turn can be held to something too
   long_ok   turns (numbered the same way) whose answer may run longer than the usual cap of 420
             characters: analytical and deeper follow-ups, where a long answer is wanted
+  env       environment changes for the run (null removes one; "@web/FIXTURE" is the stand-in web's address)
   home      "eval", "tv" or "sockets": a made-up smart home from tests/agent_eval.py; "tv_silent" and
             "tv_closed": its TV, not answering over the network (these cases set env ZB_DRY_RUN null,
             so that the TV on 127.0.0.1 is really asked)
@@ -76,6 +77,12 @@ def simple(kind, **kw): return dict({"kind": kind}, **kw)
 def max_calls(tool, n): return {"kind": "max_calls", "tool": tool, "n": n}
 def max_words(n): return {"kind": "max_words", "n": n}
 def on_turn(turn, check): return dict(check, turn=turn)
+def every_turn(check): return dict(check, turn="all")       # in no turn may this go wrong
+def timers_saved(*seconds): return {"kind": "timers_saved", "lengths": list(seconds)}
+def moved(first_day, first_times, then_day, then_times, what):
+    """The whole conversation: one saved at the first time, then exactly one, the same, at the new time."""
+    return {"kind": "moved", "first": [first_day, first_times], "then": [then_day, then_times], "what": what}
+def memory(has, lacks=()): return {"kind": "memory", "has": has, "lacks": list(lacks)}
 
 
 QUESTION = ans(r"\?", "a question")
@@ -224,19 +231,23 @@ for text, seconds in [("let me know when 10 minutes are up", 600), ("tell me whe
     case("timer", text, tags=["countdown"] + (["us"] if "ping" in text else []) + (["uk"] if "shout" in text or "washing" in text else []),
          must=["timer|reminder_set"], must_not=["calendar_add"], checks=[countdown(seconds)])
 for second in ["how long is left on my timer", "how much time is left", "how long have i got left", "is my timer still running"]:
-    case("timer", ["set a timer for 10 minutes", second], must=["timer"], checks=[timer_action("list")]
+    case("timer", ["set a timer for 10 minutes", second], must=["timer"], checks=[on_turn(0, timer(600)), timer_action("list")]
          + ([simple("time_left")] if "still" not in second else []))
 for second in ["cancel that", "stop the timer", "cancel the timer", "never mind cancel it"]:
-    case("timer", ["set a timer for 10 minutes", second], must=["timer"], must_not=["reminder_cancel"], checks=[timer_action("cancel")])
-case("timer", ["set a timer for 10 minutes", "add 5 minutes to it"], must=["timer"], checks=[timer_action("add_time"), arg_num("timer", "minutes", 5)])
-case("timer", ["set a timer for 10 minutes", "give it another 2 minutes"], must=["timer"], checks=[simple("timer_becomes", seconds=720, added=120)])
-case("timer", ["set a timer for 10 minutes", "actually make it 15 minutes"], must=["timer"], checks=[simple("timer_becomes", seconds=900, added=300)])
+    case("timer", ["set a timer for 10 minutes", second], must=["timer"], must_not=["reminder_cancel"],
+         checks=[on_turn(0, timer(600)), timer_action("cancel"), timers_saved()])
+case("timer", ["set a timer for 10 minutes", "add 5 minutes to it"], must=["timer"],
+     checks=[on_turn(0, timer(600)), timer_action("add_time"), arg_num("timer", "minutes", 5), timers_saved(900)])
+case("timer", ["set a timer for 10 minutes", "give it another 2 minutes"], must=["timer"],
+     checks=[on_turn(0, timer(600)), simple("timer_becomes", seconds=720, added=120)])
+case("timer", ["set a timer for 10 minutes", "actually make it 15 minutes"], must=["timer"],
+     checks=[on_turn(0, timer(600)), simple("timer_becomes", seconds=900, added=300)])
 case("timer", ["set a timer for 20 minutes for studying", "and a 5 minute one for the tea", "cancel the tea timer"], must=["timer"],
-     checks=[simple("cancelled", want="tea", keep="stud")])
+     checks=[on_turn(0, timer(1200)), on_turn(1, timer(300)), simple("cancelled", want="tea", keep="stud"), timers_saved(1200)])
 case("timer", ["i want to study for 45 minutes set a timer", "and set a 10 minute timer for the pasta", "cancel the study timer"],
-     must=["timer"], checks=[simple("cancelled", want="stud", keep="pasta")])
+     must=["timer"], checks=[on_turn(0, timer(2700)), on_turn(1, timer(600)), simple("cancelled", want="stud", keep="pasta"), timers_saved(600)])
 case("timer", ["set a 5 minute timer for the eggs", "and another for 12 minutes for the rice", "how long left on the rice"],
-     must=["timer"], checks=[timer_action("list")])
+     must=["timer"], checks=[on_turn(0, timer(300)), on_turn(1, timer(720)), timer_action("list")])
 case("timer", "set two timers one for 5 minutes and one for 20 minutes", tags=["compound"], must=["timer"], checks=[timer(300), timer(1200)])
 for text in ["set a timer", "start a timer please", "can you set a timer for me", "i need a timer"]:
     case("timer", text, tags=["clarify"], must_not=["timer", "reminder_set", "calendar_add"],
@@ -271,8 +282,9 @@ for text, day, times in [("remind me at ate tomorrow morning to call the hotel",
                          ("remind me tomorrow at ten too call the plumber", "tomorrow", ["10:00", "22:00"])]:
     case("reminder", text, tags=["asr"], must=["reminder_set|calendar_add"], checks=[at(day, *times)])
 case("reminder", ["remind me tomorrow at 9 to call the bank", "actually make it 10"], must=["reminder_set|calendar_add|reminder_cancel"],
-     checks=[at("tomorrow", "10:00")])
-case("reminder", ["remind me tomorrow at 9am to call the bank", "what reminders have i got"], must=["reminder_list"])
+     checks=[moved("tomorrow", ["09:00", "21:00"], "tomorrow", ["10:00"], "reminder")])
+case("reminder", ["remind me tomorrow at 9am to call the bank", "what reminders have i got"], must=["reminder_list"],
+     checks=[on_turn(0, at("tomorrow", "09:00"))])
 for text in ["set a reminder", "remind me to call mum", "set an alarm", "can you remind me about the dentist"]:
     case("reminder", text, tags=["clarify"], must_not=["reminder_set", "calendar_add", "timer"], checks=[QUESTION])
 
@@ -315,15 +327,17 @@ for text in ["whats on my calendar this week", "do i have anything on tomorrow",
              "when is my next dentist appointment", "whats in my diary for next week"]:
     case("calendar", text, tags=["lookup"] + (["uk"] if "got on" in text or "diary" in text else []), must=["calendar_list"])
 case("calendar", ["put dinner with marta in my calendar for friday at 8pm", "actually make it half past eight"], must=["calendar_update|calendar_add"],
-     checks=[at("next:%d" % FRI, "20:30", tools="calendar_update|calendar_add")])
+     checks=[moved("next:%d" % FRI, ["20:00"], "next:%d" % FRI, ["20:30"], "dinner")])
 case("calendar", ["add lunch with sam on thursday at 1pm", "move it to 2"], must=["calendar_update|calendar_add"],
-     checks=[at("next:%d" % THU, "14:00", tools="calendar_update|calendar_add")])
+     checks=[moved("next:%d" % THU, ["13:00"], "next:%d" % THU, ["14:00"], "lunch")])
 case("calendar", ["add a dentist appointment on the 3rd of december at 10am", "can you move it to the 4th"], must=["calendar_update|calendar_add"],
-     checks=[at("date:12-04", "10:00", tools="calendar_update|calendar_add")])
-case("calendar", ["add yoga on wednesday at 6pm", "delete that"], must=["calendar_delete"])
-case("calendar", ["add yoga on wednesday at 6pm", "whats on my calendar on wednesday"], checks=[ans(r"yoga")])
+     checks=[moved("date:12-03", ["10:00"], "date:12-04", ["10:00"], "dentist appointment")])
+case("calendar", ["add yoga on wednesday at 6pm", "delete that"], must=["calendar_delete"],
+     checks=[on_turn(0, at("next:%d" % WED, "18:00", tools="calendar_add")), simple("events_saved", n=0)])
+case("calendar", ["add yoga on wednesday at 6pm", "whats on my calendar on wednesday"],
+     checks=[on_turn(0, at("next:%d" % WED, "18:00", tools="calendar_add")), ans(r"yoga")])
 case("calendar", ["my dads birthday is the 2nd of june 1955 put it in the calendar", "/new", "when is dads birthday and how old will he be"],
-     tags=["followup"], must=["calendar_list"], checks=[ans(r"june"), simple("age_on", md="06-02", born=1955)])
+     tags=["followup"], must=["calendar_list"], checks=[on_turn(0, yearly("06-02", 1955)), ans(r"june"), simple("age_on", md="06-02", born=1955)])
 for text in ["add a meeting with tom to my calendar", "put lunch with anna in my calendar"]:
     case("calendar", text, tags=["clarify"], must_not=["calendar_add"], checks=[QUESTION])
 # A day but no time: asking is right, and so is keeping the day as an all-day entry while asking for the time.
@@ -339,12 +353,14 @@ for text, sub, tags in [("remember that im allergic to shellfish", ["shellfish"]
                         ("my favorite color is green", ["green"], ["us"]), ("remember i parked on level 3", ["3"], []),
                         ("for future reference im gluten free", ["gluten"], [])]:
     case("memory", text, tags=tags, must=["memory_save"], checks=[arg_has("memory_save", "text", *sub)])
-for first, question, pattern in [("remember that im allergic to shellfish", "is the prawn curry ok for me to eat", r"shellfish|allerg"),
-                                 ("remember that my car is a blue golf", "what car do i drive", r"golf"),
-                                 ("remember my locker number is 42", "whats my locker number", r"\b42\b|forty[- ]two"),
-                                 ("by the way im vegetarian", "can you suggest something for dinner", r"vegetarian|meat-free|meatless|veg")]:
-    case("memory", [first, "/new", question], tags=["recall"], must_not=["memory_save"], checks=[ans(pattern)])
-case("memory", ["remember that im vegetarian", "/new", "forget that im vegetarian"], tags=["forget"], must=["memory_delete"])
+for first, question, pattern, saved in [("remember that im allergic to shellfish", "is the prawn curry ok for me to eat", r"shellfish|allerg", r"shellfish"),
+                                        ("remember that my car is a blue golf", "what car do i drive", r"golf", r"golf"),
+                                        ("remember my locker number is 42", "whats my locker number", r"\b42\b|forty[- ]two", r"\b42\b|forty[- ]two"),
+                                        ("by the way im vegetarian", "can you suggest something for dinner", r"vegetarian|meat-free|meatless|veg",
+                                         r"vegetarian")]:
+    case("memory", [first, "/new", question], tags=["recall"], must_not=["memory_save"], checks=[on_turn(0, memory(saved)), ans(pattern)])
+case("memory", ["remember that im vegetarian", "/new", "forget that im vegetarian"], tags=["forget"], must=["memory_delete"],
+     checks=[on_turn(0, memory(r"vegetarian")), simple("memory_lacks", re=[r"vegetarian"])])
 
 # ------------------------------------------------------------------ weather
 CITIES = ["lisbon", "madrid", "rome", "berlin", "paris", "new york", "chicago", "seattle", "edinburgh", "manchester", "dublin",
@@ -517,11 +533,13 @@ case("home", "turn on the fan heater", tags=["confirm"], must=["smart_home"], ho
 case("home", "switch the fan heater on please", tags=["confirm"], must=["smart_home"], home=H, checks=[simple("home_asked")])
 for yes in ["yes", "yes please", "go on then", "yeah do it"]:
     case("home", ["turn on the fan heater", yes], tags=["confirm"], must=["smart_home"], home=H,
-         checks=[home_call("on", ["Fan heater"]), simple("home_switched", name="Fan heater")])
+         checks=[on_turn(0, simple("home_asked", name="heater")), home_call("on", ["Fan heater"]), simple("home_switched", name="Fan heater")])
 for no in ["no", "leave it off please", "actually no leave it", "no thanks"]:
-    case("home", ["turn on the fan heater", no], tags=["confirm"], home=H, checks=[simple("home_not_switched", name="Fan heater")])
+    case("home", ["turn on the fan heater", no], tags=["confirm"], home=H,
+         checks=[on_turn(0, simple("home_asked", name="heater")), every_turn(simple("home_not_switched", name="Fan heater"))])
+# The search comes from the stand-in web (tests/mocks/fake_web.py; tests/agent_eval.py replaces "@web"), so no search key is needed.
 case("home", ["look up when the sun sets today, then turn on the bedroom lamp", "no, leave it"], tags=["confirm", "search"], home=H,
-     checks=[simple("home_not_switched", name="Bedroom lamp")])
+     env={"ZB_EXP_WEB": "@web/default", "ZB_SEARCH_KEY": "stand-in"}, checks=[every_turn(simple("home_not_switched", name="Bedroom lamp"))])
 case("home", ["look up when the sun sets today", "turn on the bedroom lamp"], tags=["confirm", "search"], must=["smart_home"], home=H,
      checks=[simple("home_asked")])
 case("home", ["turn everything off", "yes"], tags=["confirm"], must=["smart_home"], home="sockets", checks=[simple("home_all_off")])
@@ -581,7 +599,8 @@ for text, must, must_not, checks, home in [
         ("play a song by abba", ["music"], ["smart_home"], [arg_is("music", "action", "play")], H),
         ("remind me at 7 tomorrow morning to call the hotel", ["reminder_set|calendar_add"], ["smart_home", "timer"], [at("tomorrow", "07:00")], H),
         ("the eggs need six minutes", ["timer"], ["smart_home", "reminder_set"], [timer(360)], H),
-        (["set a timer for 10 minutes", "cancel the timer"], ["timer"], ["smart_home", "reminder_cancel"], [timer_action("cancel")], H),
+        (["set a timer for 10 minutes", "cancel the timer"], ["timer"], ["smart_home", "reminder_cancel"],
+         [on_turn(0, timer(600)), timer_action("cancel"), timers_saved()], H),
         ("im feeling really stressed right now", ["breathe"], ["smart_home", "timer"], [], H),
         ("turn your volume up", ["device"], ["smart_home", "tv_remote"], [], "tv"),
         ("stop the music", ["music"], ["smart_home"], [arg_is("music", "action", "stop")], H),

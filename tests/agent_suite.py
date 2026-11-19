@@ -163,39 +163,45 @@ def k_cancelled(s): return ev.chk_cancelled(s["want"], s["keep"])
 
 def k_countdown(s):
     """Counted down from now: a timer of that length, or a reminder that many minutes away (either is right)."""
-    seconds = s["seconds"]
-
-    def check(t):
-        if any(abs(ev.timer_seconds(c) - seconds) < 1 for c in ev.timer_calls(t, "start")): return []
-        for c in ev.calls(t, "reminder_set"):
-            try:
-                if c.get("in_minutes") is not None and abs(float(c["in_minutes"]) * 60 - seconds) < 1: return []
-            except (TypeError, ValueError): pass
-            if c.get("at"):
-                try: due = datetime.datetime.strptime(str(c["at"])[:16], "%Y-%m-%d %H:%M")
-                except ValueError: continue
-                if abs((due - ev.today()).total_seconds() - seconds) < 180: return []
-        return ["a timer or reminder should go off %d seconds from now, got %s" % (seconds, ev.calls(t, "timer|reminder_set"))]
-    return check
+    return ev.chk_countdown(s["seconds"])
 
 
 def k_timer_becomes(s):
-    """The running timer now has a new length: added to, or replaced by a new one of that length."""
+    """The running timer now has a new length: added to, or replaced by a new one of that length; with a
+    recorded state, exactly one timer is saved, of the new length (a replacement that left the old one
+    running is two timers)."""
     def check(t):
-        if any(abs(ev.timer_seconds(c) - s["added"]) < 1 for c in ev.timer_calls(t, "add_time")): return []
-        if any(abs(ev.timer_seconds(c) - s["seconds"]) < 1 for c in ev.timer_calls(t, "start")): return []
-        return ["the timer should gain %d seconds or be restarted for %d, got %s" % (s["added"], s["seconds"], ev.calls(t, "timer"))]
+        if not (any(abs(ev.timer_seconds(c) - s["added"]) < 1 for c in ev.timer_calls(t, "add_time")) or
+                any(abs(ev.timer_seconds(c) - s["seconds"]) < 1 for c in ev.timer_calls(t, "start"))):
+            return ["the timer should gain %d seconds or be restarted for %d, got %s" % (s["added"], s["seconds"], ev.tried(t, "timer"))]
+        return ev.chk_timers_saved(s["seconds"])(t)
+    return check
+
+
+def k_timers_saved(s): return ev.chk_timers_saved(*s["lengths"])
+
+
+def k_moved(s):
+    return ev.chk_moved_item(lambda: stamps_for(*s["first"]), lambda: stamps_for(*s["then"]), s["what"])
+
+
+def k_memory(s): return ev.chk_memory(s["has"], s.get("lacks", ()))
+def k_memory_lacks(s): return ev.chk_memory_lacks(*s["re"])
+
+
+def k_events_saved(s):
+    """Exactly n calendar events are saved after the turn (nothing to check without a recorded state)."""
+    def check(t):
+        st = ev.state(t)
+        if st is None or len(ev.saved_events(st)) == s["n"]: return []
+        return ["%d calendar events should be saved: %s" % (s["n"], ev.shown_state(st, "when"))]
     return check
 
 
 def k_at(s):
     def check(t):
         ok = stamps_for(s["day"], s["times"])
-        for c in ev.calls(t, s["tools"]):
-            when = str(c.get("at", c.get("start")))[:16]
-            if when in ok and (not s.get("weekly") or c.get("repeat") == "weekly"): return []
-        return ["%s should be for %s%s, got %s" % (s["tools"], " or ".join(ok), " repeating weekly" if s.get("weekly") else "",
-                                                   ev.calls(t, s["tools"]))]
+        return ev.at_check(t, s["tools"], ok, " or ".join(ok) + (" repeating weekly" if s.get("weekly") else ""), s.get("weekly", False))
     return check
 
 
@@ -330,7 +336,7 @@ def k_age_on(s):
 
 
 def k_no_call(s):
-    return lambda t: ["should not call %s" % s["tool"]] if ev.calls(t, s["tool"]) else []
+    return lambda t: ["should not call %s" % s["tool"]] if ev.attempts(t, s["tool"]) else []
 
 
 def k_max_calls(s):
@@ -370,7 +376,7 @@ def k_either(s):
 
 def k_home_call(s): return ev.home_call(s["action"], s.get("targets"), **s.get("values", {}))
 def k_home_never_on(s): return ev.home_never_on
-def k_home_asked(s): return ev.home_asked
+def k_home_asked(s): return ev.home_asked_about(s.get("name"))
 def k_home_switched(s): return ev.home_switched(s["name"])
 def k_home_not_switched(s): return ev.home_not_switched(s["name"])
 def k_home_all_off(s): return ev.home_all_off
@@ -382,9 +388,10 @@ KINDS = {name[2:]: f for name, f in globals().items() if name.startswith("k_") a
 
 
 def compile_check(s):
-    """One check; with "turn", it carries that turn's number for tests/agent_eval.py's score()."""
+    """One check; with "turn", it carries that turn's number (or "all": every turn) for tests/agent_eval.py's
+    score(). A whole-conversation check ("moved") looks at every turn itself."""
     f = KINDS[s["kind"]](s)
-    if "turn" not in s: return f
+    if "turn" not in s or getattr(f, "whole", False): return f
     def on_turn(t): return f(t)
     on_turn.turn = s["turn"]
     return on_turn
@@ -439,7 +446,9 @@ def main():
     cases = json.load(open(args.cases, encoding="utf-8"))
     chosen = selected(cases, args)
     if not args.rescore and not args.list and not os.environ.get("ZB_SEARCH_KEY"):
-        dropped = [c for c in chosen if "search" in c["tags"] and not c.get("env", {}).get("ZB_SEARCH_KEY", "x") is None]
+        # Cases whose search comes from the stand-in web (env ZB_EXP_WEB) need no key.
+        dropped = [c for c in chosen if "search" in c["tags"] and not c.get("env", {}).get("ZB_SEARCH_KEY", "x") is None
+                   and "ZB_EXP_WEB" not in c.get("env", {})]
         if dropped:
             print("no ZB_SEARCH_KEY: leaving out %d cases tagged search" % len(dropped))
             chosen = [c for c in chosen if c not in dropped]
@@ -494,13 +503,7 @@ def main():
         print("no cases selected")
         shutil.rmtree(home, ignore_errors=True)
         return
-    totals = sorted(t["total"] for r in results for t in r["turns"] if t["total"] is not None)
-    firsts = sorted(t["first"] for r in results for t in r["turns"] if t["first"] is not None)
-    med = lambda v: v[len(v) // 2] if v else float("nan")
-    p90 = lambda v: v[min(len(v) - 1, int(len(v) * 0.9))] if v else float("nan")
-    print("\n%d/%d passed (%.0f%%) | per request: total median %.1fs, mean %.1fs, 90th %.1fs, worst %.1fs | first words: median %.1fs, 90th %.1fs"
-          % (n - failures, n, 100.0 * (n - failures) / n, med(totals), sum(totals) / max(1, len(totals)), p90(totals),
-             totals[-1] if totals else 0, med(firsts), p90(firsts)))
+    print("\n%d/%d passed (%.0f%%) | %s" % (n - failures, n, 100.0 * (n - failures) / n, ev.timing_summary(results)))
     print("by tag: " + ", ".join("%s %d/%d" % (t, ok, k) for t, (ok, k) in sorted(per_tag.items(), key=lambda kv: (kv[1][0] / kv[1][1], kv[0]))))
     slow = sorted(results, key=lambda r: -r["seconds"])[:args.slowest]
     print("slowest: " + ", ".join("%s %.1fs" % (r["case"], r["seconds"]) for r in slow))

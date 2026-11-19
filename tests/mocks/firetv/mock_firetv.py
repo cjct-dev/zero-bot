@@ -45,7 +45,8 @@ Config keys for /reset and /set (all optional):
   notjson, wrongtypes, truncated, silent, close, reset, 500, 400, 404, 405, badutf8, hugeheader; the
   DIAL wake is "POST /apps/FireTVRemote", and a fault there means the TV did not take the wake),
   fault_after ({"POST /v1/FireTV": 2}: that many requests to the endpoint are answered normally
-  first), dial_late (seconds: the DIAL wake is taken at once but answered only this much later, as
+  first), fault_times ({"POST /v1/FireTV": 1}: the fault answers only that many requests, then the
+  endpoint works again; without it, every one after fault_after), dial_late (seconds: the DIAL wake is taken at once but answered only this much later, as
   the owner's TV did from deep standby), starting_s and starting_mode (see the starting state), late (seconds: every command -
   a key, a media action, an app launch - is carried out at once and answered only after this
   long, like a busy TV), slow_tls_every (N: every Nth TLS handshake on the API port waits
@@ -469,7 +470,8 @@ class Tv:
             self.counts[endpoint] = count = self.counts.get(endpoint, 0) + 1
             fault = self.cfg["faults"].get(endpoint)
             spared = int(self.cfg.get("fault_after", {}).get(endpoint, 0))
-        if fault and count > spared:
+            times = self.cfg.get("fault_times", {}).get(endpoint)
+        if fault and count > spared and (times is None or count <= spared + int(times)):
             self.fault(conn, fault, endpoint)    # the TV does not take the wake
             return
         with self.lock:
@@ -555,7 +557,8 @@ class Tv:
             self.counts[endpoint] = count = self.counts.get(endpoint, 0) + 1
             fault = self.cfg["faults"].get(endpoint)
             spared = int(self.cfg.get("fault_after", {}).get(endpoint, 0))
-        if fault and count > spared:
+            times = self.cfg.get("fault_times", {}).get(endpoint)
+        if fault and count > spared and (times is None or count <= spared + int(times)):
             self.fault(conn, fault, endpoint)
             return
         # Auth first, then routing (firehose section 2: a 403 names the missing header).

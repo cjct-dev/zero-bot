@@ -3837,6 +3837,12 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "list"
    },
@@ -3863,6 +3869,12 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
    {
     "kind": "timer_action",
     "action": "list"
@@ -3891,6 +3903,12 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "list"
    },
@@ -3918,6 +3936,12 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "list"
    }
@@ -3944,8 +3968,18 @@
   ],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "cancel"
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": []
    }
   ],
   "env": {},
@@ -3970,8 +4004,18 @@
   ],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "cancel"
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": []
    }
   ],
   "env": {},
@@ -3996,8 +4040,18 @@
   ],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "cancel"
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": []
    }
   ],
   "env": {},
@@ -4022,8 +4076,18 @@
   ],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "cancel"
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": []
    }
   ],
   "env": {},
@@ -4046,6 +4110,12 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "add_time"
    },
@@ -4054,6 +4124,12 @@
     "tool": "timer",
     "key": "minutes",
     "num": 5
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": [
+     900
+    ]
    }
   ],
   "env": {},
@@ -4075,6 +4151,12 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
    {
     "kind": "timer_becomes",
     "seconds": 720,
@@ -4100,6 +4182,12 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
    {
     "kind": "timer_becomes",
     "seconds": 900,
@@ -4127,9 +4215,27 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 1200,
+    "label": null,
+    "turn": 0
+   },
+   {
+    "kind": "timer",
+    "seconds": 300,
+    "label": null,
+    "turn": 1
+   },
+   {
     "kind": "cancelled",
     "want": "tea",
     "keep": "stud"
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": [
+     1200
+    ]
    }
   ],
   "env": {},
@@ -4153,9 +4259,27 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 2700,
+    "label": null,
+    "turn": 0
+   },
+   {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 1
+   },
+   {
     "kind": "cancelled",
     "want": "stud",
     "keep": "pasta"
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": [
+     600
+    ]
    }
   ],
   "env": {},
@@ -4178,6 +4302,18 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "timer",
+    "seconds": 300,
+    "label": null,
+    "turn": 0
+   },
+   {
+    "kind": "timer",
+    "seconds": 720,
+    "label": null,
+    "turn": 1
+   },
    {
     "kind": "timer_action",
     "action": "list"
@@ -5152,13 +5288,21 @@
   "must_not": [],
   "checks": [
    {
-    "kind": "at",
-    "day": "tomorrow",
-    "times": [
-     "10:00"
+    "kind": "moved",
+    "first": [
+     "tomorrow",
+     [
+      "09:00",
+      "21:00"
+     ]
     ],
-    "tools": "reminder_set|calendar_add",
-    "weekly": false
+    "then": [
+     "tomorrow",
+     [
+      "10:00"
+     ]
+    ],
+    "what": "reminder"
    }
   ],
   "env": {},
@@ -5179,7 +5323,18 @@
    "reminder_list"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "at",
+    "day": "tomorrow",
+    "times": [
+     "09:00"
+    ],
+    "tools": "reminder_set|calendar_add",
+    "weekly": false,
+    "turn": 0
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -6298,13 +6453,20 @@
   "must_not": [],
   "checks": [
    {
-    "kind": "at",
-    "day": "next:4",
-    "times": [
-     "20:30"
+    "kind": "moved",
+    "first": [
+     "next:4",
+     [
+      "20:00"
+     ]
     ],
-    "tools": "calendar_update|calendar_add",
-    "weekly": false
+    "then": [
+     "next:4",
+     [
+      "20:30"
+     ]
+    ],
+    "what": "dinner"
    }
   ],
   "env": {},
@@ -6327,13 +6489,20 @@
   "must_not": [],
   "checks": [
    {
-    "kind": "at",
-    "day": "next:3",
-    "times": [
-     "14:00"
+    "kind": "moved",
+    "first": [
+     "next:3",
+     [
+      "13:00"
+     ]
     ],
-    "tools": "calendar_update|calendar_add",
-    "weekly": false
+    "then": [
+     "next:3",
+     [
+      "14:00"
+     ]
+    ],
+    "what": "lunch"
    }
   ],
   "env": {},
@@ -6356,13 +6525,20 @@
   "must_not": [],
   "checks": [
    {
-    "kind": "at",
-    "day": "date:12-04",
-    "times": [
-     "10:00"
+    "kind": "moved",
+    "first": [
+     "date:12-03",
+     [
+      "10:00"
+     ]
     ],
-    "tools": "calendar_update|calendar_add",
-    "weekly": false
+    "then": [
+     "date:12-04",
+     [
+      "10:00"
+     ]
+    ],
+    "what": "dentist appointment"
    }
   ],
   "env": {},
@@ -6383,7 +6559,22 @@
    "calendar_delete"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "at",
+    "day": "next:2",
+    "times": [
+     "18:00"
+    ],
+    "tools": "calendar_add",
+    "weekly": false,
+    "turn": 0
+   },
+   {
+    "kind": "events_saved",
+    "n": 0
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -6401,6 +6592,16 @@
   "must": [],
   "must_not": [],
   "checks": [
+   {
+    "kind": "at",
+    "day": "next:2",
+    "times": [
+     "18:00"
+    ],
+    "tools": "calendar_add",
+    "weekly": false,
+    "turn": 0
+   },
    {
     "kind": "answer",
     "re": "yoga",
@@ -6427,6 +6628,12 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "yearly",
+    "md": "06-02",
+    "year": 1955,
+    "turn": 0
+   },
    {
     "kind": "answer",
     "re": "june",
@@ -6840,6 +7047,12 @@
   ],
   "checks": [
    {
+    "kind": "memory",
+    "has": "shellfish",
+    "lacks": [],
+    "turn": 0
+   },
+   {
     "kind": "answer",
     "re": "shellfish|allerg",
     "what": null
@@ -6865,6 +7078,12 @@
    "memory_save"
   ],
   "checks": [
+   {
+    "kind": "memory",
+    "has": "golf",
+    "lacks": [],
+    "turn": 0
+   },
    {
     "kind": "answer",
     "re": "golf",
@@ -6892,6 +7111,12 @@
   ],
   "checks": [
    {
+    "kind": "memory",
+    "has": "\\b42\\b|forty[- ]two",
+    "lacks": [],
+    "turn": 0
+   },
+   {
     "kind": "answer",
     "re": "\\b42\\b|forty[- ]two",
     "what": null
@@ -6918,6 +7143,12 @@
   ],
   "checks": [
    {
+    "kind": "memory",
+    "has": "vegetarian",
+    "lacks": [],
+    "turn": 0
+   },
+   {
     "kind": "answer",
     "re": "vegetarian|meat-free|meatless|veg",
     "what": null
@@ -6942,7 +7173,20 @@
    "memory_delete"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "memory",
+    "has": "vegetarian",
+    "lacks": [],
+    "turn": 0
+   },
+   {
+    "kind": "memory_lacks",
+    "re": [
+     "vegetarian"
+    ]
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -12691,6 +12935,11 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
+   {
     "kind": "home_call",
     "action": "on",
     "targets": [
@@ -12723,6 +12972,11 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
    {
     "kind": "home_call",
     "action": "on",
@@ -12757,6 +13011,11 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
+   {
     "kind": "home_call",
     "action": "on",
     "targets": [
@@ -12790,6 +13049,11 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
+   {
     "kind": "home_call",
     "action": "on",
     "targets": [
@@ -12821,8 +13085,14 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
+   {
     "kind": "home_not_switched",
-    "name": "Fan heater"
+    "name": "Fan heater",
+    "turn": "all"
    }
   ],
   "env": {},
@@ -12844,8 +13114,14 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
+   {
     "kind": "home_not_switched",
-    "name": "Fan heater"
+    "name": "Fan heater",
+    "turn": "all"
    }
   ],
   "env": {},
@@ -12867,8 +13143,14 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
+   {
     "kind": "home_not_switched",
-    "name": "Fan heater"
+    "name": "Fan heater",
+    "turn": "all"
    }
   ],
   "env": {},
@@ -12890,8 +13172,14 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "home_asked",
+    "name": "heater",
+    "turn": 0
+   },
+   {
     "kind": "home_not_switched",
-    "name": "Fan heater"
+    "name": "Fan heater",
+    "turn": "all"
    }
   ],
   "env": {},
@@ -12915,10 +13203,14 @@
   "checks": [
    {
     "kind": "home_not_switched",
-    "name": "Bedroom lamp"
+    "name": "Bedroom lamp",
+    "turn": "all"
    }
   ],
-  "env": {},
+  "env": {
+   "ZB_EXP_WEB": "@web/default",
+   "ZB_SEARCH_KEY": "stand-in"
+  },
   "home": "eval",
   "steer": null
  },
@@ -14271,8 +14563,18 @@
   ],
   "checks": [
    {
+    "kind": "timer",
+    "seconds": 600,
+    "label": null,
+    "turn": 0
+   },
+   {
     "kind": "timer_action",
     "action": "cancel"
+   },
+   {
+    "kind": "timers_saved",
+    "lengths": []
    }
   ],
   "env": {},

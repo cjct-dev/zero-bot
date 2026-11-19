@@ -313,6 +313,70 @@ def timeout_counted_once():
     check("timeouts: the summary counts 1 of 3 turns completed and one timeout", "completed 1/3" in s and "1 timeout" in s, s)
 
 
+# ------------------------------------------------------------------ the review's new conversations: their checks hold
+def _timers(**kw):
+    return state(timers=[(name.capitalize(), secs) for name, secs in kw.items()])
+
+
+@test
+def two_timers_conversation():
+    c = case("review_two_timers")
+    both = [("timer", {"action": "start", "minutes": 12, "label": "tea"}, started("Tea", 12)),
+            ("timer", {"action": "start", "minutes": 20, "label": "toast"}, started("Toast", 20))]
+    add = ("timer", {"action": "add_time", "minutes": 3, "label": "tea"}, json.dumps({"extended": {"label": "Tea", "added": "3 minutes"}}))
+    cancel = ("timer", {"action": "cancel", "label": "toast"}, json.dumps({"cancelled": ["Toast"], "still_running": ["Tea"]}))
+    tea_left = state(timers=[("Tea", 900)])
+    tea_left["reminders"][0]["due"] = EPOCH + 14 * 60 + 30
+    turns = [{"user": "set a tea timer for twelve minutes and a toast timer for twenty", "calls": both,
+              "answer": "Tea is set for 12 minutes and toast for 20.", "state": _timers(tea=720, toast=1200)},
+             {"user": "add three minutes to one of them", "answer": "Which one, the tea or the toast?", "state": _timers(tea=720, toast=1200)},
+             {"user": "the shorter one", "calls": [add], "answer": "Added three minutes to the tea timer.", "state": _timers(tea=900, toast=1200)},
+             {"user": "cancel the other one", "calls": [cancel], "answer": "The toast timer is cancelled.", "state": _timers(tea=900)},
+             {"user": "whats left", "calls": [("timer", {"action": "list"}, json.dumps({"timers": [{"label": "Tea", "time_left": "14 minutes 30 seconds"}]}))],
+              "answer": "Your tea timer has 14 minutes left.", "state": tea_left}]
+    check("review: two timers, asked, tea extended, toast cancelled, passes", passes(c, transcript(*turns)) == [], passes(c, transcript(*turns)))
+    rushed = [dict(t) for t in turns]
+    rushed[1] = {"user": "add three minutes to one of them", "calls": [add], "answer": "I added three minutes to the tea timer.",
+                 "state": _timers(tea=900, toast=1200)}
+    check("review: extending a timer without asking which fails", passes(c, transcript(*rushed)) != [])
+    wrong = [dict(t) for t in turns]
+    wrong[4] = dict(turns[4], answer="Your tea timer has 9 minutes left.")
+    check("review: the wrong time left fails", passes(c, transcript(*wrong)) != [])
+
+
+@test
+def locker_conversation():
+    c = case("review_locker")
+    save = lambda text: ("memory_save", {"text": text}, json.dumps({"saved": {"id": 1, "text": text}}))
+    turns = [{"user": "remember my locker is forty-two", "calls": [save("Locker number is 42")], "answer": "I'll remember that.",
+              "state": state(memory=["Locker number is 42"])},
+             {"user": "correction, its twenty-four", "calls": [save("Locker number is 24")], "answer": "Updated: locker 24.",
+              "state": state(memory=["Locker number is 24"])},
+             {"new": True},
+             {"user": "which locker is mine", "answer": "Your locker is number 24.", "state": state(memory=["Locker number is 24"])},
+             {"user": "forget my locker number", "calls": [("memory_delete", {"id": 1}, json.dumps({"deleted": 1}))],
+              "answer": "Done, it's forgotten.", "state": state()},
+             {"new": True},
+             {"user": "which locker is mine", "answer": "I don't know your locker number.", "state": state()}]
+    check("review: locker corrected, recalled, forgotten, passes", passes(c, transcript(*turns)) == [], passes(c, transcript(*turns)))
+    stale = [dict(t) for t in turns]
+    stale[1] = dict(turns[1], state=state(memory=["Locker number is 42", "Locker number is 24"]))
+    check("review: a stale 42 left beside the 24 fails, though every answer is right", passes(c, transcript(*stale)) != [])
+
+
+@test
+def forecast_threshold():
+    rem = ("reminder_set", {"text": "Take a coat", "at": "%s 08:00" % (datetime.date.today() + datetime.timedelta(days=1))},
+           json.dumps({"saved": {"id": 50, "text": "Take a coat"}}))
+    weather = ("weather", {"location": "York", "days": 2}, json.dumps({"forecast": ["today: rain chance 85%", "tomorrow: rain chance 59%"]}))
+    tomorrow8 = at(datetime.date.today() + datetime.timedelta(days=1), "08:00")
+    bad = transcript({"user": "if tomorrows rain chance...", "calls": [weather, rem], "answer": "Done, I'll remind you at 8 to take a coat.",
+                      "state": state(reminders=[("Take a coat", tomorrow8)])},
+                     {"user": "what did you set", "answer": "A reminder at 8 tomorrow to take a coat.", "state": state(reminders=[("Take a coat", tomorrow8)])})
+    check("review: a reminder set at 59% fails", passes(case("review_rain_59"), bad) != [])
+    check("review: the same reminder at 60% passes", passes(case("review_rain_60"), bad) == [], passes(case("review_rain_60"), bad))
+
+
 def main():
     print("%d checks, %d failed" % (checks, failed))
     sys.exit(1 if failed else 0)
