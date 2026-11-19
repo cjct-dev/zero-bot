@@ -636,7 +636,11 @@ key, real audio), say so plainly rather than implying it was.
   (`FireTvDriver::apply` and `press`, `on_lately`), for every part of the change. Its "off already"
   first said "did not answer", so the app searched the network for 2.5 s for a TV in standby; a
   refused port is the device there with the port closed (`Reply::refused`, errno ECONNREFUSED),
-  and only an attempt that timed out reads as "did not answer".
+  and only an attempt that timed out reads as "did not answer". In deep standby the owner's TV lets
+  the port time out, so the search still runs (a TV that moved and is on can still be switched off);
+  for an off change a device found nowhere "seems to be off already" (`after_lookup`), not "switched
+  off at the wall, or out of Wi-Fi range", which the model passed on as a fault (ZB-075). A driver's
+  error is joined to more words without its closing full stop (`clause`).
 - The keyboard's three lights (caps lock, fn, symbols) have no kernel interface: the keypad takes no
   EV_LED events and they are not LED-class devices. The M5Stack keypad driver sets them by writing a
   mode (0 off, 1 blink, 2 fast, 3 on) into registers 0xBD to 0xBF of the M5IOE1 expander, the
