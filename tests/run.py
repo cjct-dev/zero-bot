@@ -1275,8 +1275,11 @@ def self_test():
         o = parse(["--no-search", "--tags", "home", "--groups", "live-suite"])
         free = search_free_suite(o)
         tagged = {c["name"] for c in cases if "home" in c["tags"]}
-        check("no-search with --tags: the tags still choose", free and "home-055" in free[1] and set(free[1]) <= tagged and
-              "home-056" in free[2], free and free[1][:5])
+        # home-055 and home-056 both take their search from the stand-in web, so both are kept; nothing left out
+        # uses it.
+        by_name = {c["name"]: c for c in cases}
+        check("no-search with --tags: the tags still choose", free and "home-055" in free[1] and "home-056" in free[1]
+              and set(free[1]) <= tagged and not any(stand_in_web(by_name[n]) for n in free[2]), free and free[2][:5])
 
     n = live_count("live-suite", parse(["--only", "timer-001,calc-001", "--no-search"]))
     check("a live subset's size", n in (None, 2), n)
