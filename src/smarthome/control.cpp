@@ -1140,13 +1140,20 @@ std::string execute(const Command &cmd, bool dry_run) {
     json now = change_json(base);
     if (base.on && now.size() == 1) now = *base.on ? "on" : "off";
     if (base.transport) { now.erase("transport"); now["playback"] = *base.transport; }
+    // After a TV did not answer, the reply offered the infrared remote every time, and a yes sent the codes
+    // of the one brand in settings, which may be another TV's (ZB-072). Said here, where it applies; in
+    // the tools' descriptions it was not heeded, and it drew TV key presses to the infrared remote.
+    const auto tell = [](const Step &s) {
+        return std::string(". Tell the user") +
+               (s.item->thing.type == "tv" ? ", without offering the infrared remote instead (it may send another TV's codes)" : "");
+    };
     if (r.scope == Scope::Thing) {
-        if (!changed) return fail("could not change " + in_quotes(r.label) + ": " + steps[0].err + ". Tell the user");
+        if (!changed) return fail("could not change " + in_quotes(r.label) + ": " + steps[0].err + tell(steps[0]));
         return dump({{"target", r.label}, {"now", now}});
     }
     if (!changed)
         return fail("none of " + in_quotes(r.label) + " could be changed: " + in_quotes(first_failure->item->label) + ": " +
-                    first_failure->err + ". Tell the user");
+                    first_failure->err + tell(*first_failure));
     json out = {{"target", r.label}, {"changed", changed}, {"now", now}};
     if (!failed.empty()) out["failed"] = failed;
     return dump(out);

@@ -35,6 +35,9 @@
 
 using home::json;
 
+// What a TV's failure ends with (control.cpp, ZB-072).
+const char kNoInfrared[] = ", without offering the infrared remote instead (it may send another TV's codes)";
+
 namespace {
 
 int g_checks = 0, g_failed = 0;
@@ -954,11 +957,12 @@ void test_commands() {
     // A device that does not answer: one thing is an error, a group reports what failed.
     g_fake->broken.insert("fake:tv");
     r = run({{"action", "on"}, {"target", "Living room TV"}});
-    CHECK_MSG(r == "ERROR: could not change \"Living room TV\": it did not answer. Tell the user", r);
+    // A TV that does not answer: the infrared remote is not to be offered (ZB-072); for other things it is not mentioned.
+    CHECK_MSG(r == "ERROR: could not change \"Living room TV\": it did not answer. Tell the user" + std::string(kNoInfrared), r);
     write_home(lights_home());
     g_fake->broken = {"fake:bridge"};
     r = run({{"action", "off"}, {"target", "Bedroom"}});
-    CHECK_MSG(starts(r, "ERROR: none of \"Bedroom\" could be changed: \""), r);
+    CHECK_MSG(starts(r, "ERROR: none of \"Bedroom\" could be changed: \"") && !has(r, "infrared"), r);
     g_fake->broken.clear();
     // Dry run: nothing reaches a device, the answer is the same.
     const size_t n = g_fake->applied();
@@ -2754,7 +2758,7 @@ void test_moved_devices() {
     g_scan_answer = {};
     r = run({{"action", "on"}, {"target", "Bedroom TV"}});
     CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": it did not answer; it was not found at another address on the network "
-                   "either (it may be switched off at the wall, or out of Wi-Fi range). Tell the user",
+                   "either (it may be switched off at the wall, or out of Wi-Fi range). Tell the user" + std::string(kNoInfrared),
               r);
     CHECK(applies() == 1 && saved("fake:tv")->ip == "127.0.0.1");
     // Still announcing itself where it was: not switched off, so the error does not say it is.
@@ -2771,7 +2775,7 @@ void test_moved_devices() {
     g_fake->refusing["fake:tv"] = "the TV answered with error code -1501";
     g_scan_answer = {found_at("fake:tv", "127.0.0.1")};
     r = run({{"action", "off"}, {"target", "Bedroom TV"}});
-    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": the TV answered with error code -1501. Tell the user", r);
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": the TV answered with error code -1501. Tell the user" + std::string(kNoInfrared), r);
     CHECK(applies() == 1);
     g_fake->refusing.clear();
 
@@ -2801,7 +2805,7 @@ void test_moved_devices() {
     home_with_tv();
     g_fake->broken = {"fake:tv"};
     r = run({{"action", "on"}, {"target", "Bedroom TV"}});
-    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": it did not answer. Tell the user", r);
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": it did not answer. Tell the user" + std::string(kNoInfrared), r);
     g_fake->broken.clear();
 }
 

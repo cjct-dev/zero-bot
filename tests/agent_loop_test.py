@@ -125,19 +125,22 @@ HOME = _home({"id": "1", "name": "Fan heater", "type": "plug", "caps": 1, "room"
 
 
 def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, photo=False, timeout=60, radio=None, search_key=None,
-        inspect=None):
+        inspect=None, trace=False, settings=None):
     """Runs the app once against `script`: --chat with each of `said`, or --ask `ask` (with `extra`
     arguments such as --steer). Returns a Run. `inspect(state_folder)` is called before the
-    temporary home is removed, to look at what the run left there."""
+    temporary home is removed, to look at what the run left there. `trace`: the experiments' trace
+    (ZB_EXP_TRACE) is recorded, in Run.trace (events) and Run.trace_text. `settings` are added to
+    the app's settings file."""
     state = tempfile.mkdtemp(prefix="zb-loop-")
     model = None
     try:
         os.makedirs(state + "/config/zero-bot")
         os.makedirs(state + "/data/zero-bot")
-        settings = {"llm_model": "scripted", "speak_replies": False, "home_city": "London"}
+        app_settings = {"llm_model": "scripted", "speak_replies": False, "home_city": "London"}
         if search_key:
-            settings["search_key"] = search_key
-        json.dump(settings, open(state + "/config/zero-bot/settings.json", "w"))
+            app_settings["search_key"] = search_key
+        app_settings.update(settings or {})
+        json.dump(app_settings, open(state + "/config/zero-bot/settings.json", "w"))
         if radio:
             json.dump({"stations": radio}, open(state + "/config/zero-bot/radio.json", "w"))
         json.dump(script, open(state + "/script.json", "w"))
@@ -153,6 +156,10 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
         for v in ("ZB_SEARCH_KEY", "ZB_FAKE_CAMERA", "ZB_TEST_NETWORK", "ZB_DATE_ORDER", "http_proxy", "HTTP_PROXY",
                   "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
             e.pop(v, None)
+        for v in [k for k in e if k.startswith("ZB_EXP_")]:   # experiments' switches: only as a scenario sets them
+            e.pop(v)
+        if trace:
+            e["ZB_EXP_TRACE"] = state + "/trace.jsonl"
         if home:
             json.dump(home, open(state + "/data/zero-bot/smarthome.json", "w"))
             e["ZB_TEST_NETWORK"] = "1"
@@ -169,6 +176,8 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
             out = (ex.stdout.decode() if isinstance(ex.stdout, bytes) else ex.stdout or "") + "\n[TIMED OUT]\n"
         requests = [json.loads(l) for l in open(log)] if os.path.exists(log) else []
         r = Run(out, requests)
+        r.trace_text = open(state + "/trace.jsonl").read() if os.path.exists(state + "/trace.jsonl") else ""
+        r.trace = [json.loads(l) for l in r.trace_text.splitlines() if l.strip()]
         if VERBOSE: print(repr(r))
         if inspect: inspect(state)
         return r
@@ -724,6 +733,466 @@ def home_after_photo():
     res = r.results()
     check("smart home after a photo: a change the photo asked for waits for the user's word", len(res) >= 2 and res[0].startswith(sign)
           and res[1].startswith("CONFIRM") and "text from outside" in res[1] and not any('"now":"on"' in x for x in res), r)
+
+
+# ------------------------------------------------------------------ the experiments' trace (ZB_EXP_*)
+def events(r, kind):
+    return [e for e in r.trace if e.get("ev") == kind]
+
+
+@scenario
+def trace_off_sends_nothing_new():
+    r = run({"default": {"text": "Lisbon is the capital of Portugal."}}, ask="what is the capital of portugal", fast=True)
+    n = "experiments off"
+    check(n + ": no request asks for token counts", r.requests and not any("stream_options" in b for b in r.bodies()), r.bodies()[:1])
+    check(n + ": the system prompt starts as it always has", r.requests and text_of(r.messages(1)[0]).startswith("You are "), "")
+    check(n + ": no speech is synthesised for a probe", not any(q["rule"] == "speech" for q in r.requests), r)
+
+
+@scenario
+def trace_held_draft():
+    script = {"rules": [{"when": {"said": SECOND_LOOK}, "reply": {"text": "OK"}}],
+              "default": {"text": "Lisbon is the capital of Portugal."}, "cached_tokens": 1234}
+    r = run(script, ask="what is the capital of portugal", fast=True, trace=True)
+    n = "trace, a held draft and its second look"
+    check(n + ": the answer is unchanged", r.answer == "Lisbon is the capital of Portugal." and len(r.requests) == 2, r)
+    check(n + ": every call asks for token counts", all(b.get("stream_options") == {"include_usage": True} for b in r.bodies()), "")
+    start, cs, reqs = events(r, "start"), events(r, "call"), events(r, "request")
+    check(n + ": one start line, first", len(start) == 1 and r.trace[0]["ev"] == "start", r.trace_text)
+    check(n + ": two calls, decide then second_look, numbered in the request",
+          [(c["req"], c["call"], c["purpose"], c["role"]) for c in cs] == [(1, 1, "decide", "main"), (1, 2, "second_look", "main")], cs)
+    if len(cs) == 2:
+        c = cs[0]
+        check(n + ": the service's counts are kept", c["usage"].get("prompt_tokens", 0) > 1000 and c["usage"].get("completion_tokens", 0) > 0
+              and c["usage"].get("prompt_tokens_details", {}).get("cached_tokens") == 1234, c["usage"])
+        sent = len(json.dumps(r.requests[0]["body"], ensure_ascii=False, separators=(",", ":")).encode())
+        check(n + ": the body's size as sent", abs(c["body_bytes"] - sent) < sent * 0.05, (c["body_bytes"], sent))
+        check(n + ": times in order", 0 <= c["t_send"] and 0 <= c["ttfb_ms"] <= c["first_text_ms"] <= c["done_ms"] and
+              c["first_call_ms"] == -1 and cs[1]["t_send"] >= c["t_send"] + c["done_ms"] - 5, cs)
+        check(n + ": fast mode, tools offered, outcome text", c["fast"] and c["tools"] > 10 and c["tool_choice"] == "auto" and
+              c["outcome"] == "text" and c["attempts"] == 1 and c["status"] == 200, c)
+    check(n + ": one request line", len(reqs) == 1 and reqs[0]["req"] == 1, reqs)
+    if reqs:
+        q = reqs[0]
+        check(n + ": the second look said OK; no guard, no tool", q["second_look"] == "ok" and q["guards"] == [] and q["tools"] == []
+              and q["calls"] == 2, q)
+        check(n + ": the first sentence comes after the second look, before the end",
+              len(cs) == 2 and cs[1]["t_send"] + cs[1]["done_ms"] - 5 <= q["first_sentence_ms"] <= q["done_ms"] and q["absorb_ms"] >= 0, q)
+
+
+@scenario
+def trace_tools_and_guards():
+    script = {"rules": [{"when": {"result": "{"}, "reply": {"text": "Christmas is in 37 days."}},
+                        {"when": {"said": "timer"}, "reply": calls(TIMER_12)},
+                        {"when": {"said": "christmas"}, "reply": calls(XMAS)},
+                        {"when": {"said": CORRECTION}, "reply": {"text": "I can't do that, sorry."}},
+                        {"when": {"said": "dentist"}, "reply": {"text": "Done, I've added it to your calendar."}}]}
+    r = run(script, said=["set a timer for 12 minutes", "how long until christmas", "add the dentist on friday"], trace=True)
+    n = "trace, tools and guards"
+    reqs, cs = events(r, "request"), events(r, "call")
+    check(n + ": three requests", [q["req"] for q in reqs] == [1, 2, 3], reqs)
+    if len(reqs) != 3: return
+    t = reqs[0]["tools"]
+    check(n + ": a confirmed tool, one call", len(t) == 1 and t[0]["name"] == "timer" and t[0]["outcome"] == "ok" and t[0]["ms"] >= 0
+          and reqs[0]["calls"] == 1 and reqs[0]["first_sentence_ms"] >= 0, reqs[0])
+    first = [c for c in cs if c["req"] == 1]
+    check(n + ": the call's outcome is the tool's name", [c["outcome"] for c in first] == [["timer"]] and first[0]["first_call_ms"] >= 0, first)
+    check(n + ": a tool, then the answer", [c["purpose"] for c in cs if c["req"] == 2] == ["decide", "after_tool"] and
+          [x["name"] for x in reqs[1]["tools"]] == ["date_info"], [c for c in cs if c["req"] == 2])
+    check(n + ": the claim guard, then a corrected call", [g["guard"] for g in reqs[2]["guards"]] == ["claims_action"] and
+          [c["purpose"] for c in cs if c["req"] == 3] == ["decide", "correction"] and reqs[2]["second_look"] is None, reqs[2])
+
+
+@scenario
+def trace_holds_no_words():
+    script = {"rules": [{"when": {"said": "zebracorn"}, "reply": calls(("timer", {"action": "start", "minutes": 3, "label": "marmotlime",
+                                                                                  "say": "Your marmotlime timer is set."}))},
+                        {"when": {"said": "quokka"}, "reply": {"text": "A quokkafish is not a fish."}}]}
+    r = run(script, said=["start a zebracorn timer for 3 minutes", "what is a quokka"], trace=True, fast=True)
+    n = "trace holds no words"
+    check(n + ": something was traced", len(events(r, "call")) >= 2 and len(events(r, "request")) == 2, r.trace_text)
+    leaked = [w for w in ("zebracorn", "marmotlime", "quokka", "Your", "fish", "test-key", "Bearer", "scripted", "127.0.0.1", "London")
+              if w.lower() in r.trace_text.lower()]
+    check(n + ": not the user's, the model's or a tool's words, the key, the model's id or the address", not leaked, leaked)
+
+
+@scenario
+def trace_slow_and_refused():
+    script = {"rules": [{"when": {"usage": True}, "reply": {"status": 400, "body": '{"error": {"message": "unknown field stream_options"}}'}},
+                        {"when": {"said": "slow"}, "reply": {"text": "Here it is.", "delay_ms": 400}}],
+              "default": {"text": "Fine."}}
+    r = run(script, said=["a slow one", "and another"], trace=True)
+    n = "trace, a slow answer and a service that refuses the counts"
+    cs = events(r, "call")
+    check(n + ": the answers still come", [t["answer"] for t in r.turns] == ["Here it is.", "Fine."], r)
+    check(n + ": asked once, then never again", [("stream_options" in b) for b in r.bodies()] == [True, False, False], [r.requests])
+    if len(cs) == 2:
+        check(n + ": the refused call counts two sends and no usage", cs[0]["attempts"] == 2 and not cs[0]["usage_asked"] and
+              cs[0]["usage"] is None and cs[1]["attempts"] == 1, cs)
+        check(n + ": the wait shows in the time to the first byte", cs[0]["ttfb_ms"] >= 390 and cs[1]["ttfb_ms"] < 390, cs)
+
+
+@scenario
+def trace_refusal_was_the_reasoning_field():
+    # A 400 for "reasoning_effort", not for the token counts: the counts are asked for again and kept.
+    script = {"rules": [{"when": {"effort": True}, "reply": {"status": 400, "body": '{"error": {"message": "unknown field reasoning_effort"}}'}},
+                        {"when": {"said": "CHECK BEFORE SPEAKING"}, "reply": {"text": "OK"}}],
+              "default": {"text": "Lisbon."}}
+    r = run(script, said=["capital of portugal", "and of spain"], fast=True, trace=True)
+    n = "trace, a service that refuses the reasoning field"
+    sent = [("reasoning_effort" in b, "stream_options" in b) for b in r.bodies()]
+    check(n + ": counts dropped once, asked again with the field dropped, then always asked",
+          sent[:3] == [(True, True), (True, False), (False, True)] and all(x == (False, True) for x in sent[3:]), sent)
+    cs = events(r, "call")
+    check(n + ": the counts are reported once the call goes through", bool(cs) and cs[0]["attempts"] == 3 and
+          cs[0]["usage"].get("prompt_tokens", 0) > 0 and all(c["usage_asked"] for c in cs), cs[:1])
+    check(n + ": the answers still come", [t["answer"] for t in r.turns] == ["Lisbon.", "Lisbon."], r)
+
+
+@scenario
+def trace_cache_bust_and_tts_probe():
+    script = {"rules": [{"when": {"said": "hello"}, "reply": {"chunks": ["Hello there. ", "How can I help?"]}}], "default": {"text": "Bye."}}
+    r = run(script, said=["hello", "bye"], env={"ZB_EXP_CACHE_BUST": "1", "ZB_EXP_TTS_PROBE": "1"}, trace=True,
+            settings={"tts_model": "scripted-voice"})
+    n = "cache bust and speech probe"
+    prompts = [text_of(r.messages(i + 1)[0]) for i in range(len(r.requests)) if r.requests[i]["rule"] != "speech"]
+    check(n + ": one random line on top of the system prompt, the same in every call of a run",
+          len(prompts) == 2 and prompts[0].startswith("(Session ") and len(set(prompts)) == 1, [p[:40] for p in prompts])
+    r2 = run(script, ask="hello", env={"ZB_EXP_CACHE_BUST": "1"})
+    other = text_of(r2.messages(1)[0]) if r2.requests else ""
+    check(n + ": another run gets another line", other.startswith("(Session ") and prompts and other.split("\n")[0] != prompts[0].split("\n")[0],
+          other[:40])
+    # (the first piece handed to speech, however much of the answer the chunker put in it)
+    said = [q["body"].get("input", "").strip() for q in r.requests if q["rule"] == "speech" and q["body"].get("response_format") == "pcm"]
+    check(n + ": each request's first piece of speech is synthesised once, nothing else",
+          len(said) == 2 and said[0].startswith("Hello there.") and said[1] == "Bye.", said)
+    tts = events(r, "tts")
+    check(n + ": the probe's time is traced per request", sorted(e["req"] for e in tts) == [1, 2] and all(e["ok"] and e["tts_first_ms"] >= 0
+          for e in tts), tts)
+    check(n + ": the start line says which switches were on", events(r, "start") and events(r, "start")[0]["cache_bust"] and
+          events(r, "start")[0]["tts_probe"], events(r, "start"))
+
+
+# ------------------------------------------------------------------ E2: the tool text (ZB_EXP_TOOLS)
+def _shape(tools):
+    """What a variant may never change: names, parameters, their types and enums, required fields."""
+    out = []
+    for t in tools:
+        f = t["function"]
+        p = f.get("parameters", {})
+        out.append((f["name"], sorted((k, v.get("type"), json.dumps(v.get("enum"))) for k, v in p.get("properties", {}).items()),
+                    p.get("required")))
+    return out
+
+
+def _variant_run(variant):
+    env = {"ZB_EXP_TOOLS": variant} if variant else {}
+    r = run({"default": {"text": "Lisbon."}}, ask="what is the capital of portugal", home=HOME, radio=STATIONS,
+            search_key="test-search-key", env=env)
+    body = r.requests[0]["body"] if r.requests else {}
+    return body.get("tools", []), text_of(body.get("messages", [{}])[0])
+
+
+SAY_SHORT = "Spoken once this has worked; see Using tools."
+
+
+@scenario
+def exp_tools_variants():
+    n = "E2 tool text"
+    plain, plain_prompt = _variant_run(None)
+    full, full_prompt = _variant_run("full")
+    say1, say1_prompt = _variant_run("say1")
+    lean, lean_prompt = _variant_run("lean")
+    check(n + ": full is what the app sends without the switch", full == plain and full_prompt == plain_prompt and len(plain) > 20,
+          len(plain))
+    check(n + ": say1 and lean keep every name, parameter, type, enum and required field",
+          _shape(say1) == _shape(plain) and _shape(lean) == _shape(plain), "")
+    by = lambda tools: {t["function"]["name"]: t["function"] for t in tools}
+    P, S, L = by(plain), by(say1), by(lean)
+    says = {k: f["parameters"]["properties"]["say"]["description"] for k, f in S.items() if "say" in f["parameters"].get("properties", {})}
+    check(n + ": say1: every confirmable tool, smart_home and radio included, has the one short line",
+          {"timer", "calendar_add", "smart_home", "radio", "music", "device", "breathe"} <= set(says) and
+          all(d.startswith(SAY_SHORT) for d in says.values()), says)
+    check(n + ": say1: the limits some tools add are kept", "start, cancel and add_time" in says.get("timer", "") and
+          "stop and next" in says.get("music", "") and "Not for status" in says.get("device", "") and
+          "Not for status" in says.get("smart_home", ""), says)
+    def without_say(f):
+        g = json.loads(json.dumps(f))
+        g.get("parameters", {}).get("properties", {}).pop("say", None)
+        return g
+    check(n + ": say1 changes nothing but the say text", all(without_say(S[k]) == without_say(P[k]) for k in P), "")
+    check(n + ": say1: the system prompt says once what a confirmation holds",
+          "with the detail that matters (\"Your timer is set for 12 minutes.\")" in say1_prompt and "the detail that matters" not in plain_prompt
+          and lean_prompt == say1_prompt, "")
+    size = lambda tools: len(json.dumps(tools, ensure_ascii=False, separators=(",", ":")).encode())
+    check(n + ": each variant is smaller: full %d, say1 %d, lean %d bytes" % (size(plain), size(say1), size(lean)),
+          size(plain) - size(say1) > 1000 and size(say1) - size(lean) > 1500, "")
+    fixed = [k for k in L if k not in ("smart_home", "radio")]
+    text = lambda f: len(f["description"]) + sum(len(v.get("description", "")) for v in f["parameters"].get("properties", {}).values())
+    full_text, lean_text = sum(text(P[k]) for k in fixed), sum(text(L[k]) for k in fixed)
+    check(n + ": lean: no fixed tool's text grows, and all of it is at least a quarter shorter (%d to %d characters); "
+          "smart_home and radio keep theirs" % (full_text, lean_text),
+          all(text(L[k]) <= text(P[k]) for k in fixed) and lean_text <= full_text * 0.75 and
+          L["smart_home"]["description"] == P["smart_home"]["description"] and L["radio"]["description"] == P["radio"]["description"],
+          [k for k in fixed if text(L[k]) > text(P[k])])
+    rules = {"calendar_add": ["only way", "not in memory_save", "ask for a missing one"],
+             "reminder_set": ["only way", "is a timer instead", "calendar_add"],
+             "timer": ["only way", "counted down from now"], "memory_save": ["only way"],
+             "tv_remote": ["smart_home", "no fallback"], "date_info": ["never count days"],
+             "web_search": ["Not for settled general knowledge"], "world_time": ["Not for the user's own time"],
+             "calendar_update": ["never add a second event"], "breathe": ["Start it at once"]}
+    missing = [(k, w) for k, ws in rules.items() for w in ws if w not in L.get(k, {}).get("description", "")]
+    check(n + ": lean keeps the boundary rules", not missing, missing)
+    out = subprocess.run([APP, "--schema"], env=dict(os.environ, ZB_EXP_TOOLS="sayone"), capture_output=True, text=True, timeout=30)
+    check(n + ": an unknown variant stops the run", out.returncode == 2 and "not a variant" in out.stderr, (out.returncode, out.stderr))
+
+
+# ------------------------------------------------------------------ E3: the parallel check (ZB_EXP_DECIDE)
+CHECK_NOTE = "Say only whether answering it needs one of your tools"
+PARALLEL = {"ZB_EXP_DECIDE": "parallel"}
+
+
+def _check_requests(r):
+    return [q for q in r.requests if q["rule"] != "speech" and CHECK_NOTE in text_of(q["body"]["messages"][-1])]
+
+
+def _pcheck(r):
+    reqs = events(r, "request")
+    return reqs[0].get("parallel_check") if reqs else None
+
+
+@scenario
+def exp_check_none_streams():
+    # The check clears the draft before the draft arrives: spoken as it streams, no second look.
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": {"text": "NONE"}},
+                        {"when": {"said": SECOND_LOOK}, "reply": {"text": "OK"}}],
+              "default": {"chunks": ["Lisbon is the capital ", "of Portugal."], "delay_ms": 300}}
+    r = run(script, ask="what is the capital of portugal", fast=True, env=PARALLEL, trace=True)
+    n = "E3 check says none, early"
+    check(n + ": the draft is the answer", r.answer == "Lisbon is the capital of Portugal.", r)
+    check(n + ": two calls (draft and check), no second look", len(r.requests) == 2 and not any(
+        SECOND_LOOK in json.dumps(q["body"]) for q in r.requests), r)
+    cq = _check_requests(r)
+    main = [q for q in r.requests if q not in cq]
+    if len(cq) == 1 and len(main) == 1:
+        c, m = cq[0]["body"], main[0]["body"]
+        check(n + ": the check sends the same prompt, tools and conversation, with its note in place of the decide note",
+              c["messages"][0] == m["messages"][0] and c["tools"] == m["tools"] and c["messages"][:-1] == m["messages"][:-1] and
+              DECIDE_NOTE in text_of(m["messages"][-1]) and DECIDE_NOTE not in text_of(c["messages"][-1]) and
+              text_of(c["messages"][-1]).split("\n\n")[0] == text_of(m["messages"][-1]).split("\n\n")[0], "")
+        check(n + ": the check asks for a word", c["max_tokens"] <= 16 and c.get("reasoning_effort") == "none" and c["model"] == m["model"],
+              (c["max_tokens"], c.get("reasoning_effort")))
+    else:
+        check(n + ": one check request and one deciding request", False, r)
+    pc = _pcheck(r)
+    check(n + ": traced: none, used while streaming", pc and pc["verdict"] == "none" and pc["used"] == "stream" and pc["ms"] >= 0, pc)
+    cs = events(r, "call")
+    check(n + ": the check's call is traced with its purpose", sorted(c["purpose"] for c in cs) == ["decide", "parallel_check"], cs)
+
+
+@scenario
+def exp_check_none_after():
+    # The draft is complete before the check answers: it waits for the check, then stands.
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": {"text": "NONE.", "delay_ms": 300}},
+                        {"when": {"said": SECOND_LOOK}, "reply": {"text": "OK"}}],
+              "default": {"text": "Lisbon is the capital of Portugal."}}
+    r = run(script, said=["what is the capital of portugal", "thanks"], fast=True, env=PARALLEL, trace=True)
+    n = "E3 check says none, after the draft"
+    check(n + ": both answers spoken as drafted", [t["answer"] for t in r.turns] == ["Lisbon is the capital of Portugal."] * 2, r)
+    check(n + ": no second look in either turn", not any(SECOND_LOOK in json.dumps(q["body"]) for q in r.requests) and
+          len(r.requests) == 4, r)
+    reqs = events(r, "request")
+    check(n + ": traced: none, used after the draft", [q.get("parallel_check", {}).get("used") for q in reqs] == ["after", "after"], reqs)
+    if len(r.requests) == 4:
+        second = [q for q in r.requests if q not in _check_requests(r)][-1]["body"]["messages"]
+        check(n + ": the next turn sees the draft as the reply, and no check note", second[-2] == {"role": "assistant",
+              "content": "Lisbon is the capital of Portugal."} and CHECK_NOTE not in json.dumps(second), second[-3:])
+
+
+@scenario
+def exp_check_tool_runs_second_look():
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": {"text": "TOOL"}},
+                        {"when": {"said": SECOND_LOOK}, "reply": calls(XMAS)},
+                        {"when": {"result": "{"}, "reply": {"text": "Christmas is in 37 days."}}],
+              "default": {"text": "Christmas is in 40 days."}}
+    r = run(script, ask="how many days until christmas", fast=True, env=PARALLEL, trace=True)
+    n = "E3 check says a tool is needed"
+    check(n + ": the second look runs and its tool call is made", [t for t, _ in r.tools()] == ["date_info"] and
+          r.answer == "Christmas is in 37 days." and "40 days" not in r.out, r)
+    check(n + ": four calls (draft, check, second look, answer)", len(r.requests) == 4, r)
+    pc = _pcheck(r)
+    check(n + ": traced: tool, then the second look", pc and pc["verdict"] == "tool" and pc["used"] == "second_look" and
+          events(r, "request")[0]["second_look"] == "date_info", events(r, "request"))
+
+
+@scenario
+def exp_check_calls_a_tool():
+    # A check that calls a tool instead of answering a word: a tool is needed. Its call is never made.
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": calls(TIMER_12)},
+                        {"when": {"said": SECOND_LOOK}, "reply": {"text": "OK"}}],
+              "default": {"text": "How long should the timer be?"}}
+    r = run(script, ask="set a timer", fast=True, env=PARALLEL, trace=True)
+    n = "E3 check calls a tool"
+    check(n + ": nothing is run; the second look clears the question", r.tools() == [] and r.answer == "How long should the timer be?", r)
+    pc = _pcheck(r)
+    check(n + ": traced as tool", pc and pc["verdict"] == "tool" and pc["used"] == "second_look", pc)
+
+
+@scenario
+def exp_check_late_or_failed():
+    n = "E3 check late"
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": {"text": "NONE", "delay_ms": 2500}},
+                        {"when": {"said": SECOND_LOOK}, "reply": {"text": "OK"}}],
+              "default": {"text": "Lisbon is the capital of Portugal."}}
+    r = run(script, ask="what is the capital of portugal", fast=True, env=PARALLEL, trace=True)
+    check(n + ": the second look runs, the answer stands", r.answer == "Lisbon is the capital of Portugal." and
+          any(SECOND_LOOK in json.dumps(q["body"]) for q in r.requests), r)
+    pc = _pcheck(r)
+    check(n + ": traced as late and cancelled", pc and pc["used"] == "late" and pc["verdict"] == "cancelled", pc)
+    n = "E3 check failed"
+    script["rules"][0]["reply"] = {"status": 403, "body": '{"error": {"message": "not allowed"}}'}
+    r = run(script, ask="what is the capital of portugal", fast=True, env=PARALLEL, trace=True)
+    check(n + ": the second look runs, the answer stands, no error shown", r.answer == "Lisbon is the capital of Portugal." and
+          any(SECOND_LOOK in json.dumps(q["body"]) for q in r.requests) and "not allowed" not in r.out, r)
+    pc = _pcheck(r)
+    check(n + ": traced as failed", pc and pc["verdict"] == "failed" and pc["used"] == "second_look", pc)
+    n = "E3 check answers in words"
+    script["rules"][0]["reply"] = {"text": "Lisbon."}
+    r = run(script, ask="what is the capital of portugal", fast=True, env=PARALLEL, trace=True)
+    pc = _pcheck(r)
+    check(n + ": unclear, so the second look runs", pc and pc["verdict"] == "unclear" and pc["used"] == "second_look" and
+          r.answer == "Lisbon is the capital of Portugal.", (pc, r))
+
+
+@scenario
+def exp_check_main_tool_and_guard():
+    n = "E3 the deciding call makes a tool call"
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": {"text": "NONE", "delay_ms": 200}}], "default": calls(TIMER_12)}
+    r = run(script, ask="set a timer for 12 minutes", fast=True, env=PARALLEL, trace=True)
+    check(n + ": the tool runs and its confirmation is spoken", [t for t, _ in r.tools()] == ["timer"] and
+          r.answer == "Your timer is set for 12 minutes.", r)
+    pc = _pcheck(r)
+    check(n + ": the check's word changes nothing", pc and pc["used"] == "main_tool", pc)
+    n = "E3 a cleared draft that claims an action"
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": {"text": "NONE"}},
+                        {"when": {"said": CORRECTION}, "reply": calls(TIMER_12)}],
+              "default": {"chunks": ["Done, your timer is set for 12 minutes. ", "Enjoy."], "delay_ms": 300}}
+    r = run(script, ask="set a timer for 12 minutes", fast=True, env=PARALLEL, trace=True)
+    check(n + ": the claim guard still withdraws it, and the tool is called", [t for t, _ in r.tools()] == ["timer"] and
+          r.answer == "Your timer is set for 12 minutes." and "Enjoy" not in r.answer, r)
+    reqs = events(r, "request")
+    check(n + ": traced: cleared while streaming, then the guard", reqs and reqs[0]["parallel_check"]["used"] == "stream" and
+          [g["guard"] for g in reqs[0]["guards"]] == ["claims_action"], reqs)
+
+
+@scenario
+def exp_check_only_when_held():
+    n = "E3 no check without fast mode, nor without the switch"
+    script = {"rules": [{"when": {"said": CHECK_NOTE}, "reply": {"text": "NONE"}}], "default": {"text": "Lisbon."}}
+    r = run(script, ask="what is the capital of portugal", fast=False, env=PARALLEL)
+    check(n + ": fast mode off: one call", len(r.requests) == 1 and not _check_requests(r), r)
+    r = run(script, ask="what is the capital of portugal", fast=True)
+    check(n + ": switch off: no check", not _check_requests(r) and len(r.requests) == 2, r)
+
+
+# ------------------------------------------------------------------ E3b: answers through a reply tool (ZB_EXP_DECIDE=required)
+REQUIRED = {"ZB_EXP_DECIDE": "required"}
+
+
+def reply_call(*chunks, text=None):
+    """A call of the reply tool, its arguments in these pieces (or made from text)."""
+    if text is not None:
+        chunks = [json.dumps({"text": text}, ensure_ascii=False)]
+    return {"name": "reply", "args": "".join(chunks), "args_chunks": list(chunks)}
+
+
+@scenario
+def exp_reply_streams():
+    # Escapes split across pieces: a quote, a new line, an accent and a character beyond the first plane.
+    chunks = ['{"te', 'xt": "Lisbon is the capital ', 'of Portugal. Try a \\"pastel de nata\\" at a caf', '\\u00e9', '. ',
+              'Enjoy \\ud83d', '\\ude00!"}']
+    script = {"rules": [{"when": {"said": "thanks"}, "reply": {"calls": [reply_call(text="You're welcome.")]}}],
+              "default": {"calls": [reply_call(*chunks)]}}
+    r = run(script, said=["what is the capital of portugal", "thanks"], fast=True, env=REQUIRED, trace=True)
+    n = "E3b a reply streamed in pieces"
+    want = "Lisbon is the capital of Portugal. Try a \"pastel de nata\" at a café. Enjoy \U0001F600!"
+    check(n + ": the reply's text is the answer, decoded", r.turns[0]["answer"] == want and r.turns[1]["answer"] == "You're welcome.", r)
+    check(n + ": one call a turn, no second look", len(r.requests) == 2 and SECOND_LOOK not in json.dumps(r.bodies()), r)
+    if len(r.requests) == 2:
+        b = r.requests[0]["body"]
+        check(n + ": the deciding call sends tool_choice required, the reply tool last, and the decide note",
+              b.get("tool_choice") == "required" and b["tools"][-1]["function"]["name"] == "reply" and
+              DECIDE_NOTE in text_of(b["messages"][-1]), (b.get("tool_choice"), [t["function"]["name"] for t in b["tools"]][-2:]))
+        hist = r.messages(2)
+        check(n + ": the conversation keeps the answer as plain text, never a reply call",
+              hist[-2] == {"role": "assistant", "content": want} and "tool_calls" not in json.dumps(hist), hist[-3:])
+        check(n + ": the same tool list in every call (the cached prefix)", r.requests[0]["body"]["tools"] == r.requests[1]["body"]["tools"], "")
+    cs = events(r, "call")
+    check(n + ": traced as text, with the reply call counted", [(c["outcome"], c["reply_calls"], c["tool_choice"]) for c in cs] ==
+          [("text", 1, "required")] * 2 and cs[0]["first_text_ms"] >= 0, cs)
+    check(n + ": no reply tool is ever run", not any(t == "reply" for t, _ in r.tools()), r.tools())
+
+
+@scenario
+def exp_reply_with_tool_and_after():
+    n = "E3b reply beside a real tool call"
+    script = {"default": {"calls": [reply_call(text="Starting it now."), {"name": TIMER_12[0], "args": TIMER_12[1]}]}}
+    r = run(script, ask="set a timer for 12 minutes", fast=True, env=REQUIRED)
+    check(n + ": the tool runs, its confirmation is spoken, reply is never run", [t for t, _ in r.tools()] == ["timer"] and
+          "Your timer is set for 12 minutes." in r.out, r)
+    n = "E3b after a tool"
+    script = {"rules": [{"when": {"result": "{"}, "reply": {"text": "Christmas is in 37 days."}}], "default": calls(XMAS)}
+    r = run(script, ask="how many days until christmas", fast=True, env=REQUIRED)
+    check(n + ": required only while deciding, auto after a tool", [b.get("tool_choice") for b in r.bodies()] == ["required", "auto"] and
+          r.answer == "Christmas is in 37 days.", ([b.get("tool_choice") for b in r.bodies()], r))
+    n = "E3b a reply that claims an action"
+    script = {"rules": [{"when": {"said": CORRECTION}, "reply": calls(TIMER_12)}],
+              "default": {"calls": [reply_call(text="Done, your timer is set for 12 minutes.")]}}
+    r = run(script, ask="set a timer for 12 minutes", fast=True, env=REQUIRED, trace=True)
+    reqs = events(r, "request")
+    check(n + ": the claim guard withdraws it and the tool is called", [t for t, _ in r.tools()] == ["timer"] and
+          reqs and [g["guard"] for g in reqs[0]["guards"]] == ["claims_action"] and
+          [b.get("tool_choice") for b in r.bodies()] == ["required", "auto"], (r, reqs))
+    n = "E3b the answer as text, then again in the reply call"
+    r = run({"default": {"text": "Lisbon is the capital of Portugal.", "calls": [reply_call(text="Lisbon is the capital of Portugal.")]}},
+            ask="what is the capital of portugal", fast=True, env=REQUIRED, trace=True)
+    cs = events(r, "call")
+    check(n + ": said once", r.answer == "Lisbon is the capital of Portugal." and r.out.count("capital of Portugal") == 1 and
+          cs and cs[0]["reply_after_text"] and cs[0]["reply_calls"] == 1, (r, cs))
+    n = "E3b a service that ignores required"
+    r = run({"default": {"text": "Lisbon is the capital of Portugal."}}, ask="what is the capital of portugal", fast=True, env=REQUIRED)
+    check(n + ": plain text is the answer, with no second look", r.answer == "Lisbon is the capital of Portugal." and len(r.requests) == 1, r)
+    n = "E3b without fast mode"
+    r = run({"default": {"calls": [reply_call(text="Lisbon.")]}}, ask="what is the capital of portugal", env=REQUIRED)
+    check(n + ": tool_choice auto, the reply tool offered, its text the answer", len(r.requests) == 1 and
+          r.requests[0]["body"].get("tool_choice") == "auto" and r.requests[0]["body"]["tools"][-1]["function"]["name"] == "reply" and
+          r.answer == "Lisbon.", r)
+
+
+@scenario
+def exp_reply_held():
+    held = {"ZB_EXP_DECIDE": "required_held"}
+    n = "E3c words, then the reply call repeating them"
+    r = run({"default": {"text": "Lisbon is the capital of Portugal.", "calls": [reply_call(text="Lisbon is the capital of Portugal.")]}},
+            ask="what is the capital of portugal", fast=True, env=held, trace=True)
+    reqs = events(r, "request")
+    check(n + ": spoken once, one call, no second look", r.answer == "Lisbon is the capital of Portugal." and len(r.requests) == 1 and
+          r.requests[0]["body"].get("tool_choice") == "required" and reqs and reqs[0]["sentences"] == 1, (r, reqs))
+    n = "E3c a reply streamed in pieces"
+    r = run({"default": {"calls": [reply_call('{"text": "Lisbon is ', 'the capital of Portugal."}')]}}, ask="capital of portugal",
+            fast=True, env=held)
+    check(n + ": its text is the answer", r.answer == "Lisbon is the capital of Portugal." and len(r.requests) == 1, r)
+    n = "E3c words, then a real tool"
+    r = run({"default": {"text": "Your timer is set for 12 minutes.", "calls": [{"name": TIMER_12[0], "args": TIMER_12[1]}]}},
+            ask="set a timer for 12 minutes", fast=True, env=held, trace=True)
+    reqs = events(r, "request")
+    check(n + ": the words are never spoken (no guard needed); the tool runs and confirms", [t for t, _ in r.tools()] == ["timer"] and
+          r.answer == "Your timer is set for 12 minutes." and reqs and reqs[0]["guards"] == [] and reqs[0]["sentences"] == 1, (r, reqs))
+    n = "E3c words and no call at all"
+    r = run({"rules": [{"when": {"said": SECOND_LOOK}, "reply": {"text": "OK"}}], "default": {"text": "Lisbon is the capital of Portugal."}},
+            ask="capital of portugal", fast=True, env=held)
+    check(n + ": the second look runs as before", r.answer == "Lisbon is the capital of Portugal." and len(r.requests) == 2 and
+          SECOND_LOOK in json.dumps(r.requests[1]["body"]), r)
 
 
 def main():

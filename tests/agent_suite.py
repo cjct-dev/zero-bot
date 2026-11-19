@@ -13,7 +13,8 @@ Select by tag, name or a stratified sample, so a subset can be run:
     tests/agent_suite.py --only timer-00 --repeat 5
 
 Other options as in tests/agent_eval.py: --bin, --repeat, --jobs (keep 1 for timings), --fast 0|1,
---json OUT (full results), --rescore OUT (score saved results again; same day only). It needs
+--json OUT (full results), --rescore OUT (score saved results again; same day only), --trace (the
+experiments' trace of each turn in --json: model calls, tokens, timings; tests/exp_report.py). It needs
 ZB_API_BASE and ZB_API_KEY (and model names in ZB_EVAL_LLM_MODEL etc.); cases tagged "search" are
 left out without ZB_SEARCH_KEY. Every case starts from an empty state with ZB_DRY_RUN, as in the
 scored set. The summary gives the pass rate per tag and the slowest cases.
@@ -40,7 +41,8 @@ sys.path.insert(0, HERE)
 sys.dont_write_bytecode = True   # importing agent_eval leaves no __pycache__ in tests/
 import agent_eval as ev   # noqa: E402
 
-HOMES = {"eval": ev.EVAL_HOME, "tv": ev.TV_HOME, "sockets": ev.SOCKETS_HOME}
+HOMES = {"eval": ev.EVAL_HOME, "tv": ev.TV_HOME, "sockets": ev.SOCKETS_HOME, "tv_silent": ev.TV_SILENT_HOME,
+         "tv_closed": ev.TV_CLOSED_HOME}
 MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 LANGUAGE = {"es": r"\b(el|la|los|las|de|que|en|hoy|grados|está|minutos|listo|temporizador|tiempo|hace)\b",
@@ -334,6 +336,7 @@ def k_home_switched(s): return ev.home_switched(s["name"])
 def k_home_not_switched(s): return ev.home_not_switched(s["name"])
 def k_home_all_off(s): return ev.home_all_off
 def k_home_step(s): return ev.home_step(s["sign"])
+def k_home_no_action(s): return ev.home_no_action(*s["actions"])
 
 
 KINDS = {name[2:]: f for name, f in globals().items() if name.startswith("k_") and callable(f)}
@@ -390,6 +393,7 @@ def main():
     ap.add_argument("--json", default="", help="write full results to this file")
     ap.add_argument("--rescore", default="", help="score a results file written by --json again (same day only)")
     ap.add_argument("--list", action="store_true", help="list the selected cases and tag counts, run nothing")
+    ap.add_argument("--trace", action="store_true", help="record the experiments' trace (cli build, ZB_EXP_TRACE) into each turn of --json")
     ap.add_argument("--slowest", type=int, default=10, help="how many of the slowest cases to list")
     args = ap.parse_args()
 
@@ -420,6 +424,7 @@ def main():
     env = dict(os.environ, ZB_DRY_RUN="1", ZB_NO_AUDIO="1", HOME=home)
     if os.environ.get("ZB_EVAL_CAMERA"): env["ZB_FAKE_CAMERA"] = os.environ["ZB_EVAL_CAMERA"]
     if args.fast is not None: env["ZB_FAST_MODE"] = args.fast
+    if args.trace: env["ZB_EVAL_TRACE"] = "1"
     compiled = {c["name"]: compile_case(c) for c in chosen}
     jobs = [c for c in chosen for _ in range(len(saved.get(c["name"], [])) if args.rescore else args.repeat)]
     run = (lambda c: saved[c["name"]].pop(0)) if args.rescore else (lambda c: ev.run_case(args.bin, env, compiled[c["name"]]))
@@ -458,6 +463,7 @@ def main():
     print("by tag: " + ", ".join("%s %d/%d" % (t, ok, k) for t, (ok, k) in sorted(per_tag.items(), key=lambda kv: (kv[1][0] / kv[1][1], kv[0]))))
     slow = sorted(results, key=lambda r: -r["seconds"])[:args.slowest]
     print("slowest: " + ", ".join("%s %.1fs" % (r["case"], r["seconds"]) for r in slow))
+    if args.trace: print(ev.trace_summary(results))
     if failed_names:
         print("failed: " + ", ".join("%s%s" % (k, " x%d" % v if args.repeat > 1 else "") for k, v in sorted(failed_names.items())))
     if args.json: json.dump(results, open(args.json, "w"), indent=1)

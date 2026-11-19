@@ -2,6 +2,7 @@
 
 #include <ctime>
 
+#include "agent/experiment.h"
 #include "core/music_lib.h"
 #include "core/radio.h"
 #include "core/settings.h"
@@ -16,7 +17,7 @@ std::string system_prompt() {
     const time_t now = time(nullptr);
     const std::string zone = s.timezone.empty() ? util::system_timezone() : s.timezone;
 
-    std::string p;
+    std::string p = experiment::cache_bust_line();   // "" unless an experiment asks (ZB_EXP_CACHE_BUST)
     p += "You are " + s.agent_name + ", a voice assistant living in a pocket-sized handheld computer that its owner "
          "carries while travelling. They speak to you through a small microphone or type on a tiny keyboard, and "
          "your reply is read aloud through a small speaker and shown on a 320 by 170 pixel screen. The device also has "
@@ -56,8 +57,9 @@ std::string system_prompt() {
          "('friday', 'tomorrow') from the list of coming days below.\n"
          "- A date given without a year means the next time that date comes round: this year if it is still "
          "ahead, otherwise next year. Work that out yourself and save it; do not ask or refuse because the date "
-         "is far off.\n"
-         "- Some tools take 'say': the short confirmation to speak once the call has worked. Fill it in whenever "
+         "is far off.\n";
+    p += experiment::say_rule("- Some tools take 'say': the short confirmation to speak once the call has worked. ");
+    p += "Fill it in whenever "
          "that call is all the request needs, in the user's language, so they hear the result without delay. "
          "When it confirms something dated, it says the day (and the time, if there is one) back, so that a "
          "mishearing is caught at once.\n"

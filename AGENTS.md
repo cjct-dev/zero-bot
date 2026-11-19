@@ -269,7 +269,10 @@ What exists:
   `ZB_API_BASE`, `ZB_API_KEY`, optionally `ZB_SEARCH_KEY`, and model names in `ZB_EVAL_LLM_MODEL`
   etc. Use `--only`, `--repeat N` (models are not deterministic: repeat a changed case 5 to 8
   times) and `--fast 0|1`. Expect one or two flaky cases; compare against a run of the
-  previous code before blaming a change.
+  previous code before blaming a change. Cases run with `ZB_DRY_RUN`, except those that must reach a
+  device (`env=LIVE`: a paired Fire TV on 127.0.0.1 that does not answer, `TV_SILENT_HOME` and
+  `TV_CLOSED_HOME`, for what is said after a network error); those get stand-ins that do nothing for
+  the programs that would change the PC (volume, sound, camera, network).
 - **Generated request set**: `tests/suite/generate.py` (fixed seed) writes `tests/suite/cases.json`,
   about 570 requests in categories (timer, reminder, calendar, weather, home, route, ...) with
   feature tags (`asr`, `lang-xx`, `uk`, `us`, `followup`, `compound`, `notool`, `clarify`,
@@ -291,6 +294,16 @@ What exists:
   only devices at 127.x addresses are contacted and nothing is scanned; use it for any smart-home
   test on a PC, never `--discover`), `ZB_TEST_TETHER=1` (the radio acts as on a phone's
   connection).
+- **Measurement switches** (`src/agent/experiment.h`; compiled into the `cli` build only, CMake option
+  `ZB_EXPERIMENTS`): `ZB_EXP_TRACE=file` appends a JSON line per model call (purpose, timings, token
+  counts the service reports, size sent) and per request (first sentence, tools, guards, second look);
+  no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`. Variants measured against
+  the default, none of them adopted: `ZB_EXP_TOOLS=say1|lean` (shorter tool text),
+  `ZB_EXP_DECIDE=parallel|required|required_held` (deciding without the second look); an unknown value
+  stops the run. The runners' `--trace` puts each turn's trace into `--json`; `tests/exp_report.py`
+  summarises such files and `tests/exp_compare.py` compares a variant with a baseline case by case and by
+  tag (repeat the same cases on both sides before pooling). With no `ZB_EXP_*` variable set nothing sent
+  or done changes (checked in `agent_loop_test.py`).
 - **Screens**: `build/sim/zero_bot --shots out/` and look at the PNGs. Every UI change should
   be checked this way before it goes to the device. The script in `App::render_shots` walks
   the menus by counting key presses, so adding a settings row shifts later screenshots: fix
@@ -424,6 +437,14 @@ key, real audio), say so plainly rather than implying it was.
 - A "past" escape-hatch parameter on the calendar tool was used by the model to bypass the
   check it was meant to refine. Do not give the model a way round a guard.
 - Give tools the allowed names as an `enum` (smart-home devices) rather than describing them.
+- A rule in a tool's description is not always heeded where it matters, and words added to a
+  description move routing elsewhere. tv_remote's said "if a listed TV does not answer over the network,
+  say so rather than trying this", yet after every network error of a listed TV (35 runs in 35) the reply
+  offered the infrared remote, and a "yes" then sent another TV's codes (ZB-072). The rule added to both
+  tools' descriptions cut the offers to 3 in 55, but drew TV key presses ("press ok on the tv") to the
+  infrared remote (5 runs in 50, none in 30 before), and naming tv_remote there made replies tell the user
+  to "try the tv_remote tool". Said once in the TV's failure result (`control.cpp`), where it applies, it
+  left the prompt and tools byte for byte as they were: 2 offers in 55 and no infrared call.
 - The model's own weekday arithmetic slips: on a Wednesday, "every Tuesday" was saved on Monday 23
   November six times in six while the confirmation said Tuesday. The calendar and reminder tools
   refuse a call whose `say` names one weekday the date is not (`weekday_slip`), naming the nearest
