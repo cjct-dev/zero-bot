@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(zero_bot VERSION 0.4.7 LANGUAGES C CXX)
+project(zero_bot VERSION 0.4.8 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
