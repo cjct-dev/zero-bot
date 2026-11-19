@@ -73,9 +73,32 @@ const Switches &get() {
         r.tools = variant("ZB_EXP_TOOLS", "full", {"full", "say1", "lean"});
         r.decide = variant("ZB_EXP_DECIDE", "second_look", {"second_look", "parallel", "required", "required_held"});
         if (const char *m = getenv("ZB_EXP_CHECK_MODEL")) r.check_model = m;
+        if (const char *w = getenv("ZB_EXP_WEB"); w && *w) {
+            // Only a stand-in on this computer: the switch must never send a search or a key elsewhere.
+            r.web = w;
+            // The host must be a 127.a.b.c address written out ("http://127.example.net" is not one).
+            const size_t host_end = r.web.find_first_of(":/", 7);
+            const std::string host = r.web.substr(7, host_end == std::string::npos ? std::string::npos : host_end - 7);
+            int parts = 0, a = -1, b = -1, c = -1, d = -1;
+            char rest = 0;
+            parts = sscanf(host.c_str(), "%d.%d.%d.%d%c", &a, &b, &c, &d, &rest);
+            const bool loopback = parts == 4 && a == 127 && b >= 0 && b < 256 && c >= 0 && c < 256 && d >= 0 && d < 256;
+            if (r.web.compare(0, 7, "http://") != 0 || !loopback || r.web.find_first_of("@?#") != std::string::npos) {
+                fprintf(stderr, "ZB_EXP_WEB=%s is not an http://127.x address\n", w);
+                exit(2);
+            }
+            while (!r.web.empty() && r.web.back() == '/') r.web.pop_back();
+        }
         return r;
     }();
     return s;
+}
+
+std::string web(const std::string &url) {
+    const std::string &base = get().web;
+    const size_t scheme = url.find("://");
+    if (base.empty() || scheme == std::string::npos) return url;
+    return base + "/" + url.substr(scheme + 3);
 }
 
 void trace(json event) {

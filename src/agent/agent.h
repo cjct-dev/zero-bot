@@ -24,6 +24,11 @@ struct AgentEvents {   // called from worker threads
     std::function<void(const std::string &jpeg_path)> image;
     std::function<void(const std::string &pattern, int minutes)> breathe;   // show a breathing exercise once the reply is spoken
     std::function<void(const std::string &message)> error;
+#if ZB_EXPERIMENTS
+    // The command line's records for the test sets (cli build only): each tool call as it finishes,
+    // with the model's call id, its arguments and the whole result, before any cut for the model.
+    std::function<void(const std::string &id, const std::string &name, const std::string &args, const std::string &result)> tool_done;
+#endif
 };
 
 class Agent {

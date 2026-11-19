@@ -620,6 +620,15 @@ def history_trimmed():
           [b["messages"][1]["role"] for b in r.bodies()])
     last = json.dumps(r.messages(len(r.requests))) if r.requests else ""
     check(n + ": the oldest turns are gone, the newest kept", "turn 1 hello" not in last and "turn 24 timer" in last, "")
+    # The scorer's evidence survives the trimming: each turn's own call records, and the printed lines too.
+    timer_turns = [i for i, t in enumerate(r.turns) if "timer" in said[i]]
+    check(n + ": every timer turn has its call record, with its id and whole result",
+          all([c["name"] for c in r.turns[i].get("calls", [])] == ["timer"] and r.turns[i]["calls"][0]["id"] and
+              r.turns[i]["calls"][0]["result"].startswith("{") for i in timer_turns) and
+          not any(r.turns[i].get("calls") for i in range(len(said)) if i not in timer_turns), [r.turns[i].get("calls") for i in timer_turns])
+    check(n + ": the printed call lines are not lost to the trimming either", r.out.count("  -> timer ") == len(timer_turns),
+          r.out.count("  -> timer "))
+    check(n + ": each turn ends with the saved state", all(isinstance(t.get("state"), dict) and "reminders" in t["state"] for t in r.turns), "")
 
 
 # ------------------------------------------------------------------ saved conversations (DIAGNOSTICS, temporary)

@@ -295,7 +295,23 @@ What exists:
   previous code before blaming a change. Cases run with `ZB_DRY_RUN`, except those that must reach a
   device (`env=LIVE`: a paired Fire TV on 127.0.0.1 that does not answer, `TV_SILENT_HOME` and
   `TV_CLOSED_HOME`, for what is said after a network error); those get stand-ins that do nothing for
-  the programs that would change the PC (volume, sound, camera, network).
+  the programs that would change the PC (volume, sound, camera, network). What earns a pass: a change
+  counts only when its call worked (no `ERROR`, not waiting for a yes) and the saved state shows it,
+  and a compound request is checked part by part. The `cli` build prints, besides the readable lines,
+  a `[call]` record for every tool call of a turn as it finishes (id, name, arguments, the whole
+  result; from the turn's own events, so a trimmed history hides none) and a `[state]` record after
+  each turn (calendar, reminders and timers, memory); the parser falls back on the old lines for
+  saved runs, whose results are cut at 300 bytes. A check looks at the last turn, at the one
+  `on_turn` names, at `every_turn` (a later turn cannot hide an earlier mistake), or at the whole
+  conversation (`chk_moved_item`: one saved, then exactly one at the new time). Numbers keep their
+  sign and times their am or pm. A run that times out counts once, in the turn it stopped in; later
+  turns are "not started", and the summary gives the completion rate and the time to the first
+  sentence (with `--trace`) beside the time to the first text. `web(fixture)` in a case's env sends
+  web search, forecasts and place names to a stand-in (`tests/mocks/fake_web.py`, through the `cli`
+  build's `ZB_EXP_WEB`, honoured only for an `http://127.x` address and compiled out of the device
+  build): canned answers, and search without a key. **The scorer's own test**: `tests/scorer_test.py`
+  (offline, no service) feeds deliberately wrong transcripts that must fail and right ones that must
+  pass; run it after any change to a check, and add a wrong transcript for any new kind of mistake.
 - **Generated request set**: `tests/suite/generate.py` (fixed seed) writes `tests/suite/cases.json`,
   about 570 requests in categories (timer, reminder, calendar, weather, home, route, ...) with
   feature tags (`asr`, `lang-xx`, `uk`, `us`, `followup`, `compound`, `notool`, `clarify`,
@@ -306,7 +322,9 @@ What exists:
   prints pass rates per tag and the slowest cases. Checks are declarative (`"kind"` in the file,
   compiled by `KINDS` in the runner) and accept every right answer: a timer or a reminder for "in
   20 minutes", several right tools, any of the right numbers. A check looks at the last turn
-  unless it names another (`"turn"`); `long_ok` lists the turns that may answer at length, which
+  unless it names another (`"turn"`: a number, or `"all"` for every turn; `moved` looks at the whole
+  conversation), and checks of changes read the saved state as the scored set's do (`timers_saved`,
+  `events_saved`, `memory`, `memory_lacks`); `long_ok` lists the turns that may answer at length, which
   the owner wants for analytical follow-ups (so `max_words` is for simple factual turns only;
   `max_calls` caps a tool, such as searches in a row). The `dialogue` category holds threads of
   several turns generalised from saved conversations (`tests/suite/from_conversation.py` drafts

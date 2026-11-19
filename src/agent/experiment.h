@@ -31,6 +31,10 @@
 //                          call begins: spoken if it is reply, never if it is a real tool; with no call at
 //                          all the second look runs as before)
 //   ZB_EXP_CHECK_MODEL=ID  the model the parallel check asks (default: the main model)
+//   ZB_EXP_WEB=BASE        the web search, weather and place-name requests go to a stand-in at BASE
+//                          (tests/mocks/fake_web.py) instead of the internet: https://HOST/PATH?Q is
+//                          sent as BASE/HOST/PATH?Q. BASE must be http://127.x...; anything else stops
+//                          the run. For the test sets: canned results, and search without a key
 #pragma once
 #include <atomic>
 #include <chrono>
@@ -55,6 +59,7 @@ struct Switches {
     std::string tools = "full";             // ZB_EXP_TOOLS: full, say1, lean
     std::string decide = "second_look";     // ZB_EXP_DECIDE: second_look, parallel, required, required_held
     std::string check_model;                // ZB_EXP_CHECK_MODEL ("" = the main model)
+    std::string web;                        // ZB_EXP_WEB ("" = the real services)
 };
 
 #if ZB_EXPERIMENTS
@@ -67,6 +72,7 @@ long request_ms();                              // ms since the current request 
 void trace_call(const json &call);              // one model call of the current request (numbered here)
 json numbers_only(const json &v);               // a copy keeping only numbers, booleans and objects of them
 void wait_probes(int max_ms);                   // lets speech probes still running finish (command line)
+std::string web(const std::string &url);        // ZB_EXP_WEB: the stand-in's address for url, or url
 
 // E2: the tool list as it is about to be sent (tools::schema), in the variant ZB_EXP_TOOLS asks for.
 // Only "description" texts change. E3b (ZB_EXP_DECIDE=required) adds the reply tool at the end.
@@ -145,6 +151,7 @@ inline long request_ms() { return -1; }
 inline void trace_call(const json &) {}
 inline json numbers_only(const json &) { return nullptr; }
 inline void wait_probes(int) {}
+inline std::string web(std::string url) { return url; }
 inline void shape_tools(json &) {}
 inline std::string say_rule(const std::string &standard) { return standard; }
 inline bool parallel_check() { return false; }
