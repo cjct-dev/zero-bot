@@ -218,19 +218,27 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
         const double total = since();
         const json hist = agent.history_snapshot(&gone);
         size_t tool_calls = 0;
-        json responses = json::array();   // the calls of each model response in this request
+#if ZB_EXPERIMENTS
+        json responses = json::array();   // the calls of each model response in this request, for the records
+#endif
         for (size_t i = begins > gone ? begins - gone : 0; i < hist.size(); ++i) {
             const json &m = hist[i];
             if (m.contains("tool_calls")) {
+#if ZB_EXPERIMENTS
                 json asked = json::array();
+#endif
                 for (auto &c : m["tool_calls"]) {
                     ++tool_calls;
                     printf("  -> %s %s\n", c["function"]["name"].get<std::string>().c_str(),
                            c["function"]["arguments"].get<std::string>().c_str());
+#if ZB_EXPERIMENTS
                     asked.push_back({{"id", util::jget(c, "id", std::string())}, {"name", c["function"]["name"]},
                                      {"args", c["function"]["arguments"]}});
+#endif
                 }
+#if ZB_EXPERIMENTS
                 responses.push_back(asked);
+#endif
             }
             else if (util::jget(m, "role", std::string()) == "tool")
                 printf("  <- %s\n", util::truncate_utf8(m["content"].get<std::string>(), 300).c_str());
@@ -246,7 +254,6 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
                     {"answer", answer}, {"tool_calls", tool_calls}, {"responses", responses}});
 #else
         (void)tool_calls;
-        (void)responses;
 #endif
         printf("[answer %.1fs] %s\n", total, answer.c_str());
         fflush(stdout);

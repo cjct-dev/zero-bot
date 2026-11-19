@@ -574,6 +574,8 @@ def saved_when_and_rain():
           [nothing[0], {"answer": "A reminder at 8 tomorrow to take a coat, since rain is not unlikely."}], "the answer s")
     got = verdict(c59, nothing[0], {"answer": "Your coat reminder for 8 am tomorrow. Nothing else."})
     check("rain (C1): 'your coat reminder for 8 am tomorrow. Nothing else.' fails", got[0] == "fail" and "states a reminder as set" in str(got[1]), got)
+    trips("rain: an answer about the weather, not about what was set", c59, [nothing[0], {"answer": "It isn't going to rain much in York tomorrow."}],
+          "the answer should say that nothing was set")
     trips("rain (C1, round 2): 'Nothing else, but your reminder for 8 is set' fails with nothing saved", c59,
           [nothing[0], {"answer": "Nothing else, but your reminder for 8 is set."}], "the answer states a reminder as set: 'your reminder for 8 is set'")
     trips("rain: the same for a forecast without tomorrow's figure", cm,
@@ -915,7 +917,7 @@ path = os.environ.get("ZB_EVAL_RECORDS")
 if os.environ.get("FAKE_NO_RECORDS") or not path:
     for t in turns: print("> [user] %s\n[answer 1.0s] Okay." % t)
     sys.exit(0)
-env = {k: os.environ.get(k) for k in ("ZB_EXP_NO_HARDWARE", "ZB_FAKE_CAMERA", "ZB_DRY_RUN", "ZB_EXP_TRACE", "ZB_EVAL_RECORDS")}
+env = {k: os.environ.get(k) for k in ("ZB_EXP_NO_HARDWARE", "ZB_FAKE_CAMERA", "ZB_DRY_RUN", "ZB_EXP_TRACE", "ZB_EVAL_RECORDS", "HOME")}
 def rec(**r): f.write(json.dumps(dict(r, v=2, mono=0, wall=0)) + "\n")
 with open(path, "w") as f:
     rec(ev="start", caps=os.environ.get("FAKE_CAPS", "records,web,no_hardware").split(","))
@@ -1175,12 +1177,14 @@ def guards_applied_last():
         app = os.path.join(folder, "fake_app")
         with open(app, "w") as f: f.write(FAKE_APP)
         os.chmod(app, os.stat(app).st_mode | stat.S_IEXEC)
-        sneaky = bare("hello", env={"ZB_EXP_NO_HARDWARE": "0", "ZB_FAKE_CAMERA": "/dev/video0", "ZB_DRY_RUN": None, "ZB_EVAL_RECORDS": "/tmp/x"})
-        got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1"), sneaky)
+        sneaky = bare("hello", env={"ZB_EXP_NO_HARDWARE": "0", "ZB_FAKE_CAMERA": "/dev/video0", "ZB_DRY_RUN": None, "ZB_EVAL_RECORDS": "/tmp/x",
+                                    "HOME": "/root"})
+        got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1", HOME=folder), sneaky)
         env = json.loads(got["turns"][0]["answer"]) if got["turns"] and got["turns"][0]["answer"].startswith("{") else {}
         check("guards (N5): the case cannot lift the hardware guard, change the camera, drop dry run or move the records",
               env.get("ZB_EXP_NO_HARDWARE") == "1" and env.get("ZB_FAKE_CAMERA") == ev.CAMERA_FIXTURE and env.get("ZB_DRY_RUN") == "1"
-              and env.get("ZB_EVAL_RECORDS", "").endswith("/records.jsonl") and not got["unscorable"], (env, got["unscorable"]))
+              and env.get("ZB_EVAL_RECORDS", "").endswith("/records.jsonl") and env.get("HOME") == folder and not got["unscorable"],
+              (env, got["unscorable"]))
         tv = dict(bare("turn the tv up"), env={"ZB_DRY_RUN": None}, home=ev.TV_SILENT_HOME)
         got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1"), tv)
         env = json.loads(got["turns"][0]["answer"]) if got["turns"] and got["turns"][0]["answer"].startswith("{") else {}
@@ -1217,6 +1221,11 @@ def device_log_by_turn():
     turns = [dict(_turnfields(), began_wall=100.0, ended_wall=105.0), dict(_turnfields(), began_wall=110.0, ended_wall=115.0),
              dict(_turnfields(), began_wall=120.0)]
     ev.place_device_log(turns, [(101.0, "a"), (107.0, "b"), (112.0, "c"), (130.0, "d")])
+    try:
+        ev.chk_device_log("POST /v1/FireTV volume_down", 1)([dict(_turnfields(), device_log=["x"]), _turnfields()])
+        check("device log: a conversation with a turn that has no log is unscorable", False)
+    except ev.Unscorable:
+        check("device log: a conversation with a turn that has no log is unscorable", True)
     check("device log: each turn its own, the rest between", [t["device_log"] for t in turns] == [["a"], ["c"], ["d"]] and
           turns[-1]["device_log_between"] == ["b"], [t.get("device_log") for t in turns])
 
