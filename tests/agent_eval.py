@@ -1370,7 +1370,7 @@ def turns_from_records(text, c, process):
                 bad("turn %s (%r) is not the case's next request (%r)" % (r.get("turn"), r.get("text"), want))
                 break
             pos += 1
-            cur = _blank_turn(calls=[])
+            cur = _blank_turn(calls=[], began=r.get("mono"))   # seconds since the app started, as are "ended" and each call's "at"
             turns.append(cur)
         elif kind == "error" and cur is None:
             if turns: turns[-1]["error"] = turns[-1]["error"] or str(r.get("message"))   # after the request, before the next
@@ -1383,7 +1383,7 @@ def turns_from_records(text, c, process):
                 if not all(isinstance(x, str) for x in fields) or not fields[0] or not fields[1] or r.get("n") != len(cur["calls"]) + 1:
                     bad("a call record without its number, id, name, arguments and result")
                     break
-                cur["calls"].append({"id": fields[0], "name": fields[1], "args": fields[2], "result": fields[3]})
+                cur["calls"].append({"id": fields[0], "name": fields[1], "args": fields[2], "result": fields[3], "at": r.get("mono")})
             elif kind == "state":
                 st = r.get("state")
                 if "state" in cur or not isinstance(st, dict) or not isinstance(st.get("now"), int):
@@ -1403,7 +1403,7 @@ def turns_from_records(text, c, process):
                 if n != len(cur["calls"]):
                     bad("turn %d made %d tool calls but has %d call records" % (len(turns), n, len(cur["calls"])))
                     break
-                cur.update(total=float(total), first=first, answer=plain(answer_))
+                cur.update(total=float(total), first=first, answer=plain(answer_), ended=r.get("mono"))
                 cur = None
         elif kind == "end":
             if cur is not None or r.get("turns") != len(turns):
@@ -1537,8 +1537,8 @@ def verdict(c, run):
 def run_from_saved(r):
     """A result saved by --json, as run_case returns one, for --rescore. Results saved before the process
     and evidence fields existed are scored as they are: what they lack makes their checks unscorable."""
-    return {"turns": r.get("turns"), "process": r.get("process"), "evidence": r.get("evidence", "stdout"),
-            "unscorable": list(r.get("unscorable") or [])}
+    why = r.get("unscorable_why", r.get("unscorable") if isinstance(r.get("unscorable"), list) else [])
+    return {"turns": r.get("turns"), "process": r.get("process"), "evidence": r.get("evidence", "stdout"), "unscorable": list(why or [])}
 
 def trace_summary(results):
     """One line from the traces of a --trace run: model calls, tokens and upload per request."""
@@ -1690,11 +1690,15 @@ def case_hash(c):
             "long_ok": raw.get("long_ok", []), "quotes_ok": raw.get("quotes_ok", False)}
     return hashlib.sha1(json.dumps(body, sort_keys=True, ensure_ascii=False, default=repr).encode()).hexdigest()
 
-def result_record(c, run, outcome, problems, traced, **extra):
-    """What --json keeps of one run: the verdict, the evidence it rests on, and what makes it comparable."""
-    return dict({"case": c["name"], "case_hash": case_hash(c), "scorer": SCORER_VERSION, "trace": bool(traced), "outcome": outcome,
-                 "requests": c["turns"], "problems": problems, "turns": run["turns"], "process": run.get("process"),
-                 "evidence": run.get("evidence"), "unscorable": run.get("unscorable") or []}, **extra)
+def result_record(c, run, outcome, problems, traced, which="scored", **extra):
+    """What --json keeps of one run: the verdict ("outcome"; "unscorable" is true for an unscorable run, with
+    the reasons in "problems"), the evidence it rests on ("unscorable_why": what made the records themselves
+    unusable, kept for --rescore), and what makes it comparable: case_hash, scorer, trace, and the set it
+    belongs to ("set": "scored" or "suite")."""
+    return dict({"case": c["name"], "set": which, "case_hash": case_hash(c), "scorer": SCORER_VERSION, "trace": bool(traced),
+                 "outcome": outcome, "unscorable": outcome == "unscorable", "requests": c["turns"], "problems": problems,
+                 "turns": run["turns"], "process": run.get("process"), "evidence": run.get("evidence"),
+                 "unscorable_why": run.get("unscorable") or []}, **extra)
 
 # ---------------------------------------------------------------- the cases checked before a run
 def validate(cases):

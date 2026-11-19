@@ -580,7 +580,7 @@ def main():
             for p in problems: print("       !! " + p)
             sys.stdout.flush()
             tr = traced if traced is not None else any("trace" in t for t in turns)
-            results.append(ev.result_record(compiled[c["name"]], got, outcome, problems, tr, tags=c["tags"],
+            results.append(ev.result_record(compiled[c["name"]], got, outcome, problems, tr, "suite", tags=c["tags"],
                                             seconds=sum(t.get("total") or 0 for t in turns)))
     n = len(results)
     shutil.rmtree(home, ignore_errors=True)

@@ -793,14 +793,24 @@ def case_hash_and_records():
     run = run_of(a, {"calls": [T12], "answer": "Timer set for 12 minutes.", "state": state(timers=[("Timer", 720)])})
     out = ev.verdict(a, run)
     rec = ev.result_record(a, run, out[0], out[1], True)
-    check("result: case_hash, scorer and trace in every result", rec["case_hash"] == ev.case_hash(a) and rec["scorer"] == ev.SCORER_VERSION
-          and rec["trace"] is True and rec["outcome"] == "pass" and rec["process"]["exit"] == 0, rec)
+    check("result: case_hash, scorer, trace and set in every result", rec["case_hash"] == ev.case_hash(a) and rec["scorer"] == ev.SCORER_VERSION
+          and rec["trace"] is True and rec["outcome"] == "pass" and rec["unscorable"] is False and rec["set"] == "scored"
+          and rec["process"]["exit"] == 0, rec)
     back = ev.run_from_saved(json.loads(json.dumps(rec)))
     check("result: a saved result scores again the same", ev.verdict(a, back) == out, (ev.verdict(a, back), out))
     bad = run_of(a, text="garbage\n")
     rec = ev.result_record(a, bad, *ev.verdict(a, bad), False)
+    check("result: an unscorable run says so, with its reasons in problems", rec["unscorable"] is True and rec["problems"]
+          and all(p.startswith("unscorable") for p in rec["problems"]), rec)
     check("result: an unscorable run stays unscorable when scored again", ev.verdict(a, ev.run_from_saved(json.loads(json.dumps(rec))))[0] == "unscorable",
           rec)
+    missing = run_of(a, {"calls": [T12], "answer": "Timer set for 12 minutes.", "state": None})
+    rec = ev.result_record(a, missing, *ev.verdict(a, missing), False)
+    check("result: unscorable for want of a state: unscorable true, every problem marked", rec["unscorable"] is True and rec["unscorable_why"] == []
+          and all(p.startswith("unscorable") for p in rec["problems"]), rec)
+    s = suite_case("timer-001")
+    rec = ev.result_record(s, run_of(s, {"answer": "x"}), "fail", ["x"], False, "suite", tags=s["tags"])
+    check("result: the suite's records say set suite", rec["set"] == "suite" and rec["unscorable"] is False, rec)
 
 
 @test
