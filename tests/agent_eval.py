@@ -86,7 +86,7 @@ def says_time(text, when, slack_min=2):
             if any(right_half(text, m.end(), t.hour) for m in re.finditer(pat, text)): return True
         if t.hour % 12 == 0 and t.minute < 10 and re.search(r"midnight" if t.hour == 0 else r"noon|midday", text, re.I): return True
         if t.minute == 0:
-            for m in re.finditer(r"\b(%d|%s)\s*(o['’]?clock\b|(?=a\.?\s?m\b|p\.?\s?m\b))" % (h12, ONES[h12]), text, re.I):
+            for m in re.finditer(r"\b(%d|%s)\s*(o['’]?clock\b|(?=a\.?\s?m\b|p\.?\s?m\b|(?:in the|this|tomorrow) (?:morning|afternoon|evening)|tonight|at night))" % (h12, ONES[h12]), text, re.I):
                 if right_half(text, m.end(), t.hour): return True
     return False
 
@@ -1049,14 +1049,17 @@ CASES = [
                  on_turn(3, chk_timers_named(tea=900)), chk_timers_named(tea=900), chk_timer_left_said("tea")]),
     # A conditional reminder at a forecast threshold: the same words with tomorrow at 59%, 60% and no
     # figure, today on the other side of 60; zero, one and zero reminders, and the follow-up agrees.
-    case("review_rain_59", [FORECAST_REMINDER, "what did you set"], must=["weather"], env=web("rain59"),
+    case("review_rain_59", [FORECAST_REMINDER, "what did you set"], env=web("rain59"),
          checks=[on_turn(0, lambda t: arg(t, "weather", "location", has("york"), "York")), on_turn(0, chk_saved_when(0)),
                  chk_saved_when(0), answer(r"\b(no|not|didn'?t|haven'?t|nothing|won'?t|wasn'?t|isn'?t)\b", "that nothing was set")]),
     case("review_rain_60", [FORECAST_REMINDER, "what did you set"], must_not=["timer"], env=web("rain60"),
          checks=[on_turn(0, lambda t: arg(t, "weather", "location", has("york"), "York")),
                  on_turn(0, chk_saved_when(1, lambda: stamps([tomorrow()], "08:00"), "coat")),
-                 chk_saved_when(1, lambda: stamps([tomorrow()], "08:00"), "coat"), answer(r"coat"), answer(r"\b8\b|eight|08[:.]00", "eight o'clock")]),
-    case("review_rain_missing", [FORECAST_REMINDER, "what did you set"], must=["weather"], env=web("rainmissing"),
+                 chk_saved_when(1, lambda: stamps([tomorrow()], "08:00"), "coat"), answer(r"coat"),
+                 lambda t: [] if says_time(t["answer"], datetime.datetime(2000, 1, 1, 8, 0), 0) or
+                 any(right_half(t["answer"], m.end(), 8) for m in re.finditer(r"\b(?:8|eight)\b(?![:.]\d)", t["answer"], re.I))
+                 else ["the answer should give 8 am"]]),
+    case("review_rain_missing", [FORECAST_REMINDER, "what did you set"], env=web("rainmissing"),
          checks=[on_turn(0, lambda t: arg(t, "weather", "location", has("york"), "York")), on_turn(0, chk_saved_when(0)),
                  chk_saved_when(0), answer(r"\b(no|not|didn'?t|haven'?t|nothing|won'?t|wasn'?t|isn'?t)\b", "that nothing was set")]),
     # A stale yes: the question about the heater is overtaken by "leave it off"; a later bare "yes" switches
