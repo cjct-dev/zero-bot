@@ -172,7 +172,7 @@ bool in_region(const json &r, const std::string &region_in) {
 // does not exist there still resolves to its best-known namesake.
 bool geocode(const std::string &query, Place &out, std::string &err, Context &ctx, const std::string &country = "") {
     const std::string base = "https://geocoding-api.open-meteo.com/v1/search?language=en&count=";
-    json j = fetch_json(base + (country.empty() ? "1" : "10") + "&name=" + http::url_encode(query), err, ctx);
+    json j = fetch_json(experiment::web(base + (country.empty() ? "1" : "10") + "&name=" + http::url_encode(query)), err, ctx);
     if (!err.empty()) return false;
     size_t pick = 0;
     if (!country.empty() && j.contains("results") && j["results"].is_array())
@@ -191,7 +191,7 @@ bool geocode(const std::string &query, Place &out, std::string &err, Context &ct
                                        tries < 3;
          cut = name.rfind(' ', cut - 1), ++tries) {
         const std::string region = util::trim(name.substr(cut + 1));
-        j = fetch_json(base + "8&name=" + http::url_encode(util::trim(name.substr(0, cut))), err, ctx);
+        j = fetch_json(experiment::web(base + "8&name=" + http::url_encode(util::trim(name.substr(0, cut)))), err, ctx);
         if (!err.empty()) return false;
         if (!j.contains("results") || !j["results"].is_array()) continue;
         for (size_t i = 0; i < j["results"].size(); ++i) {
@@ -688,7 +688,7 @@ std::string t_web_search(const json &a, Context &ctx) {
                     "not be looked up. Tell the user that; if you answer from memory, say it may be out of date");
     const json body = {{"query", query}, {"search_depth", "basic"}, {"include_answer", true}, {"max_results", 5}};
     std::string err;
-    const json j = fetch_json("https://api.tavily.com/search", err, ctx,
+    const json j = fetch_json(experiment::web("https://api.tavily.com/search"), err, ctx,
                               {"Content-Type: application/json", "Authorization: Bearer " + key}, body.dump());
     if (!err.empty()) return fail(err);
     json out = json::object();
@@ -726,7 +726,7 @@ std::string t_weather(const json &a, Context &ctx) {
              "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m"
              "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset%s",
              p.lat, p.lon, days, imperial ? "&temperature_unit=fahrenheit&wind_speed_unit=mph" : "");
-    const json j = fetch_json(url, err, ctx);
+    const json j = fetch_json(experiment::web(url), err, ctx);
     if (!err.empty()) return fail(err);
     const std::string deg = imperial ? "F" : "C", wind = imperial ? " mph" : " km/h";
     json out = {{"place", p.name + (p.country.empty() ? "" : ", " + p.country)}};

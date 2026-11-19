@@ -89,10 +89,40 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
     ev.answer_discard = [] { first_text = false; puts("[draft withdrawn]"); };
     ev.error = [](const std::string &m) { printf("[error] %s\n", m.c_str()); };
     ev.image = [](const std::string &p) { printf("[photo] %s\n", p.c_str()); };
+#if ZB_EXPERIMENTS
+    // Records for the test sets' scorer (tests/agent_eval.py), one line each, as JSON: every tool call
+    // of the request as it finishes, whole, from the turn's own events (so trimming the history cannot
+    // hide one, and nothing is cut), and after the request what the calendar, reminders, timers and
+    // memory files hold.
+    ev.tool_done = [](const std::string &id, const std::string &name, const std::string &args, const std::string &result) {
+        const json rec = {{"id", id}, {"name", name}, {"args", args}, {"result", result}};
+        printf("[call] %s\n", rec.dump(-1, ' ', false, json::error_handler_t::replace).c_str());
+        fflush(stdout);
+    };
+    auto state_record = [] {
+        json st = {{"now", static_cast<long long>(time(nullptr))}};
+        for (const char *name : {"reminders", "calendar", "memory"})
+            st[name] = util::load_json(util::data_dir() + "/" + name + ".json", json::array());
+        printf("[state] %s\n", st.dump(-1, ' ', false, json::error_handler_t::replace).c_str());
+    };
+#endif
     Agent &agent = Agent::get();
     agent.start(ev);
+    // Where this request's messages begin in the history afterwards. The history only grows at its end
+    // and is cut at its front (when a request starts), so the part of the old history still there is
+    // the longest end of it that the new history begins with.
+    auto turn_start = [](const json &before, const json &after) -> size_t {
+        for (size_t cut = 0; cut <= before.size(); ++cut) {
+            const size_t kept = before.size() - cut;
+            if (kept > after.size()) continue;
+            bool same = true;
+            for (size_t i = 0; i < kept && same; ++i) same = before[cut + i] == after[i];
+            if (same) return kept;
+        }
+        return 0;
+    };
     auto one = [&](const std::string &text) {
-        const size_t before = agent.history_size();
+        const json earlier = agent.history_snapshot();
         t0 = std::chrono::steady_clock::now();
         first_text = false;
         // Stands in for the user pressing the talk key while the request is being worked on.
@@ -117,7 +147,7 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
         if (talker.joinable()) talker.join();
         const double total = since();
         const json hist = agent.history_snapshot();
-        for (size_t i = before; i < hist.size(); ++i) {
+        for (size_t i = turn_start(earlier, hist); i < hist.size(); ++i) {
             const json &m = hist[i];
             if (m.contains("tool_calls"))
                 for (auto &c : m["tool_calls"])
@@ -130,6 +160,9 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
             else if (util::jget(m, "role", std::string()) == "assistant" && i + 1 < hist.size())
                 printf("  = %s\n", util::truncate_utf8(util::jget(m, "content", std::string()), 160).c_str());
         }
+#if ZB_EXPERIMENTS
+        state_record();   // before the answer, whose text runs to the next prompt
+#endif
         printf("[answer %.1fs] %s\n", total, answer.c_str());
         fflush(stdout);
     };

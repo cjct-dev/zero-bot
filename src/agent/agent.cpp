@@ -706,6 +706,9 @@ void Agent::run_turn() {
                     std::chrono::steady_clock::now() - tool_started).count());
                 activity::tool(c.name, c.args, result, tool_ms);   // DIAGNOSTICS (temporary): the activity log
                 rt.tool(c.name, tool_ms, result);
+#if ZB_EXPERIMENTS
+                if (ev_.tool_done) ev_.tool_done(c.id, c.name, c.args, result);
+#endif
                 if (result.size() > kMaxToolResult) result = util::truncate_utf8(result, kMaxToolResult, " …[truncated]");
                 if (tools::failed(result)) {
                     ++failures;
