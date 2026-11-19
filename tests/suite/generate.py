@@ -8,9 +8,11 @@ dropped article), so the file is the same on every run. Change the templates, ru
 read the diff before committing it. `--check` exits non-zero when cases.json is out of date.
 
 Each case: {"name", "tags", "turns", "must", "must_not", "checks", "env", "home", "steer"}, and
-"long_ok" when it has one.
+"long_ok" and "tried" when it has them.
   turns     what the user says, in order ("/new" starts a new conversation, memories kept)
-  must      tools the last turn must call; "a|b" means either
+  must      tools the last turn must call; "a|b" means either; a change must also have worked
+  tried     tools the last turn must call whatever came of it: routing, and cases about a failure or
+            about a question first (a change waiting for the user's yes has not worked yet)
   must_not  tools it must not call; "*" means none at all
   checks    declarative checks of the last turn, compiled by tests/agent_suite.py (see KINDS there);
             a check with "turn": N looks at turn N instead (0 is the first, -1 the last; "/new" is
@@ -44,7 +46,7 @@ MON, TUE, WED, THU, FRI, SAT, SUN = range(7)
 
 
 # ------------------------------------------------------------------ building blocks
-def case(cat, turns, tags=(), must=(), must_not=(), checks=(), env=None, home=None, steer=None, long_ok=()):
+def case(cat, turns, tags=(), must=(), must_not=(), checks=(), env=None, home=None, steer=None, long_ok=(), tried=()):
     COUNT[cat] = COUNT.get(cat, 0) + 1
     turns = [turns] if isinstance(turns, str) else list(turns)
     tags = [cat] + [t for t in tags if t != cat]
@@ -54,6 +56,7 @@ def case(cat, turns, tags=(), must=(), must_not=(), checks=(), env=None, home=No
     CASES.append({"name": "%s-%03d" % (cat, COUNT[cat]), "tags": tags, "turns": turns, "must": list(must), "must_not": list(must_not),
                   "checks": list(checks), "env": env or {}, "home": home, "steer": steer})
     if long_ok: CASES[-1]["long_ok"] = list(long_ok)
+    if tried: CASES[-1]["tried"] = list(tried)
 
 
 def ans(pattern, what=None): return {"kind": "answer", "re": pattern, "what": what}
@@ -79,9 +82,10 @@ def max_words(n): return {"kind": "max_words", "n": n}
 def on_turn(turn, check): return dict(check, turn=turn)
 def every_turn(check): return dict(check, turn="all")       # in no turn may this go wrong
 def timers_saved(*seconds): return {"kind": "timers_saved", "lengths": list(seconds)}
-def moved(first_day, first_times, then_day, then_times, what):
-    """The whole conversation: one saved at the first time, then exactly one, the same, at the new time."""
-    return {"kind": "moved", "first": [first_day, first_times], "then": [then_day, then_times], "what": what}
+def moved(first_day, first_times, then_day, then_times, what, title=None):
+    """The whole conversation: one saved at the first time, then exactly one, the same, at the new time;
+    its name has every word of title (default what) that says what it is."""
+    return {"kind": "moved", "first": [first_day, first_times], "then": [then_day, then_times], "what": what, "title": title or what}
 def memory(has, lacks=()): return {"kind": "memory", "has": has, "lacks": list(lacks)}
 
 
@@ -282,7 +286,7 @@ for text, day, times in [("remind me at ate tomorrow morning to call the hotel",
                          ("remind me tomorrow at ten too call the plumber", "tomorrow", ["10:00", "22:00"])]:
     case("reminder", text, tags=["asr"], must=["reminder_set|calendar_add"], checks=[at(day, *times)])
 case("reminder", ["remind me tomorrow at 9 to call the bank", "actually make it 10"], must=["reminder_set|calendar_add|reminder_cancel"],
-     checks=[moved("tomorrow", ["09:00", "21:00"], "tomorrow", ["10:00"], "reminder")])
+     checks=[moved("tomorrow", ["09:00", "21:00"], "tomorrow", ["10:00"], "reminder", "bank")])
 case("reminder", ["remind me tomorrow at 9am to call the bank", "what reminders have i got"], must=["reminder_list"],
      checks=[on_turn(0, at("tomorrow", "09:00"))])
 for text in ["set a reminder", "remind me to call mum", "set an alarm", "can you remind me about the dentist"]:
@@ -331,7 +335,7 @@ case("calendar", ["put dinner with marta in my calendar for friday at 8pm", "act
 case("calendar", ["add lunch with sam on thursday at 1pm", "move it to 2"], must=["calendar_update|calendar_add"],
      checks=[moved("next:%d" % THU, ["13:00"], "next:%d" % THU, ["14:00"], "lunch")])
 case("calendar", ["add a dentist appointment on the 3rd of december at 10am", "can you move it to the 4th"], must=["calendar_update|calendar_add"],
-     checks=[moved("date:12-03", ["10:00"], "date:12-04", ["10:00"], "dentist appointment")])
+     checks=[moved("date:12-03", ["10:00"], "date:12-04", ["10:00"], "dentist appointment", "dentist")])
 case("calendar", ["add yoga on wednesday at 6pm", "delete that"], must=["calendar_delete"],
      checks=[on_turn(0, at("next:%d" % WED, "18:00", tools="calendar_add")), simple("events_saved", n=0)])
 case("calendar", ["add yoga on wednesday at 6pm", "whats on my calendar on wednesday"],
@@ -453,10 +457,12 @@ for text, action in [("stop the music", "stop"), ("turn the music off", "stop"),
                      ("next track please", "next"), ("what song is this", "now_playing"), ("whats playing", "now_playing"),
                      ("what music have i got", "library|search"), ("shuffle my music", "play"), ("play something relaxing", "play|search")]:
     # "next" finds nothing playing in a fresh state, so the call made is what counts there (routing).
-    case("music", text, must=["music"], checks=[dict({"kind": "arg", "tool": "music", "key": "action", "any": action.split("|")},
-                                                     **({"made": True} if action == "next" else {}))])
+    case("music", text, **({"tried": ["music"]} if action == "next" else {"must": ["music"]}),
+         checks=[dict({"kind": "arg", "tool": "music", "key": "action", "any": action.split("|")}, **({"made": True} if action == "next" else {}))])
 case("music", "play some aba", tags=["asr"], must=["music"], checks=[arg_is("music", "action", "play")])
-case("music", ["play some abba", "skip this one"], must=["music"], checks=[arg_is("music", "action", "next")])
+# The songs queued in the first turn are skipped in the second: with ZB_DRY_RUN the music tool keeps a
+# pretend queue, so "next" works only after a play that worked, and moves to the queue's next song.
+case("music", ["play some abba", "skip this one"], must=["music"], checks=[on_turn(0, arg_is("music", "action", "play")), arg_is("music", "action", "next")])
 case("music", ["put on some jazz", "stop"], must=["music"], checks=[arg_is("music", "action", "stop")])
 for text, key, tags in [("turn on the tv", "power", []), ("turn the telly on", "power", ["uk"]), ("switch off the tv", "power", []),
                         ("turn the tv volume up", "volume_up", []), ("turn the telly down a bit", "volume_down", ["uk"]), ("mute the tv", "mute", []),
@@ -531,8 +537,8 @@ for text in ["turn on the garage door", "open the blinds in the bedroom", "turn 
     case("home", text, tags=["missing"], home=H,
          checks=[simple("home_never_on"), ans(CANNOT + r"|no (device|garage|blinds|coffee)|isn'?t|not (one|listed|among|set up)|don'?t see|couldn'?t find|aren'?t",
                                               "that there is no such device")])
-case("home", "turn on the fan heater", tags=["confirm"], must=["smart_home"], home=H, checks=[simple("home_asked")])
-case("home", "switch the fan heater on please", tags=["confirm"], must=["smart_home"], home=H, checks=[simple("home_asked")])
+case("home", "turn on the fan heater", tags=["confirm"], tried=["smart_home"], home=H, checks=[simple("home_asked", name="heater")])
+case("home", "switch the fan heater on please", tags=["confirm"], tried=["smart_home"], home=H, checks=[simple("home_asked", name="heater")])
 for yes in ["yes", "yes please", "go on then", "yeah do it"]:
     case("home", ["turn on the fan heater", yes], tags=["confirm"], must=["smart_home"], home=H,
          checks=[on_turn(0, simple("home_asked", name="heater")), home_call("on", ["Fan heater"]), simple("home_switched", name="Fan heater")])
@@ -540,10 +546,13 @@ for no in ["no", "leave it off please", "actually no leave it", "no thanks"]:
     case("home", ["turn on the fan heater", no], tags=["confirm"], home=H,
          checks=[on_turn(0, simple("home_asked", name="heater")), every_turn(simple("home_not_switched", name="Fan heater"))])
 # The search comes from the stand-in web (tests/mocks/fake_web.py; tests/agent_eval.py replaces "@web"), so no search key is needed.
+# The first turn searches, and the change waits for the user's word: asked about, never made.
+WEB = {"ZB_EXP_WEB": "@web/default", "ZB_SEARCH_KEY": "stand-in"}
 case("home", ["look up when the sun sets today, then turn on the bedroom lamp", "no, leave it"], tags=["confirm", "search"], home=H,
-     env={"ZB_EXP_WEB": "@web/default", "ZB_SEARCH_KEY": "stand-in"}, checks=[every_turn(simple("home_not_switched", name="Bedroom lamp"))])
-case("home", ["look up when the sun sets today", "turn on the bedroom lamp"], tags=["confirm", "search"], must=["smart_home"], home=H,
-     checks=[simple("home_asked")])
+     env=WEB, checks=[on_turn(0, arg_has("web_search", "query", "sun")), on_turn(0, simple("asks", name="lamp")),
+                      every_turn(simple("home_not_switched", name="Bedroom lamp"))])
+case("home", ["look up when the sun sets today", "turn on the bedroom lamp"], tags=["confirm", "search"], tried=["smart_home"], home=H,
+     env=WEB, checks=[on_turn(0, arg_has("web_search", "query", "sun")), simple("home_asked", name="lamp")])
 case("home", ["turn everything off", "yes"], tags=["confirm"], must=["smart_home"], home="sockets", checks=[simple("home_all_off")])
 case("home", ["turn on the bedroom lamp", "make it blue"], must=["smart_home"], home=H, checks=[home_call("set", ["Bedroom lamp", "Bedroom"], color="blue")])
 case("home", ["turn on the floor lamp", "dim it to 20 percent"], must=["smart_home"], home=H, checks=[home_call("set", ["Floor lamp", "Lounge"], brightness=20)])
@@ -579,7 +588,7 @@ FAILED = (r"couldn'?t|could not|can'?t|cannot|unable|didn'?t|did not|isn'?t|is n
 NO_IR_OFFER = nans(r"infra.?red|\bIR\b|top (edge )?of (the|this|my) device|point(ing)? (the|this|my) device|remote instead",
                    "offer the infrared remote for a TV the smart home lists")
 for turns, home in [("turn the tv up a bit", "tv_silent"), ("turn the tv down", "tv_closed")]:
-    case("home", turns, tags=["tv", "route", "offline"], must=["smart_home"], must_not=["tv_remote", "device"], home=home, env=LIVE,
+    case("home", turns, tags=["tv", "route", "offline"], tried=["smart_home"], must_not=["tv_remote", "device"], home=home, env=LIVE,
          checks=[ans(FAILED, "that it did not work"), NO_IR_OFFER])
 for turns, home in [(["turn on the tv", "turn the volume up"], "tv_silent"), (["switch the tv on", "turn it down a bit"], "tv_closed")]:
     case("home", turns, tags=["tv", "route", "offline"], must_not=["tv_remote", "device"], home=home, env=LIVE,
@@ -649,7 +658,8 @@ for text, must, checks in [
          [arg_has("weather", "location", "tokyo"), arg_has("world_time", "place", "tokyo")]),
         ("add lunch with sam on friday at 1pm and remind me on thursday at 6pm to book a table", ["calendar_add", "reminder_set|calendar_add"],
          [at("next:%d" % FRI, "13:00", tools="calendar_add"), at("next:%d" % THU, "18:00")]),
-        ("play some jazz and turn your volume down to 30", ["music", "device"], [arg_num("device", "value", 30)]),
+        ("play some jazz and turn your volume down to 30", ["music", "device"],
+         [arg_num("device", "value", 30), simple("music_filter", key="genre", has=["jazz"])]),
         ("remember that im vegetarian and add dinner with anna on saturday at 7pm", ["memory_save", "calendar_add"],
          [arg_has("memory_save", "text", "vegetarian"), at("next:%d" % SAT, "19:00", tools="calendar_add")]),
         ("set a timer for ten minutes and uh whats the weather like in leeds tomorrow", ["timer", "weather"],
@@ -684,11 +694,20 @@ for text, tags in [("what time uk time is the stripe o.p.o.", ["asr"]),
                    ("what time does the monzo i.p.o. start in uk time", ["asr"]),
                    ("whats the date of the canva ipo and what time is that uk time", [])]:
     case("dialogue", text, tags=tags + ["uk", "search"], must=["web_search"], checks=[NOT_CLARIFY, IPO_QUERY])
-# A follow-up that leans on the turn before: the subject is known, and the time is converted.
-case("dialogue", ["when is discord's ipo", "and what time would trading start uk time"], tags=["uk", "search"],
-     must=["web_search|world_time"], checks=[SAYS_TIME, nans(r"which company|what company", "ask which company")])
-case("dialogue", ["when is the next apple product launch event", "what time is that in uk time"], tags=["uk", "search"],
-     must=["web_search|world_time"], checks=[SAYS_TIME, nans(r"which event|what event", "ask which event")])
+# A follow-up that leans on the turn before: the subject is known, and the time is what the search found,
+# converted, or "not announced" where it found none. The searches come from the stand-in web's "events"
+# fixture (tests/mocks/fake_web.py): the launch's time is published (event_time works out the UK time it
+# must be), the listing's is not (no time of day may be given for it, except as what usually happens).
+EVENTS_WEB = {"ZB_EXP_WEB": "@web/events", "ZB_SEARCH_KEY": "stand-in"}
+case("dialogue", ["when is discord's ipo", "and what time would trading start uk time"], tags=["uk", "search"], env=EVENTS_WEB,
+     checks=[on_turn(0, arg_has("web_search", "query", "discord")),
+             # The exchange's usual hours may be given as such: 9:30 to 16:00 in New York, 14:30 to 21:00 in the UK
+             # (13:30 to 20:00 in the weeks the clocks change on different dates).
+             simple("unannounced_time", usual=["09:30", "13:30", "14:30", "16:00", "20:00", "21:00"]),
+             nans(r"which company|what company", "ask which company")])
+case("dialogue", ["when is the next apple product launch event", "what time is that in uk time"], tags=["uk", "search"], env=EVENTS_WEB,
+     checks=[on_turn(0, arg_has("web_search", "query", "apple")), simple("event_time", event="product_launch"),
+             nans(r"which event|what event", "ask which event")])
 # The search budget: a clarified question is looked up once or twice, not four times in a row; nor
 # is the misheard one before it (a live run made seven searches there, 55 s, and passed).
 case("dialogue", ["what time uk time is the stripe o.p.o.", "sorry, i meant the stripe i-p-o, the stock market listing. when does it price"],

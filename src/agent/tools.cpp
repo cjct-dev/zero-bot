@@ -897,22 +897,45 @@ void radio_hint(const json &a, json &out) {
                        : "A radio station is played with the radio tool, not from the music library.";
 }
 
+// With ZB_DRY_RUN nothing plays, but the music tool keeps a pretend queue of what it would have played,
+// so that "next" and "now_playing" answer as they would with a player (the test sets ask for a song
+// and then skip it). Without ZB_DRY_RUN it is never touched.
+struct DryQueue {
+    std::mutex mtx;
+    std::vector<std::string> paths;
+    size_t at = 0;
+    std::string current() { return at < paths.size() ? paths[at] : std::string(); }
+};
+DryQueue &dry_queue() { static DryQueue q; return q; }
+
 std::string t_music(const json &a, Context &ctx) {
     const std::string action = util::lower(str_arg(a, "action"));
     audio::Music &player = audio::Music::get();
     MusicLibrary &lib = MusicLibrary::get();
-    if (action == "stop") { if (!dry_run()) player.stop(); return "music stopped"; }
+    DryQueue &dry = dry_queue();
+    std::unique_lock<std::mutex> dry_lock(dry.mtx, std::defer_lock);
+    if (dry_run()) dry_lock.lock();
+    if (action == "stop") {
+        if (!dry_run()) player.stop();
+        else dry.paths.clear();
+        return "music stopped";
+    }
     if (action == "next") {
+        if (dry_run()) {
+            if (dry.current().empty()) return fail("nothing is playing");
+            if (++dry.at >= dry.paths.size()) dry.paths.clear();   // past the last track, as the player stops
+            return "skipped to the next track";
+        }
         if (!player.playing()) return fail("nothing is playing");
         if (player.live()) return fail("a radio station is playing, not a list of songs; another station is started with radio");
         player.next();
         return "skipped to the next track";
     }
     if (action == "now_playing") {
-        if (player.live())
+        if (!dry_run() && player.live())
             return json{{"radio_station", player.title()},
                         {"note", "a live station: the stream does not say which programme or song is on"}}.dump();
-        const std::string cur = player.current();
+        const std::string cur = dry_run() ? dry.current() : player.current();
         if (cur.empty()) return "nothing is playing";
         const Track t = lib.lookup(cur);
         return json{{"title", t.title}, {"artist", t.artist}, {"album", t.album}}.dump();
@@ -966,6 +989,9 @@ std::string t_music(const json &a, Context &ctx) {
         // lifts the hold), so the song does not begin, stop for the reply and begin again.
         if (ctx.in_conversation) player.hold(audio::Music::kExchange, true);
         player.play(paths);
+    } else {
+        dry.paths = paths;
+        dry.at = 0;
     }
     const Track &first = found[0];
     return json{{"now_playing", first.title + (first.artist.empty() ? "" : " by " + first.artist)},

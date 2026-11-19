@@ -5302,7 +5302,8 @@
       "10:00"
      ]
     ],
-    "what": "reminder"
+    "what": "reminder",
+    "title": "bank"
    }
   ],
   "env": {},
@@ -6466,7 +6467,8 @@
       "20:30"
      ]
     ],
-    "what": "dinner"
+    "what": "dinner",
+    "title": "dinner"
    }
   ],
   "env": {},
@@ -6502,7 +6504,8 @@
       "14:00"
      ]
     ],
-    "what": "lunch"
+    "what": "lunch",
+    "title": "lunch"
    }
   ],
   "env": {},
@@ -6538,7 +6541,8 @@
       "10:00"
      ]
     ],
-    "what": "dentist appointment"
+    "what": "dentist appointment",
+    "title": "dentist"
    }
   ],
   "env": {},
@@ -10019,9 +10023,7 @@
   "turns": [
    "skip this song"
   ],
-  "must": [
-   "music"
-  ],
+  "must": [],
   "must_not": [],
   "checks": [
    {
@@ -10036,7 +10038,10 @@
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "tried": [
+   "music"
+  ]
  },
  {
   "name": "music-012",
@@ -10046,9 +10051,7 @@
   "turns": [
    "next track please"
   ],
-  "must": [
-   "music"
-  ],
+  "must": [],
   "must_not": [],
   "checks": [
    {
@@ -10063,7 +10066,10 @@
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "tried": [
+   "music"
+  ]
  },
  {
   "name": "music-013",
@@ -10237,6 +10243,13 @@
   ],
   "must_not": [],
   "checks": [
+   {
+    "kind": "arg",
+    "tool": "music",
+    "key": "action",
+    "is": "play",
+    "turn": 0
+   },
    {
     "kind": "arg",
     "tool": "music",
@@ -12885,18 +12898,20 @@
   "turns": [
    "turn on the fan heater"
   ],
-  "must": [
-   "smart_home"
-  ],
+  "must": [],
   "must_not": [],
   "checks": [
    {
-    "kind": "home_asked"
+    "kind": "home_asked",
+    "name": "heater"
    }
   ],
   "env": {},
   "home": "eval",
-  "steer": null
+  "steer": null,
+  "tried": [
+   "smart_home"
+  ]
  },
  {
   "name": "home-046",
@@ -12907,18 +12922,20 @@
   "turns": [
    "switch the fan heater on please"
   ],
-  "must": [
-   "smart_home"
-  ],
+  "must": [],
   "must_not": [],
   "checks": [
    {
-    "kind": "home_asked"
+    "kind": "home_asked",
+    "name": "heater"
    }
   ],
   "env": {},
   "home": "eval",
-  "steer": null
+  "steer": null,
+  "tried": [
+   "smart_home"
+  ]
  },
  {
   "name": "home-047",
@@ -13204,6 +13221,20 @@
   "must_not": [],
   "checks": [
    {
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "sun"
+    ],
+    "turn": 0
+   },
+   {
+    "kind": "asks",
+    "name": "lamp",
+    "turn": 0
+   },
+   {
     "kind": "home_not_switched",
     "name": "Bedroom lamp",
     "turn": "all"
@@ -13228,18 +13259,32 @@
    "look up when the sun sets today",
    "turn on the bedroom lamp"
   ],
-  "must": [
-   "smart_home"
-  ],
+  "must": [],
   "must_not": [],
   "checks": [
    {
-    "kind": "home_asked"
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "sun"
+    ],
+    "turn": 0
+   },
+   {
+    "kind": "home_asked",
+    "name": "lamp"
    }
   ],
-  "env": {},
+  "env": {
+   "ZB_EXP_WEB": "@web/default",
+   "ZB_SEARCH_KEY": "stand-in"
+  },
   "home": "eval",
-  "steer": null
+  "steer": null,
+  "tried": [
+   "smart_home"
+  ]
  },
  {
   "name": "home-057",
@@ -14064,9 +14109,7 @@
   "turns": [
    "turn the tv up a bit"
   ],
-  "must": [
-   "smart_home"
-  ],
+  "must": [],
   "must_not": [
    "tv_remote",
    "device"
@@ -14087,7 +14130,10 @@
    "ZB_DRY_RUN": null
   },
   "home": "tv_silent",
-  "steer": null
+  "steer": null,
+  "tried": [
+   "smart_home"
+  ]
  },
  {
   "name": "home-083",
@@ -14100,9 +14146,7 @@
   "turns": [
    "turn the tv down"
   ],
-  "must": [
-   "smart_home"
-  ],
+  "must": [],
   "must_not": [
    "tv_remote",
    "device"
@@ -14123,7 +14167,10 @@
    "ZB_DRY_RUN": null
   },
   "home": "tv_closed",
-  "steer": null
+  "steer": null,
+  "tried": [
+   "smart_home"
+  ]
  },
  {
   "name": "home-084",
@@ -15490,6 +15537,13 @@
     "tool": "device",
     "key": "value",
     "num": 30
+   },
+   {
+    "kind": "music_filter",
+    "key": "genre",
+    "has": [
+     "jazz"
+    ]
    }
   ],
   "env": {},
@@ -15836,15 +15890,28 @@
    "when is discord's ipo",
    "and what time would trading start uk time"
   ],
-  "must": [
-   "web_search|world_time"
-  ],
+  "must": [],
   "must_not": [],
   "checks": [
    {
-    "kind": "answer",
-    "re": "\\b\\d{1,2}(:\\d\\d)?\\s*(am|pm|a\\.m\\.|p\\.m\\.)|\\b\\d{1,2}:\\d\\d\\b|o'?clock|\\b(noon|midday)\\b|in the (morning|afternoon|evening)",
-    "what": "a time of day"
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "discord"
+    ],
+    "turn": 0
+   },
+   {
+    "kind": "unannounced_time",
+    "usual": [
+     "09:30",
+     "13:30",
+     "14:30",
+     "16:00",
+     "20:00",
+     "21:00"
+    ]
    },
    {
     "kind": "not_answer",
@@ -15852,7 +15919,10 @@
     "what": "ask which company"
    }
   ],
-  "env": {},
+  "env": {
+   "ZB_EXP_WEB": "@web/events",
+   "ZB_SEARCH_KEY": "stand-in"
+  },
   "home": null,
   "steer": null
  },
@@ -15868,15 +15938,21 @@
    "when is the next apple product launch event",
    "what time is that in uk time"
   ],
-  "must": [
-   "web_search|world_time"
-  ],
+  "must": [],
   "must_not": [],
   "checks": [
    {
-    "kind": "answer",
-    "re": "\\b\\d{1,2}(:\\d\\d)?\\s*(am|pm|a\\.m\\.|p\\.m\\.)|\\b\\d{1,2}:\\d\\d\\b|o'?clock|\\b(noon|midday)\\b|in the (morning|afternoon|evening)",
-    "what": "a time of day"
+    "kind": "arg",
+    "tool": "web_search",
+    "key": "query",
+    "has": [
+     "apple"
+    ],
+    "turn": 0
+   },
+   {
+    "kind": "event_time",
+    "event": "product_launch"
    },
    {
     "kind": "not_answer",
@@ -15884,7 +15960,10 @@
     "what": "ask which event"
    }
   ],
-  "env": {},
+  "env": {
+   "ZB_EXP_WEB": "@web/events",
+   "ZB_SEARCH_KEY": "stand-in"
+  },
   "home": null,
   "steer": null
  },

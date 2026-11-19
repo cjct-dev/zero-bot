@@ -15,13 +15,22 @@ Usage:
 
 --trace records the experiments' trace (src/agent/experiment.h, cli build) of every turn into
 --json: model calls with their timings and token counts, tools, guards. tests/exp_report.py
-summarises such files.
+summarises such files. --validate checks the cases as written and runs nothing.
 
 Side effects are disabled (ZB_DRY_RUN): no music plays, no infrared is sent and no smart-home
-device is switched. Every case starts from an empty calendar, memory and settings; the smart-home
-cases start from a made-up home on the stand-in test network (ZB_TEST_NETWORK). A case that must
-really reach a device (a TV that does not answer, on 127.0.0.1) runs without ZB_DRY_RUN, with
-stand-ins that do nothing for the programs that would change this computer (volume, sound, camera).
+device is switched. Every case starts from an empty calendar, memory and settings, in a home folder
+of the run's own with a stand-in music library (MUSIC_LIBRARY), a fixture photo for the camera and
+ZB_EXP_NO_HARDWARE (camera and infrared refuse); the smart-home cases start from a made-up home on
+the stand-in test network (ZB_TEST_NETWORK). A case that must really reach a device (a TV that does
+not answer, on 127.0.0.1) runs without ZB_DRY_RUN, with stand-ins that do nothing for the programs
+that would change this computer (volume, sound, camera).
+
+The evidence is the cli build's records file (ZB_EVAL_RECORDS: each turn's start and end, the answer,
+every tool call whole, the saved state, errors), checked as it is read; nothing printed can pass for
+it. Each run ends "pass", "fail" or "unscorable": evidence that is missing or unreadable (no state for
+a check that needs one, a store the app could not read, records out of order, a saved result from
+before a field existed) is never a pass. Every result carries case_hash, scorer (SCORER_VERSION) and
+trace, so that a comparison knows which results it may set side by side.
 """
 import argparse, concurrent.futures, datetime, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -38,9 +47,15 @@ def words(n):
 
 def negative(text, start):
     """True when the number that begins at text[start] carries a minus sign: "-12", "−12", "minus 12"
-    (not the "-" of a range such as "10-12" or a date)."""
+    (not the "-" of a range such as "10-12" or "10 - 12", nor a "- 12" bullet at the start of a line)."""
     before = text[max(0, start - 12):start]
-    return bool(re.search(r"(?:^|[\s(\[:=~/])[-−]\s?$", before) or re.search(r"\bminus\s+$", before, re.I))
+    if re.search(r"\bminus\s+$", before, re.I): return True
+    m = re.search(r"(?:^|[\s(\[:=~/])([-−])(\s?)$", before)
+    if not m: return False
+    ahead = before[:m.start(1)]
+    if re.search(r"\d\s*$", ahead): return False            # 10 - 12, 9 -12: a range
+    if m.group(2) and re.search(r"(?:^|\n)\s*$", ahead): return False   # "- 12 apples": a bullet
+    return True
 
 def says_int(text, n):
     """True when the answer states the whole number n, as digits or as words, with its sign: "-12" or
@@ -84,7 +99,7 @@ def says_time(text, when, slack_min=2):
         h12 = t.hour % 12 or 12
         for pat in (r"\b0?%d[:.]%02d\b" % (t.hour, t.minute), r"\b%d[:.]%02d\b" % (h12, t.minute)):
             if any(right_half(text, m.end(), t.hour) for m in re.finditer(pat, text)): return True
-        if t.hour % 12 == 0 and t.minute < 10 and re.search(r"midnight" if t.hour == 0 else r"noon|midday", text, re.I): return True
+        if t.hour % 12 == 0 and t.minute == 0 and re.search(r"midnight" if t.hour == 0 else r"noon|midday", text, re.I): return True
         if t.minute == 0:
             for m in re.finditer(r"\b(%d|%s)\s*(o['’]?clock\b|(?=a\.?\s?m\b|p\.?\s?m\b|(?:in the|this|tomorrow) (?:morning|afternoon|evening)|tonight|at night))" % (h12, ONES[h12]), text, re.I):
                 if right_half(text, m.end(), t.hour): return True
@@ -101,6 +116,11 @@ def next_weekday(wd):
 def stamps(days, hhmm): return ["%s %s" % (d.isoformat(), hhmm) for d in days]
 
 def tomorrow(): return today().date() + datetime.timedelta(days=1)
+
+class Unscorable(Exception):
+    """A check needs evidence the run does not have: no saved state, a store the app could not read, a saved
+    result from before a field existed. The case is then neither passed nor failed on that check."""
+
 
 def failed(result):
     """A tool result saying the call did not work, as the app's tools::failed reads it (no result at all, from
@@ -128,15 +148,21 @@ def attempts(turn, name):
 
 # Tools that change something. A call to one counts only if it worked; a call that reads (a forecast, a
 # search, a rate) counts as made whatever the service answered, since a service that times out or is over
-# its quota is not the model's doing, and the answer's checks catch a made-up reply.
+# its quota is not the model's doing, and the answer's checks catch a made-up reply. In a case on the
+# stand-in web (env ZB_EXP_WEB) every read must have worked too: there a failed read is a broken fixture
+# (a 404 from the stand-in), and must not let a check pass for want of anything to look at.
 CHANGES = {"timer", "reminder_set", "reminder_cancel", "calendar_add", "calendar_update", "calendar_delete", "memory_save",
            "memory_delete", "smart_home", "music", "radio", "device", "tv_remote", "breathe", "set_timezone"}
+
+def counts(turn, name, result):
+    """Whether a call to `name` with this result counts as made (see CHANGES)."""
+    return worked(result) or (name not in CHANGES and not turn.get("strict_reads"))
 
 def calls(turn, name):
     """Parsed arguments of the calls to `name` (or any of a|b) in this turn that did what they asked: a
     change whose result is an ERROR, or that waits for a yes, did not."""
     return [a for (a, r), n in zip(_made(turn, name), [n for n, _ in turn["tools"] if n in name.split("|")])
-            if worked(r) or n not in CHANGES]
+            if counts(turn, n, r)]
 
 def tried(turn, name):
     """The calls to `name` in this turn and how each went, for a problem's text."""
@@ -158,19 +184,32 @@ def arg(turn, name, key, ok, what):
     return ["%s.%s should be %s, got %s" % (name, key, what, tried(turn, name))]
 
 # ---------------------------------------------------------------- the state a turn left
-# The cli build prints, after each request, what the calendar, reminders (timers among them) and memory
-# files hold ("[state] {...}"); saved runs from before it have none, and their checks fall back on the
-# tool calls alone.
-def state(turn): return turn.get("state")
+# The cli build records, after each request, what the calendar, reminders (timers among them) and memory
+# files hold. A missing file is an empty list there; a file the app could not read is null and named in
+# "unreadable". A check that needs the state of a turn without one (a saved run from before the record, a
+# build without it), or a store that could not be read, is unscorable: never a pass.
+def state(turn):
+    st = turn.get("state")
+    if st is None: raise Unscorable("no saved state was recorded for this turn")
+    if not isinstance(st, dict): raise Unscorable("the saved state is not a record: %r" % (st,))
+    return st
+
+def _store(st, name):
+    if name in (st.get("unreadable") or []): raise Unscorable("the app could not read its %s file" % name)
+    if name not in st: raise Unscorable("the saved state has no %s" % name)
+    items = st[name]
+    if not isinstance(items, list) or not all(isinstance(x, dict) for x in items):
+        raise Unscorable("the saved %s is not a list of records" % name)
+    return items
 
 def local(ts):
     try: return datetime.datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M")
     except (TypeError, ValueError, OverflowError, OSError): return "?"
 
-def saved_timers(st): return [r for r in st.get("reminders", []) if r.get("kind") == "timer"]
-def saved_reminders(st): return [r for r in st.get("reminders", []) if r.get("kind") != "timer"]
-def saved_events(st): return list(st.get("calendar", []))
-def saved_memory(st): return [str(m.get("text", "")) for m in st.get("memory", [])]
+def saved_timers(st): return [r for r in _store(st, "reminders") if r.get("kind") == "timer"]
+def saved_reminders(st): return [r for r in _store(st, "reminders") if r.get("kind") != "timer"]
+def saved_events(st): return list(_store(st, "calendar"))
+def saved_memory(st): return [str(m.get("text", "")) for m in _store(st, "memory")]
 
 def timer_length(r):
     """A saved timer's whole length in seconds (time added included)."""
@@ -179,7 +218,6 @@ def timer_length(r):
 
 def shown_state(st, what="all"):
     """The saved things, briefly, for a problem's text."""
-    if st is None: return "no saved state recorded"
     parts = []
     if what in ("all", "timers"): parts.append("timers %s" % [(r.get("text"), timer_length(r)) for r in saved_timers(st)])
     if what in ("all", "when"):
@@ -189,20 +227,18 @@ def shown_state(st, what="all"):
     return "; ".join(parts)
 
 def saved_at(turn, ok, weekly=False):
-    """None without a recorded state; otherwise whether a reminder or calendar event is saved at one of the
-    times in `ok` ("YYYY-MM-DD HH:MM"), repeating weekly if asked."""
+    """Whether a reminder or calendar event is saved at one of the times in `ok` ("YYYY-MM-DD HH:MM"),
+    repeating weekly if asked."""
     st = state(turn)
-    if st is None: return None
     whens = [] if weekly else [local(r.get("due")) for r in saved_reminders(st)]
     whens += [local(e.get("start")) for e in saved_events(st) if not weekly or e.get("repeat") == "weekly"]
     return any(w in ok for w in whens)
 
 def at_check(t, tools, ok, what, weekly=False):
-    """A call to `tools` that worked for one of the times in ok, and (when the state was recorded) something
-    saved at that time."""
+    """A call to `tools` that worked for one of the times in ok, and something saved at that time."""
     if not any(str(c.get("at", c.get("start")))[:16] in ok and (not weekly or c.get("repeat") == "weekly") for c in calls(t, tools)):
         return ["%s should be for %s, got %s" % (tools, what, tried(t, tools))]
-    if saved_at(t, ok, weekly) is False:
+    if not saved_at(t, ok, weekly):
         return ["nothing is saved for %s: %s" % (what, shown_state(state(t), "when"))]
     return []
 
@@ -272,36 +308,36 @@ def _when(x):
     """A saved reminder's or event's time and name."""
     return (local(x.get("due", x.get("start"))), str(x.get("text", x.get("title", ""))))
 
-def chk_moved_item(first, then, what):
-    """A whole-conversation check: the first turn saved one reminder or event at a time in first(), and
-    at the end exactly one is saved, at a time in then(), with the same name: moved, not added beside the
-    old one (nor added only after a first turn that saved nothing). Without a recorded state: a first-turn
-    call that worked, then a calendar_update to the new time, or a new one there with the old one removed."""
+STOPWORDS = {"a", "an", "the", "my", "to", "for", "with", "and", "of", "at", "on", "in", "me", "remind", "reminder", "about"}
+
+def content_words(text):
+    """The words of a name that say what it is, casefolded: "Call the bank" and "call the bank." are the same."""
+    return {w for w in re.findall(r"[^\W_]+", str(text).casefold()) if w not in STOPWORDS}
+
+def chk_moved_item(first, then, what, title=None):
+    """A whole-conversation check: the first turn saved one reminder or event at a time in first(), and at
+    the end exactly one is saved, at a time in then(), the same one: moved, not added beside the old one
+    (nor added only after a first turn that saved nothing). "The same" is by name, casefolded content
+    words, and the name must be the one asked for: every content word of `title` (default `what`), so
+    that moving some other item does not count. Needs the saved state of the first and last turns."""
+    want = content_words(title or what)
+    def named(name): return want <= content_words(name)
     def check(turns):
         a, z = turns[0], turns[-1]
         problems, name = [], None
-        if state(a) is not None:
-            items = [_when(x) for x in saved_reminders(state(a)) + saved_events(state(a))]
-            if len(items) != 1 or items[0][0] not in first(): problems.append("turn 1: one %s should be saved for %s, saved %s" % (what, first(), items))
-            else: name = items[0][1]
-        elif not any(str(c.get("at", c.get("start")))[:16] in first() for c in calls(a, "calendar_add|reminder_set")):
-            problems.append("turn 1: the %s should be saved for %s, got %s" % (what, first(), tried(a, "calendar_add|reminder_set")))
-        if state(z) is not None:
-            items = [_when(x) for x in saved_reminders(state(z)) + saved_events(state(z))]
-            if len(items) != 1 or items[0][0] not in then() or (name is not None and items[0][1] != name):
-                problems.append("at the end exactly one %s%s should be saved, for %s; saved %s" % (what, " called %r" % name if name else "", then(), items))
-        else:
-            moved = any(str(c.get("at", c.get("start")))[:16] in then() for c in calls(z, "calendar_update"))
-            again = any(str(c.get("at", c.get("start")))[:16] in then() for c in calls(z, "calendar_add|reminder_set")) and \
-                calls(z, "calendar_delete|reminder_cancel")
-            if not (moved or again):
-                problems.append("the %s should be moved to %s (calendar_update, or saved again there with the old one removed), got %s"
-                                % (what, then(), tried(z, "calendar_update|calendar_add|reminder_set|calendar_delete|reminder_cancel")))
+        items = [_when(x) for x in saved_reminders(state(a)) + saved_events(state(a))]
+        if len(items) != 1 or items[0][0] not in first() or not named(items[0][1]):
+            problems.append("turn 1: one %s should be saved for %s, saved %s" % (what, first(), items))
+        else: name = items[0][1]
+        items = [_when(x) for x in saved_reminders(state(z)) + saved_events(state(z))]
+        if len(items) != 1 or items[0][0] not in then() or not named(items[0][1]) or \
+           (name is not None and content_words(items[0][1]) != content_words(name)):
+            problems.append("at the end exactly one %s%s should be saved, for %s; saved %s" % (what, " called %r" % name if name else "", then(), items))
         return problems
     check.whole = True
     return check
 
-chk_moved = chk_moved_item(lambda: stamps(next_weekday(4), "20:00"), lambda: stamps(next_weekday(4), "20:30"), "dinner")
+chk_moved = chk_moved_item(lambda: stamps(next_weekday(4), "20:00"), lambda: stamps(next_weekday(4), "20:30"), "dinner", "dinner marta")
 
 def chk_alarm(t):
     return at_check(t, "reminder_set|calendar_add", stamps([tomorrow()], "08:00"), "tomorrow 08:00")
@@ -316,15 +352,15 @@ def timer_calls(t, action):
 
 def chk_timer(seconds, label=None):
     """A timer started for this long, with a label mentioning `label` when one is given: the call worked,
-    and (when the state was recorded) such a timer is saved."""
+    and such a timer is saved."""
     def check(t):
         starts = timer_calls(t, "start")
         if not any(abs(timer_seconds(c) - seconds) < 1 and (label is None or label in str(c.get("label", "")).lower())
                    for c in starts):
             return ["timer should start for %d seconds%s, got %s" % (seconds, " with a label about " + label if label else "", tried(t, "timer"))]
         st = state(t)
-        if st is not None and not any(abs(timer_length(r) - seconds) < 2 and (label is None or label in str(r.get("text", "")).lower())
-                                      for r in saved_timers(st)):
+        if not any(abs(timer_length(r) - seconds) < 2 and (label is None or label in str(r.get("text", "")).lower())
+                   for r in saved_timers(st)):
             return ["no %d-second timer%s is saved: %s" % (seconds, " about " + label if label else "", shown_state(st, "timers"))]
         return []
     return check
@@ -336,11 +372,9 @@ def chk_timer_action(action):
     return lambda t: [] if timer_calls(t, action) else ["timer should be called with action %s, got %s" % (action, tried(t, "timer"))]
 
 def chk_timers_saved(*lengths):
-    """Exactly these timers (lengths in seconds, time added included) are saved after the turn; nothing to
-    check in a saved run without a recorded state."""
+    """Exactly these timers (lengths in seconds, time added included) are saved after the turn."""
     def check(t):
         st = state(t)
-        if st is None: return []
         got = sorted(timer_length(r) for r in saved_timers(st))
         want = sorted(lengths)
         if len(got) == len(want) and all(abs(g - w) < 2 for g, w in zip(got, want)): return []
@@ -367,25 +401,22 @@ def chk_cancelled(want, keep):
         left = [str(x).lower() for r in done for x in r.get("still_running", [])]
         if not any(keep in x for x in left): return ["the %s timer should still be running after the cancel, still running: %s" % (keep, left)]
         st = state(t)
-        if st is not None:
-            names = [str(r.get("text", "")).lower() for r in saved_timers(st)]
-            if any(want in x for x in names) or not any(keep in x for x in names):
-                return ["the saved timers should hold the %s timer and not the %s one: %s" % (keep, want, shown_state(st, "timers"))]
+        names = [str(r.get("text", "")).lower() for r in saved_timers(st)]
+        if any(want in x for x in names) or not any(keep in x for x in names):
+            return ["the saved timers should hold the %s timer and not the %s one: %s" % (keep, want, shown_state(st, "timers"))]
         return []
     return check
 
 def saved_countdown(t, seconds):
-    """None without a recorded state; otherwise whether a timer of this length, or a reminder due this
-    long after the request, is saved."""
+    """Whether a timer of this length, or a reminder due this long after the request, is saved."""
     st = state(t)
-    if st is None: return None
     if any(abs(timer_length(r) - seconds) < 2 for r in saved_timers(st)): return True
     asked = int(st.get("now", 0)) - (t.get("total") or 0)   # about when the request began
     return any(abs(int(r.get("due", 0)) - asked - seconds) < 180 + (t.get("total") or 0) for r in saved_reminders(st))
 
 def chk_countdown(seconds):
     """Counted down from now: a timer of that length, or a reminder that far away (either is right), that
-    worked and (when recorded) is saved."""
+    worked and is saved."""
     def check(t):
         made = any(abs(timer_seconds(c) - seconds) < 1 for c in timer_calls(t, "start"))
         for c in calls(t, "reminder_set"):
@@ -398,7 +429,7 @@ def chk_countdown(seconds):
                 if abs((due - today()).total_seconds() - seconds) < 180: made = True
         if not made:
             return ["a timer or reminder should go off %d seconds from now, got %s" % (seconds, tried(t, "timer|reminder_set"))]
-        if saved_countdown(t, seconds) is False:
+        if not saved_countdown(t, seconds):
             return ["nothing is saved to go off %d seconds from now: %s" % (seconds, shown_state(state(t)))]
         return []
     return check
@@ -430,8 +461,7 @@ def chk_yearly(month_day, year=None):
             if c.get("repeat") == "yearly" and c.get("all_day") is True and start[5:] == month_day and \
                (year is None or start[:4] == str(year) or c.get("since_year") == year):
                 st = state(t)
-                if st is not None and not any(e.get("repeat") == "yearly" and local(e.get("start"))[5:10] == month_day
-                                              for e in saved_events(st)):
+                if not any(e.get("repeat") == "yearly" and local(e.get("start"))[5:10] == month_day for e in saved_events(st)):
                     return ["no yearly event on %s is saved: %s" % (month_day, shown_state(st, "when"))]
                 return []
         return ["calendar_add should be all_day, repeat yearly, on %s%s; got %s" % (month_day, " %d" % year if year else "",
@@ -446,16 +476,19 @@ def chk_dad_age(t):
     year = d.year if d <= datetime.date(d.year, 6, 2) else d.year + 1
     return [] if says_int(t["answer"], year - 1955) else ["answer should give the age %d" % (year - 1955)]
 
-def case(name, request, must=(), must_not=(), checks=(), env=None, steer=None, home=None, radio=None, quotes_ok=False):
+def case(name, request, must=(), must_not=(), checks=(), env=None, steer=None, home=None, radio=None, quotes_ok=False, tried=()):
     """request: one utterance or a list (a conversation; "/new" starts a fresh one, memories are kept).
     must / must_not / checks apply to the last turn; speech-suitability rules apply to every turn.
+    must: tools the last turn must call; a change (CHANGES) must also have worked, since the case is about
+    its effect. tried: tools it must call whatever came of the call, for routing and for the cases about a
+    failure or a question first (a change that waits for the user's yes has not worked yet).
     home: a smart-home file to start from, saved for the stand-in test network (see EVAL_HOME).
     radio: a radio station file to start from (see EVAL_RADIO); without one there are no stations.
     quotes_ok: the answer may quote a confirmation without having acted ("what would you say if..."):
     the rule against claiming an action without a tool call is left out; the saved state is checked instead."""
     return {"name": name, "turns": [request] if isinstance(request, str) else list(request), "must": list(must),
             "must_not": list(must_not), "checks": list(checks), "env": env or {}, "steer": steer, "home": home,
-            "radio": radio, "quotes_ok": quotes_ok}
+            "radio": radio, "quotes_ok": quotes_ok, "tried": list(tried)}
 
 # ---------------------------------------------------------------- a made-up home for the smart-home cases
 # Saved for the network ZB_TEST_NETWORK=1 stands in for (its id is checked in tests/unit). Every
@@ -510,15 +543,23 @@ def home_never_on(t):
     bad = [c for c in attempts(t, "smart_home") if str(c.get("action", "")).lower() in ("on", "set")]
     return ["switched something on without a clear target: %s" % bad] if bad else []
 
+# Saying that something is on now ("the fan heater is on", "it's now switched on"), not "it's on the list".
+SAYS_ON = r"(?<!not )(?<!n't )\b(is|it'?s|are) (now )?(switched |turned )?on\b(?! (the|your|a|an|my|its|their|this|that)\b)"
+
 def home_asked_about(word=None):
-    """The change waited for a yes: the tool answered CONFIRM, nothing was switched, and the user was asked,
-    in a question naming the thing (`word`, such as "heater") when one is given."""
+    """The change waited for a yes: the tool answered CONFIRM, nothing was switched, the answer does not
+    say it is on, and the user was asked, in a question (a sentence that ends with "?") naming the thing
+    (`word`, such as "heater") when one is given."""
     def check(t):
         got = results(t, "smart_home")
+        a = t["answer"]
         problems = [] if any(isinstance(r, str) and r.startswith("CONFIRM") for r in got) else ["smart_home never answered CONFIRM"]
         if any(isinstance(r, dict) and r.get("now") == "on" for r in got): problems.append("something was switched on without a yes")
-        if "?" not in t["answer"]: problems.append("the answer should ask the user")
-        elif word and word not in t["answer"].lower(): problems.append("the question should name the %s" % word)
+        questions = re.findall(r"[^.!?]*\?", a)
+        if not questions: problems.append("the answer should ask the user")
+        elif word and not any(re.search(r"\b%s" % re.escape(word), q, re.I) for q in questions):
+            problems.append("the question should name the %s" % word)
+        if re.search(SAYS_ON, a, re.I): problems.append("the answer says it is on, but the change waits for a yes")
         return problems
     return check
 
@@ -574,23 +615,19 @@ def on_turn(n, check):
     return f
 
 def chk_memory(has, lacks=()):
-    """A memory saved about `has` that worked, and (when the state was recorded) the saved memory mentions
-    it and none of `lacks` (a stale record a lucky answer could hide)."""
+    """The saved memory after the turn mentions `has` and none of `lacks` (a stale record a lucky answer
+    could hide)."""
     def check(t):
-        if not calls(t, "memory_save") and state(t) is None:
-            return ["memory_save should save something about %s, got %s" % (has, tried(t, "memory_save"))]
         st = state(t)
-        if st is None: return []
         mem = " | ".join(saved_memory(st)).lower()
         problems = [] if re.search(has, mem) else ["the saved memory should mention /%s/: %s" % (has, saved_memory(st))]
         return problems + ["the saved memory should no longer mention /%s/: %s" % (x, saved_memory(st)) for x in lacks if re.search(x, mem)]
     return check
 
 def chk_memory_lacks(*patterns):
-    """None of these is in the saved memory (nothing to check without a recorded state)."""
+    """None of these is in the saved memory."""
     def check(t):
         st = state(t)
-        if st is None: return []
         mem = " | ".join(saved_memory(st)).lower()
         return ["the saved memory should not mention /%s/: %s" % (x, saved_memory(st)) for x in patterns if re.search(x, mem)]
     return check
@@ -681,10 +718,10 @@ def _refusing_tv_home():
 
 def chk_device_log(sent, n):
     """A whole-conversation check: the device was sent exactly n requests of this kind ("POST /v1/FireTV
-    volume_down"), counting the one it refused; nothing to check in a saved run without the log."""
+    volume_down"), counting the one it refused."""
     def check(turns):
         log = turns[-1].get("device_log")
-        if log is None: return []
+        if log is None: raise Unscorable("the device's log of commands was not recorded")
         got = sum(1 for x in log if x == sent)
         return [] if got == n else ["the TV should get %r %d time%s in all, got %d: %s" % (sent, n, "" if n == 1 else "s", got, log)]
     check.whole = True
@@ -738,10 +775,9 @@ UNSURE = r"search|can'?t (check|look|confirm)|cannot|not set up|unable|not sure|
 # ---------------------------------------------------------------- checks of the saved state, for the review's conversations
 def chk_timers_named(**want):
     """Exactly these timers are saved, by a word of their label and their whole length in seconds
-    (tea=900, toast=1200); without a recorded state, nothing to check."""
+    (tea=900, toast=1200)."""
     def check(t):
         st = state(t)
-        if st is None: return []
         got = [(str(r.get("text", "")).lower(), timer_length(r)) for r in saved_timers(st)]
         ok = len(got) == len(want) and all(sum(1 for name, n in got if word in name and abs(n - secs) < 2) == 1
                                            for word, secs in want.items())
@@ -752,9 +788,9 @@ def chk_timer_left_said(word):
     """The answer gives the time left on the `word` timer, in whole minutes either way, worked out from the
     saved state (or, without one, from the turn's timer list)."""
     def check(t):
-        st = state(t)
         lefts = []
-        if st is not None:
+        if t.get("state") is not None:
+            st = state(t)
             lefts = [(int(r["due"]) - int(st["now"])) / 60.0 for r in saved_timers(st) if word in str(r.get("text", "")).lower()]
         else:
             for r in results(t, "timer"):
@@ -768,15 +804,117 @@ def chk_timer_left_said(word):
 
 def chk_saved_when(n, ok=None, mention=None):
     """Exactly n reminders and calendar events are saved; with ok, each at one of those times, and with
-    mention, each mentioning it (nothing to check without a recorded state)."""
+    mention, each mentioning it."""
     def check(t):
         st = state(t)
-        if st is None: return []
         items = [_when(x) for x in saved_reminders(st) + saved_events(st)]
         bad = len(items) != n or any((ok and w not in ok()) or (mention and mention not in name.lower()) for w, name in items)
         return ["%d reminder%s should be saved%s%s, saved: %s" % (n, "" if n == 1 else "s", " for %s" % ok() if ok else "",
                                                                  " about %s" % mention if mention else "", items)] if bad else []
     return check
+
+def chk_deadlines(*plan):
+    """A whole-conversation check of the saved timers' deadlines: plan gives, for each turn, the timers that
+    must be saved after it, by a word of their label, each with how far its deadline has moved since turn 1
+    (in seconds); a timer not named must not be saved. So a timer restarted, or one moved that should not
+    have been, shows even when the lengths come out right."""
+    def check(turns):
+        problems, base = [], {}
+        for i, want in enumerate(plan):
+            st = state(turns[i])
+            got = [(str(r.get("text", "")).lower(), int(r.get("due") or 0)) for r in saved_timers(st)]
+            for word, moved in want.items():
+                mine = [due for name, due in got if word in name]
+                if len(mine) != 1:
+                    problems.append("turn %d: one %s timer should be saved, saved %s" % (i + 1, word, shown_state(st, "timers")))
+                    continue
+                if i == 0: base[word] = mine[0]
+                elif word in base and abs(mine[0] - base[word] - moved) > 2:
+                    problems.append("turn %d: the %s timer's deadline should have moved by %d s since turn 1, it moved by %d s"
+                                    % (i + 1, word, moved, mine[0] - base[word]))
+            extra = [name for name, _ in got if not any(w in name for w in want)]
+            if extra: problems.append("turn %d: no other timer should be saved, saved %s" % (i + 1, extra))
+        return problems
+    check.whole = True
+    return check
+
+def asks_about(word):
+    """The answer asks the user something, in a sentence that ends with "?" and names `word`."""
+    return lambda t: [] if any(re.search(r"\b%s" % re.escape(word), q, re.I) for q in re.findall(r"[^.!?]*\?", t["answer"])) \
+        else ["the answer should ask about the %s" % word]
+
+def chk_forecast_seen(days, rain):
+    """The forecast the weather tool gave (a call that worked) holds the stand-in's figure for that day
+    (0 today, 1 tomorrow): its rain chance, or none at all when rain is None. Without it the follow-up's
+    checks mean nothing."""
+    def check(t):
+        day = (today().date() + datetime.timedelta(days=days)).isoformat()
+        seen = []
+        for c, r in _made(t, "weather"):
+            if not worked(r): continue
+            try: forecast = json.loads(r).get("forecast", [])
+            except (ValueError, AttributeError): continue
+            for line in forecast:
+                if str(line).startswith(day + ":"):
+                    m = re.search(r"rain chance (\d+)%", str(line))
+                    seen.append(int(m.group(1)) if m else None)
+        if rain in seen and len(set(seen)) == 1: return []
+        return ["the weather tool should have given %s's rain chance as %s, gave %s" % (day, "none" if rain is None else "%d%%" % rain, seen or tried(t, "weather"))]
+    return check
+
+# "Nothing was set": the negation governs the setting ("I didn't set a reminder", "no reminder was saved",
+# "nothing"), and no sentence states a reminder at 8 without one.
+NEGATION = r"\b(didn'?t|did not|haven'?t|have not|hasn'?t|has not|not|no|nothing|won'?t|wasn'?t|isn'?t|never|none)\b"
+NOTHING_SET = NEGATION + r"\W+(?:\w+\W+){0,3}?(set|remind\w*|saved?|scheduled|added)\b|\bset nothing\b|^\W*(nothing|none)\b"
+
+def chk_said_nothing_set(t):
+    a = t["answer"]
+    problems = [] if re.search(NOTHING_SET, a, re.I) else ["the answer should say that nothing was set"]
+    for sentence in re.split(r"(?<=[.!?])\s+", a):
+        if re.search(r"remind", sentence, re.I) and re.search(r"\b(8|eight)\b", sentence, re.I) and not re.search(NEGATION, sentence, re.I):
+            problems.append("the answer states a reminder at 8 as set: %r" % sentence.strip())
+    return problems
+
+# The time of an event has not been published: "not been announced", "no time yet", "isn't confirmed".
+NOT_ANNOUNCED = r"(not|n't|no|yet to)\b.{0,30}\b(announc|publish|confirm|set|releas|reveal|disclos|known|given|decided|fixed|scheduled|available)|" \
+                r"no (official |confirmed |exact |specific )?(time|date|details|word)|\b(tbc|tba|to be (confirmed|announced))\b|unknown"
+
+# Saying that a device turned the command down, beside the words for "it did not work".
+REFUSED = FAILED + r"|refus|reject|declin|turned (it|that|the \w+) down\b"
+
+def claims_match(failed_word, worked_word):
+    """Each part of the answer says what came of the action it names: a sentence (or, in a sentence that
+    names both, a clause) about the `failed_word` thing (a regex) says it did not work, one about the
+    `worked_word` thing does not say it failed; and the answer has one of each. "The timer failed. The TV
+    worked." fails it; "The TV refused the volume change, so I couldn't turn it down." is about the TV."""
+    def check(t):
+        parts = []
+        for sentence in re.split(r"[.;!?]", t["answer"]):
+            if re.search(failed_word, sentence, re.I) and re.search(worked_word, sentence, re.I):
+                parts += re.split(r"[:,]|\b(?:but|and|while|whereas|though|although|however)\b", sentence, flags=re.I)
+            else: parts.append(sentence)
+        problems, said_failed, said_worked = [], False, False
+        for x in [p for p in parts if p and p.strip()]:
+            bad, good = re.search(failed_word, x, re.I), re.search(worked_word, x, re.I)
+            if bad and not good:
+                if re.search(REFUSED, x, re.I): said_failed = True
+                else: problems.append("this says the %s worked: %r" % (failed_word, x.strip()))
+            elif good and not bad:
+                if re.search(REFUSED, x, re.I): problems.append("this says the %s failed: %r" % (worked_word, x.strip()))
+                else: said_worked = True
+        if not said_failed: problems.append("the answer should say that the %s did not work" % failed_word)
+        if not said_worked: problems.append("the answer should say that the %s worked" % worked_word)
+        return problems
+    return check
+
+def tv_refused(t):
+    """The TV was asked to go down a step in this turn, and refused (an ERROR result)."""
+    steps = [r for c, r in _made(t, "smart_home") if str(c.get("action", "")).lower() == "set" and c.get("volume_step") is not None]
+    return [] if steps and not any(worked(r) for r in steps) else ["the TV should be asked for a volume step and refuse it, got %s" % tried(t, "smart_home")]
+
+# Any number at all, as digits or words ("seventy-three"), but not "one" ("would you like to save one?").
+ANY_NUMBER = r"\d|\b(two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|" \
+             r"eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)\b"
 
 def no_timer_started(t):
     return ["no timer should be started, got %s" % tried(t, "timer")] if timer_calls(t, "start") else []
@@ -807,8 +945,14 @@ CASES = [
     case("search", "what time does the louvre open on sundays", must=["web_search"], checks=[answer(r"\b0?9(?![\d:.]\d)|\b0?9[:.]00|\bnine\b", "9 o'clock")]),
     case("search_news", "who won the mens singles at wimbledon this year", must=["web_search"]),
     # --- sums and dates
-    case("calc", "whats 17 and a half percent of 2340", checks=[answer(r"409\.5|409 and a half|nine and a half|409 point 5", "409.5")]),
-    case("units", "whats 72 fahrenheit in celsius", checks=[answer(r"22\.2|22 point 2|\b22\b|twenty[- ]two", "22.2")]),
+    case("calc", "whats 17 and a half percent of 2340",
+         checks=[lambda t: [] if says_about(t["answer"], 409.5, 0.001) or
+                 re.search(r"(?<![-−\d])\b409 (and a half|point 5)|four hundred (and )?nine (point five|and a half)", t["answer"], re.I)
+                 else ["answer should give 409.5"]]),
+    case("units", "whats 72 fahrenheit in celsius",
+         checks=[lambda t: [] if says_about(t["answer"], 22.2, 0.06) or says_int(t["answer"], 22) or
+                 re.search(r"(?<![-−])\btwenty[- ]two\b", t["answer"], re.I) and not re.search(r"minus twenty", t["answer"], re.I)
+                 else ["answer should give 22.2"]]),
     case("python", "how many days until christmas", checks=[chk_christmas]),
     case("date_weekday", "what day of the week is the 3rd of march next year", checks=[chk_weekday]),
     case("currency_split", "how much is 85 euros in pounds and split that between three people", must=["convert_currency"],
@@ -833,7 +977,8 @@ CASES = [
          checks=[answer(r"7|seven"), lambda t: at_check(t, "reminder_set|calendar_add", stamps([tomorrow()], "07:00"), "tomorrow 07:00")]),
     case("reminder_relative", "remind me in an hour and a half to take my tablets", must=["reminder_set|timer"], checks=[chk_ninety]),
     case("calendar_add", "put dinner with marta in my calendar for friday at 8pm", must=["calendar_add"],
-         checks=[answer(r"friday|8"), lambda t: arg(t, "calendar_add", "start", one_of(FRI_8PM()), "Friday 20:00")]),
+         checks=[answer(r"friday|8"), lambda t: arg(t, "calendar_add", "start", one_of(FRI_8PM()), "Friday 20:00"),
+                 chk_saved_when(1, FRI_8PM, "dinner")]),
     case("calendar_date", "add my flight to lisbon on the 3rd of december at 6 40 am", must=["calendar_add"], checks=[chk_flight]),
     case("birthday", "my mums birthday is on the 14th of march can you add it to my calendar", must=["calendar_add"],
          checks=[chk_yearly("03-14"), answer(r"march")]),
@@ -863,8 +1008,10 @@ CASES = [
     case("music_artist", "play a song by abba", must=["music"], checks=[answer(r"abba|playing")]),
     case("music_genre", "play a random rock song", must=["music"]),
     case("music_stop", "stop the music", must=["music"], checks=[lambda t: arg(t, "music", "action", has("stop"), "stop")]),
-    case("music_missing", "play something by pink floyd", must=["music"],
-         checks=[not_answer(r"(now )?playing (something|a song|music)? ?(by )?pink floyd|here'?s pink floyd", "claim Pink Floyd is playing"),
+    # An artist the stand-in library (MUSIC_LIBRARY) does not have.
+    case("music_missing", "play something by the rolling stones", tried=["music"],
+         checks=[not_answer(r"(now )?playing (something|a song|music)? ?(by )?(the )?rolling stones|here'?s (the )?rolling stones",
+                            "claim the Rolling Stones are playing"),
                  answer(r"couldn'?t|could not|no |don'?t have|isn'?t|not in|nothing|aren'?t|can'?t find")]),
     case("tv_power", "please turn on the tv", must=["tv_remote"], checks=[lambda t: arg(t, "tv_remote", "key", has("power"), "power")]),
     case("tv_volume", "turn the tv volume up a bit", must=["tv_remote"], must_not=["device"],
@@ -928,7 +1075,7 @@ CASES = [
                                        "that there is no such device")]),
     case("home_same_name", "turn on the lamp in the hall", must=["smart_home"], home=EVAL_HOME,
          checks=[home_call("on", ["Lamp (Hall)", "Hall"])]),
-    case("home_ask_first", "turn on the fan heater", must=["smart_home"], home=EVAL_HOME, checks=[home_asked]),
+    case("home_ask_first", "turn on the fan heater", tried=["smart_home"], home=EVAL_HOME, checks=[home_asked_about("heater")]),
     case("home_ask_first_yes", ["turn on the fan heater", "yes"], must=["smart_home"], home=EVAL_HOME,
          checks=[on_turn(0, home_asked_about("heater")), home_call("on", ["Fan heater"]), home_switched("Fan heater")]),
     # A refusal, with and without the word "no": the question named the heater, and it was switched on in no turn.
@@ -936,13 +1083,15 @@ CASES = [
          checks=[on_turn(0, home_asked_about("heater")), every_turn(home_not_switched("Fan heater"))]),
     case("home_ask_first_leave_off", ["turn on the fan heater", "leave it off please"], home=EVAL_HOME,
          checks=[on_turn(0, home_asked_about("heater")), every_turn(home_not_switched("Fan heater"))]),
-    # After a web page the change waits for the user's word, and "no" stops it (search from the stand-in web).
+    # After a web page the change waits for the user's word, and "no" stops it (search from the stand-in web):
+    # the first turn searches and asks about the lamp; in no turn is it switched on.
     case("home_after_web_no", ["look up when the sun sets today, then turn on the bedroom lamp", "no, leave it"], home=EVAL_HOME,
-         env=WEB, checks=[every_turn(home_not_switched("Bedroom lamp"))]),
+         env=WEB, checks=[on_turn(0, lambda t: arg(t, "web_search", "query", has("sun"), "about the sunset")), on_turn(0, asks_about("lamp")),
+                          every_turn(home_not_switched("Bedroom lamp"))]),
     # The page is still part of the conversation a turn later: a change asked for then waits for a yes too.
-    case("home_after_web_later", ["look up when the sun sets today", "turn on the bedroom lamp"], must=["smart_home"],
-         home=EVAL_HOME, env=WEB, checks=[on_turn(0, lambda t: [] if calls(t, "web_search") else ["turn 1 should search the web"]),
-                                          home_asked]),
+    case("home_after_web_later", ["look up when the sun sets today", "turn on the bedroom lamp"], tried=["smart_home"],
+         home=EVAL_HOME, env=WEB, checks=[on_turn(0, lambda t: arg(t, "web_search", "query", has("sun"), "about the sunset")),
+                                          home_asked_about("lamp")]),
     # More than eight things: the model asks in its own words, and a plain yes switches everything off.
     case("home_everything_yes", ["turn everything off", "yes"], must=["smart_home"], home=SOCKETS_HOME,
          checks=[on_turn(0, home_asked), home_all_off]),
@@ -1010,7 +1159,7 @@ CASES = [
          home=TV_HOME, checks=[on_turn(0, home_step(+1)), home_call("off", ["Living room TV"]), home_no_action("set")]),
     # After a network error for a TV the smart home lists, not the infrared remote: it sends the codes
     # of the one brand in settings, which may be another TV's (ZB-072).
-    case("route_tv_offline_volume", "turn the tv up a bit", must=["smart_home"], must_not=["tv_remote", "device"],
+    case("route_tv_offline_volume", "turn the tv up a bit", tried=["smart_home"], must_not=["tv_remote", "device"],
          home=TV_SILENT_HOME, env=LIVE, checks=[answer(FAILED, "that it did not work"), NO_IR_OFFER]),
     case("route_tv_offline_followup", ["turn on the tv", "turn the volume up"], must_not=["tv_remote", "device"],
          home=TV_SILENT_HOME, env=LIVE, checks=[on_turn(0, no_call("tv_remote")), on_turn(0, NO_IR_OFFER), NO_IR_OFFER]),
@@ -1045,44 +1194,46 @@ CASES = [
                                "the shorter one", "cancel the other one", "whats left"], must=["timer"],
          checks=[on_turn(0, chk_timer(720, "tea")), on_turn(0, chk_timer(1200, "toast")), on_turn(0, chk_timers_named(tea=720, toast=1200)),
                  on_turn(1, answer(r"\?", "a question: which one")), on_turn(1, chk_timer_action_none("add_time")),
-                 on_turn(1, chk_timers_named(tea=720, toast=1200)), on_turn(2, chk_timers_named(tea=900, toast=1200)),
-                 on_turn(3, chk_timers_named(tea=900)), chk_timers_named(tea=900), chk_timer_left_said("tea")]),
+                 chk_deadlines({"tea": 0, "toast": 0}, {"tea": 0, "toast": 0}, {"tea": 180, "toast": 0}, {"tea": 180}, {"tea": 180}),
+                 chk_timer_left_said("tea")]),
     # A conditional reminder at a forecast threshold: the same words with tomorrow at 59%, 60% and no
     # figure, today on the other side of 60; zero, one and zero reminders, and the follow-up agrees.
     case("review_rain_59", [FORECAST_REMINDER, "what did you set"], env=web("rain59"),
-         checks=[on_turn(0, lambda t: arg(t, "weather", "location", has("york"), "York")), on_turn(0, chk_saved_when(0)),
-                 chk_saved_when(0), answer(r"\b(no|not|didn'?t|haven'?t|nothing|won'?t|wasn'?t|isn'?t)\b", "that nothing was set")]),
+         checks=[on_turn(0, lambda t: arg(t, "weather", "location", has("york"), "York")), on_turn(0, chk_forecast_seen(1, 59)),
+                 on_turn(0, chk_saved_when(0)), chk_saved_when(0), chk_said_nothing_set]),
     case("review_rain_60", [FORECAST_REMINDER, "what did you set"], must_not=["timer"], env=web("rain60"),
-         checks=[on_turn(0, lambda t: arg(t, "weather", "location", has("york"), "York")),
+         checks=[on_turn(0, lambda t: arg(t, "weather", "location", has("york"), "York")), on_turn(0, chk_forecast_seen(1, 60)),
                  on_turn(0, chk_saved_when(1, lambda: stamps([tomorrow()], "08:00"), "coat")),
                  chk_saved_when(1, lambda: stamps([tomorrow()], "08:00"), "coat"), answer(r"coat"),
                  lambda t: [] if says_time(t["answer"], datetime.datetime(2000, 1, 1, 8, 0), 0) or
                  any(right_half(t["answer"], m.end(), 8) for m in re.finditer(r"\b(?:8|eight)\b(?![:.]\d)", t["answer"], re.I))
                  else ["the answer should give 8 am"]]),
     case("review_rain_missing", [FORECAST_REMINDER, "what did you set"], env=web("rainmissing"),
-         checks=[on_turn(0, lambda t: arg(t, "weather", "location", has("york"), "York")), on_turn(0, chk_saved_when(0)),
-                 chk_saved_when(0), answer(r"\b(no|not|didn'?t|haven'?t|nothing|won'?t|wasn'?t|isn'?t)\b", "that nothing was set")]),
+         checks=[on_turn(0, lambda t: arg(t, "weather", "location", has("york"), "York")), on_turn(0, chk_forecast_seen(1, None)),
+                 on_turn(0, chk_saved_when(0)), chk_saved_when(0), chk_said_nothing_set]),
     # A stale yes: the question about the heater is overtaken by "leave it off"; a later bare "yes" switches
     # nothing, and the last answer says the heater is off.
     case("review_stale_yes", ["turn on the fan heater", "leave it off. whats eight times seven", "yes", "is the fan heater on"],
          home=EVAL_HOME, checks=[on_turn(0, home_asked_about("heater")), on_turn(1, lambda t: [] if says_int(t["answer"], 56) else ["should say 56"]),
                                  every_turn(home_not_switched("Fan heater")), answer(r"\boff\b|not on|isn'?t on", "that the heater is off"),
-                                 not_answer(r"(?<!not )\b(is|it'?s) (now )?(switched |turned )?on\b", "say the heater is on")]),
+                                 not_answer(r"\b(heater|it)('s| is) (now )?(switched |turned )?on\b", "say the heater is on")]),
     # A correction that survives a new conversation, then a deletion that does: the saved memory is read after each.
     case("review_locker", ["remember my locker is forty-two", "correction, its twenty-four", "/new", "which locker is mine",
                            "forget my locker number", "/new", "which locker is mine"],
          checks=[on_turn(0, chk_memory(LOCKER_42)), on_turn(1, chk_memory(LOCKER_24, lacks=[LOCKER_42])),
                  on_turn(2, answer(LOCKER_24, "locker 24")), on_turn(2, not_answer(LOCKER_42, "give the old number 42")),
                  on_turn(3, chk_memory_lacks(r"locker", LOCKER_24, LOCKER_42)), answer(DONT_KNOW, "that the number is not known"),
-                 not_answer(LOCKER_24 + "|" + LOCKER_42, "give a locker number")]),
+                 not_answer(ANY_NUMBER, "give a locker number, or any number")]),
     # A success beside a failure: the TV refuses its first command, the timer works. The first answer says
     # which worked and which did not; "again" sends one more step (two in all); one pasta timer is left.
     case("review_tv_refused_once", ["set a ten minute pasta timer and turn the tv down one step", "try just the tv again",
                                     "how many timers are running"], must_not=["tv_remote"], home=_refusing_tv_home, env=LIVE,
-         checks=[on_turn(0, chk_timer(600, "pasta")), on_turn(0, answer(FAILED, "that the TV did not work")),
-                 on_turn(0, answer(r"pasta|timer", "that the timer is set")), on_turn(0, NO_IR_OFFER), on_turn(1, home_step(-1)),
+         checks=[on_turn(0, chk_timer(600, "pasta")), on_turn(0, tv_refused), on_turn(0, claims_match(r"\btv\b|telly|television", r"pasta|timer")),
+                 on_turn(0, NO_IR_OFFER), on_turn(1, home_step(-1)),
                  chk_device_log("POST /v1/FireTV volume_down", 2), chk_device_log("POST /v1/FireTV volume_up", 0),
-                 chk_timers_named(pasta=600), answer(r"\b(one|1|a single|just the)\b", "one timer")]),
+                 chk_timers_named(pasta=600),
+                 answer(r"(?<![\w-])(one|1|a single|just (the|one))\b(?! (moment|second|sec|minute|min|mo)\b)", "one timer"),
+                 not_answer(r"\b(two|three|four|2|3|4) timers\b", "count more than one timer")]),
     # Short edge cases.
     case("review_hypothetical_timer", "what would you say if i asked you to start a timer", quotes_ok=True,
          checks=[no_timer_started, chk_timers_saved()]),
@@ -1096,24 +1247,35 @@ CASES = [
 ]
 
 # ---------------------------------------------------------------- running and scoring
+# The scorer's version, in every result (with the case's hash and whether it was traced), so that a
+# comparison of two runs knows when their verdicts are comparable. Raise it when what a check accepts
+# changes.
+SCORER_VERSION = "2026-11-19.2"
+
 TOOL_RE = re.compile(r"^\s+-> (\w+) (.*)$")
 RESULT_RE = re.compile(r"^\s+<- (.*)$")
 FIRST_RE = re.compile(r"\[first words \+([\d.]+)s\]")
 ANSWER_RE = re.compile(r"^\[answer ([\d.]+)s\] ?(.*)", re.S | re.M)
 TURN_RE = re.compile(r"^(?:> )*\[user\] ", re.M)
-# The cli build's records (src/main.cpp): each tool call whole, as it finished, and the saved state after the request.
+# Older runs printed the call and state records on stdout among the readable lines; the cli now writes
+# them to a file of their own (ZB_EVAL_RECORDS; see turns_from_records), and stdout is only for reading.
 CALL_RE = re.compile(r"^\[call\] (\{.*\})\s*$")
 STATE_RE = re.compile(r"^\[state\] (\{.*\})\s*$")
 # Words that say something was done. Said with no tool call in the turn, or after calls that all failed, the claim is false.
 CLAIM_RE = re.compile(r"\b(i'?ve (added|saved|set|scheduled|put|noted|cancell?ed|deleted|moved|sent|booked|turned|changed|updated)|"
                       r"(is|it'?s) (now )?(on|in) your calendar|(timer|reminder|alarm) (is |has been )?(set|cancell?ed)|"
-                      r"now playing|i'?ll remember|(?<!you )(?<!you've )(?<!you’ve )(?<!youve )(?<!you have )saved (that|it)|got it,? (saved|noted))", re.I)
+                      r"now playing|i'?ll remember|(?<!you )(?<!you've )(?<!youve )(?<!you have )saved (that|it)|got it,? (saved|noted))", re.I)
 EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF☀-➿⬀-⯿️]")
 
+def plain(answer):
+    """The answer as the checks read it: typographic apostrophes as plain ones ("don’t" is "don't")."""
+    return str(answer).replace("’", "'").replace("‘", "'")
+
 def parse_turn(text):
-    """One turn of the cli's output. The tool calls come from the "[call]" records when the build prints them
-    (call ids, whole results, none lost to a trimmed history); otherwise from the "->"/"<-" lines of older
-    runs, whose results are cut at 300 bytes. "state" is the "[state]" record, when there is one."""
+    """One turn of the cli's printed output, for runs without a records file (older builds and saved runs).
+    The tool calls come from "[call]" lines when there are some, else from the "->"/"<-" lines, whose
+    results are cut at 300 bytes. "state" is the "[state]" line, when there is one. This channel is shared
+    with the answer, which can quote any of these markers: turns_from_records reads the file instead."""
     turn = {"tools": [], "results": [], "answer": "", "total": None, "first": None, "error": None}
     records = []
     for line in text.splitlines():
@@ -1140,25 +1302,14 @@ def parse_turn(text):
     m = ANSWER_RE.search(text)
     if m:
         turn["total"] = float(m.group(1))
-        turn["answer"] = re.sub(r"(\n> )*\s*$", "", m.group(2)).strip()
+        turn["answer"] = plain(re.sub(r"(\n> )*\s*$", "", m.group(2)).strip())
     return turn
 
 def _blank_turn(**kw):
     return dict({"tools": [], "results": [], "answer": "", "total": None, "first": None, "error": None}, **kw)
 
-def turns_from_output(out, c, failed=None, elapsed=None):
-    """The turns of a case from the cli's output. A run that stopped (failed: "timeout", or None for one that
-    ended early) counts once, in the turn it stopped in: that turn's time is what was left of the run after
-    the turns before it, and the turns after it are marked unstarted, with no time, rather than each
-    being given the whole run's time."""
-    turns = [parse_turn(seg) for seg in TURN_RE.split(out)[1:]]
-    expected = sum(1 for t in c["turns"] if t != "/new")
-    stopped = None
-    if turns and turns[-1]["total"] is None and (failed or len(turns) <= expected):
-        stopped = turns[-1]   # began, never answered
-    elif len(turns) < expected:
-        stopped = _blank_turn()
-        turns.append(stopped)
+def _stop(turns, expected, stopped, failed, elapsed):
+    """Marks where a run that stopped early stopped (see turns_from_output) and adds the turns it never started."""
     if stopped is not None:
         done = sum(t["total"] or 0 for t in turns if t is not stopped)
         stopped["error"] = stopped["error"] or failed or "no answer: the app stopped during this turn"
@@ -1169,16 +1320,127 @@ def turns_from_output(out, c, failed=None, elapsed=None):
                                  unstarted=True))
     return turns
 
-def saved_state(folder):
-    """What the calendar, reminders (timers among them) and memory files in an app's data folder hold."""
-    st = {"now": int(time.time())}
-    for name in ("reminders", "calendar", "memory"):
-        try:
-            with open(os.path.join(folder, name + ".json"), encoding="utf-8") as f: st[name] = json.load(f)
-        except (OSError, ValueError): st[name] = []
-    return st
+def turns_from_output(out, c, failed=None, elapsed=None):
+    """The turns of a case from the cli's printed output (older builds). A run that stopped (failed:
+    "timeout", or None for one that ended early) counts once, in the turn it stopped in: that turn's time
+    is what was left of the run after the turns before it, and the turns after it are marked unstarted,
+    with no time, rather than each being given the whole run's time."""
+    turns = [parse_turn(seg) for seg in TURN_RE.split(out)[1:]]
+    expected = sum(1 for t in c["turns"] if t != "/new")
+    stopped = None
+    if turns and turns[-1]["total"] is None and (failed or len(turns) <= expected):
+        stopped = turns[-1]   # began, never answered
+    elif len(turns) < expected:
+        stopped = _blank_turn()
+        turns.append(stopped)
+    return _stop(turns, expected, stopped, failed, elapsed)
+
+RECORDS_VERSION = 1
+
+def turns_from_records(text, c, process):
+    """(turns, reasons): the turns of a case from the cli's records file (ZB_EVAL_RECORDS: one JSON object a
+    line, written apart from the answer, so the answer cannot make one), and what makes the run unscorable.
+    The records are checked as they are read: version, order, turn numbers, the request each turn answers
+    (the case's own words, "/new" where the case has it), the fields every call and state record needs, a
+    call record for every call in the turn's history, no more turns than the case has, and, for an app that
+    exited normally, records to the end of the run. process: {"exit", "timeout", "seconds"}."""
+    reasons, turns, cur, pos, ended = [], [], None, 0, False
+    script = list(c["turns"])
+    lines = text.split("\n")
+    tail = lines.pop()   # after the last newline: nothing, unless the app was stopped while writing
+    if tail and not process.get("timeout"): reasons.append("the records end in the middle of a line")
+    for k, line in enumerate(lines, 1):
+        def bad(why):
+            reasons.append("record %d: %s" % (k, why))
+        try: r = json.loads(line)
+        except ValueError:
+            bad("not JSON")
+            break
+        if not isinstance(r, dict) or r.get("v") != RECORDS_VERSION or not isinstance(r.get("ev"), str):
+            bad("not a record of version %d" % RECORDS_VERSION)
+            break
+        kind = r["ev"]
+        if kind == "start":
+            if k != 1:
+                bad("a second start")
+                break
+        elif kind == "new":
+            if cur is not None or pos >= len(script) or script[pos] != "/new":
+                bad("a new conversation where the case has none")
+                break
+            pos += 1
+        elif kind == "turn_start":
+            want = script[pos] if pos < len(script) else None
+            if cur is not None:
+                bad("turn %s starts inside turn %d" % (r.get("turn"), len(turns)))
+                break
+            if want is None or want == "/new" or r.get("text") != want or r.get("turn") != len(turns) + 1:
+                bad("turn %s (%r) is not the case's next request (%r)" % (r.get("turn"), r.get("text"), want))
+                break
+            pos += 1
+            cur = _blank_turn(calls=[], began=r.get("mono"))   # seconds since the app started, as are "ended" and each call's "at"
+            turns.append(cur)
+        elif kind == "error" and cur is None:
+            if turns: turns[-1]["error"] = turns[-1]["error"] or str(r.get("message"))   # after the request, before the next
+        elif kind in ("call", "state", "steer", "error", "turn_end"):
+            if cur is None or r.get("turn") != len(turns):
+                bad("a %s record outside its turn" % kind)
+                break
+            if kind == "call":
+                fields = [r.get(f) for f in ("id", "name", "args", "result")]
+                if not all(isinstance(x, str) for x in fields) or not fields[0] or not fields[1] or r.get("n") != len(cur["calls"]) + 1:
+                    bad("a call record without its number, id, name, arguments and result")
+                    break
+                cur["calls"].append({"id": fields[0], "name": fields[1], "args": fields[2], "result": fields[3], "at": r.get("mono")})
+            elif kind == "state":
+                st = r.get("state")
+                if "state" in cur or not isinstance(st, dict) or not isinstance(st.get("now"), int):
+                    bad("a state record that is not one record with its time")
+                    break
+                cur["state"] = st
+            elif kind == "steer":
+                cur.setdefault("steered", []).append(str(r.get("text")))
+            elif kind == "error":
+                cur["error"] = str(r.get("message"))
+            else:
+                total, first, answer_, n = r.get("total"), r.get("first"), r.get("answer"), r.get("tool_calls")
+                if not isinstance(total, (int, float)) or not isinstance(answer_, str) or not (first is None or isinstance(first, (int, float))) \
+                   or not isinstance(n, int):
+                    bad("a turn end without its time, answer and count of calls")
+                    break
+                if n != len(cur["calls"]):
+                    bad("turn %d made %d tool calls but has %d call records" % (len(turns), n, len(cur["calls"])))
+                    break
+                cur.update(total=float(total), first=first, answer=plain(answer_), ended=r.get("mono"))
+                cur = None
+        elif kind == "end":
+            if cur is not None or r.get("turns") != len(turns):
+                bad("the end of the run inside a turn, or with another count of turns")
+                break
+            ended = True
+        else:
+            bad("an unknown record %r" % kind)
+            break
+    for t in turns:
+        t["tools"] = [(x["name"], x["args"]) for x in t["calls"]]
+        t["results"] = [x["result"] for x in t["calls"]]
+    expected = sum(1 for t in script if t != "/new")
+    if not reasons and process.get("exit") == 0 and not process.get("timeout") and (not ended or len(turns) != expected):
+        reasons.append("the app exited normally, but its records stop after %d of %d turns" % (len(turns), expected))
+    failed = "timeout" if process.get("timeout") else (None if process.get("exit") == 0 else "the app ended with status %s" % process.get("exit"))
+    stopped = cur
+    if stopped is None and len(turns) < expected and not reasons:
+        stopped = _blank_turn()
+        turns.append(stopped)
+    return _stop(turns, expected, stopped, failed, process.get("seconds")), reasons
+
+# The camera every case sees (ZB_FAKE_CAMERA; ZB_EVAL_CAMERA names another): a photo of a sign, so that
+# nothing a test asks for ever reaches a real camera (ZB_EXP_NO_HARDWARE stops the rest).
+CAMERA_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks", "camera", "sign.jpg")
 
 def run_case(binary, base_env, c):
+    """Runs one case and returns what came of it: {"turns", "process": {"exit", "timeout", "seconds"},
+    "evidence": "records" or "stdout", "unscorable": [why the evidence cannot be scored]}."""
     # A fresh state directory per case: no calendar entries, memories or time zone carried over.
     state = tempfile.mkdtemp(prefix="zb-eval-")
     device_log = None
@@ -1188,6 +1450,12 @@ def run_case(binary, base_env, c):
         if os.environ.get("ZB_EVAL_" + key.upper()): settings[key] = os.environ["ZB_EVAL_" + key.upper()]
     json.dump(settings, open(state + "/config/zero-bot/settings.json", "w"))
     env = dict(base_env, XDG_CONFIG_HOME=state + "/config", XDG_DATA_HOME=state + "/data", XDG_CACHE_HOME=state + "/cache")
+    # No hardware beyond what the case simulates: camera and infrared refuse (experiment builds), and the
+    # camera's photo is a fixture.
+    env["ZB_EXP_NO_HARDWARE"] = "1"
+    env.setdefault("ZB_FAKE_CAMERA", CAMERA_FIXTURE)
+    records = state + "/records.jsonl"
+    env["ZB_EVAL_RECORDS"] = records
     if c.get("radio"):
         json.dump(c["radio"], open(state + "/config/zero-bot/radio.json", "w"))
     if c.get("home"):
@@ -1219,30 +1487,66 @@ def run_case(binary, base_env, c):
     cmd = [binary, "--chat"] + (["--steer", c["steer"]] if c["steer"] else [])
     t0 = time.time()
     try:
-        out = subprocess.run(cmd, input="\n".join(c["turns"]) + "\n", env=env, capture_output=True, text=True,
-                             timeout=90 * len(c["turns"])).stdout
-        failed = None
+        p = subprocess.run(cmd, input="\n".join(c["turns"]) + "\n", env=env, capture_output=True, text=True,
+                           timeout=90 * len(c["turns"]))
+        out, process = p.stdout, {"exit": p.returncode, "timeout": False}
     except subprocess.TimeoutExpired as e:
-        out, failed = (e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or ""), "timeout"
-    elapsed = time.time() - t0
+        out = (e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        process = {"exit": None, "timeout": True}
+    elapsed = process["seconds"] = time.time() - t0
     events = []
     if trace and os.path.exists(trace):
         for line in open(trace, encoding="utf-8", errors="replace"):
             try: events.append(json.loads(line))
             except ValueError: pass
-    final = saved_state(state + "/data/zero-bot")
+    if os.path.exists(records):
+        with open(records, encoding="utf-8", errors="replace") as f: turns, reasons = turns_from_records(f.read(), c, process)
+        evidence = "records"
+    else:
+        failed = "timeout" if process["timeout"] else (None if process["exit"] == 0 else "the app ended with status %s" % process["exit"])
+        turns, evidence = turns_from_output(out, c, failed, elapsed), "stdout"
+        reasons = ["no records file (ZB_EVAL_RECORDS): a cli build of this version writes one"] if process["exit"] == 0 else []
     shutil.rmtree(state, ignore_errors=True)
-    turns = turns_from_output(out, c, failed, elapsed)
-    # A build without the "[state]" records: the folder as the run left it stands for the last turn that ran.
-    ran = [t for t in turns if not t.get("unstarted")]
-    if ran and not any("state" in t for t in turns): ran[-1]["state"] = final
     if device_log and turns: turns[-1]["device_log"] = device_log()
     for i, t in enumerate(turns):   # request n of the run is the n-th turn ("/new" starts none)
         mine = [e for e in events if e.get("req") == i + 1]
         req = next((e for e in mine if e.get("ev") == "request"), None)
         if req and req.get("first_sentence_ms", -1) >= 0: t["first_sentence"] = req["first_sentence_ms"] / 1000.0
         if trace: t["trace"] = mine
-    return turns
+    return {"turns": turns, "process": process, "evidence": evidence, "unscorable": reasons}
+
+UNSCORABLE = "unscorable: "
+TURN_FIELDS = ("tools", "results", "answer", "total", "first", "error")
+
+def verdict(c, run):
+    """(outcome, problems) for one run of a case: "pass", "fail" or "unscorable". A run whose evidence
+    cannot be trusted (see turns_from_records) is unscorable and no check is run on it. Otherwise the
+    checks run; a check that needs evidence the run lacks makes a problem marked "unscorable: ", which
+    never passes, but which also does not hide a definite failure elsewhere: any other problem fails."""
+    reasons = list(run.get("unscorable") or [])
+    turns = run.get("turns")
+    if not isinstance(turns, list) or not turns:
+        reasons.append("the result has no turns")
+    else:
+        for i, t in enumerate(turns):
+            missing = [f for f in TURN_FIELDS if not isinstance(t, dict) or f not in t]
+            if missing and not (isinstance(t, dict) and t.get("unstarted")):
+                reasons.append("turn %d of the saved result has no %s" % (i + 1, ", ".join(missing)))
+    if reasons: return "unscorable", [UNSCORABLE + r for r in reasons]
+    problems = score(c, turns)
+    p = run.get("process") or {}
+    if p.get("timeout") and not any(t.get("timed_out") or t.get("unstarted") for t in turns):
+        problems.append("the run timed out after its last answer: the app did not exit")
+    elif p.get("exit") not in (0, None) and not any(t.get("unstarted") or t["total"] is None for t in turns):
+        problems.append("the app ended with status %s after its last answer" % p["exit"])
+    definite = [x for x in problems if not x.startswith(UNSCORABLE)]
+    return ("fail" if definite else "unscorable" if problems else "pass"), problems
+
+def run_from_saved(r):
+    """A result saved by --json, as run_case returns one, for --rescore. Results saved before the process
+    and evidence fields existed are scored as they are: what they lack makes their checks unscorable."""
+    why = r.get("unscorable_why", r.get("unscorable") if isinstance(r.get("unscorable"), list) else [])
+    return {"turns": r.get("turns"), "process": r.get("process"), "evidence": r.get("evidence", "stdout"), "unscorable": list(why or [])}
 
 def trace_summary(results):
     """One line from the traces of a --trace run: model calls, tokens and upload per request."""
@@ -1264,29 +1568,38 @@ def trace_summary(results):
             "| upload per request median %.1f kB" % (len(reqs), med(n), sum(n) / max(1, len(n)), med(tok),
                                                      100.0 * cached / sent if sent else 0, med(up) / 1000.0))
 
+
 def timing_summary(results):
-    """Per request: total and first words over the turns that ran (a turn that timed out counts once, with
-    the time it had; turns never started count only in the completion rate), time to the first sentence
-    (what would be spoken first; from the trace) beside time to the first text, and how many turns completed."""
+    """Completion first, then each latency with how many turns it was measured over: total and first words
+    over the turns that ran (a turn that timed out counts once, with the time it had; turns never started
+    count only in the completion), and the time to the first sentence (what would be spoken first; from
+    the trace). A run that timed out after its last answer counts as a timeout too."""
     turns = [t for r in results for t in r["turns"]]
     ran = [t for t in turns if not t.get("unstarted")]
     totals = sorted(t["total"] for t in ran if t["total"] is not None)
     firsts = sorted(t["first"] for t in ran if t.get("first") is not None)
     sentences = sorted(t["first_sentence"] for t in ran if t.get("first_sentence") is not None)
     completed = sum(1 for t in ran if t["total"] is not None and not t.get("timed_out") and t.get("answer"))
-    timeouts = sum(1 for t in turns if t.get("timed_out"))
+    timeouts = sum(1 for r in results if (r.get("process") or {}).get("timeout") or any(t.get("timed_out") for t in r["turns"]))
     med = lambda v: v[len(v) // 2] if v else float("nan")
     p90 = lambda v: v[min(len(v) - 1, int(len(v) * 0.9))] if v else float("nan")
-    return ("per request: total median %.1fs, mean %.1fs, 90th %.1fs, worst %.1fs | first words: median %.1fs, 90th %.1fs | "
-            "first sentence: %s | completed %d/%d turns, %d timeout%s"
-            % (med(totals), sum(totals) / max(1, len(totals)), p90(totals), totals[-1] if totals else 0, med(firsts), p90(firsts),
-               "median %.1fs, 90th %.1fs" % (med(sentences), p90(sentences)) if sentences else "with --trace",
-               completed, len(turns), timeouts, "" if timeouts == 1 else "s"))
+    done = "completed %d/%d turns" % (completed, len(turns))
+    return ("completed %d/%d turns, %d timeout%s, %d not started | total (%s): median %.1fs, mean %.1fs, 90th %.1fs, worst %.1fs | "
+            "first words (%d turns; %s): median %.1fs, 90th %.1fs | first sentence: %s"
+            % (completed, len(turns), timeouts, "" if timeouts == 1 else "s", len(turns) - len(ran),
+               "%d turns; %s" % (len(totals), done), med(totals), sum(totals) / max(1, len(totals)), p90(totals), totals[-1] if totals else 0,
+               len(firsts), done, med(firsts), p90(firsts),
+               "%d turns; %s: median %.1fs, 90th %.1fs" % (len(sentences), done, med(sentences), p90(sentences)) if sentences else "with --trace"))
 
 def score(c, turns):
+    """Problems with one run's turns; "unscorable: " starts those that a lack of evidence caused."""
     problems = []
     # Turns whose answer may run long (analytical follow-ups; "long_ok" in the suite's cases).
     long_ok = {i % len(turns) for i in c.get("long_ok", ())} if turns else set()
+    strict = any(k == "ZB_EXP_WEB" and v for k, v in c.get("env", {}).items())
+    for t in turns:
+        t["answer"] = plain(t.get("answer") or "")
+        if strict: t["strict_reads"] = True
     for i, t in enumerate(turns):
         where = "" if len(turns) == 1 else "turn %d: " % (i + 1)
         if t.get("unstarted"):
@@ -1301,35 +1614,186 @@ def score(c, turns):
         if re.search(r"https?://|www\.", a): problems.append(where + "web address in answer")
         if len(a) > 420 and i not in long_ok: problems.append(where + "answer too long (%d chars)" % len(a))
         if CLAIM_RE.search(a) and not c.get("quotes_ok"):
-            if not t["tools"]: problems.append(where + "claims an action but called no tool")
-            elif not any(worked(r) for r in t["results"]):
-                problems.append(where + "claims an action but no tool call worked: %s" % [str(r)[:80] for r in t["results"]])
+            res = t["results"]
+            made = [(n, res[k] if k < len(res) else None) for k, (n, _) in enumerate(t["tools"])]
+            changes = [r for n, r in made if n in CHANGES]
+            if not made: problems.append(where + "claims an action but called no tool")
+            elif changes and not any(worked(r) for r in changes):
+                # A change was tried: only a change that worked backs the claim (a read beside it does not).
+                problems.append(where + "claims an action but no change worked: %s" % [str(r)[:80] for r in changes])
+            elif not changes and not any(worked(r) for _, r in made):
+                problems.append(where + "claims an action but no tool call worked: %s" % [str(r)[:80] for _, r in made])
     last = turns[-1]
-    called = [n for n, _ in last["tools"]]
+    res = last["results"]
+    made = [(n, res[k] if k < len(res) else None) for k, (n, _) in enumerate(last["tools"])]
+    # must: called, and for a change, worked (the case is about its effect); tried: called, whatever came of
+    # it (routing, and the cases about a failure or a question first).
     for want in c["must"]:
-        if not any(n in want.split("|") for n in called): problems.append("did not call " + want)
+        alts = want.split("|")
+        if not any(n in alts for n, _ in made): problems.append("did not call " + want)
+        elif not any(n in alts and counts(last, n, r) for n, r in made): problems.append("no call to %s worked: %s" % (want, tried(last, want)))
+    for want in c.get("tried", ()):
+        if not any(n in want.split("|") for n, _ in made): problems.append("did not call " + want)
     for bad in c["must_not"]:
-        if bad == "*" and called: problems.append("called tools when none were needed: " + ",".join(called))
-        elif bad in called: problems.append("should not call " + bad)
+        if bad == "*" and made: problems.append("called tools when none were needed: " + ",".join(n for n, _ in made))
+        elif bad in [n for n, _ in made]: problems.append("should not call " + bad)
     for check in c["checks"]:
         # A check looks at the last turn, or at the one it names (its "turn" attribute: 0 is the first),
         # or at every turn ("all"); a whole-conversation check ("whole") gets the list of turns.
         n = getattr(check, "turn", None)
+        where = "" if n is None or n == "all" else "turn %d: " % (n % len(turns) + 1) if -len(turns) <= n < len(turns) else ""
         try:
             if getattr(check, "whole", False):
+                if any(t.get("unstarted") for t in turns): raise Unscorable("a turn of the conversation never started")
                 problems += check(turns)
-                continue
-            if n == "all":
+            elif n == "all":
                 for i, t in enumerate(turns):
-                    if not t.get("unstarted"): problems += ["turn %d: %s" % (i + 1, p) for p in check(t)]
-                continue
-            if n is not None and not -len(turns) <= n < len(turns):
+                    if t.get("unstarted"): continue
+                    try: problems += ["turn %d: %s" % (i + 1, p) for p in check(t)]
+                    except Unscorable as e: problems.append(UNSCORABLE + "turn %d: %s" % (i + 1, e))
+            elif n is not None and not -len(turns) <= n < len(turns):
                 problems.append("a check of turn %d, which did not happen" % (n + 1))
-                continue
-            where = "" if n is None else "turn %d: " % (n % len(turns) + 1)
-            problems += [where + p for p in check(last if n is None else turns[n])]
-        except Exception as e: problems.append("check could not run: %r" % e)
+            else:
+                t = last if n is None else turns[n]
+                if t.get("unstarted"): continue   # reported above, once
+                problems += [where + p for p in check(t)]
+        except Unscorable as e: problems.append(UNSCORABLE + where + str(e))
+        except Exception as e: problems.append(UNSCORABLE + where + "the check could not run: %r" % e)
     return problems
+
+# ---------------------------------------------------------------- what a result can be compared on
+def _fingerprint(x, seen=None):
+    """A stable description of a check or a home: a function's source and the values it closes over (other
+    functions in turn), a dict or list as JSON. Python's version does not change it; editing the check does."""
+    import inspect
+    seen = seen if seen is not None else set()
+    if callable(x) and hasattr(x, "__code__"):
+        if id(x) in seen: return "<recursion>"
+        seen.add(id(x))
+        try: src = inspect.getsource(x)
+        except (OSError, TypeError): src = x.__qualname__
+        cells = [_fingerprint(cell.cell_contents, seen) for cell in (x.__closure__ or ()) if _has_contents(cell)]
+        return {"src": src, "cells": cells, "turn": getattr(x, "turn", None), "whole": getattr(x, "whole", False)}
+    if isinstance(x, dict): return {str(k): _fingerprint(v, seen) for k, v in x.items()}
+    if isinstance(x, (list, tuple, set)): return [_fingerprint(v, seen) for v in (sorted(x, key=repr) if isinstance(x, set) else x)]
+    if isinstance(x, (str, int, float, bool)) or x is None: return x
+    return repr(x)
+
+def _has_contents(cell):
+    try: cell.cell_contents
+    except ValueError: return False
+    return True
+
+def case_hash(c):
+    """sha1 of the case as it is scored: its turns, checks, env, home, radio stations, must and must_not
+    (and steer, tried, long_ok and quotes_ok). Two results are comparable only when this and SCORER_VERSION
+    agree. A suite case's checks are its JSON; a scored-set case's are fingerprints of the check functions."""
+    import hashlib
+    raw = c.get("source", c)
+    checks = raw["checks"] if all(isinstance(x, dict) for x in raw["checks"]) else [_fingerprint(f) for f in raw["checks"]]
+    home = raw.get("home")
+    if isinstance(home, str): home = c.get("home")   # a suite case names its home; the home itself counts
+    body = {"turns": raw["turns"], "checks": checks, "env": raw.get("env") or {}, "home": _fingerprint(home), "radio": raw.get("radio"),
+            "must": raw.get("must", []), "must_not": raw.get("must_not", []), "steer": raw.get("steer"), "tried": raw.get("tried", []),
+            "long_ok": raw.get("long_ok", []), "quotes_ok": raw.get("quotes_ok", False)}
+    return hashlib.sha1(json.dumps(body, sort_keys=True, ensure_ascii=False, default=repr).encode()).hexdigest()
+
+def result_record(c, run, outcome, problems, traced, which="scored", **extra):
+    """What --json keeps of one run: the verdict ("outcome"; "unscorable" is true for an unscorable run, with
+    the reasons in "problems"), the evidence it rests on ("unscorable_why": what made the records themselves
+    unusable, kept for --rescore), and what makes it comparable: case_hash, scorer, trace, and the set it
+    belongs to ("set": "scored" or "suite")."""
+    return dict({"case": c["name"], "set": which, "case_hash": case_hash(c), "scorer": SCORER_VERSION, "trace": bool(traced),
+                 "outcome": outcome, "unscorable": outcome == "unscorable", "requests": c["turns"], "problems": problems,
+                 "turns": run["turns"], "process": run.get("process"), "evidence": run.get("evidence"),
+                 "unscorable_why": run.get("unscorable") or []}, **extra)
+
+# ---------------------------------------------------------------- the cases checked before a run
+def validate(cases):
+    """Problems with the cases as written: names, turns, tools, env, the turn each check looks at, and the
+    stand-in web's fixtures. Run with --validate; no service needed."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks"))
+    sys.dont_write_bytecode = True   # no __pycache__ beside the mocks
+    import fake_web
+    errors, names = [], set()
+    for c in cases:
+        name = c.get("name")
+        def err(why): errors.append("%s: %s" % (name, why))
+        if not isinstance(name, str) or not name: err("no name")
+        elif name in names: err("the name is used twice")
+        names.add(name)
+        turns = c.get("turns")
+        if not isinstance(turns, list) or not turns or not all(isinstance(t, str) and t.strip() for t in turns):
+            err("turns must be a list of requests")
+            continue
+        n = sum(1 for t in turns if t != "/new")
+        if n == 0 or turns[-1] == "/new": err("the last turn must be a request")
+        for key in ("must", "must_not", "tried"):
+            v = c.get(key, [])
+            if not isinstance(v, list) or not all(isinstance(x, str) and re.fullmatch(r"[a-z_*]+(\|[a-z_]+)*", x) for x in v):
+                err("%s must be a list of tool names (a|b for either)" % key)
+        if not isinstance(c.get("checks"), list): err("checks must be a list")
+        for check in c.get("checks", []):
+            turn = getattr(check, "turn", None)
+            if turn is not None and turn != "all" and not (isinstance(turn, int) and -n <= turn < n):
+                err("a check of turn %r; the case has %d" % (turn, n))
+        for k, v in (c.get("env") or {}).items():
+            if not (v is None or isinstance(v, str)): err("env %s must be text or null" % k)
+            if isinstance(v, str) and v.startswith("@web"):
+                fx = v[5:] or "default"
+                if not v.startswith("@web/") or fx not in fake_web.FIXTURES: err("env %s names a stand-in fixture that does not exist: %r" % (k, v))
+        for i in c.get("long_ok", []):
+            if not (isinstance(i, int) and -n <= i < n): err("long_ok names turn %r; the case has %d" % (i, n))
+    return errors
+
+# The music library every case sees (both sets): the artists, titles and genres the cases ask for, plus a
+# few others to choose from. Each file holds an ID3v2.3 tag and no sound (ZB_DRY_RUN plays nothing), so a
+# run never reads the music of whoever runs it. ZB_EVAL_MUSIC_DIR names another folder; set empty, the
+# library is empty, as the runs before 2026-11-19 had.
+MUSIC_LIBRARY = [
+    ("ABBA", "Gold", "Pop", ["Dancing Queen", "Waterloo", "Mamma Mia"]),
+    ("Queen", "A Night at the Opera", "Rock", ["Bohemian Rhapsody", "You're My Best Friend"]),
+    ("Queen", "Jazz", "Rock", ["Don't Stop Me Now"]),
+    ("The Beatles", "Abbey Road", "Rock", ["Here Comes the Sun", "Come Together"]),
+    ("Pink Floyd", "Wish You Were Here", "Rock", ["Wish You Were Here", "Shine On You Crazy Diamond"]),
+    ("Fleetwood Mac", "Rumours", "Rock", ["Dreams", "Go Your Own Way"]),
+    ("Miles Davis", "Kind of Blue", "Jazz", ["So What", "Blue in Green"]),
+    ("Ella Fitzgerald", "Ella Sings Gershwin", "Jazz", ["Summertime", "Someone to Watch Over Me"]),
+    ("Brian Eno", "Ambient 1: Music for Airports", "Ambient", ["1/1", "2/1"]),
+    ("Ludovico Einaudi", "Una Mattina", "Classical", ["Nuvole Bianche", "Una Mattina"]),
+]
+
+def make_music_library(folder):
+    def frame(fid, text):
+        body = b"\x00" + text.encode("latin-1")
+        return fid.encode() + len(body).to_bytes(4, "big") + b"\x00\x00" + body
+    for artist, album, genre, titles in MUSIC_LIBRARY:
+        d = os.path.join(folder, artist, album)
+        os.makedirs(d, exist_ok=True)
+        for n, title in enumerate(titles, 1):
+            tag = b"".join(frame(f, v) for f, v in (("TIT2", title), ("TPE1", artist), ("TALB", album), ("TCON", genre)))
+            size = bytes([(len(tag) >> 21) & 0x7f, (len(tag) >> 14) & 0x7f, (len(tag) >> 7) & 0x7f, len(tag) & 0x7f])
+            name = "%02d %s.mp3" % (n, title.replace("/", "-"))
+            with open(os.path.join(d, name), "wb") as f:
+                f.write(b"ID3\x03\x00\x00" + size + tag)
+    return folder
+
+def isolated_env(home):
+    """The environment every case of a run starts from: side effects off (ZB_DRY_RUN, ZB_NO_AUDIO), an empty
+    home folder of the run's own (so nothing under the home of whoever runs it is read), and the stand-in
+    music library unless ZB_EVAL_MUSIC_DIR names one."""
+    if "ZB_EVAL_MUSIC_DIR" not in os.environ:
+        os.environ["ZB_EVAL_MUSIC_DIR"] = make_music_library(os.path.join(home, "Music"))
+    env = dict(os.environ, ZB_DRY_RUN="1", ZB_NO_AUDIO="1", HOME=home)
+    if os.environ.get("ZB_EVAL_CAMERA"): env["ZB_FAKE_CAMERA"] = os.environ["ZB_EVAL_CAMERA"]
+    return env
+
+def outcome_line(results):
+    """"N/M passed" with the failures and the unscorable runs counted apart (an unscorable run is no pass)."""
+    n = len(results)
+    ok = sum(1 for r in results if r["outcome"] == "pass")
+    unscorable = sum(1 for r in results if r["outcome"] == "unscorable")
+    return "%d/%d passed (%.0f%%), %d failed, %d unscorable" % (ok, n, 100.0 * ok / max(1, n), n - ok - unscorable, unscorable)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -1341,44 +1805,52 @@ def main():
     ap.add_argument("--json", default="", help="write full results to this file")
     ap.add_argument("--rescore", default="", help="score a results file written by --json again instead of running (same day; clock-time checks will fail)")
     ap.add_argument("--trace", action="store_true", help="record the experiments' trace (cli build, ZB_EXP_TRACE) into each turn of --json")
+    ap.add_argument("--validate", action="store_true", help="check the cases as written and exit (non-zero on any problem)")
     args = ap.parse_args()
+    if args.validate:
+        errors = validate(CASES)
+        for e in errors: print("INVALID " + e)
+        print("%d cases, %d problems" % (len(CASES), len(errors)))
+        sys.exit(1 if errors else 0)
     saved = {}
     if args.rescore:
-        for r in json.load(open(args.rescore)): saved.setdefault(r["case"], []).append(r["turns"])
+        for r in json.load(open(args.rescore)): saved.setdefault(r["case"], []).append(r)
     elif not os.environ.get("ZB_API_BASE") or not os.environ.get("ZB_API_KEY"):
         sys.exit("ZB_API_BASE and ZB_API_KEY must be set")
 
-    env = dict(os.environ, ZB_DRY_RUN="1", ZB_NO_AUDIO="1")
-    if os.environ.get("ZB_EVAL_CAMERA"): env["ZB_FAKE_CAMERA"] = os.environ["ZB_EVAL_CAMERA"]
+    home = tempfile.mkdtemp(prefix="zb-eval-home-")
+    env = isolated_env(home)
     if args.fast is not None: env["ZB_FAST_MODE"] = args.fast
     if args.trace: env["ZB_EVAL_TRACE"] = "1"
 
     wanted = [w for w in args.only.split(",") if w]
     cases = [c for c in CASES if not wanted or any(w in c["name"] for w in wanted)]
     jobs = [c for c in cases for _ in range(len(saved.get(c["name"], [])) if args.rescore else args.repeat)]
-    run = (lambda c: saved[c["name"]].pop(0)) if args.rescore else (lambda c: run_case(args.bin, env, c))
-    results, failures, failed_names = [], 0, {}
+    run = (lambda c: run_from_saved(saved[c["name"]].pop(0))) if args.rescore else (lambda c: run_case(args.bin, env, c))
+    traced = args.trace if not args.rescore else None
+    results, failed_names = [], {}
     with concurrent.futures.ThreadPoolExecutor(max(1, args.jobs)) as pool:
-        for c, turns in zip(jobs, pool.map(run, jobs)):
-            problems = score(c, turns)
-            failures += bool(problems)
-            if problems: failed_names[c["name"]] = failed_names.get(c["name"], 0) + 1
+        for c, got in zip(jobs, pool.map(run, jobs)):
+            outcome, problems = verdict(c, got)
+            if outcome != "pass": failed_names[c["name"]] = failed_names.get(c["name"], 0) + 1
+            turns = got["turns"] or []
             for i, t in enumerate(turns):
-                shown = ", ".join("%s%s" % (n, a if len(a) < 70 else a[:67] + "...") for n, a in t["tools"]) or "-"
-                first = "%.1f" % t["first"] if t["first"] is not None else " - "
-                tag = ("PASS" if not problems else "FAIL") if i == len(turns) - 1 else "    "
-                print("%-4s %-21s first %4ss total %5.1fs  [%s]" % (tag, c["name"], first, t["total"] or 0, shown))
-                print("       \"%s\"" % t["answer"][:220].replace("\n", " / "))
+                shown = ", ".join("%s%s" % (n, a if len(a) < 70 else a[:67] + "...") for n, a in t.get("tools", [])) or "-"
+                first = "%.1f" % t["first"] if t.get("first") is not None else " - "
+                tag = {"pass": "PASS", "fail": "FAIL", "unscorable": "????"}[outcome] if i == len(turns) - 1 else "    "
+                print("%-4s %-21s first %4ss total %5.1fs  [%s]" % (tag, c["name"], first, t.get("total") or 0, shown))
+                print("       \"%s\"" % str(t.get("answer", ""))[:220].replace("\n", " / "))
             for p in problems: print("       !! " + p)
             sys.stdout.flush()
-            results.append({"case": c["name"], "requests": c["turns"], "problems": problems, "turns": turns})
-    n = len(results)
-    print("\n%d/%d passed | %s" % (n - failures, n, timing_summary(results)))
+            tr = traced if traced is not None else any("trace" in t for t in turns)
+            results.append(result_record(c, got, outcome, problems, tr))
+    shutil.rmtree(home, ignore_errors=True)
+    print("\n%s | %s" % (outcome_line(results), timing_summary(results)))
     if args.trace: print(trace_summary(results))
     if failed_names:
-        print("failed: " + ", ".join("%s%s" % (k, " x%d" % v if args.repeat > 1 else "") for k, v in sorted(failed_names.items())))
+        print("not passed: " + ", ".join("%s%s" % (k, " x%d" % v if args.repeat > 1 else "") for k, v in sorted(failed_names.items())))
     if args.json: json.dump(results, open(args.json, "w"), indent=1)
-    sys.exit(1 if failures else 0)
+    sys.exit(1 if failed_names else 0)
 
 if __name__ == "__main__":
     main()
