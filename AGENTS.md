@@ -55,15 +55,18 @@ src/smarthome/      discovery (mDNS, SSDP, TP-Link and WiZ broadcasts); driver.h
 src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
                     pages, the keys and their guide (key_guide), when the screen dims and goes off
                     (screen_idle), breathing screen, alarm banner, theme
-tests/              scored agent test set (needs a live service), device-free unit tests
+tests/              run.py, the entry point that runs the groups below by profile (section 6);
+                    scored agent test set (needs a live service), device-free unit tests
                     (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit, Hue, Kasa,
                     WiZ, Shelly, keys, radio, tools), Tapo, Fire TV, HomeKit, Hue, Kasa, WiZ and
                     Shelly end to end (tapo_e2e.py, firetv_e2e.py, homekit_e2e.py, hue_e2e.py,
                     kasa_e2e.py, wiz_e2e.py, shelly_e2e.py),
                     the loop against a scripted chat service (home_chat_e2e.py, agent_loop_test.py,
                     and selfheal_chat_e2e.py for failures), the generated request set (suite/,
-                    agent_suite.py), golden screenshots (shots_compare.py, golden/shots/),
-                    simulated devices and service (mocks/)
+                    agent_suite.py), the scorer's own test (scorer_test.py), the gate and
+                    reports for live runs (exp_compare.py, exp_report.py), golden screenshots
+                    (shots_compare.py, golden/shots/), simulated devices, chat service and web
+                    (mocks/)
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
 ```
 
