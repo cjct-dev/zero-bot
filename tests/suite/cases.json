@@ -13274,6 +13274,11 @@
    {
     "kind": "home_asked",
     "name": "lamp"
+   },
+   {
+    "kind": "home_not_switched",
+    "name": "Bedroom lamp",
+    "turn": "all"
    }
   ],
   "env": {
@@ -15533,17 +15538,13 @@
   "must_not": [],
   "checks": [
    {
-    "kind": "arg",
-    "tool": "device",
-    "key": "value",
-    "num": 30
+    "kind": "device_set",
+    "setting": "volume",
+    "value": 30
    },
    {
-    "kind": "music_filter",
-    "key": "genre",
-    "has": [
-     "jazz"
-    ]
+    "kind": "music_playing",
+    "genre": "jazz"
    }
   ],
   "env": {},

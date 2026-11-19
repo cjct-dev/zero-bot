@@ -552,7 +552,8 @@ case("home", ["look up when the sun sets today, then turn on the bedroom lamp", 
      env=WEB, checks=[on_turn(0, arg_has("web_search", "query", "sun")), on_turn(0, simple("asks", name="lamp")),
                       every_turn(simple("home_not_switched", name="Bedroom lamp"))])
 case("home", ["look up when the sun sets today", "turn on the bedroom lamp"], tags=["confirm", "search"], tried=["smart_home"], home=H,
-     env=WEB, checks=[on_turn(0, arg_has("web_search", "query", "sun")), simple("home_asked", name="lamp")])
+     env=WEB, checks=[on_turn(0, arg_has("web_search", "query", "sun")), simple("home_asked", name="lamp"),
+                      every_turn(simple("home_not_switched", name="Bedroom lamp"))])
 case("home", ["turn everything off", "yes"], tags=["confirm"], must=["smart_home"], home="sockets", checks=[simple("home_all_off")])
 case("home", ["turn on the bedroom lamp", "make it blue"], must=["smart_home"], home=H, checks=[home_call("set", ["Bedroom lamp", "Bedroom"], color="blue")])
 case("home", ["turn on the floor lamp", "dim it to 20 percent"], must=["smart_home"], home=H, checks=[home_call("set", ["Floor lamp", "Lounge"], brightness=20)])
@@ -658,8 +659,9 @@ for text, must, checks in [
          [arg_has("weather", "location", "tokyo"), arg_has("world_time", "place", "tokyo")]),
         ("add lunch with sam on friday at 1pm and remind me on thursday at 6pm to book a table", ["calendar_add", "reminder_set|calendar_add"],
          [at("next:%d" % FRI, "13:00", tools="calendar_add"), at("next:%d" % THU, "18:00")]),
+        # Each effect whole: the device's volume (not its brightness) at 30, and a jazz song really started.
         ("play some jazz and turn your volume down to 30", ["music", "device"],
-         [arg_num("device", "value", 30), simple("music_filter", key="genre", has=["jazz"])]),
+         [simple("device_set", setting="volume", value=30), simple("music_playing", genre="jazz")]),
         ("remember that im vegetarian and add dinner with anna on saturday at 7pm", ["memory_save", "calendar_add"],
          [arg_has("memory_save", "text", "vegetarian"), at("next:%d" % SAT, "19:00", tools="calendar_add")]),
         ("set a timer for ten minutes and uh whats the weather like in leeds tomorrow", ["timer", "weather"],

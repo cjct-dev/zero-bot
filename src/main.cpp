@@ -99,8 +99,11 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
     // that file, a channel of their own, one JSON object a line, so nothing the model says can pass for
     // one: each request's start and end (its number, the times, the answer), every tool call of it as the
     // call finishes, whole (from the request's own events: trimming the history hides none, nothing is
-    // cut), errors, steering, the saved state after it, "/new", and the end of the run. Without the file
-    // the call and state records are printed as "[call] {...}" and "[state] {...}" lines, as before.
+    // cut), errors, steering, the saved state after it, "/new", and the end of the run. Each turn's end lists
+    // the calls of every model response in it, from the history, so each call record can be matched to the
+    // response that asked for it. Every record carries its time since the run began ("mono") and the wall
+    // clock ("wall"), to set it beside a simulated device's log. Without the file the call and state records
+    // are printed as "[call] {...}" and "[state] {...}" lines, as before.
     static FILE *records = nullptr;
     static std::mutex records_mtx;
     static int request_no = 0, call_no = 0;
@@ -110,8 +113,9 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
         return 2;
     }
     static const auto record = [](json r) {
-        r["v"] = 1;
+        r["v"] = 2;
         r["mono"] = std::chrono::duration<double>(std::chrono::steady_clock::now() - run_began).count();
+        r["wall"] = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
         const std::string line = r.dump(-1, ' ', false, json::error_handler_t::replace);
         std::lock_guard<std::mutex> lk(records_mtx);
         fprintf(records, "%s\n", line.c_str());
@@ -137,26 +141,43 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
         printf("[call] %s\n", rec.dump(-1, ' ', false, json::error_handler_t::replace).c_str());
         fflush(stdout);
     };
-    // What the calendar, reminders (timers among them) and memory files hold. A missing file is an empty
-    // list; one that cannot be read, or holds something other than a list, is null and named in
-    // "unreadable", so the scorer can tell a broken store from an empty one.
+    // What the calendar, reminders (timers among them) and memory files hold, and the saved state of every
+    // smart-home thing (its name, room and state; nothing else of the file). A file that does not exist is
+    // null and named in "absent"; one that cannot be read, or holds something of the wrong shape, is null
+    // and named in "unreadable": the scorer tells both from an empty list.
     auto state_record = [] {
-        json st = {{"now", static_cast<long long>(time(nullptr))}}, unreadable = json::array();
-        for (const char *name : {"reminders", "calendar", "memory"}) {
+        json st = {{"now", static_cast<long long>(time(nullptr))}}, unreadable = json::array(), absent = json::array();
+        for (const char *name : {"reminders", "calendar", "memory", "smarthome"}) {
             const std::string path = util::data_dir() + "/" + name + ".json";
+            const std::string key = std::string(name) == "smarthome" ? "home" : name;
             std::string text;
             struct stat sb;
-            if (stat(path.c_str(), &sb) != 0 && errno == ENOENT) { st[name] = json::array(); continue; }
-            if (!util::read_file(path, text)) { st[name] = json(); unreadable.push_back(name); continue; }
-            json j = json::parse(text, nullptr, false);
-            if (j.is_discarded() || !j.is_array()) { st[name] = json(); unreadable.push_back(name); }
-            else st[name] = std::move(j);
+            st[key] = json();
+            if (stat(path.c_str(), &sb) != 0 && errno == ENOENT) { absent.push_back(key); continue; }
+            json j = util::read_file(path, text) ? json::parse(text, nullptr, false) : json(json::value_t::discarded);
+            if (key != "home") {
+                if (j.is_discarded() || !j.is_array()) unreadable.push_back(key);
+                else st[key] = std::move(j);
+                continue;
+            }
+            json things = json::array();
+            const json *nets = j.is_object() ? &j["networks"] : nullptr;
+            if (!nets || !nets->is_object()) { unreadable.push_back(key); continue; }
+            for (const auto &net : nets->items())
+                for (const auto &d : util::jget(net.value(), "devices", json::array()))
+                    for (const auto &t : util::jget(d, "things", json::array()))
+                        things.push_back({{"device", util::jget(d, "id", std::string())}, {"name", util::jget(t, "name", std::string())},
+                                          {"room", util::jget(t, "room", std::string())}, {"state", util::jget(t, "state", json::object())}});
+            st[key] = std::move(things);
         }
         if (!unreadable.empty()) st["unreadable"] = unreadable;
+        if (!absent.empty()) st["absent"] = absent;
         if (records) record({{"ev", "state"}, {"turn", request_no}, {"state", st}});
         else printf("[state] %s\n", st.dump(-1, ' ', false, json::error_handler_t::replace).c_str());
     };
-    if (records) record({{"ev", "start"}});
+    // What this build can do for the test runners, which refuse a binary without it (tests/agent_eval.py
+    // probe_binary): these records, the stand-in web (ZB_EXP_WEB), and refusing hardware (ZB_EXP_NO_HARDWARE).
+    if (records) record({{"ev", "start"}, {"caps", {"records", "web", "no_hardware"}}});
 #endif
     Agent &agent = Agent::get();
     agent.start(ev);
@@ -164,7 +185,8 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
         // Where this request's messages will begin, counted over the whole run: the history only grows at
         // its end and loses messages at its front, and the agent counts those it loses.
         size_t gone = 0;
-        const size_t begins = agent.history_snapshot(&gone).size() + gone;
+        const size_t held = agent.history_snapshot(&gone).size();   // sets gone: read it only after this statement
+        const size_t begins = held + gone;
 #if ZB_EXPERIMENTS
         ++request_no;
         call_no = 0;
@@ -196,14 +218,20 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
         const double total = since();
         const json hist = agent.history_snapshot(&gone);
         size_t tool_calls = 0;
+        json responses = json::array();   // the calls of each model response in this request
         for (size_t i = begins > gone ? begins - gone : 0; i < hist.size(); ++i) {
             const json &m = hist[i];
-            if (m.contains("tool_calls"))
+            if (m.contains("tool_calls")) {
+                json asked = json::array();
                 for (auto &c : m["tool_calls"]) {
                     ++tool_calls;
                     printf("  -> %s %s\n", c["function"]["name"].get<std::string>().c_str(),
                            c["function"]["arguments"].get<std::string>().c_str());
+                    asked.push_back({{"id", util::jget(c, "id", std::string())}, {"name", c["function"]["name"]},
+                                     {"args", c["function"]["arguments"]}});
                 }
+                responses.push_back(asked);
+            }
             else if (util::jget(m, "role", std::string()) == "tool")
                 printf("  <- %s\n", util::truncate_utf8(m["content"].get<std::string>(), 300).c_str());
             else if (util::jget(m, "role", std::string()) == "user")
@@ -215,9 +243,10 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
         state_record();   // before the answer, whose text runs to the next prompt
         if (records)
             record({{"ev", "turn_end"}, {"turn", request_no}, {"total", total}, {"first", first_at >= 0 ? json(first_at) : json()},
-                    {"answer", answer}, {"tool_calls", tool_calls}});
+                    {"answer", answer}, {"tool_calls", tool_calls}, {"responses", responses}});
 #else
         (void)tool_calls;
+        (void)responses;
 #endif
         printf("[answer %.1fs] %s\n", total, answer.c_str());
         fflush(stdout);

@@ -91,18 +91,28 @@ def right_half(text, end, hour):
     if m.group(2) or m.group(4): return hour >= 12
     return hour >= 18 or hour < 5   # "at night"
 
-def says_time(text, when, slack_min=2):
+# Said of a time, saying it is not that time: "it's not at 6 pm", "rather than 6 pm".
+DENIED = re.compile(r"\b(not|never|no|isn'?t|wasn'?t|aren'?t|won'?t|rather than|instead of)\b[^,.;:!?]*$", re.I)
+
+def denied(text, start):
+    """True when the words just before text[start], in its own clause, deny it ("not at 6 pm")."""
+    return bool(DENIED.search(re.split(r"[,.;:!?]", text[:start])[-1]))
+
+def says_time(text, when, slack_min=2, affirmed=False):
     """True when the answer states the clock time `when` (24-hour or 12-hour), give or take slack. An am or
-    pm that is said must be the right one: "3:00 am" is not 15:00."""
+    pm that is said must be the right one: "3:00 am" is not 15:00. With affirmed, a time its own clause
+    denies ("it's not at 6 pm") does not count."""
+    ok = lambda m: not (affirmed and denied(text, m.start()))
     for d in range(-slack_min, slack_min + 1):
         t = when + datetime.timedelta(minutes=d)
         h12 = t.hour % 12 or 12
         for pat in (r"\b0?%d[:.]%02d\b" % (t.hour, t.minute), r"\b%d[:.]%02d\b" % (h12, t.minute)):
-            if any(right_half(text, m.end(), t.hour) for m in re.finditer(pat, text)): return True
-        if t.hour % 12 == 0 and t.minute == 0 and re.search(r"midnight" if t.hour == 0 else r"noon|midday", text, re.I): return True
+            if any(right_half(text, m.end(), t.hour) and ok(m) for m in re.finditer(pat, text)): return True
+        if t.hour % 12 == 0 and t.minute == 0 and any(ok(m) for m in re.finditer(r"midnight" if t.hour == 0 else r"noon|midday", text, re.I)):
+            return True
         if t.minute == 0:
             for m in re.finditer(r"\b(%d|%s)\s*(o['’]?clock\b|(?=a\.?\s?m\b|p\.?\s?m\b|(?:in the|this|tomorrow) (?:morning|afternoon|evening)|tonight|at night))" % (h12, ONES[h12]), text, re.I):
-                if right_half(text, m.end(), t.hour): return True
+                if right_half(text, m.end(), t.hour) and ok(m): return True
     return False
 
 def today(): return datetime.datetime.now()
@@ -154,15 +164,25 @@ def attempts(turn, name):
 CHANGES = {"timer", "reminder_set", "reminder_cancel", "calendar_add", "calendar_update", "calendar_delete", "memory_save",
            "memory_delete", "smart_home", "music", "radio", "device", "tv_remote", "breathe", "set_timezone"}
 
-def counts(turn, name, result):
-    """Whether a call to `name` with this result counts as made (see CHANGES)."""
-    return worked(result) or (name not in CHANGES and not turn.get("strict_reads"))
+# The actions of those tools that only read: a search of the music library or the smart home's status
+# changes nothing, so it counts as made whatever came of it, like any other read.
+READS = {"timer": {"list"}, "music": {"search", "now_playing", "library"}, "smart_home": {"status"}, "device": {"status"}}
+
+def is_change(name, args=None):
+    """Whether a call to `name` with these arguments (parsed or as sent) changes something."""
+    if name not in CHANGES: return False
+    a = args if isinstance(args, dict) else _args(args or "")
+    return str(a.get("action", a.get("setting", ""))).strip().lower() not in READS.get(name, ())
+
+def counts(turn, name, result, args=None):
+    """Whether a call to `name` with this result counts as made (see CHANGES and READS)."""
+    return worked(result) or (not is_change(name, args) and not turn.get("strict_reads"))
 
 def calls(turn, name):
     """Parsed arguments of the calls to `name` (or any of a|b) in this turn that did what they asked: a
     change whose result is an ERROR, or that waits for a yes, did not."""
     return [a for (a, r), n in zip(_made(turn, name), [n for n, _ in turn["tools"] if n in name.split("|")])
-            if counts(turn, n, r)]
+            if counts(turn, n, r, a)]
 
 def tried(turn, name):
     """The calls to `name` in this turn and how each went, for a problem's text."""
@@ -185,21 +205,33 @@ def arg(turn, name, key, ok, what):
 
 # ---------------------------------------------------------------- the state a turn left
 # The cli build records, after each request, what the calendar, reminders (timers among them) and memory
-# files hold. A missing file is an empty list there; a file the app could not read is null and named in
-# "unreadable". A check that needs the state of a turn without one (a saved run from before the record, a
-# build without it), or a store that could not be read, is unscorable: never a pass.
+# files hold, and the smart home's things ("home"). A file that does not exist is named in "absent": it
+# reads as empty only if it never existed in the run (the parser marks one that disappeared as
+# "vanished"); a file the app could not read is named in "unreadable". A check that needs the state of a
+# turn without one (a saved run from before the record, a build without it), a store that could not be
+# read or that vanished, or an entry without the fields every entry has, is unscorable: never a pass.
 def state(turn):
     st = turn.get("state")
     if st is None: raise Unscorable("no saved state was recorded for this turn")
     if not isinstance(st, dict): raise Unscorable("the saved state is not a record: %r" % (st,))
     return st
 
+# What every saved entry has, with its type: one without them is not taken for a valid entry.
+STORE_FIELDS = {"reminders": {"text": str, "due": int}, "calendar": {"title": str, "start": int}, "memory": {"text": str},
+                "home": {"name": str, "state": dict}}
+
 def _store(st, name):
     if name in (st.get("unreadable") or []): raise Unscorable("the app could not read its %s file" % name)
+    if name in (st.get("vanished") or []): raise Unscorable("the %s file was there earlier in the run and is gone" % name)
+    if name in (st.get("absent") or []): return []
     if name not in st: raise Unscorable("the saved state has no %s" % name)
     items = st[name]
     if not isinstance(items, list) or not all(isinstance(x, dict) for x in items):
         raise Unscorable("the saved %s is not a list of records" % name)
+    for x in items:
+        for key, kind in STORE_FIELDS.get(name, {}).items():
+            if not isinstance(x.get(key), kind) or isinstance(x.get(key), bool):
+                raise Unscorable("a saved %s entry has no %s: %s" % (name, key, json.dumps(x)[:120]))
     return items
 
 def local(ts):
@@ -565,18 +597,31 @@ def home_asked_about(word=None):
 
 home_asked = home_asked_about()
 
+def thing_on(st, name):
+    """Whether the smart home's saved state has the thing `name` switched on (as the app saves it after any
+    change: to the thing, its room, a group or everything)."""
+    things = [x for x in _store(st, "home") if x["name"].lower() == name.lower()]
+    if not things: raise Unscorable("the saved home has no %s" % name)
+    return any(x["state"].get("on") is True for x in things)
+
+def _now_on(now):
+    return now == "on" or (isinstance(now, dict) and now.get("on") is True)
+
 def home_switched(name):
+    """The thing was switched on in this turn: a smart_home change worked, and the saved state shows it on."""
     def check(t):
-        return [] if any(isinstance(r, dict) and r.get("target") == name and r.get("now") == "on" for r in results(t, "smart_home")) \
-            else ["%s should have been switched on, got %s" % (name, results(t, "smart_home"))]
+        if any(isinstance(r, dict) and _now_on(r.get("now")) for r in results(t, "smart_home")) and thing_on(state(t), name): return []
+        return ["%s should have been switched on, got %s" % (name, results(t, "smart_home"))]
     return check
 
 def home_not_switched(name):
-    """The user declined: whatever the model tried, the thing was not switched on in this turn (as
-    every_turn(...): in no turn of the conversation)."""
+    """The user declined: whatever the model tried, and whatever it named (the thing, its room, a group,
+    everything), the thing is not on after this turn (as every_turn(...): after no turn of the conversation)."""
     def check(t):
-        bad = [r for r in results(t, "smart_home") if isinstance(r, dict) and r.get("target") == name and r.get("now") == "on"]
-        return ["%s was switched on although the user declined: %s" % (name, bad)] if bad else []
+        named = [r for r in results(t, "smart_home") if isinstance(r, dict) and r.get("target") == name and _now_on(r.get("now"))]
+        if named or thing_on(state(t), name):
+            return ["%s was switched on although the user declined: %s" % (name, named or "the saved state shows it on")]
+        return []
     return check
 
 def home_all_off(t):
@@ -698,8 +743,9 @@ TV_SILENT_HOME, TV_CLOSED_HOME = _offline_tv_home("silent"), _offline_tv_home("c
 def _refusing_tv_home():
     """A paired Fire TV that answers (tests/mocks/firetv/mock_firetv.py, in this process, on 127.0.0.1) and
     refuses its first remote-control command, then takes the rest; the cases using it set LIVE. Returns
-    the home and a function giving the TV's log of commands ("METHOD path action"), which the runner
-    stores in the last turn as "device_log"."""
+    the home and a function giving the TV's log of commands ((wall-clock time, "METHOD path action")), which
+    the runner sets beside each turn's start and end ("device_log" of each turn; "device_log_between" in the
+    last turn for any that fell between turns)."""
     import types
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks", "firetv"))
     sys.dont_write_bytecode = True   # no __pycache__ beside the mock
@@ -714,17 +760,26 @@ def _refusing_tv_home():
     home["networks"][TEST_NETWORK]["devices"].insert(0, {
         "id": "fire_tv:eval", "kind": "fire_tv", "name": "Living room TV", "last_ip": "127.0.0.1", "port": tv.api.port,
         "info": {"dial_port": str(tv.dial.port)}, "auth": {"token": "evaltoken", "key_pin": tv.pin()}, "enabled": True, "things": [t]})
-    return home, lambda: ["%s %s %s" % (e["method"], e["path"], e["query"].get("action", "")) for e in tv.stats["requests"]]
+    return home, lambda: [(tv.started + e["t"], "%s %s %s" % (e["method"], e["path"], e["query"].get("action", ""))) for e in tv.stats["requests"]]
 
 def chk_device_log(sent, n):
     """A whole-conversation check: the device was sent exactly n requests of this kind ("POST /v1/FireTV
-    volume_down"), counting the one it refused."""
+    volume_down"), counting the one it refused, in all (a request between turns included)."""
     def check(turns):
-        log = turns[-1].get("device_log")
-        if log is None: raise Unscorable("the device's log of commands was not recorded")
+        if any(t.get("device_log") is None for t in turns): raise Unscorable("the device's log of commands was not recorded")
+        log = [x for t in turns for x in t["device_log"]] + list(turns[-1].get("device_log_between") or [])
         got = sum(1 for x in log if x == sent)
         return [] if got == n else ["the TV should get %r %d time%s in all, got %d: %s" % (sent, n, "" if n == 1 else "s", got, log)]
     check.whole = True
+    return check
+
+def device_sent(sent, n):
+    """In this turn the device was sent exactly n requests of this kind (its log, set beside the turn's
+    start and end by the clock)."""
+    def check(t):
+        if t.get("device_log") is None: raise Unscorable("the device's log was not set beside this turn")
+        got = sum(1 for x in t["device_log"] if x == sent)
+        return [] if got == n else ["the TV should get %r %d time%s in this turn, got %d: %s" % (sent, n, "" if n == 1 else "s", got, t["device_log"])]
     return check
 # Saying that it did not work.
 FAILED = (r"couldn'?t|could not|can'?t|cannot|unable|didn'?t|did not|isn'?t|is not|wasn'?t|not (replying|responding|answering|reachable)|"
@@ -802,15 +857,15 @@ def chk_timer_left_said(word):
         return [] if any(says_int(t["answer"], n) for n in ok) else ["the answer should give the %s timer's %s minutes left" % (word, "/".join(map(str, sorted(ok))))]
     return check
 
-def chk_saved_when(n, ok=None, mention=None):
-    """Exactly n reminders and calendar events are saved; with ok, each at one of those times, and with
-    mention, each mentioning it."""
+def chk_saved_when(n, ok=None, mention=None, events_only=False):
+    """Exactly n reminders and calendar events are saved (calendar events only, with events_only); with ok,
+    each at one of those times, and with mention, each mentioning it."""
     def check(t):
         st = state(t)
-        items = [_when(x) for x in saved_reminders(st) + saved_events(st)]
+        items = [_when(x) for x in ([] if events_only else saved_reminders(st)) + saved_events(st)]
         bad = len(items) != n or any((ok and w not in ok()) or (mention and mention not in name.lower()) for w, name in items)
-        return ["%d reminder%s should be saved%s%s, saved: %s" % (n, "" if n == 1 else "s", " for %s" % ok() if ok else "",
-                                                                 " about %s" % mention if mention else "", items)] if bad else []
+        return ["%d %s%s should be saved%s%s, saved: %s" % (n, "calendar event" if events_only else "reminder", "" if n == 1 else "s",
+                                                            " for %s" % ok() if ok else "", " about %s" % mention if mention else "", items)] if bad else []
     return check
 
 def chk_deadlines(*plan):
@@ -867,12 +922,17 @@ def chk_forecast_seen(days, rain):
 NEGATION = r"\b(didn'?t|did not|haven'?t|have not|hasn'?t|has not|not|no|nothing|won'?t|wasn'?t|isn'?t|never|none)\b"
 NOTHING_SET = NEGATION + r"\W+(?:\w+\W+){0,3}?(set|remind\w*|saved?|scheduled|added)\b|\bset nothing\b|^\W*(nothing|none)\b"
 
+# A part of the answer that says a reminder exists: "your reminder for 8 is set", "I'll remind you at 8".
+REMINDER_STATED = r"\b(8|eight)\b|\b(is|was|has been|are|got) (now )?(set|saved|scheduled|on)\b|\bi'?ll remind\b|\bi'?ve? set\b|\bi set\b"
+
 def chk_said_nothing_set(t):
+    """The answer agrees with a store that holds no reminder: it says nothing was set, and no part of it
+    (a clause: "Nothing else, but your reminder for 8 is set" has two) states a reminder without denying it."""
     a = t["answer"]
     problems = [] if re.search(NOTHING_SET, a, re.I) else ["the answer should say that nothing was set"]
-    for sentence in re.split(r"(?<=[.!?])\s+", a):
-        if re.search(r"remind", sentence, re.I) and re.search(r"\b(8|eight)\b", sentence, re.I) and not re.search(NEGATION, sentence, re.I):
-            problems.append("the answer states a reminder at 8 as set: %r" % sentence.strip())
+    for clause in re.split(r"[.!?;,]|\b(?:but|and|so|because|though|although|however|since)\b", a, flags=re.I):
+        if clause and re.search(r"remind", clause, re.I) and re.search(REMINDER_STATED, clause, re.I) and not re.search(NEGATION, clause, re.I):
+            problems.append("the answer states a reminder as set: %r" % clause.strip())
     return problems
 
 # The time of an event has not been published: "not been announced", "no time yet", "isn't confirmed".
@@ -915,6 +975,34 @@ def tv_refused(t):
 # Any number at all, as digits or words ("seventy-three"), but not "one" ("would you like to save one?").
 ANY_NUMBER = r"\d|\b(two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|" \
              r"eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)\b"
+
+# The music library's genre of each song, for what a play call started ("now_playing": "So What by Miles Davis").
+def music_genre(now_playing):
+    for artist, _, genre, titles in MUSIC_LIBRARY:
+        if any(str(now_playing) == "%s by %s" % (title, artist) for title in titles): return genre.lower()
+    return None
+
+def music_playing(genre):
+    """A music play call worked in this turn and what it started is a song of that genre in the library."""
+    def check(t):
+        started = [r.get("now_playing") for c, r in [(c, results_of(r)) for c, r in _made(t, "music")]
+                   if str(c.get("action", "play")).lower() == "play" and isinstance(r, dict) and r.get("now_playing")]
+        if any(music_genre(x) == genre.lower() for x in started): return []
+        return ["music should be playing a %s song, started %s, got %s" % (genre, started, tried(t, "music"))]
+    return check
+
+def device_set(setting, value):
+    """A device call that worked set this setting (volume, brightness) to this value: the operation, the
+    target and the value together."""
+    def check(t):
+        for c in calls(t, "device"):
+            if str(c.get("setting", "")).lower() == setting and _same(c.get("value"), value): return []
+        return ["device should set %s to %s, got %s" % (setting, value, tried(t, "device"))]
+    return check
+
+def results_of(r):
+    try: return json.loads(r)
+    except (TypeError, ValueError): return r
 
 def no_timer_started(t):
     return ["no timer should be started, got %s" % tried(t, "timer")] if timer_calls(t, "start") else []
@@ -978,7 +1066,7 @@ CASES = [
     case("reminder_relative", "remind me in an hour and a half to take my tablets", must=["reminder_set|timer"], checks=[chk_ninety]),
     case("calendar_add", "put dinner with marta in my calendar for friday at 8pm", must=["calendar_add"],
          checks=[answer(r"friday|8"), lambda t: arg(t, "calendar_add", "start", one_of(FRI_8PM()), "Friday 20:00"),
-                 chk_saved_when(1, FRI_8PM, "dinner")]),
+                 chk_saved_when(1, FRI_8PM, "dinner", events_only=True)]),
     case("calendar_date", "add my flight to lisbon on the 3rd of december at 6 40 am", must=["calendar_add"], checks=[chk_flight]),
     case("birthday", "my mums birthday is on the 14th of march can you add it to my calendar", must=["calendar_add"],
          checks=[chk_yearly("03-14"), answer(r"march")]),
@@ -1091,7 +1179,7 @@ CASES = [
     # The page is still part of the conversation a turn later: a change asked for then waits for a yes too.
     case("home_after_web_later", ["look up when the sun sets today", "turn on the bedroom lamp"], tried=["smart_home"],
          home=EVAL_HOME, env=WEB, checks=[on_turn(0, lambda t: arg(t, "web_search", "query", has("sun"), "about the sunset")),
-                                          home_asked_about("lamp")]),
+                                          home_asked_about("lamp"), every_turn(home_not_switched("Bedroom lamp"))]),
     # More than eight things: the model asks in its own words, and a plain yes switches everything off.
     case("home_everything_yes", ["turn everything off", "yes"], must=["smart_home"], home=SOCKETS_HOME,
          checks=[on_turn(0, home_asked), home_all_off]),
@@ -1212,7 +1300,8 @@ CASES = [
          checks=[on_turn(0, lambda t: arg(t, "weather", "location", has("york"), "York")), on_turn(0, chk_forecast_seen(1, None)),
                  on_turn(0, chk_saved_when(0)), chk_saved_when(0), chk_said_nothing_set]),
     # A stale yes: the question about the heater is overtaken by "leave it off"; a later bare "yes" switches
-    # nothing, and the last answer says the heater is off.
+    # nothing, and the last answer says the heater is off. Judged in dry run, by the smart home's results and
+    # its saved state after each turn; a check from a simulated plug's own log is left for later (ZB-077).
     case("review_stale_yes", ["turn on the fan heater", "leave it off. whats eight times seven", "yes", "is the fan heater on"],
          home=EVAL_HOME, checks=[on_turn(0, home_asked_about("heater")), on_turn(1, lambda t: [] if says_int(t["answer"], 56) else ["should say 56"]),
                                  every_turn(home_not_switched("Fan heater")), answer(r"\boff\b|not on|isn'?t on", "that the heater is off"),
@@ -1229,10 +1318,15 @@ CASES = [
     case("review_tv_refused_once", ["set a ten minute pasta timer and turn the tv down one step", "try just the tv again",
                                     "how many timers are running"], must_not=["tv_remote"], home=_refusing_tv_home, env=LIVE,
          checks=[on_turn(0, chk_timer(600, "pasta")), on_turn(0, tv_refused), on_turn(0, claims_match(r"\btv\b|telly|television", r"pasta|timer")),
-                 on_turn(0, NO_IR_OFFER), on_turn(1, home_step(-1)),
+                 on_turn(0, NO_IR_OFFER), on_turn(0, device_sent("POST /v1/FireTV volume_down", 1)),
+                 on_turn(1, home_step(-1)), on_turn(1, device_sent("POST /v1/FireTV volume_down", 1)),
+                 on_turn(1, answer(r"\b(tv|telly|television|volume)\b", "what the retry did")),
+                 on_turn(1, not_answer(REFUSED, "say the retry failed")), device_sent("POST /v1/FireTV volume_down", 0),
                  chk_device_log("POST /v1/FireTV volume_down", 2), chk_device_log("POST /v1/FireTV volume_up", 0),
                  chk_timers_named(pasta=600),
-                 answer(r"(?<![\w-])(one|1|a single|just (the|one))\b(?! (moment|second|sec|minute|min|mo)\b)", "one timer"),
+                 # The count is of timers: "One device is online" is no answer.
+                 answer(r"(?<![\w-])(one|1|a single|just (the|one))\b(?! (moment|second|sec|minute|min|mo)\b)[^.!?]{0,40}\btimers?\b|"
+                        r"\b(only|just) (the|your) pasta timer\b", "one timer"),
                  not_answer(r"\b(two|three|four|2|3|4) timers\b", "count more than one timer")]),
     # Short edge cases.
     case("review_hypothetical_timer", "what would you say if i asked you to start a timer", quotes_ok=True,
@@ -1335,16 +1429,21 @@ def turns_from_output(out, c, failed=None, elapsed=None):
         turns.append(stopped)
     return _stop(turns, expected, stopped, failed, elapsed)
 
-RECORDS_VERSION = 1
+RECORDS_VERSION = 2
+STORES = ("reminders", "calendar", "memory", "home")
 
 def turns_from_records(text, c, process):
     """(turns, reasons): the turns of a case from the cli's records file (ZB_EVAL_RECORDS: one JSON object a
     line, written apart from the answer, so the answer cannot make one), and what makes the run unscorable.
-    The records are checked as they are read: version, order, turn numbers, the request each turn answers
-    (the case's own words, "/new" where the case has it), the fields every call and state record needs, a
-    call record for every call in the turn's history, no more turns than the case has, and, for an app that
-    exited normally, records to the end of the run. process: {"exit", "timeout", "seconds"}."""
+    The stream must be whole and in order: "start" first, then for each request "turn_start" (its number and
+    the case's own words; "new" where the case has "/new"), its call, steer and error records, exactly one
+    "state", and "turn_end"; then "end", and nothing after it. Every call record has its number, id, name,
+    arguments and result, and the calls of the turn are exactly those of its model responses (listed in
+    "turn_end", from the history), in order, ids included; no response repeats an id. An app that exited
+    normally must have written every turn and the end. A store present in one turn and absent in a later one
+    is marked "vanished" there. process: {"exit", "timeout", "seconds"}."""
     reasons, turns, cur, pos, ended = [], [], None, 0, False
+    seen = set()   # stores that existed in an earlier turn
     script = list(c["turns"])
     lines = text.split("\n")
     tail = lines.pop()   # after the last newline: nothing, unless the app was stopped while writing
@@ -1360,9 +1459,16 @@ def turns_from_records(text, c, process):
             bad("not a record of version %d" % RECORDS_VERSION)
             break
         kind = r["ev"]
+        if ended:
+            bad("a %s record after the end of the run" % kind)
+            break
+        if (k == 1) != (kind == "start"):
+            bad("the run does not begin with its start" if k == 1 else "a second start")
+            break
         if kind == "start":
-            if k != 1:
-                bad("a second start")
+            caps = r.get("caps")
+            if not isinstance(caps, list) or "records" not in caps:
+                bad("a start without the build's capabilities")
                 break
         elif kind == "new":
             if cur is not None or pos >= len(script) or script[pos] != "/new":
@@ -1378,7 +1484,8 @@ def turns_from_records(text, c, process):
                 bad("turn %s (%r) is not the case's next request (%r)" % (r.get("turn"), r.get("text"), want))
                 break
             pos += 1
-            cur = _blank_turn(calls=[], began=r.get("mono"))   # seconds since the app started, as are "ended" and each call's "at"
+            # Times: "began", "ended" and each call's "at" are seconds since the app started; the "_wall" ones the clock's.
+            cur = _blank_turn(calls=[], began=r.get("mono"), began_wall=r.get("wall"))
             turns.append(cur)
         elif kind == "error" and cur is None:
             if turns: turns[-1]["error"] = turns[-1]["error"] or str(r.get("message"))   # after the request, before the next
@@ -1391,27 +1498,43 @@ def turns_from_records(text, c, process):
                 if not all(isinstance(x, str) for x in fields) or not fields[0] or not fields[1] or r.get("n") != len(cur["calls"]) + 1:
                     bad("a call record without its number, id, name, arguments and result")
                     break
+                if "state" in cur:
+                    bad("a call record after the turn's state")
+                    break
                 cur["calls"].append({"id": fields[0], "name": fields[1], "args": fields[2], "result": fields[3], "at": r.get("mono")})
             elif kind == "state":
                 st = r.get("state")
                 if "state" in cur or not isinstance(st, dict) or not isinstance(st.get("now"), int):
                     bad("a state record that is not one record with its time")
                     break
+                absent = st.get("absent") or []
+                gone = [x for x in STORES if x in absent and x in seen]
+                if gone: st["vanished"] = gone
+                seen.update(x for x in STORES if x not in absent and x in st)
                 cur["state"] = st
             elif kind == "steer":
                 cur.setdefault("steered", []).append(str(r.get("text")))
             elif kind == "error":
                 cur["error"] = str(r.get("message"))
             else:
-                total, first, answer_, n = r.get("total"), r.get("first"), r.get("answer"), r.get("tool_calls")
+                total, first, answer_, n, responses = r.get("total"), r.get("first"), r.get("answer"), r.get("tool_calls"), r.get("responses")
                 if not isinstance(total, (int, float)) or not isinstance(answer_, str) or not (first is None or isinstance(first, (int, float))) \
-                   or not isinstance(n, int):
-                    bad("a turn end without its time, answer and count of calls")
+                   or not isinstance(n, int) or not isinstance(responses, list):
+                    bad("a turn end without its time, answer, count of calls and model responses")
+                    break
+                if "state" not in cur:
+                    bad("turn %d ended without its saved state" % len(turns))
                     break
                 if n != len(cur["calls"]):
                     bad("turn %d made %d tool calls but has %d call records" % (len(turns), n, len(cur["calls"])))
                     break
-                cur.update(total=float(total), first=first, answer=plain(answer_), ended=r.get("mono"))
+                shaped = all(isinstance(resp, list) and all(isinstance(x, dict) for x in resp) for resp in responses)
+                asked = [{"id": x.get("id"), "name": x.get("name"), "args": x.get("args")} for resp in responses for x in resp] if shaped else None
+                made = [{"id": x["id"], "name": x["name"], "args": x["args"]} for x in cur["calls"]]
+                if not shaped or asked != made or any(len({x.get("id") for x in resp}) != len(resp) for resp in responses):
+                    bad("turn %d's call records are not the calls its model responses asked for" % len(turns))
+                    break
+                cur.update(total=float(total), first=first, answer=plain(answer_), ended=r.get("mono"), ended_wall=r.get("wall"))
                 cur = None
         elif kind == "end":
             if cur is not None or r.get("turns") != len(turns):
@@ -1438,9 +1561,22 @@ def turns_from_records(text, c, process):
 # nothing a test asks for ever reaches a real camera (ZB_EXP_NO_HARDWARE stops the rest).
 CAMERA_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks", "camera", "sign.jpg")
 
+# What a case's env may not set: the runner's guards, applied after it (see run_case).
+GUARDED = ("ZB_EXP_NO_HARDWARE", "ZB_FAKE_CAMERA", "ZB_EVAL_RECORDS", "ZB_EXP_TRACE", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+           "XDG_CACHE_HOME", "HOME", "ZB_TEST_NETWORK", "PATH")
+
+def device_home(home):
+    """Whether a case's home has a simulated device that must really be reached (a Fire TV on 127.0.0.1): the
+    only reason a case may run without ZB_DRY_RUN."""
+    devices = [d for n in (home or {}).get("networks", {}).values() for d in n.get("devices", [])]
+    return any(d.get("kind") == "fire_tv" and str(d.get("last_ip", "")).startswith("127.") for d in devices)
+
 def run_case(binary, base_env, c):
     """Runs one case and returns what came of it: {"turns", "process": {"exit", "timeout", "seconds"},
-    "evidence": "records" or "stdout", "unscorable": [why the evidence cannot be scored]}."""
+    "evidence": "records" or "stdout", "unscorable": [why the evidence cannot be scored], "trace": whether
+    the app was traced}. The runner's guards are applied last, over the case's env: no hardware, the fixture
+    camera, the records file and a state folder of the case's own, and ZB_DRY_RUN unless the case's home
+    has a simulated device it must reach."""
     # A fresh state directory per case: no calendar entries, memories or time zone carried over.
     state = tempfile.mkdtemp(prefix="zb-eval-")
     device_log = None
@@ -1449,13 +1585,9 @@ def run_case(binary, base_env, c):
     for key in ("llm_model", "stt_model", "tts_model", "music_dir"):
         if os.environ.get("ZB_EVAL_" + key.upper()): settings[key] = os.environ["ZB_EVAL_" + key.upper()]
     json.dump(settings, open(state + "/config/zero-bot/settings.json", "w"))
-    env = dict(base_env, XDG_CONFIG_HOME=state + "/config", XDG_DATA_HOME=state + "/data", XDG_CACHE_HOME=state + "/cache")
-    # No hardware beyond what the case simulates: camera and infrared refuse (experiment builds), and the
-    # camera's photo is a fixture.
-    env["ZB_EXP_NO_HARDWARE"] = "1"
-    env.setdefault("ZB_FAKE_CAMERA", CAMERA_FIXTURE)
+    env = dict(base_env)
     records = state + "/records.jsonl"
-    env["ZB_EVAL_RECORDS"] = records
+    home = None
     if c.get("radio"):
         json.dump(c["radio"], open(state + "/config/zero-bot/radio.json", "w"))
     if c.get("home"):
@@ -1465,11 +1597,19 @@ def run_case(binary, base_env, c):
         home = c["home"]() if callable(c["home"]) else c["home"]   # a home with a port made when it runs
         if isinstance(home, tuple): home, device_log = home      # and a simulated device whose log is kept
         json.dump(home, open(state + "/data/zero-bot/smarthome.json", "w"))
-        env["ZB_TEST_NETWORK"] = "1"
     for k, v in c["env"].items():
+        if k in GUARDED: continue   # validate() reports it
         if v is None: env.pop(k, None)
         elif isinstance(v, str) and v.startswith("@web"): env[k] = web_base() + v[4:]   # the stand-in web, started once
         else: env[k] = v
+    # The guards, last. No hardware beyond what the case simulates: camera and infrared refuse (experiment
+    # builds), and the camera's photo is a fixture (ZB_EVAL_CAMERA, a runner's choice, may name another).
+    env.update(XDG_CONFIG_HOME=state + "/config", XDG_DATA_HOME=state + "/data", XDG_CACHE_HOME=state + "/cache",
+               ZB_EXP_NO_HARDWARE="1", ZB_FAKE_CAMERA=base_env.get("ZB_FAKE_CAMERA") or CAMERA_FIXTURE, ZB_EVAL_RECORDS=records)
+    if home is not None: env["ZB_TEST_NETWORK"] = "1"
+    else: env.pop("ZB_TEST_NETWORK", None)
+    if c["env"].get("ZB_DRY_RUN", "") is None and device_home(home): env.pop("ZB_DRY_RUN", None)
+    else: env["ZB_DRY_RUN"] = "1"
     if "ZB_DRY_RUN" not in env:
         # A device is really contacted (on 127.0.0.1 only: ZB_TEST_NETWORK), and so would be whatever
         # else the model calls: the programs that change this computer are stand-ins that do nothing.
@@ -1481,9 +1621,12 @@ def run_case(binary, base_env, c):
         env["PATH"] = stand_ins + os.pathsep + env.get("PATH", "")
     # --trace: the experiments' trace (src/agent/experiment.h; cli build), one file per case: each turn's time
     # to its first sentence (what the user would hear first), and all of it into --json. Only when asked: the
-    # trace asks the service for token counts, a change to what is sent.
-    trace = state + "/trace.jsonl" if base_env.get("ZB_EVAL_TRACE") else None
+    # trace asks the service for token counts, a change to what is sent. A trace asked for in the
+    # environment (ZB_EXP_TRACE) is taken as asked for too, and recorded: the result says whether the app
+    # was traced, whatever the command line said.
+    trace = state + "/trace.jsonl" if base_env.get("ZB_EVAL_TRACE") or base_env.get("ZB_EXP_TRACE") else None
     if trace: env["ZB_EXP_TRACE"] = trace
+    else: env.pop("ZB_EXP_TRACE", None)
     cmd = [binary, "--chat"] + (["--steer", c["steer"]] if c["steer"] else [])
     t0 = time.time()
     try:
@@ -1507,13 +1650,26 @@ def run_case(binary, base_env, c):
         turns, evidence = turns_from_output(out, c, failed, elapsed), "stdout"
         reasons = ["no records file (ZB_EVAL_RECORDS): a cli build of this version writes one"] if process["exit"] == 0 else []
     shutil.rmtree(state, ignore_errors=True)
-    if device_log and turns: turns[-1]["device_log"] = device_log()
+    if device_log and turns: place_device_log(turns, device_log())
     for i, t in enumerate(turns):   # request n of the run is the n-th turn ("/new" starts none)
         mine = [e for e in events if e.get("req") == i + 1]
         req = next((e for e in mine if e.get("ev") == "request"), None)
         if req and req.get("first_sentence_ms", -1) >= 0: t["first_sentence"] = req["first_sentence_ms"] / 1000.0
         if trace: t["trace"] = mine
-    return {"turns": turns, "process": process, "evidence": evidence, "unscorable": reasons}
+    return {"turns": turns, "process": process, "evidence": evidence, "unscorable": reasons, "trace": bool(trace)}
+
+def place_device_log(turns, log):
+    """Sets a simulated device's log ([(wall-clock time, what)]) beside the turns by the records' wall times:
+    each turn's "device_log" is what the device was sent while the turn ran (until its end, or for a turn
+    that never ended, from its start on); what fell between turns goes to the last turn's
+    "device_log_between". A turn without a start time gets no log, so a check of it is unscorable."""
+    between = []
+    for t in turns:
+        if t.get("began_wall") is not None: t["device_log"] = []
+    for at, what in log:
+        mine = [t for t in turns if t.get("began_wall") is not None and t["began_wall"] - 0.05 <= at <= (t.get("ended_wall") or float("inf")) + 0.05]
+        (mine[0]["device_log"] if mine else between).append(what)
+    turns[-1]["device_log_between"] = between
 
 UNSCORABLE = "unscorable: "
 TURN_FIELDS = ("tools", "results", "answer", "total", "first", "error")
@@ -1542,11 +1698,18 @@ def verdict(c, run):
     definite = [x for x in problems if not x.startswith(UNSCORABLE)]
     return ("fail" if definite else "unscorable" if problems else "pass"), problems
 
-def run_from_saved(r):
-    """A result saved by --json, as run_case returns one, for --rescore. Results saved before the process
-    and evidence fields existed are scored as they are: what they lack makes their checks unscorable."""
-    why = r.get("unscorable_why", r.get("unscorable") if isinstance(r.get("unscorable"), list) else [])
-    return {"turns": r.get("turns"), "process": r.get("process"), "evidence": r.get("evidence", "stdout"), "unscorable": list(why or [])}
+def run_from_saved(r, c=None):
+    """A result saved by --json, as run_case returns one, for --rescore. It keeps where it came from (its
+    requests, case_hash, fixtures, trace and evidence; result_record writes those, not the current case's),
+    so that scoring old evidence again never gives it a new identity; a saved run whose requests are not
+    case c's is unscorable. Results saved before a field existed are scored as they are: what they lack
+    makes their checks unscorable."""
+    why = list(r.get("unscorable_why", r.get("unscorable") if isinstance(r.get("unscorable"), list) else []) or [])
+    if c is not None and r.get("requests") != c["turns"]:
+        why.append("the saved run asked %r, not this case's %r" % (r.get("requests"), c["turns"]))
+    return {"turns": r.get("turns"), "process": r.get("process"), "evidence": r.get("evidence", "stdout"), "unscorable": why,
+            "trace": r.get("trace"),
+            "provenance": {k: r.get(k) for k in ("requests", "case_hash", "fixtures", "trace")}}
 
 def trace_summary(results):
     """One line from the traces of a --trace run: model calls, tokens and upload per request."""
@@ -1616,7 +1779,7 @@ def score(c, turns):
         if CLAIM_RE.search(a) and not c.get("quotes_ok"):
             res = t["results"]
             made = [(n, res[k] if k < len(res) else None) for k, (n, _) in enumerate(t["tools"])]
-            changes = [r for n, r in made if n in CHANGES]
+            changes = [r for (n, r), (_, a) in zip(made, t["tools"]) if is_change(n, a)]
             if not made: problems.append(where + "claims an action but called no tool")
             elif changes and not any(worked(r) for r in changes):
                 # A change was tried: only a change that worked backs the claim (a read beside it does not).
@@ -1631,7 +1794,7 @@ def score(c, turns):
     for want in c["must"]:
         alts = want.split("|")
         if not any(n in alts for n, _ in made): problems.append("did not call " + want)
-        elif not any(n in alts and counts(last, n, r) for n, r in made): problems.append("no call to %s worked: %s" % (want, tried(last, want)))
+        elif not any(n in alts and counts(last, n, r, a) for (n, r), (_, a) in zip(made, last["tools"])): problems.append("no call to %s worked: %s" % (want, tried(last, want)))
     for want in c.get("tried", ()):
         if not any(n in want.split("|") for n, _ in made): problems.append("did not call " + want)
     for bad in c["must_not"]:
@@ -1684,10 +1847,35 @@ def _has_contents(cell):
     except ValueError: return False
     return True
 
+def _sha1(data):
+    import hashlib
+    return hashlib.sha1(data if isinstance(data, bytes) else data.encode()).hexdigest()
+
+def fixtures_of(c):
+    """What the fixtures a case runs against hold, each as a sha1: the music library and the camera's
+    picture (every case), the stand-in web (its source: fixtures and how it serves them; cases with
+    "@web/..."), the simulated Fire TV (a case whose home starts one)."""
+    import inspect
+    here = os.path.dirname(os.path.abspath(__file__))
+    out = {"music": _sha1(json.dumps(MUSIC_LIBRARY)), "camera": _sha1(open(CAMERA_FIXTURE, "rb").read())}
+    if any(isinstance(v, str) and v.startswith("@web") for v in (c.get("env") or {}).values()):
+        out["web"] = _sha1(open(os.path.join(here, "mocks", "fake_web.py"), "rb").read())
+    home = c.get("home")
+    if callable(home):
+        try: src = inspect.getsource(home)
+        except (OSError, TypeError): src = ""
+        if "mock_firetv" in src: out["firetv"] = _sha1(open(os.path.join(here, "mocks", "firetv", "mock_firetv.py"), "rb").read())
+    return out
+
+def fixture_version(c):
+    """One short string for fixtures_of(c), as results carry it ("fixtures")."""
+    return _sha1(json.dumps(fixtures_of(c), sort_keys=True))[:12]
+
 def case_hash(c):
     """sha1 of the case as it is scored: its turns, checks, env, home, radio stations, must and must_not
-    (and steer, tried, long_ok and quotes_ok). Two results are comparable only when this and SCORER_VERSION
-    agree. A suite case's checks are its JSON; a scored-set case's are fingerprints of the check functions."""
+    (and steer, tried, long_ok and quotes_ok), and what its fixtures hold (fixtures_of). Two results are
+    comparable only when this and SCORER_VERSION agree. A suite case's checks are its JSON; a scored-set
+    case's are fingerprints of the check functions."""
     import hashlib
     raw = c.get("source", c)
     checks = raw["checks"] if all(isinstance(x, dict) for x in raw["checks"]) else [_fingerprint(f) for f in raw["checks"]]
@@ -1695,18 +1883,49 @@ def case_hash(c):
     if isinstance(home, str): home = c.get("home")   # a suite case names its home; the home itself counts
     body = {"turns": raw["turns"], "checks": checks, "env": raw.get("env") or {}, "home": _fingerprint(home), "radio": raw.get("radio"),
             "must": raw.get("must", []), "must_not": raw.get("must_not", []), "steer": raw.get("steer"), "tried": raw.get("tried", []),
-            "long_ok": raw.get("long_ok", []), "quotes_ok": raw.get("quotes_ok", False)}
+            "long_ok": raw.get("long_ok", []), "quotes_ok": raw.get("quotes_ok", False), "fixtures": fixtures_of(c)}
     return hashlib.sha1(json.dumps(body, sort_keys=True, ensure_ascii=False, default=repr).encode()).hexdigest()
 
-def result_record(c, run, outcome, problems, traced, which="scored", **extra):
+def result_record(c, run, outcome, problems, traced=None, which="scored", **extra):
     """What --json keeps of one run: the verdict ("outcome"; "unscorable" is true for an unscorable run, with
     the reasons in "problems"), the evidence it rests on ("unscorable_why": what made the records themselves
-    unusable, kept for --rescore), and what makes it comparable: case_hash, scorer, trace, and the set it
-    belongs to ("set": "scored" or "suite")."""
-    return dict({"case": c["name"], "set": which, "case_hash": case_hash(c), "scorer": SCORER_VERSION, "trace": bool(traced),
-                 "outcome": outcome, "unscorable": outcome == "unscorable", "requests": c["turns"], "problems": problems,
-                 "turns": run["turns"], "process": run.get("process"), "evidence": run.get("evidence"),
-                 "unscorable_why": run.get("unscorable") or []}, **extra)
+    unusable, kept for --rescore), and what makes it comparable: case_hash, fixtures, scorer, trace and the
+    set it belongs to ("set": "scored" or "suite"). "trace" is whether the app was traced (run_case says;
+    `traced` only for a run that does not). A run scored again (run_from_saved) keeps the requests,
+    case_hash, fixtures and trace it was made with."""
+    prov = run.get("provenance")
+    trace = run.get("trace") if run.get("trace") is not None or prov else traced
+    return dict({"case": c["name"], "set": which, "case_hash": prov["case_hash"] if prov else case_hash(c),
+                 "fixtures": prov["fixtures"] if prov else fixture_version(c), "scorer": SCORER_VERSION,
+                 "trace": None if trace is None else bool(trace), "outcome": outcome, "unscorable": outcome == "unscorable",
+                 "requests": prov["requests"] if prov else c["turns"], "problems": problems, "turns": run["turns"],
+                 "process": run.get("process"), "evidence": run.get("evidence"), "unscorable_why": run.get("unscorable") or []}, **extra)
+
+def probe_binary(binary):
+    """Why a binary cannot run the live sets ([] when it can): it must be an experiments build that writes
+    the records file, of this version, and says it refuses hardware (ZB_EXP_NO_HARDWARE) and has the
+    stand-in web. It is run once with no request, in an empty home of its own, with dry run on."""
+    folder = tempfile.mkdtemp(prefix="zb-probe-")
+    try:
+        path = os.path.join(folder, "records.jsonl")
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": folder, "XDG_CONFIG_HOME": folder + "/config",
+               "XDG_DATA_HOME": folder + "/data", "XDG_CACHE_HOME": folder + "/cache", "ZB_EVAL_RECORDS": path,
+               "ZB_DRY_RUN": "1", "ZB_NO_AUDIO": "1", "ZB_EXP_NO_HARDWARE": "1"}
+        try: p = subprocess.run([binary, "--chat"], input="", env=env, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as e: return ["%s did not run: %s" % (binary, e)]
+        if p.returncode != 0: return ["%s --chat ended with status %d" % (binary, p.returncode)]
+        if not os.path.exists(path): return ["%s writes no records file (ZB_EVAL_RECORDS): build the cli preset of this checkout" % binary]
+        try: recs = [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+        except ValueError: return ["%s wrote records that are not JSON" % binary]
+        first = recs[0] if recs and isinstance(recs[0], dict) else {}
+        caps = first.get("caps") if isinstance(first.get("caps"), list) else []
+        problems = []
+        if first.get("v") != RECORDS_VERSION or first.get("ev") != "start": problems.append("%s writes records of another version" % binary)
+        problems += ["%s has no %s" % (binary, x) for x in ("records", "no_hardware", "web") if x not in caps]
+        if not recs or recs[-1].get("ev") != "end": problems.append("%s did not write the end of its run" % binary)
+        return problems
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 # ---------------------------------------------------------------- the cases checked before a run
 def validate(cases):
@@ -1738,6 +1957,9 @@ def validate(cases):
             if turn is not None and turn != "all" and not (isinstance(turn, int) and -n <= turn < n):
                 err("a check of turn %r; the case has %d" % (turn, n))
         for k, v in (c.get("env") or {}).items():
+            if k in GUARDED: err("env %s is the runner's to set (a guard); the case may not" % k)
+            if k == "ZB_DRY_RUN" and v is None and not (callable(c.get("home")) or device_home(c.get("home"))):
+                err("only a case whose home has a simulated device to reach may run without ZB_DRY_RUN")
             if not (v is None or isinstance(v, str)): err("env %s must be text or null" % k)
             if isinstance(v, str) and v.startswith("@web"):
                 fx = v[5:] or "default"
@@ -1817,6 +2039,9 @@ def main():
         for r in json.load(open(args.rescore)): saved.setdefault(r["case"], []).append(r)
     elif not os.environ.get("ZB_API_BASE") or not os.environ.get("ZB_API_KEY"):
         sys.exit("ZB_API_BASE and ZB_API_KEY must be set")
+    else:
+        unfit = probe_binary(args.bin)
+        if unfit: sys.exit("the binary cannot run the live cases: " + "; ".join(unfit))
 
     home = tempfile.mkdtemp(prefix="zb-eval-home-")
     env = isolated_env(home)
@@ -1826,7 +2051,7 @@ def main():
     wanted = [w for w in args.only.split(",") if w]
     cases = [c for c in CASES if not wanted or any(w in c["name"] for w in wanted)]
     jobs = [c for c in cases for _ in range(len(saved.get(c["name"], [])) if args.rescore else args.repeat)]
-    run = (lambda c: run_from_saved(saved[c["name"]].pop(0))) if args.rescore else (lambda c: run_case(args.bin, env, c))
+    run = (lambda c: run_from_saved(saved[c["name"]].pop(0), c)) if args.rescore else (lambda c: run_case(args.bin, env, c))
     traced = args.trace if not args.rescore else None
     results, failed_names = [], {}
     with concurrent.futures.ThreadPoolExecutor(max(1, args.jobs)) as pool:
@@ -1842,8 +2067,7 @@ def main():
                 print("       \"%s\"" % str(t.get("answer", ""))[:220].replace("\n", " / "))
             for p in problems: print("       !! " + p)
             sys.stdout.flush()
-            tr = traced if traced is not None else any("trace" in t for t in turns)
-            results.append(result_record(c, got, outcome, problems, tr))
+            results.append(result_record(c, got, outcome, problems, traced))
     shutil.rmtree(home, ignore_errors=True)
     print("\n%s | %s" % (outcome_line(results), timing_summary(results)))
     if args.trace: print(trace_summary(results))

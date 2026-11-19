@@ -362,12 +362,12 @@ def k_nothing_set(s): return ev.chk_said_nothing_set
 
 def k_event_time(s):
     """The answer gives the stand-in web's published event time (tests/mocks/fake_web.py, EVENTS), converted
-    to the user's time zone: exactly, with its am or pm right."""
+    to the user's time zone: exactly, with its am or pm right, and not denied ("it's not at 6 pm")."""
     import fake_web
     from zoneinfo import ZoneInfo
     def check(t):
         when = fake_web.event_time(s["event"]).astimezone(ZoneInfo(s.get("zone", "Europe/London")))
-        return [] if ev.says_time(t["answer"], when, 0) else \
+        return [] if ev.says_time(t["answer"], when, 0, affirmed=True) else \
             ["answer should give the event's time in %s, %s" % (s.get("zone", "Europe/London"), when.strftime("%H:%M (%-I:%M %p) on %-d %B"))]
     return check
 
@@ -414,7 +414,9 @@ USUALLY = r"\b(usually|typically|normally|generally|traditionally|tends? to|hist
           r"open(s|ing)? (at|from)|opening (time|bell|hours?))\b|" + CONDITIONAL
 
 
-def k_home_call(s): return ev.home_call(s["action"], s.get("targets"), **s.get("values", {}))
+def k_device_set(s): return ev.device_set(s["setting"], s["value"])
+def k_music_playing(s): return ev.music_playing(s["genre"])
+def k_home_call(s): return ev.home_call(s["action"], s.get("targets"), **(s.get("values") or {}))
 def k_home_never_on(s): return ev.home_never_on
 def k_home_asked(s): return ev.home_asked_about(s.get("name"))
 def k_home_switched(s): return ev.home_switched(s["name"])
@@ -444,16 +446,69 @@ def compile_case(c):
     return out
 
 
-# What each kind needs ("re" is a regular expression); the others are optional.
-NEEDS = {"answer": ["re"], "not_answer": ["re"], "arg": ["tool", "key"], "timer": ["seconds"], "timer_action": ["action"],
-         "cancelled": ["want", "keep"], "countdown": ["seconds"], "timer_becomes": ["added", "seconds"], "timers_saved": ["lengths"],
-         "moved": ["first", "then", "what"], "memory": ["has"], "memory_lacks": ["re"], "events_saved": ["n"],
-         "at": ["day", "times", "tools"], "yearly": ["md"], "number": ["values", "tol"], "days_until": ["md"], "weeks_until": ["md"],
-         "date_in": ["days"], "currency": [], "converted": ["targets", "amount"], "converted_share": ["amount", "factor"],
-         "time_in": ["zone"], "time_conv": ["local", "zone"], "music_filter": ["key", "has"], "language": ["lang"], "age_on": ["md", "born"],
-         "no_call": ["tool"], "max_calls": ["tool", "n"], "max_words": ["n"], "all_day_on": ["day"], "either": ["of"],
-         "home_call": ["action"], "home_asked": [], "home_switched": ["name"], "home_not_switched": ["name"], "home_step": ["sign"],
-         "home_no_action": ["actions"], "asks": ["name"], "forecast_seen": ["days", "rain"], "event_time": ["event"]}
+# What each kind takes, and of what type: "re" a regular expression, "re-list" a list of them; "?" marks one
+# that may be left out (or null). ONE_OF: kinds that need at least one of these. Anything else in a check
+# (besides "kind" and "turn") is a mistake, such as a misspelt name.
+SPEC = {"answer": {"re": "re", "what": "str?"}, "not_answer": {"re": "re", "what": "str?"},
+        "arg": {"tool": "str", "key": "str", "has": "list?", "num": "num?", "is": "str?", "any": "list?", "made": "bool?"},
+        "timer": {"seconds": "num", "label": "str?"}, "timer_action": {"action": "str"}, "time_left": {},
+        "cancelled": {"want": "str", "keep": "str"}, "countdown": {"seconds": "num"}, "timer_becomes": {"added": "num", "seconds": "num"},
+        "timers_saved": {"lengths": "list"}, "moved": {"first": "list", "then": "list", "what": "str", "title": "str?"},
+        "memory": {"has": "re", "lacks": "re-list?"}, "memory_lacks": {"re": "re-list"}, "events_saved": {"n": "int"},
+        "at": {"day": "str", "times": "list", "tools": "str", "weekly": "bool?"}, "yearly": {"md": "str", "year": "int?"},
+        "number": {"values": "list", "tol": "num"}, "days_until": {"md": "str", "slack": "int?"}, "weeks_until": {"md": "str"},
+        "weekday_of": {"md": "str?", "year": "str?", "date": "str?"}, "date_in": {"days": "int"}, "today_date": {}, "today_weekday": {},
+        "local_time": {}, "currency": {"amount": "num?", "from": "str?", "to": "str?"}, "converted": {"targets": "list", "amount": "num"},
+        "converted_share": {"amount": "num", "factor": "num"}, "stock_answer": {}, "time_in": {"zone": "str"},
+        "time_conv": {"local": "str", "zone": "str"}, "home_weather": {}, "music_filter": {"key": "str", "has": "list"},
+        "language": {"lang": "str"}, "age_on": {"md": "str", "born": "int"}, "no_call": {"tool": "str"},
+        "max_calls": {"tool": "str", "n": "int"}, "max_words": {"n": "int"}, "all_day_on": {"day": "str"}, "either": {"of": "list"},
+        "home_call": {"action": "str", "targets": "list?", "values": "dict?"}, "home_never_on": {}, "home_asked": {"name": "str?"},
+        "home_switched": {"name": "str"}, "home_not_switched": {"name": "str"}, "home_all_off": {}, "home_step": {"sign": "int"},
+        "home_no_action": {"actions": "list"}, "asks": {"name": "str"}, "forecast_seen": {"days": "int", "rain": "int?"},
+        "nothing_set": {}, "event_time": {"event": "str", "zone": "str?"}, "unannounced_time": {"usual": "list?"},
+        "device_set": {"setting": "str", "value": "num"}, "music_playing": {"genre": "str"}}
+ONE_OF = {"arg": ("has", "num", "is", "any"), "weekday_of": ("md", "date")}
+TYPES = {"str": str, "num": (int, float), "int": int, "list": list, "dict": dict, "bool": bool}
+
+
+def check_fields(s):
+    """What is wrong with one check's fields, by SPEC."""
+    kind, out = s["kind"], []
+    spec = SPEC.get(kind)
+    if spec is None: return ["%s has no field list (SPEC)" % kind]
+    for key in s:
+        if key not in spec and key not in ("kind", "turn"): out.append("%s takes no %r" % (kind, key))
+    for key, code in spec.items():
+        optional, code = code.endswith("?"), code.rstrip("?")
+        v = s.get(key)
+        if v is None:
+            if not optional: out.append("%s needs %s" % (kind, key))
+            continue
+        if code in ("re", "re-list"):
+            pats = v if code == "re-list" else [v]
+            if code == "re-list" and not isinstance(v, list): out.append("%s: %s must be a list of regular expressions" % (kind, key)); continue
+            for pat in pats:
+                try: re.compile(pat)
+                except (re.error, TypeError) as e: out.append("%s: %s is not a regular expression: %r (%s)" % (kind, key, pat, e))
+        elif not isinstance(v, TYPES[code]) or (code in ("num", "int") and isinstance(v, bool)):
+            out.append("%s: %s must be %s, not %r" % (kind, key, code, v))
+    if kind in ONE_OF and not any(s.get(k) is not None for k in ONE_OF[kind]):
+        out.append("%s needs one of %s" % (kind, ", ".join(ONE_OF[kind])))
+    return out
+
+
+def dry_run_check(f, turns):
+    """Runs a compiled check on a turn that has nothing in it, to find one that cannot run at all (a field it
+    reads that its case lacks): an exception other than Unscorable is a problem."""
+    blank = ev._blank_turn(state={"now": int(ev.today().timestamp()), "reminders": [], "calendar": [], "memory": [], "home": []})
+    try: f([dict(blank) for _ in range(max(1, turns))] if getattr(f, "whole", False) else dict(blank))
+    except ev.Unscorable: pass
+    except Exception as e:   # noqa: BLE001
+        return "cannot run: %r" % e
+    return None
+
+
 FIELDS = ("name", "tags", "turns", "must", "must_not", "checks", "env", "home", "steer")
 
 
@@ -478,28 +533,32 @@ def validate(cases):
             if not isinstance(s, dict) or s.get("kind") not in KINDS:
                 err("%s: no check kind %r" % (where, s.get("kind") if isinstance(s, dict) else s))
                 return
-            lacking = [k for k in NEEDS.get(s["kind"], []) if k not in s]
-            if lacking: err("%s: %s needs %s" % (where, s["kind"], ", ".join(lacking)))
-            for key in ("re", "has"):
-                pats = s.get(key) if s["kind"] in ("answer", "not_answer", "memory", "memory_lacks") else None
-                for pat in ([pats] if isinstance(pats, str) else pats or []):
-                    try: re.compile(pat)
-                    except (re.error, TypeError) as e: err("%s: %s is not a regular expression: %s" % (where, key, e))
+            for problem in check_fields(s): err("%s: %s" % (where, problem))
             if "turn" in s and not (s["turn"] == "all" or (isinstance(s["turn"], int) and -n <= s["turn"] < n)):
                 err("%s: looks at turn %r; the case has %d" % (where, s["turn"], n))
             if s["kind"] == "either":
-                for g, group in enumerate(s.get("of", [])):
-                    for k, x in enumerate(group): one(x, "%s, alternative %d.%d" % (where, g + 1, k + 1))
+                for g, group in enumerate(s.get("of") or []):
+                    for k, x in enumerate(group if isinstance(group, list) else [group]): one(x, "%s, alternative %d.%d" % (where, g + 1, k + 1))
             if s["kind"] == "event_time" and s.get("event") not in fake_web.EVENTS: err("%s: no stand-in event %r" % (where, s.get("event")))
             if s["kind"] == "unannounced_time" and "ZB_EXP_WEB" not in c["env"]: err("%s: unannounced_time needs the stand-in web" % where)
+            if s["kind"] == "language" and s.get("lang") not in LANGUAGE: err("%s: no language %r" % (where, s.get("lang")))
+            if s["kind"] in ("time_in", "time_conv") and isinstance(s.get("zone"), str):
+                from zoneinfo import ZoneInfo
+                try: ZoneInfo(s["zone"])
+                except Exception:   # noqa: BLE001
+                    err("%s: no time zone %r" % (where, s["zone"]))
         for i, s in enumerate(c["checks"] if isinstance(c["checks"], list) else []): one(s, "check %d" % (i + 1))
         if any(isinstance(s, dict) and s.get("kind") == "event_time" for s in c["checks"]) and "ZB_EXP_WEB" not in c["env"]:
             err("event_time needs the stand-in web (env ZB_EXP_WEB)")
+        if any(e.startswith(name + ":") for e in errors): continue
         try: compiled = compile_case(c)
         except Exception as e:   # noqa: BLE001
             err("does not compile: %r" % e)
             continue
-        errors += ev.validate([compiled]) if not any(e.startswith(name + ":") for e in errors) else []
+        for i, f in enumerate(compiled["checks"]):
+            problem = dry_run_check(f, n)
+            if problem: err("check %d %s" % (i + 1, problem))
+        errors += ev.validate([compiled])
     names = [c.get("name") for c in cases]
     errors += ["%s: the name is used twice" % x for x in sorted({x for x in names if names.count(x) > 1})]
     return errors
@@ -573,6 +632,9 @@ def main():
         chosen = [c for c in chosen if c["name"] in saved]
     elif not os.environ.get("ZB_API_BASE") or not os.environ.get("ZB_API_KEY"):
         sys.exit("ZB_API_BASE and ZB_API_KEY must be set")
+    else:
+        unfit = ev.probe_binary(args.bin)
+        if unfit: sys.exit("the binary cannot run the live cases: " + "; ".join(unfit))
 
     # An empty home folder of the run's own, and the stand-in music library (tests/agent_eval.py isolated_env).
     home = tempfile.mkdtemp(prefix="zb-suite-home-")
@@ -581,7 +643,7 @@ def main():
     if args.trace: env["ZB_EVAL_TRACE"] = "1"
     compiled = {c["name"]: compile_case(c) for c in chosen}
     jobs = [c for c in chosen for _ in range(len(saved.get(c["name"], [])) if args.rescore else args.repeat)]
-    run = (lambda c: ev.run_from_saved(saved[c["name"]].pop(0))) if args.rescore else (lambda c: ev.run_case(args.bin, env, compiled[c["name"]]))
+    run = (lambda c: ev.run_from_saved(saved[c["name"]].pop(0), compiled[c["name"]])) if args.rescore else (lambda c: ev.run_case(args.bin, env, compiled[c["name"]]))
     traced = args.trace if not args.rescore else None
 
     results, failed_names, per_tag = [], {}, {}
@@ -601,8 +663,7 @@ def main():
                 print("       \"%s\"" % str(t.get("answer", ""))[:220].replace("\n", " / "))
             for p in problems: print("       !! " + p)
             sys.stdout.flush()
-            tr = traced if traced is not None else any("trace" in t for t in turns)
-            results.append(ev.result_record(compiled[c["name"]], got, outcome, problems, tr, "suite", tags=c["tags"],
+            results.append(ev.result_record(compiled[c["name"]], got, outcome, problems, traced, "suite", tags=c["tags"],
                                             seconds=sum(t.get("total") or 0 for t in turns)))
     n = len(results)
     shutil.rmtree(home, ignore_errors=True)
