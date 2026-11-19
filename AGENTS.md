@@ -320,11 +320,18 @@ What exists:
   `TV_CLOSED_HOME`, for what is said after a network error); those get stand-ins that do nothing for
   the programs that would change the PC (volume, sound, camera, network). What earns a pass: a change
   counts only when its call worked (no `ERROR`, not waiting for a yes) and the saved state shows it,
-  and a compound request is checked part by part. The `cli` build prints, besides the readable lines,
-  a `[call]` record for every tool call of a turn as it finishes (id, name, arguments, the whole
-  result; from the turn's own events, so a trimmed history hides none) and a `[state]` record after
-  each turn (calendar, reminders and timers, memory); the parser falls back on the old lines for
-  saved runs, whose results are cut at 300 bytes. A check looks at the last turn, at the one
+  and a compound request is checked part by part (`must`: the change worked; `tried`: only attempted,
+  for routing and failure cases). The evidence is not read from what the answer prints: the `cli` build
+  writes a records file named by `ZB_EVAL_RECORDS` (one JSON object per line: turn start and end with
+  times, the answer, every tool call whole, the saved state after each turn, errors, `/new`, the end of
+  the run), from the turn's own events, so a trimmed history hides nothing and an answer that quotes a
+  record changes nothing. The parser checks the records as it reads; anything missing, out of order or
+  unreadable makes the run **unscorable**, which is counted apart and never a pass. Saved runs from
+  before fall back on the readable lines. Every result carries `case_hash`, `scorer`, `trace`, `set`
+  and `outcome`, which the gate uses to compare like with like. `--validate` (here and in
+  `agent_suite.py`) compiles every case offline. Both sets run each case with the stand-in music
+  library, a fixture camera photo (`tests/mocks/camera/sign.jpg`) and a temporary home. A check looks at
+  the last turn, at the one
   `on_turn` names, at `every_turn` (a later turn cannot hide an earlier mistake), or at the whole
   conversation (`chk_moved_item`: one saved, then exactly one at the new time). Numbers keep their
   sign and times their am or pm. A run that times out counts once, in the turn it stopped in; later
@@ -332,9 +339,11 @@ What exists:
   sentence (with `--trace`) beside the time to the first text. `web(fixture)` in a case's env sends
   web search, forecasts and place names to a stand-in (`tests/mocks/fake_web.py`, through the `cli`
   build's `ZB_EXP_WEB`, honoured only for an `http://127.x` address and compiled out of the device
-  build): canned answers, and search without a key. **The scorer's own test**: `tests/scorer_test.py`
+  build): canned answers, search without a key, forecasts (`rain59`, `rain60`, `rainmissing`) and event
+  times (`events`: one published, one not announced). **The scorer's own test**: `tests/scorer_test.py`
   (offline, no service) feeds deliberately wrong transcripts that must fail and right ones that must
-  pass; run it after any change to a check, and add a wrong transcript for any new kind of mistake.
+  pass, one per check, each asserting its problem text; run it after any change to a check, and add a
+  wrong transcript for any new kind of mistake.
 - **Generated request set**: `tests/suite/generate.py` (fixed seed) writes `tests/suite/cases.json`,
   about 570 requests in categories (timer, reminder, calendar, weather, home, route, ...) with
   feature tags (`asr`, `lang-xx`, `uk`, `us`, `followup`, `compound`, `notool`, `clarify`,
