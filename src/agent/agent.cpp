@@ -404,6 +404,7 @@ void Agent::run_turn() {
         failures = 0;
         failed_calls.clear();
         done_said.clear();
+        tool_ctx.worked.clear();
     };
     // Input that arrived meanwhile joins this request. It may be "try that again", so the calls
     // that failed may be made once more.
@@ -710,7 +711,9 @@ void Agent::run_turn() {
                 if (result.size() > kMaxToolResult) result = util::truncate_utf8(result, kMaxToolResult, " …[truncated]");
                 if (tools::failed(result)) {
                     ++failures;
-                    failed_calls.emplace(key, error_words(result));
+                    // Refused only for what its "say" claimed, nothing done: it may come again
+                    // with another say, or after the step it lacked.
+                    if (!tool_ctx.say_refused) failed_calls.emplace(key, error_words(result));
                 } else if (result.compare(0, 7, "CONFIRM") != 0) {
                     any_ok = true;
                 }
