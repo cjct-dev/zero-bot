@@ -193,10 +193,13 @@ groups need first. Which to use:
 - Named groups: `tests/run.py --groups unit,hue`; a live check:
   `tests/run.py --groups live-suite --tags timer --repeat 5 --no-search`; a variant against a
   baseline: `--exp ZB_EXP_TOOLS=lean --baseline B.json` (inherited `ZB_EXP_*` are never passed on).
-- Before a release: `tests/run.py --profile release --baseline EVAL.json,SUITE.json` runs every
-  offline group on fresh builds (`--build` makes them; a stale one fails), the scored set and the
-  suite once, then the gate of `tests/exp_compare.py` with `--release`. It does not start without a
-  baseline of both sets recorded by the current runners: record one with
+- Before a release: `tests/run.py --profile release --baseline EVAL.json,SUITE.json` (or `--groups
+  release`, the same mode) builds (unless `--no-build`: then a build older than any input stops it),
+  runs every offline group, every case of both live sets once, then the gate of `tests/exp_compare.py`
+  with `--release`. It refuses `--tags`, `--sample`, `--skip-tags`, `--only`, `--scored-only`,
+  `--fast` and `--exp`; `--no-search` is the declared exception. Live cases run only on a cli build
+  that is an experiments build, whose hardware guard holds and which writes the records. It does not
+  start without a baseline that covers the roster (below): record one with
   `tests/run.py --groups live-scored,live-suite` (its `eval.json` and `suite.json`).
 
 `ZB_EVAL_WRAPPER` prefixes every live run (a lock, or a script that sets the service's variables);
@@ -215,7 +218,16 @@ results without the manifest fields, under 90% of a set compared, a critical cas
 by default, or repeats unbalanced between the sides) or *passes*. A failure outranks the rest. Each
 result carries a manifest: `case_hash` (the compiled case), `scorer` (the scorer's version) and
 `trace`; only cases whose three agree on both sides are compared, the rest are counted by reason, and
-results without them are compared by name only (the report says so). **Trace policy:** the runner
+results without them are compared by name only (the report says so). A record that is not valid (no
+list of problems, an outcome its problems contradict, a `trace` its turns contradict) and an unscorable
+run never count as a pass or as a zero: a case with no scorable run on a side is left out, and an
+invalid record, an unscorable run of a critical case or over 2% unscorable runs make the verdict
+*incomplete*. **A release is measured against the roster**, every case defined in this tree (the scored
+set's `CASES` and `cases.json`, by name and current `case_hash`, with the critical cases read from the
+definitions), never against the cases the results happen to hold: the variant needs a scorable run of
+every case as defined now by the current scorer, 90% of each set must be compared, and every critical
+case compared and passing; a critical case cannot be left out. The baseline's provenance must match:
+the same `case_hash`, `scorer`, `trace` and, where recorded, `fixtures`. **Trace policy:** the runner
 always passes `--trace`, which adds `stream_options.include_usage` to what is sent, so a baseline for
 the gate must be traced too; traced against untraced pairs are left out. A live run whose cases
 failed passes only under a gate verdict of *passes* that compared its set (`gate.json` in the run
@@ -371,12 +383,13 @@ What exists:
   test on a PC, never `--discover`), `ZB_TEST_TETHER=1` (the radio acts as on a phone's
   connection).
 - **Measurement switches** (`src/agent/experiment.h`; compiled into the `cli` build only, CMake option
-  `ZB_EXPERIMENTS`): `ZB_EXP_TRACE=file` appends a JSON line per model call (purpose, timings, token
-  counts the service reports, size sent) and per request (first sentence, tools, guards, second look);
-  no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`. Variants measured against
+  `ZB_EXPERIMENTS`, which CMake refuses outside the `cli` build): `ZB_EXP_TRACE=file` appends a JSON
+  line per model call (purpose, timings, token counts the service reports, size sent) and per request
+  (first sentence, tools, guards, second look); no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`. Variants measured against
   the default, none of them adopted: `ZB_EXP_TOOLS=say1|lean` (shorter tool text),
   `ZB_EXP_DECIDE=parallel|required|required_held` (deciding without the second look); an unknown value
-  stops the run. `ZB_EXP_WEB` (the stand-in web) is sent `local`: no proxy, no redirect followed.
+  stops the run. `ZB_EXP_WEB` (the stand-in web) takes only plain decimal `http://127.a.b.c[:port][/path]`
+  and sends to the address it read, as `local`: no proxy, no redirect followed.
   **The hardware guard:** `ZB_EXP_NO_HARDWARE=1`, which the live sets' runners set for every case, makes
   the camera refuse unless `ZB_FAKE_CAMERA` names a picture, and the infrared transmitter refuse, so a
   test run never sends a real photo to the service or a code into the room (`tests/tools_cli.py`
