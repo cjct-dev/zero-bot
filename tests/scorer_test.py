@@ -75,30 +75,50 @@ def state(timers=(), reminders=(), events=(), memory=(), now=None):
     return {"now": now or EPOCH, "reminders": rem, "calendar": cal, "memory": mem}
 
 
+WALL = 1795100000.0   # the clock of a made-up run: turn n runs from WALL + 10 n to WALL + 10 n + 5
+
+
+def home_things(home, on=()):
+    """A home's things as the state record lists them, those named in `on` switched on."""
+    return [{"device": d["id"], "name": t["name"], "room": t.get("room", ""),
+             "state": dict(t.get("state") or {}, **({"on": True} if t["name"] in on else {}))}
+            for n in home["networks"].values() for d in n["devices"] for t in d["things"]]
+
+
 def records(c, *turns, end=True):
     """The records file of a run of case c. turns: dicts with calls [(name, args, result)], answer, state (a
     dict; None for no state record; an empty state when left out), total, first, error, user (to say
-    something other than the case's request); {"new": True} is "/new". A turn without "answer" never ended."""
+    something other than the case's request), on (the smart-home things switched on in that turn, for a
+    case with a home: they stay on), responses (how the calls were grouped into model responses, as
+    counts; one response with all of them when left out); {"new": True} is "/new". A turn without "answer"
+    never ended."""
     asked = [t for t in c["turns"] if t != "/new"]
-    out, n = [{"ev": "start"}], 0
+    out, n, on = [{"ev": "start", "caps": ["records", "web", "no_hardware"]}], 0, set()
+    home = c.get("home") if isinstance(c.get("home"), dict) else None
     for t in turns:
         if "answer" not in t and not t.get("new") and n < len(asked): end = False   # a turn that never ended: no end of the run
         if t.get("new"):
             out.append({"ev": "new"})
             continue
         n += 1
-        out.append({"ev": "turn_start", "turn": n, "text": t.get("user", asked[n - 1] if n <= len(asked) else "more")})
+        out.append({"ev": "turn_start", "turn": n, "text": t.get("user", asked[n - 1] if n <= len(asked) else "more"), "wall": WALL + 10 * n})
+        calls = [{"id": "call_%d_%d" % (n, j), "name": name, "args": json.dumps(args)} for j, (name, args, _) in enumerate(t.get("calls", []))]
         for j, (name, args, result) in enumerate(t.get("calls", [])):
-            out.append({"ev": "call", "turn": n, "n": j + 1, "id": "call_%d_%d" % (n, j), "name": name, "args": json.dumps(args),
-                        "result": result})
+            out.append(dict(calls[j], ev="call", turn=n, n=j + 1, result=result))
         if t.get("error"): out.append({"ev": "error", "turn": n, "message": t["error"]})
         if "answer" not in t: break
         st = t.get("state", state())
+        on |= set(t.get("on", ()))
+        if st is not None and home and "home" not in st: st = dict(st, home=home_things(home, on))
         if st is not None: out.append({"ev": "state", "turn": n, "state": st})
+        sizes, responses, k = t.get("responses", [len(calls)] if calls else []), [], 0
+        for size in sizes:
+            responses.append(calls[k:k + size])
+            k += size
         out.append({"ev": "turn_end", "turn": n, "total": t.get("total", 2.0), "first": t.get("first", 0.5), "answer": t["answer"],
-                    "tool_calls": len(t.get("calls", []))})
+                    "tool_calls": len(calls), "responses": responses, "wall": WALL + 10 * n + 5})
     if end: out.append({"ev": "end", "turns": n})
-    return "".join(json.dumps(dict(r, v=1, mono=0.0)) + "\n" for r in out)
+    return "".join(json.dumps(dict(r, v=2, mono=0.0, **({} if "wall" in r else {"wall": WALL}))) + "\n" for r in out)
 
 
 def run_of(c, *turns, exit=0, timeout=False, seconds=None, text=None, end=True):
@@ -224,20 +244,20 @@ def records_validated():
 
     unscorable("a turn more than the case has", records(c, *(good + [{"answer": "And another."}])), "is not the case's next request")
     unscorable("a turn more than the case has, with no words", base.replace('{"ev": "end", "turns": 2',
-               '{"ev": "turn_start", "turn": 3, "text": null, "v": 1, "mono": 0.0}\n{"ev": "end", "turns": 3'), "is not the case's next request")
+               '{"ev": "turn_start", "turn": 3, "text": null, "v": 2, "mono": 0.0, "wall": 0}\n{"ev": "end", "turns": 3'), "is not the case's next request")
     unscorable("a turn whose words are not the case's", records(c, good[0], dict(good[1], user="something else")), "is not the case's next request")
     unscorable("a call record without its result", base.replace(', "result": %s' % json.dumps(T12[2]), ""), "a call record without")
     unscorable("a call record numbered out of order", base.replace('"n": 1', '"n": 2'), "a call record without")
     unscorable("a turn with fewer call records than calls", base.replace('"tool_calls": 1', '"tool_calls": 2'), "made 2 tool calls but has 1")
     unscorable("a record from another turn", base.replace('"ev": "state", "turn": 1', '"ev": "state", "turn": 2'), "outside its turn")
     unscorable("a second state record in a turn", "".join(lines[:4] + [lines[3]] + lines[4:]), "not one record")
-    unscorable("an unknown version", base.replace('"v": 1', '"v": 7', 1), "not a record of version")
+    unscorable("an unknown version", base.replace('"v": 2', '"v": 7', 1), "not a record of version")
     unscorable("a line that is not JSON", base + "garbage\n", "not JSON")
     unscorable("records that stop early although the app exited normally", records(c, *good, end=False), "exited normally")
-    unscorable("a last line cut short although the app was not stopped", base + '{"v": 1, "ev": "tu', "middle of a line")
+    unscorable("a last line cut short although the app was not stopped", base + '{"v": 2, "ev": "tu', "middle of a line")
     unscorable("a new conversation the case does not have", records(c, good[0], {"new": True}, good[1]), "a new conversation where")
     # A run stopped by the time limit may end in the middle of a line: that is where it stopped.
-    got = run_of(c, text=records(c, good[0], {}) + '{"v": 1, "ev": "ca', timeout=True, seconds=50.0)
+    got = run_of(c, text=records(c, good[0], {}) + '{"v": 2, "ev": "ca', timeout=True, seconds=50.0)
     check("records: a timed-out run's cut last line is where it stopped", not got["unscorable"] and got["turns"][1].get("timed_out")
           and abs(got["turns"][1]["total"] - 48.0) < 0.01, got)
     check("records: a good run reads cleanly", run_of(c, *good)["unscorable"] == [], run_of(c, *good)["unscorable"])
@@ -266,7 +286,11 @@ def legacy_transcripts_still_parse():
 def missing_evidence_unscorable():
     c = case("timer")
     run = [{"calls": [T12], "answer": "Timer set for 12 minutes.", "state": None}]
-    trips("evidence: a state check with no state record is unscorable", c, run, "unscorable: no saved state was recorded", outcome="unscorable")
+    trips("evidence: a turn whose records have no state is unscorable", c, run, "turn 1 ended without its saved state", outcome="unscorable")
+    legacy = {"turns": [dict(_turnfields(), tools=[("timer", json.dumps(T12[1]))], results=[T12[2]], answer="Timer set for 12 minutes.")]}
+    got = ev.verdict(c, legacy)
+    check("evidence: a state check on a saved turn without a state is unscorable", got[0] == "unscorable" and
+          got[1] == ["unscorable: no saved state was recorded for this turn"], got)
     yoga = suite_case("calendar-042")
     add = ("calendar_add", {"title": "Yoga", "start": "%s 18:00" % ev.next_weekday(2)[0]}, '{"saved": {"id": 100}}')
     gone = ("calendar_delete", {"id": 100}, '{"deleted": 100}')
@@ -285,7 +309,7 @@ def missing_evidence_unscorable():
                                     "total": 1.0, "first": 0.5, "error": None}]})
     check("evidence: an old result without a saved state is unscorable, not passed", got[0] == "unscorable", got)
     # A definite failure is not hidden by missing evidence elsewhere.
-    got = verdict(c, {"calls": [T12], "answer": "Timer set for twenty minutes.", "state": None})
+    got = ev.verdict(c, {"turns": [dict(legacy["turns"][0], answer="Timer set for twenty minutes.")]})
     check("evidence: a wrong answer still fails when a state is missing", got[0] == "fail" and len(got[1]) == 2, got)
     check("evidence: the summary counts unscorable apart", ev.outcome_line([{"outcome": "pass"}, {"outcome": "fail"}, {"outcome": "unscorable"}])
           == "1/3 passed (33%), 1 failed, 1 unscorable", ev.outcome_line([{"outcome": "pass"}, {"outcome": "fail"}, {"outcome": "unscorable"}]))
@@ -468,7 +492,9 @@ def calendar_checks():
             "state": state(events=[("Dinner with Marta", at(FRIDAY, "20:00"))])}
     passes("calendar_add: the dinner saved for Friday 8pm passes", c, good)
     trips("calendar_add (A4): the call worked but another thing is saved", c, [dict(good, state=state(events=[("Dentist", at(FRIDAY, "20:00"))]))],
-          "1 reminder should be saved")
+          "1 calendar event should be saved")
+    trips("calendar_add (A4): a reminder at that time is not the calendar event", c,
+          [dict(good, state=state(reminders=[("Dinner with Marta", at(FRIDAY, "20:00"))]))], "1 calendar event should be saved")
     fails_with("calendar_add: 'I've added' after a failed calendar_add", c,
                [{"calls": [_dinner("20:00", ok=False)], "answer": "I've added dinner with Marta on Friday at 8pm."}], "claims an action but no change worked")
     c = case("calendar_date")
@@ -545,9 +571,13 @@ def saved_when_and_rain():
         passes("rain: %r passes" % answer, c59, nothing[0], {"answer": answer})
     # C1: an answer that says a reminder was set, beside "not" or "nothing" that does not govern it.
     trips("rain (C1): 'a reminder at 8 ... rain is not unlikely' fails", c59,
-          [nothing[0], {"answer": "A reminder at 8 tomorrow to take a coat, since rain is not unlikely."}], "the answer should say that nothing was set")
+          [nothing[0], {"answer": "A reminder at 8 tomorrow to take a coat, since rain is not unlikely."}], "the answer s")
     got = verdict(c59, nothing[0], {"answer": "Your coat reminder for 8 am tomorrow. Nothing else."})
-    check("rain (C1): 'your coat reminder for 8 am tomorrow. Nothing else.' fails", got[0] == "fail" and "states a reminder at 8" in str(got[1]), got)
+    check("rain (C1): 'your coat reminder for 8 am tomorrow. Nothing else.' fails", got[0] == "fail" and "states a reminder as set" in str(got[1]), got)
+    trips("rain: an answer about the weather, not about what was set", c59, [nothing[0], {"answer": "It isn't going to rain much in York tomorrow."}],
+          "the answer should say that nothing was set")
+    trips("rain (C1, round 2): 'Nothing else, but your reminder for 8 is set' fails with nothing saved", c59,
+          [nothing[0], {"answer": "Nothing else, but your reminder for 8 is set."}], "the answer states a reminder as set: 'your reminder for 8 is set'")
     trips("rain: the same for a forecast without tomorrow's figure", cm,
           [{"calls": [weather(85, None)], "answer": "There's no rain chance for tomorrow, so I haven't set anything."},
            {"answer": "Your coat reminder for 8 am tomorrow."}], "the answer s")
@@ -654,16 +684,17 @@ def tv_refused_once():
     pasta = ("timer", {"action": "start", "minutes": 10, "label": "pasta"}, started("Pasta", 10))
     down = ("smart_home", {"action": "set", "target": "Living room TV", "volume_step": -1}, 'ERROR: "Living room TV" refused the command')
     ok_down = ("smart_home", {"action": "set", "target": "Living room TV", "volume_step": -1}, json.dumps({"target": "Living room TV", "now": "on"}))
-    log = ["POST /v1/FireTV volume_down", "POST /v1/FireTV volume_down"]
+    log = [["POST /v1/FireTV volume_down"], ["POST /v1/FireTV volume_down"], []]   # turn by turn
     turns = [{"calls": [pasta, down], "answer": "Your pasta timer is set for ten minutes, but the TV didn't respond to the volume change.",
               "state": state(timers=[("Pasta", 600)])},
              {"calls": [ok_down], "answer": "Done, the TV is one step quieter.", "state": state(timers=[("Pasta", 600)])},
              {"calls": [("timer", {"action": "list"}, json.dumps({"timers": [{"label": "Pasta", "time_left": "9 minutes"}]}))],
               "answer": "Just one: the pasta timer, with 9 minutes left.", "state": state(timers=[("Pasta", 600)])}]
 
-    def with_log(turns_, device_log=log):
+    def with_log(turns_, device_log=log, between=()):
         run = run_of(c, *turns_)
-        run["turns"][-1]["device_log"] = device_log
+        for t, sent in zip(run["turns"], device_log): t["device_log"] = list(sent)
+        run["turns"][-1]["device_log_between"] = list(between)
         return ev.verdict(c, run)
     check("tv refused once: passes", with_log(turns) == ("pass", []), with_log(turns))
     swapped = list(turns)
@@ -683,9 +714,23 @@ def tv_refused_once():
     one_moment[2] = dict(turns[2], answer="One moment: you have two timers running.")
     got = with_log(one_moment)
     check("tv refused once (A6, C15): 'one moment ... two timers' fails", got[0] == "fail" and any("one timer" in p or "more than one" in p for p in got[1]), got)
-    got = with_log(turns, log[:1])
+    got = with_log(turns, [log[0], [], []])
     check("tv refused once: one volume_down in all fails (no retry reached the TV)", got[0] == "fail" and
-          any("volume_down' 2 times" in p for p in got[1]), got)
+          any("volume_down' 2 times" in p for p in got[1]) and any("turn 2: the TV should get" in p for p in got[1]), got)
+    got = with_log(turns, [log[0], [], log[1]])
+    check("tv refused once (A6): the TV's commands are checked turn by turn", got[0] == "fail" and
+          any(p.startswith("turn 2: the TV should get") for p in got[1]) and any("0 times in this turn, got 1" in p for p in got[1]), got)
+    got = with_log(turns, [log[0], [], []], between=log[1])
+    check("tv refused once: a command between turns is counted in all, but in no turn", got[0] == "fail" and
+          any(p.startswith("turn 2: the TV should get") for p in got[1]) and not any("in all" in p for p in got[1]), got)
+    retry = list(turns)
+    retry[1] = dict(turns[1], answer="The TV still didn't respond, sorry.")
+    got = with_log(retry)
+    check("tv refused once (A6): the retry's spoken result must say it worked", got == ("fail", ["turn 2: answer must not say the retry failed"]), got)
+    count = list(turns)
+    count[2] = dict(turns[2], answer="One device is online.")
+    got = with_log(count)
+    check("tv refused once (C15): 'One device is online' is no count of timers", got == ("fail", ["answer should mention one timer"]), got)
     tried_ = list(turns)
     tried_[0] = dict(turns[0], calls=[pasta])
     got = with_log(tried_)
@@ -819,7 +864,7 @@ def case_hash_and_records():
           and all(p.startswith("unscorable") for p in rec["problems"]), rec)
     check("result: an unscorable run stays unscorable when scored again", ev.verdict(a, ev.run_from_saved(json.loads(json.dumps(rec))))[0] == "unscorable",
           rec)
-    missing = run_of(a, {"calls": [T12], "answer": "Timer set for 12 minutes.", "state": None})
+    missing = {"turns": [dict(_turnfields(), tools=[("timer", json.dumps(T12[1]))], results=[T12[2]], answer="Timer set for 12 minutes.")]}
     rec = ev.result_record(a, missing, *ev.verdict(a, missing), False)
     check("result: unscorable for want of a state: unscorable true, every problem marked", rec["unscorable"] is True and rec["unscorable_why"] == []
           and all(p.startswith("unscorable") for p in rec["problems"]), rec)
@@ -872,17 +917,19 @@ path = os.environ.get("ZB_EVAL_RECORDS")
 if os.environ.get("FAKE_NO_RECORDS") or not path:
     for t in turns: print("> [user] %s\n[answer 1.0s] Okay." % t)
     sys.exit(0)
-env = {k: os.environ.get(k) for k in ("ZB_EXP_NO_HARDWARE", "ZB_FAKE_CAMERA", "ZB_DRY_RUN")}
+env = {k: os.environ.get(k) for k in ("ZB_EXP_NO_HARDWARE", "ZB_FAKE_CAMERA", "ZB_DRY_RUN", "ZB_EXP_TRACE", "ZB_EVAL_RECORDS", "HOME")}
+def rec(**r): f.write(json.dumps(dict(r, v=2, mono=0, wall=0)) + "\n")
 with open(path, "w") as f:
-    f.write(json.dumps({"v": 1, "ev": "start", "mono": 0}) + "\n")
-    for n, t in enumerate(turns, 1):
+    rec(ev="start", caps=os.environ.get("FAKE_CAPS", "records,web,no_hardware").split(","))
+    n = 0
+    for t in turns:
         if t == "/new":
-            f.write(json.dumps({"v": 1, "ev": "new", "mono": 0}) + "\n"); continue
-        f.write(json.dumps({"v": 1, "ev": "turn_start", "turn": n, "text": t, "mono": 0}) + "\n")
-        st = {"now": 1, "reminders": [], "calendar": [], "memory": []}
-        f.write(json.dumps({"v": 1, "ev": "state", "turn": n, "state": st, "mono": 0}) + "\n")
-        f.write(json.dumps({"v": 1, "ev": "turn_end", "turn": n, "total": 0.1, "first": 0.05, "answer": json.dumps(env), "tool_calls": 0, "mono": 0}) + "\n")
-    f.write(json.dumps({"v": 1, "ev": "end", "turns": len(turns), "mono": 0}) + "\n")
+            rec(ev="new"); continue
+        n += 1
+        rec(ev="turn_start", turn=n, text=t)
+        rec(ev="state", turn=n, state={"now": 1, "reminders": [], "calendar": [], "memory": []})
+        rec(ev="turn_end", turn=n, total=0.1, first=0.05, answer=json.dumps(env), tool_calls=0, responses=[])
+    rec(ev="end", turns=n)
 '''
 
 
@@ -913,6 +960,274 @@ def runner_with_a_stand_in_app():
             if saved is not None: os.environ["ZB_EVAL_MUSIC_DIR"] = saved
     finally:
         shutil.rmtree(folder, ignore_errors=True)
+
+
+# ------------------------------------------------------------------ round 2 (Astra, 19 November): the stream, provenance, guards
+@test
+def records_stream_strict():
+    """N4: the records must be one whole stream, in order; each damaged stream is unscorable."""
+    c = bare("thanks")
+    good = records(c, {"answer": "You're welcome."})
+    lines = good.splitlines(True)
+
+    def unscorable(name, text, want, case_=None):
+        got = run_of(case_ or c, text=text)
+        out = ev.verdict(case_ or c, got)
+        check("stream: " + name, out[0] == "unscorable" and any(want in p for p in out[1]), (out, got["unscorable"]))
+
+    check("stream: a whole stream passes", ev.verdict(c, run_of(c, text=good)) == ("pass", []), ev.verdict(c, run_of(c, text=good)))
+    # Astra's stream: an early end with no turns, then the expected turn, with no start, no state and no final end.
+    early = ('{"v": 2, "ev": "end", "turns": 0, "mono": 0, "wall": 0}\n'
+             '{"v": 2, "ev": "turn_start", "turn": 1, "text": "thanks", "mono": 0, "wall": 0}\n'
+             '{"v": 2, "ev": "turn_end", "turn": 1, "total": 1.0, "first": 0.5, "answer": "You are welcome.", "tool_calls": 0, "responses": [], "mono": 0, "wall": 0}\n')
+    unscorable("an early end with no turns, then the turn (no start, no state, no end)", early, "the run does not begin with its start")
+    unscorable("no start", "".join(lines[1:]), "the run does not begin with its start")
+    unscorable("a start that does not say what the build can do", good.replace(', "caps": ["records", "web", "no_hardware"]', ""), "capabilities")
+    unscorable("a record after the end", good + lines[1], "after the end of the run")
+    unscorable("a second start", "".join(lines[:1] + lines), "a second start")
+    unscorable("a turn with no state", "".join(l for l in lines if '"state"' not in l), "ended without its saved state")
+    unscorable("a turn end without its model responses", good.replace(', "responses": []', ""), "model responses")
+    c2 = case("timer")
+    two = [T12, ("timer", {"action": "list"}, '{"timers": []}')]
+    ok = records(c2, {"calls": two, "answer": "Timer set for 12 minutes.", "state": state(timers=[("Timer", 720)]), "responses": [1, 1]})
+    check("stream: calls in two model responses, matched", ev.verdict(c2, run_of(c2, text=ok))[0] == "pass", ev.verdict(c2, run_of(c2, text=ok)))
+    unscorable("a call record whose id no model response asked for", ok.replace('"id": "call_1_1", "name": "timer", "args": "{\\"action\\": \\"list\\"}", "ev"',
+                                                                               '"id": "call_9", "name": "timer", "args": "{\\"action\\": \\"list\\"}", "ev"'),
+               "not the calls its model responses asked for", c2)
+    unscorable("a call with other arguments than were asked for", ok.replace('{\\"action\\": \\"list\\"}", "ev": "call"', '{\\"action\\": \\"cancel\\"}", "ev": "call"'),
+               "not the calls its model responses asked for", c2)
+    dup = records(c2, {"calls": two, "answer": "Timer set for 12 minutes.", "state": state(timers=[("Timer", 720)])}).replace("call_1_1", "call_1_0")
+    unscorable("two calls of one response with the same id", dup, "not the calls its model responses asked for", c2)
+    late = "".join(lines[:2]) + lines[2] + json.dumps({"ev": "call", "turn": 1, "n": 1, "id": "x", "name": "timer", "args": "{}", "result": "{}",
+                                                       "v": 2, "mono": 0, "wall": 0}) + "\n" + "".join(lines[3:])
+    unscorable("a call record after the turn's state", late, "after the turn's state")
+
+
+@test
+def provenance_kept():
+    """N3: a rescored run keeps where it came from; fixtures are part of the case's identity."""
+    a = case("timer")
+    run = run_of(a, {"calls": [T12], "answer": "Timer set for 12 minutes.", "state": state(timers=[("Timer", 720)])})
+    rec = ev.result_record(a, dict(run, trace=True), *ev.verdict(a, run))
+    saved = json.loads(json.dumps(rec))
+    saved.update(case_hash="0" * 40, fixtures="old-fixture", trace=True)
+    back = ev.run_from_saved(saved, a)
+    again = ev.result_record(a, back, *ev.verdict(a, back), False)
+    check("rescore: keeps the saved run's case_hash, fixtures, trace and requests", again["case_hash"] == "0" * 40 and
+          again["fixtures"] == "old-fixture" and again["trace"] is True and again["requests"] == a["turns"] and again["outcome"] == "pass", again)
+    other = dict(saved, requests=["set a timer for 15 minutes"])
+    back = ev.run_from_saved(other, a)
+    got = ev.verdict(a, back)
+    check("rescore: a saved run of other requests is unscorable for this case", got[0] == "unscorable" and "the saved run asked" in got[1][0], got)
+    check("rescore: ... and keeps its own requests", ev.result_record(a, back, *got)["requests"] == ["set a timer for 15 minutes"])
+    web_case = case("review_rain_59")
+    check("fixtures: a case on the stand-in web hashes the stand-in", "web" in ev.fixtures_of(web_case) and "web" not in ev.fixtures_of(a),
+          ev.fixtures_of(web_case))
+    check("fixtures: the simulated Fire TV is a fixture of the case that starts it", "firetv" in ev.fixtures_of(case("review_tv_refused_once")))
+    before, before_v = ev.case_hash(a), ev.fixture_version(a)
+    saved_lib = list(ev.MUSIC_LIBRARY)
+    try:
+        ev.MUSIC_LIBRARY.append(("Nobody", "Nothing", "Pop", ["Silence"]))
+        check("fixtures: another music library, another case_hash and fixture version", ev.case_hash(a) != before and ev.fixture_version(a) != before_v)
+    finally:
+        ev.MUSIC_LIBRARY[:] = saved_lib
+    saved_cam = ev.CAMERA_FIXTURE
+    folder = tempfile.mkdtemp(prefix="zb-scorer-test-")
+    try:
+        ev.CAMERA_FIXTURE = os.path.join(folder, "other.jpg")
+        open(ev.CAMERA_FIXTURE, "wb").write(b"another picture")
+        check("fixtures: another camera picture, another case_hash", ev.case_hash(a) != before)
+    finally:
+        ev.CAMERA_FIXTURE = saved_cam
+        shutil.rmtree(folder, ignore_errors=True)
+    check("fixtures: back to the same hash", ev.case_hash(a) == before)
+
+
+@test
+def home_state_and_compound_effects():
+    """N7: the refusal is judged by the thing's saved state (a room or group change included); each part of a
+    compound request is judged as a whole (operation, target and value)."""
+    c = case("home_after_web_no")
+    search = ("web_search", {"query": "sunset today"}, json.dumps({"answer": "Sunset is at 4:05 pm."}))
+    ask = ("smart_home", {"action": "on", "target": "Bedroom lamp"}, LAMP_CONFIRM)
+    first = {"calls": [search, ask], "answer": "Sunset is at 4:05 pm. Shall I turn on the bedroom lamp?"}
+    room = ("smart_home", {"action": "on", "target": "Bedroom"}, json.dumps({"target": "Bedroom", "changed": 2, "now": "on"}))
+    trips("refusal (N7): the lamp switched on through its room", c, [first, {"calls": [room], "answer": "Okay.", "on": ["Bedroom lamp", "Bed heater"]}],
+          "turn 2: Bedroom lamp was switched on")
+    obj = ("smart_home", {"action": "set", "target": "Bedroom lamp", "brightness": 40},
+           json.dumps({"target": "Bedroom lamp", "now": {"on": True, "brightness": 40}}))
+    trips("refusal (N7): an object-valued 'now' that is on", c, [first, {"calls": [obj], "answer": "Okay."}], "turn 2: Bedroom lamp was switched on")
+    later = case("home_after_web_later")
+    on = ("smart_home", {"action": "on", "target": "Bedroom lamp"}, json.dumps({"target": "Bedroom lamp", "now": "on"}))
+    trips("later lamp (A5): switched on in the first turn", later, [{"calls": [search, on], "answer": "Sunset is at 4:05 pm.", "on": ["Bedroom lamp"]},
+                                                                    {"calls": [ask], "answer": "Shall I turn on the bedroom lamp?"}], "Bedroom lamp was switched on")
+    yes = case("home_ask_first_yes")
+    heater_on = ("smart_home", {"action": "on", "target": "Fan heater"}, HEATER_ON)
+    asked = {"calls": [("smart_home", {"action": "on", "target": "Fan heater"}, HEATER_CONFIRM)], "answer": "Shall I switch on the fan heater?"}
+    passes("switched: on after the yes, as saved", yes, asked, {"calls": [heater_on], "answer": "The fan heater is on.", "on": ["Fan heater"]})
+    trips("switched: a result that says on, but the saved state does not", yes, [asked, {"calls": [heater_on], "answer": "The fan heater is on."}],
+          "Fan heater should have been switched on")
+    jazz = suite_case("compound-005")
+    play = ("music", {"action": "play", "genre": "jazz"}, '{"now_playing": "So What by Miles Davis", "queued_tracks": 4}')
+    vol = ("device", {"setting": "volume", "value": 30}, '{"volume": 30}')
+    passes("compound (N7): jazz playing and the volume at 30 passes", jazz, {"calls": [play, vol], "answer": "Jazz is on and your volume is at 30."})
+    trips("compound (N7): brightness at 30 is not the volume", jazz,
+          [{"calls": [play, ("device", {"setting": "brightness", "value": 30}, '{"brightness": 30}')], "answer": "Jazz is on, at 30."}],
+          "device should set volume to 30")
+    trips("compound (N7): a jazz search is not jazz playing", jazz,
+          [{"calls": [("music", {"action": "search", "genre": "jazz"}, '{"matches": 4}'), vol], "answer": "Your volume is at 30."}], "music should be playing a jazz song")
+    trips("compound (N7): ABBA started for jazz", jazz,
+          [{"calls": [("music", {"action": "play", "genre": "jazz"}, '{"now_playing": "Waterloo by ABBA", "queued_tracks": 3}'), vol],
+            "answer": "Jazz is on and your volume is at 30."}], "music should be playing a jazz song")
+
+
+@test
+def reads_of_mixed_tools():
+    """C11: the read actions of tools that also change things are reads."""
+    check("reads: music search, smart_home status, timer list and device status are reads",
+          not any(ev.is_change(n, a) for n, a in (("music", {"action": "search"}), ("smart_home", {"action": "status"}),
+                                                  ("timer", {"action": "list"}), ("device", {"setting": "status"}))) and
+          all(ev.is_change(n, a) for n, a in (("music", {"action": "play"}), ("smart_home", {"action": "on"}), ("timer", {"action": "start"}))))
+    trips("claim (C11): a status read beside a failed switch backs no claim", bare("x"),
+          [{"calls": [("smart_home", {"action": "status"}, '{"things": []}'), ("smart_home", {"action": "on", "target": "Lamp"}, "ERROR: no answer")],
+            "answer": "I've turned on the lamp."}], "claims an action but no change worked")
+    passes("claim (C11): a music search that failed is a read: 'now playing' after it is judged as a read", bare("x"),
+           {"calls": [("music", {"action": "search", "query": "x"}, '{"matches": 2}'), ("music", {"action": "now_playing"}, '{"title": "So What"}')],
+            "answer": "Now playing: So What."})
+    passes("must (C11): a failed library read counts as made", bare("x", must=["music"]),
+           {"calls": [("music", {"action": "library"}, "ERROR: could not read the library")], "answer": "I couldn't read your library."})
+
+
+@test
+def stores_absent_and_malformed():
+    """A8: a store that existed and is gone, or an entry without its fields, is unscorable."""
+    yoga = suite_case("calendar-042")
+    add = ("calendar_add", {"title": "Yoga", "start": "%s 18:00" % ev.next_weekday(2)[0]}, '{"saved": {"id": 100}}')
+    gone = ("calendar_delete", {"id": 100}, '{"deleted": 100}')
+    first = {"calls": [add], "answer": "Yoga is in your calendar.", "state": state(events=[("Yoga", at(ev.next_weekday(2)[0], "18:00"))])}
+    vanished = dict(state(), calendar=None, absent=["calendar"])
+    trips("store (A8): a calendar file that was there and is gone is unscorable, not empty", yoga,
+          [first, {"calls": [gone], "answer": "Deleted.", "state": vanished}], "was there earlier in the run and is gone", outcome="unscorable")
+    c = case("review_hypothetical_timer")
+    never = dict(state(), reminders=None, absent=["reminders", "calendar", "memory"], calendar=None, memory=None)
+    passes("store: a file that never existed is empty", c, {"answer": "I'd say: timer set for 10 minutes.", "state": never})
+    broken = state(timers=[("Tea", 600)])
+    del broken["reminders"][0]["due"]
+    trips("store (A8): a reminder without its due time is unscorable", case("timer"),
+          [{"calls": [T12], "answer": "Timer set for 12 minutes.", "state": broken}], "a saved reminders entry has no due", outcome="unscorable")
+    broken = state(memory=["x"])
+    broken["memory"][0]["text"] = 42
+    trips("store (A8): a memory without text is unscorable", case("memory_recall"),
+          [{"calls": [("memory_save", {"text": "x"}, '{"saved": 1}')], "answer": "Noted.", "state": broken}, {"new": True},
+           {"answer": "No, it has shellfish in it."}],
+          "a saved memory entry has no text", outcome="unscorable")
+
+
+@test
+def published_time_not_denied():
+    """A9: "It's not at 6 pm" does not give the time."""
+    import fake_web
+    from zoneinfo import ZoneInfo
+    launch = suite_case(["when is the next apple product launch event", "what time is that in uk time"])
+    uk = fake_web.event_time("product_launch").astimezone(ZoneInfo("Europe/London"))
+    h12 = uk.strftime("%-I %p").lower()
+    search = ("web_search", {"query": "next apple product launch event"},
+              json.dumps(fake_web.search(fake_web.FIXTURES["events"], "next apple product launch event")))
+    first = {"calls": [search], "answer": "It's on %s." % uk.strftime("%A %-d %B")}
+    trips("event time (A9): 'It's not at %s UK time' fails" % h12, launch, [first, {"answer": "It's not at %s UK time." % h12}],
+          "answer should give the event's time")
+    passes("event time: 'That's %s UK time, not 10 am' passes" % h12, launch, first, {"answer": "That's %s UK time, not 10 am." % h12})
+    passes("event time: 'It isn't 10 am, it's %s' passes" % h12, launch, first, {"answer": "It isn't 10 am, it's %s UK time." % h12})
+
+
+@test
+def validator_fields():
+    """A14: every kind's fields and regular expressions are checked, and every check is run once on an empty turn."""
+    base = json.load(open(os.path.join(HERE, "suite", "cases.json"), encoding="utf-8"))[0]
+    bad = [dict(base, name="v-weekday", checks=[{"kind": "weekday_of", "year": "next"}]),
+           dict(base, name="v-lacks", checks=[{"kind": "memory", "has": "x", "lacks": ["(open"]}]),
+           dict(base, name="v-typo", checks=[{"kind": "answer", "re": "x", "wat": "y"}]),
+           dict(base, name="v-type", checks=[{"kind": "timer", "seconds": "ten"}]),
+           dict(base, name="v-zone", checks=[{"kind": "time_in", "zone": "Mars/Base"}]),
+           dict(base, name="v-lang", checks=[{"kind": "language", "lang": "xx"}]),
+           dict(base, name="v-guard", env={"ZB_EXP_NO_HARDWARE": "0"}),
+           dict(base, name="v-dry", env={"ZB_DRY_RUN": None})]
+    want = {"v-weekday": "weekday_of needs one of md, date", "v-lacks": "lacks is not a regular expression", "v-typo": "answer takes no 'wat'",
+            "v-type": "seconds must be num", "v-zone": "no time zone 'Mars/Base'", "v-lang": "no language 'xx'",
+            "v-guard": "ZB_EXP_NO_HARDWARE is the runner's to set", "v-dry": "only a case whose home has a simulated device"}
+    errors = suite.validate(bad)
+    for c in bad:
+        check("validate (A14): %s caught" % c["name"], any(e.startswith(c["name"] + ":") and want[c["name"]] in e for e in errors),
+              [e for e in errors if e.startswith(c["name"])])
+    original = suite.KINDS["date_in"]
+    try:
+        suite.KINDS["date_in"] = lambda s: (lambda t: [] if s["missing"] else [])
+        errors = suite.validate([dict(base, name="v-run", checks=[{"kind": "date_in", "days": 1}])])
+        check("validate: a check that cannot run on an empty turn is caught", any("check 1 cannot run" in e for e in errors), errors)
+    finally:
+        suite.KINDS["date_in"] = original
+
+
+@test
+def guards_applied_last():
+    """N5: the runner's guards beat the case's env; dry run is dropped only for a home with a simulated device;
+    the trace recorded is the one the app got; a binary that cannot keep the guards is refused."""
+    folder = tempfile.mkdtemp(prefix="zb-scorer-test-")
+    try:
+        app = os.path.join(folder, "fake_app")
+        with open(app, "w") as f: f.write(FAKE_APP)
+        os.chmod(app, os.stat(app).st_mode | stat.S_IEXEC)
+        sneaky = bare("hello", env={"ZB_EXP_NO_HARDWARE": "0", "ZB_FAKE_CAMERA": "/dev/video0", "ZB_DRY_RUN": None, "ZB_EVAL_RECORDS": "/tmp/x",
+                                    "HOME": "/root"})
+        got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1", HOME=folder), sneaky)
+        env = json.loads(got["turns"][0]["answer"]) if got["turns"] and got["turns"][0]["answer"].startswith("{") else {}
+        check("guards (N5): the case cannot lift the hardware guard, change the camera, drop dry run or move the records",
+              env.get("ZB_EXP_NO_HARDWARE") == "1" and env.get("ZB_FAKE_CAMERA") == ev.CAMERA_FIXTURE and env.get("ZB_DRY_RUN") == "1"
+              and env.get("ZB_EVAL_RECORDS", "").endswith("/records.jsonl") and env.get("HOME") == folder and not got["unscorable"],
+              (env, got["unscorable"]))
+        tv = dict(bare("turn the tv up"), env={"ZB_DRY_RUN": None}, home=ev.TV_SILENT_HOME)
+        got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1"), tv)
+        env = json.loads(got["turns"][0]["answer"]) if got["turns"] and got["turns"][0]["answer"].startswith("{") else {}
+        check("guards: a home with a simulated Fire TV runs without dry run, still without hardware", env.get("ZB_DRY_RUN") is None and
+              env.get("ZB_EXP_NO_HARDWARE") == "1", env)
+        got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1", ZB_EXP_TRACE="/somewhere/else.jsonl"), bare("hello"))
+        env = json.loads(got["turns"][0]["answer"]) if got["turns"] and got["turns"][0]["answer"].startswith("{") else {}
+        check("trace (C14): a trace asked for in the environment is recorded as a traced run, into the case's own file",
+              got["trace"] is True and env.get("ZB_EXP_TRACE", "").endswith("/trace.jsonl") and env["ZB_EXP_TRACE"] != "/somewhere/else.jsonl",
+              (got["trace"], env))
+        rec = ev.result_record(bare("hello"), got, "pass", [], False)
+        check("trace (C14): the result says traced, whatever the flag said", rec["trace"] is True, rec["trace"])
+        got = ev.run_case(app, {k: v for k, v in os.environ.items() if k not in ("ZB_EXP_TRACE", "ZB_EVAL_TRACE")}, bare("hello"))
+        check("trace: untraced when nothing asks for it", got["trace"] is False and ev.result_record(bare("hello"), got, "pass", [], True)["trace"] is False)
+        check("probe (N5): a build that writes records and keeps the guards is fit", ev.probe_binary(app) == [], ev.probe_binary(app))
+        older = os.path.join(folder, "older_app")
+        with open(older, "w") as f: f.write(FAKE_APP.replace('"records,web,no_hardware"', '"records,web"'))
+        os.chmod(older, 0o755)
+        problems = ev.probe_binary(older)
+        check("probe (N5): a build without the hardware guard is refused", any("no_hardware" in p for p in problems), problems)
+        silent = os.path.join(folder, "silent_app")
+        with open(silent, "w") as f: f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(silent, 0o755)
+        problems = ev.probe_binary(silent)
+        check("probe (N5): a build that writes no records is refused", any("writes no records file" in p for p in problems), problems)
+        check("probe: a binary that is not there is refused", ev.probe_binary(os.path.join(folder, "nothing")) != [])
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+@test
+def device_log_by_turn():
+    """A6: the device's log is set beside the turns by the clock."""
+    turns = [dict(_turnfields(), began_wall=100.0, ended_wall=105.0), dict(_turnfields(), began_wall=110.0, ended_wall=115.0),
+             dict(_turnfields(), began_wall=120.0)]
+    ev.place_device_log(turns, [(101.0, "a"), (107.0, "b"), (112.0, "c"), (130.0, "d")])
+    try:
+        ev.chk_device_log("POST /v1/FireTV volume_down", 1)([dict(_turnfields(), device_log=["x"]), _turnfields()])
+        check("device log: a conversation with a turn that has no log is unscorable", False)
+    except ev.Unscorable:
+        check("device log: a conversation with a turn that has no log is unscorable", True)
+    check("device log: each turn its own, the rest between", [t["device_log"] for t in turns] == [["a"], ["c"], ["d"]] and
+          turns[-1]["device_log_between"] == ["b"], [t.get("device_log") for t in turns])
 
 
 def main():
