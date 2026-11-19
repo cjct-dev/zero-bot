@@ -460,6 +460,17 @@ def cancel_claims_new_time():
     check(n + ": after the new reminder is set, the same cancel runs", len(res) == 3 and '"set":true' in res[1] and res[2] == "cancelled", res)
     check(n + ": both confirmations spoken, with no extra model call", "Your reminder is set for 10." in r.answer and
           "instead" in r.answer and len(r.requests) == 3, r)
+    # Sent together but the cancel first: refused again (nothing set yet), and once the set has worked the
+    # loop goes back to the model, whose cancel then goes ahead. The 9 o'clock reminder is not left behind.
+    script = {"rules": [{"when": {"said": "make it 10", "results": 0}, "reply": calls(cancel)},
+                        {"when": {"said": "make it 10", "results": 1}, "reply": calls(cancel, bank10)},
+                        {"when": {"said": "make it 10", "results": 3}, "reply": calls(cancel)},
+                        {"when": {"said": "make it 10"}, "reply": {"text": "Done."}},
+                        {"when": {"said": "remind me"}, "reply": calls(bank9)}]}
+    r = run(script, said=["remind me at 9 to call the bank", "actually make it 10"])
+    res = r.turns[-1]["results"] if r.turns else []
+    check(n + ": cancel sent before the set: refused, then made once the set worked", len(res) == 4 and
+          res[1].startswith("ERROR: reminder_cancel only cancels") and '"set":true' in res[2] and res[3] == "cancelled", res)
     # weekday_slip, put right in say alone: the corrected call is made, not refused as the same call.
     slip = {"text": "Bins out", "at": "2030-12-02 19:00", "say": "I'll remind you on Tuesday evening."}
     script = {"rules": [{"when": {"result": "ERROR"}, "reply": calls(("reminder_set", dict(slip, say="I'll remind you on Monday evening.")))}],

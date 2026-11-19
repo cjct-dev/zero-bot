@@ -220,7 +220,7 @@ def run_all(root):
                       ("Changed it to 10 o'clock.", "changed it to"), ("I’ve set a new one for 10.", "i've set"),
                       ("OK, 10 instead.", "instead"), ("Rescheduled for tomorrow.", "rescheduled")]:
         error(r, "reminder_cancel", {"id": 1, "say": say}, "reminder_cancel only cancels", '("%s")' % word,
-              "nothing was done", "set the new one with reminder_set first")
+              "nothing was done", "send reminder_set for the new time and this cancel together, in one reply")
     check("a refused cancel leaves the reminder there", any(x.get("id") == 1 for x in r.file("data", "zero-bot", "reminders.json") or []),
           r.file("data", "zero-bot", "reminders.json"))
     for i, say in enumerate(["Cancelled your 9 o'clock reminder.", "Your 9 o'clock reminder is now cancelled.",

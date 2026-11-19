@@ -657,8 +657,8 @@ std::string t_calendar_delete(const json &a, Context &ctx) {
 std::string t_timer(const json &a, Context &ctx) {
     if (util::lower(str_arg(a, "action")) == "cancel")
         if (const std::string more = claims_new(a, ctx, "cancelling a timer starts no new one",
-                                                "To change a running timer, use add_time, or start the new timer first and "
-                                                "then cancel the old one; or send say naming only the cancellation");
+                                                "To change a running timer, use add_time, or send the new timer's start and "
+                                                "this cancel together, in one reply; or send say naming only the cancellation");
             !more.empty())
             return fail(more);
     return timers::run_tool(a);
@@ -702,8 +702,8 @@ std::string t_reminder_cancel(const json &a, Context &ctx) {
     std::string err;
     if (!id_arg(a, "id", id, err, "use reminder_list to find it")) return fail(err);
     if (const std::string more = claims_new(a, ctx, "reminder_cancel only cancels; it sets no new time",
-                                            "To move the reminder, set the new one with reminder_set first, then cancel "
-                                            "this one; or send say naming only the cancellation");
+                                            "To move the reminder, send reminder_set for the new time and this cancel "
+                                            "together, in one reply; or send say naming only the cancellation");
         !more.empty())
         return fail(more);
     return Store::get().delete_reminder(id) ? "cancelled"
