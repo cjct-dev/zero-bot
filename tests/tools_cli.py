@@ -361,7 +361,11 @@ def guards(root):
         print("(this computer has an infrared device: the infrared guard was not tried)")
 
     # ZB_EXP_WEB: a value too short to hold an address stops the run with a sentence, not a crash.
-    for bad in ("abc", "http:/", "http://", "http://127.example.net", "http://10.0.0.1"):
+    # Only plain decimal 127.a.b.c is taken: no spelling another parser could read as another address.
+    for bad in ("abc", "http:/", "http://", "http://127.example.net", "http://10.0.0.1", "http://127.000.0.1",
+                "http://0177.0.0.1", "http://127.1", "http://127.0.0.1.", "http://127.0.0.1.:80", "http://127.0.0.256",
+                "http://127.0.0.1:0", "http://127.0.0.1:65536", "http://127.0.0.1:08080", "http://127.0.0.1x/",
+                "http://127.0.0.1:80x", "http://0x7f.0.0.1", "http://127.0.0.1\\@10.0.0.1/"):
         p = subprocess.run([APP, "--tool", "web_search", '{"query": "x"}'], env=g.env(ZB_EXP_WEB=bad, ZB_SEARCH_KEY="k"),
                            capture_output=True, timeout=60)
         text = (p.stdout + p.stderr).decode("utf-8", "replace")
@@ -381,6 +385,8 @@ def guards(root):
             ok(g, "web_search", {"query": "xylophone repair guild"}, '"results"',
                ZB_EXP_WEB="http://127.0.0.1:%s/default" % line[2], **proxy)
             check("a request to the stand-in uses no proxy", not trap.seen, trap.seen)
+            ok(g, "web_search", {"query": "xylophone repair guild"}, '"results"',
+               ZB_EXP_WEB="http://127.0.0.1:%s/default/" % line[2], ZB_SEARCH_KEY="stand-in")
         del trap.seen[:]
         error(g, "web_search", {"query": "when does the sun set"}, "HTTP 302", ZB_EXP_WEB=trap.url + "/redirect", ZB_SEARCH_KEY="stand-in")
         check("a redirect from the stand-in is not followed", len(trap.seen) == 1 and not any("/landed" in s for s in trap.seen), trap.seen)

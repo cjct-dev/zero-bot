@@ -1,51 +1,61 @@
 #!/usr/bin/env python3
 """Compares a variant's results with a baseline's, case by case, for the no-regression gate (ZB-033,
 ZB-077): results files written by tests/agent_eval.py (the scored set) or tests/agent_suite.py (the
-suite) with --json. Standard library only; reads files, calls nothing.
+suite) with --json. Standard library only; reads files (and, for --release, the case definitions in
+this tree), calls nothing.
 
 usage: tests/exp_compare.py --base A.json[,B.json...] --variant C.json[,D.json...] [--tags] [--markdown]
                             [--min-tag N] [--seed S] [--skip-tags a,b] [--tolerance 1.5]
-                            [--require scored,suite] [--release] [--verdict OUT.json]
+                            [--require scored,suite] [--release] [--not-run a,b] [--verdict OUT.json]
        tests/exp_compare.py --self-test
 
 Every file on one side is pooled: a case run several times (two scored-set runs, --repeat) gets the share
-of its runs that passed. A run passes when it has no problem and was scorable (a result marked
-"unscorable", or whose problems all say so, never counts as a pass).
+of its scorable runs that passed. Each record is checked first: it needs a case name, a list of turns and
+a list of problems, and a record with the manifest fields also an outcome that agrees with its problems
+(pass: none; fail: one that is not "unscorable: ..."; unscorable: only those) and a `trace` that agrees
+with its turns. A record that is not valid, and an unscorable run, is never a pass and never a zero: it
+counts apart. A case with no scorable run on a side is left out ("no scorable run").
 
-Which cases are compared. A result record carries its case's name and, from the runners of
-2026-11-19 on, three manifest fields: `case_hash` (a hash of the compiled case: its turns, checks,
-environment, home, radio, must and must_not), `scorer` (the scorer's version) and `trace` (whether the
-run was traced: --trace adds stream_options.include_usage to what is sent, so traced and untraced runs
-are different workloads). A case is compared only when its name is on both sides and those fields agree,
-on each side and between the sides; the rest are left out and counted by reason: a changed case, a
-different scorer, or traced against untraced. Results from before (no manifest fields) are compared by
-name only, which the report says; the generated suite's names are positions (timer-001), so a case
-inserted since the baseline can pair two different requests. tests/run.py always runs the live sets
-with --trace, so a baseline for the gate must be traced too.
+Which cases are compared. A result record carries its case's name and the manifest: `case_hash` (a hash
+of the compiled case: its turns, checks, environment, home, radio, must and must_not), `scorer` (the
+scorer's version) and `trace` (whether the run was traced: --trace adds stream_options.include_usage to
+what is sent, so traced and untraced runs are different workloads), and `fixtures` when the runners
+record a version of the stand-ins a case used. A case is compared only when its name is on both sides and
+those fields agree, on each side and between the sides; the rest are left out and counted by reason: a
+changed case, a different scorer, traced against untraced, different fixtures. Results from before the
+manifest are compared by name only, which the report says; the generated suite's names are positions
+(timer-001), so a case inserted since the baseline can pair two different requests. tests/run.py always
+runs the live sets with --trace, so a baseline for the gate must be traced too.
 
-Printed: the evidence (files, sets, what was left out and why, repeats per side); pass rates per side
-and per set, and the paired difference over cases (variant minus baseline, in cases per 100) with a 95%
-bootstrap interval over cases; with --tags, the same per tag (the first tag of a suite case is its
+A release (--release, what tests/run.py's release mode passes) is judged against the roster: every case
+defined in this tree (tests/agent_eval.py's CASES and tests/suite/cases.json), by name and current
+case_hash, and the critical cases among them, read from the definitions, not from the results. The
+variant must have run every case of the roster as it is now defined (but those --not-run names, which
+cannot include a critical case) with the current scorer; at least --min-coverage (90%) of each set must
+be compared; every critical case must be compared, scorable on both sides and pass every variant run.
+--skip-tags is refused in a release.
+
+Printed: the evidence (files, sets, what was left out and why, invalid and unscorable runs); pass rates
+per side and per set, and the paired difference over cases (variant minus baseline, in cases per 100) with
+a 95% bootstrap interval over cases; with --tags, the same per tag (the first tag of a suite case is its
 category) for tags with at least --min-tag cases; the cases that changed; the critical cases; latency,
 calls, tokens and bytes sent per turn, each with the completion rate beside it; then the gate.
 
 The gate's verdict, and the exit status:
   passes (0)        none of the below
   fails (1)         the overall interval, a set's or (with --tags) a tag's is wholly below 0; a case with
-                    at least 6 runs a side lost half or more of its share of passes (4 of 6, 6 of 12...);
-                    or a critical case did not pass every one of its runs on the variant
+                    at least 6 scorable runs a side lost half or more of its share of passes (4 of 6,
+                    6 of 12...); or a critical case failed a run on the variant
   inconclusive (3)  no failure, but the overall interval's lower end is below the tolerable loss
                     (--tolerance, default 1.5 cases per 100), or the compared cases were not run the
                     same number of times on both sides
-  incomplete (4)    the evidence cannot support a verdict: a file is unreadable; no case can be
-                    compared; a set named by --require has no compared case; and with --release, a
-                    set without results on either side, a record without the manifest fields, fewer
-                    than --min-coverage (default 90%) of a set's variant cases compared, or a critical
-                    case the baseline has and the variant lacks (unless --not-run names it: a case the run
-                    left out on purpose, as tests/run.py --no-search does)
+  incomplete (4)    the evidence cannot support a verdict: a file is unreadable; a record is not valid;
+                    a critical case has an unscorable run on either side; more than 2% of either side's
+                    runs are unscorable (--max-unscorable); no case can be compared; a set named by
+                    --require has no compared case; or, in a release, anything the roster asks for above,
+                    or a record without the manifest fields
 A failure outranks the other verdicts, then incomplete, then inconclusive. --verdict writes the verdict,
-its reasons and what was compared per set as JSON (tests/run.py reads it). --release is what
-tests/run.py's release profile passes, with --require scored,suite.
+its reasons and what was compared per set as JSON (tests/run.py reads it).
 
 Critical cases (CRITICAL below): the smart-home questions (the heater and the other changes that wait
 for a yes), the refusals after a web page, and the stale yes. Each must pass every run on the variant,
@@ -81,14 +91,18 @@ import sys
 import tempfile
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 from exp_report import Table, completed, done, fmt, kind, med, p90, turn_trace, usage   # noqa: E402
 
 TOLERANCE = 1.5        # cases per 100: the loss the overall interval must rule out
-MIN_RUNS = 6           # runs a side before one case can fail the gate by itself
+MIN_RUNS = 6           # scorable runs a side before one case can fail the gate by itself
 CASE_DROP = 0.5        # ... by losing this share of its passes or more
-MIN_COVERAGE = 0.9     # --release: share of a set's variant cases that must be compared
-MANIFEST = ("case_hash", "scorer", "trace")
+MIN_COVERAGE = 0.9     # --release: share of each set's roster that must be compared
+MAX_UNSCORABLE = 0.02  # share of a side's runs that may be unscorable before the evidence is incomplete
+MANIFEST = ("case_hash", "scorer", "trace")       # required in a release
+PROVENANCE = MANIFEST + ("fixtures",)             # compared wherever recorded
+OUTCOMES = ("pass", "fail", "unscorable")
 SETS = ("scored", "suite")
 VERDICT_EXIT = {"passes": 0, "fails": 1, "inconclusive": 3, "incomplete": 4}
 
@@ -107,16 +121,121 @@ def critical(name, tags):
     return any(re.fullmatch(p, name) for p in CRITICAL_NAMES) or bool(set(CRITICAL_TAGS) & set(tags or []))
 
 
+# ---------------------------------------------------------------- the roster
+def load_roster():
+    """Every case defined in this tree: {"scorer": the current scorer, "sets": {set: {name: {"hash", "tags"}}}},
+    from tests/agent_eval.py's CASES and tests/suite/cases.json, hashed as the runners hash them."""
+    import agent_eval as ev
+    import agent_suite as su
+    with open(os.path.join(HERE, "suite", "cases.json"), encoding="utf-8") as f:
+        suite = json.load(f)
+    return {"scorer": ev.SCORER_VERSION,
+            "sets": {"scored": {c["name"]: {"hash": ev.case_hash(c), "tags": []} for c in ev.CASES},
+                     "suite": {c["name"]: {"hash": ev.case_hash(su.compile_case(c)), "tags": c["tags"]} for c in suite}}}
+
+
+def roster_critical(roster):
+    return {n for cases in roster["sets"].values() for n, x in cases.items() if critical(n, x["tags"])}
+
+
+def matches_roster(r, entry, roster, trace=None):
+    """The record is a valid, scorable run of the case as the roster defines it now, scored by the current
+    scorer (and, when TRACE is given, traced or not as it says)."""
+    return (not record_problems(r) and outcome(r) in ("pass", "fail") and r.get("case_hash") == entry["hash"]
+            and r.get("scorer") == roster["scorer"] and (trace is None or r.get("trace") is trace))
+
+
+def roster_gaps(records, roster, side, need, not_run=(), trace=None):
+    """What a side's results lack for a release, measured against the roster (never against the cases the
+    side happens to hold): per set, at least NEED of the cases (but NOT_RUN) with a scorable run of the
+    current case and scorer, and every critical case."""
+    gaps = []
+    crit = roster_critical(roster)
+    have = {}
+    for r in records:
+        have.setdefault(r.get("case"), []).append(r)
+    for s, cases in sorted(roster["sets"].items()):
+        expected = [n for n in cases if n not in not_run]
+        good = [n for n in expected if any(matches_roster(r, cases[n], roster, trace) for r in have.get(n, []))]
+        absent = [n for n in expected if n not in have]
+        if len(good) < need * len(expected):
+            stale = [n for n in expected if n in have and n not in good]
+            gaps.append("the %s has a scorable run of the current case for %d of the %d %s cases (%s needed)%s%s"
+                        % (side, len(good), len(expected), s, "all" if need >= 1 else "%.0f%%" % (100 * need),
+                           "; not run: %s" % short(absent) if absent else "",
+                           "; another version of the case, another scorer%s or unscorable: %s"
+                           % (", untraced" if trace else "", short(stale)) if stale else ""))
+        lost = sorted(n for n in expected if n in crit and n not in good)
+        if lost:
+            gaps.append("the %s has no scorable run of the current version of the critical cases %s" % (side, ", ".join(lost)))
+    return gaps
+
+
+def short(names, n=8):
+    names = sorted(names)
+    return ", ".join(names[:n]) + (", ... (%d in all)" % len(names) if len(names) > n else "")
+
+
 # ---------------------------------------------------------------- reading
 def set_of(r):
-    """The test set a result came from: the suite's records carry tags, the scored set's do not."""
+    """The test set a result came from: "set" when recorded; else the suite's records carry tags."""
     return r.get("set") or ("suite" if "tags" in r else "scored")
 
 
+def record_problems(r):
+    """Why a result record is not a valid one ([] when it is). Records from before the manifest (no case_hash,
+    scorer, trace or outcome) need only a case name, a list of turns and a list of problems."""
+    bad = []
+    if not isinstance(r.get("case"), str) or not r.get("case"):
+        bad.append("no case name")
+    turns = r.get("turns")
+    if not isinstance(turns, list) or not all(isinstance(t, dict) for t in turns):
+        bad.append("no list of turns")
+        turns = []
+    problems = r.get("problems")
+    if not isinstance(problems, list) or not all(isinstance(p, str) for p in problems):
+        bad.append("no list of problems")
+        problems = None
+    if "set" in r and r["set"] not in SETS:
+        bad.append("set %r" % (r["set"],))
+    present = [f for f in MANIFEST if f in r]
+    if present or "outcome" in r:
+        missing = [f for f in MANIFEST + ("outcome",) if f not in r]
+        if missing:
+            bad.append("has %s but not %s" % (", ".join(present + (["outcome"] if "outcome" in r else [])), ", ".join(missing)))
+        for f in ("case_hash", "scorer"):
+            if f in r and (not isinstance(r[f], str) or not r[f]):
+                bad.append("%s is not text" % f)
+        if "trace" in r and not isinstance(r["trace"], bool):
+            bad.append("trace is not true or false")
+        o = r.get("outcome")
+        if "outcome" in r and o not in OUTCOMES:
+            bad.append("outcome %r" % (o,))
+        elif "outcome" in r and problems is not None:
+            definite = [p for p in problems if not p.lower().startswith("unscorable")]
+            if o == "pass" and problems:
+                bad.append("outcome pass with problems")
+            if o == "fail" and not definite:
+                bad.append("outcome fail with no problem that fails it")
+            if o == "unscorable" and (not problems or definite):
+                bad.append("outcome unscorable without only unscorable problems")
+        if isinstance(r.get("unscorable"), bool) and "outcome" in r and r["unscorable"] != (o == "unscorable"):
+            bad.append("unscorable %s with outcome %s" % (r["unscorable"], o))
+        if r.get("trace") is True and turns and not any("trace" in t for t in turns):
+            bad.append("marked traced, but no turn has a trace")
+        if r.get("trace") is False and any(t.get("trace") for t in turns):
+            bad.append("marked untraced, but its turns carry a trace")
+    return bad
+
+
 def outcome(r):
-    """pass, fail or unscorable (evidence missing or unreadable: never a pass)."""
-    problems = r.get("problems") or []
-    if r.get("unscorable") or (problems and all(str(p).lower().startswith("unscorable") for p in problems)):
+    """pass, fail, unscorable (evidence missing or unreadable) or invalid (the record itself is damaged)."""
+    if record_problems(r):
+        return "invalid"
+    if "outcome" in r:
+        return r["outcome"]
+    problems = r["problems"]
+    if r.get("unscorable") or (problems and all(p.lower().startswith("unscorable") for p in problems)):
         return "unscorable"
     return "fail" if problems else "pass"
 
@@ -132,7 +251,7 @@ def load(paths):
         except (OSError, ValueError) as e:
             problems.append("%s cannot be read (%s)" % (p, e.__class__.__name__))
             continue
-        if not isinstance(data, list) or not all(isinstance(r, dict) and "case" in r and "turns" in r for r in data):
+        if not isinstance(data, list) or not all(isinstance(r, dict) for r in data):
             problems.append("%s is not a results file" % p)
             continue
         for r in data:
@@ -144,14 +263,19 @@ def load(paths):
 def by_case(results):
     cases = {}
     for r in results:
-        c = cases.setdefault(r["case"], {"runs": [], "tags": r.get("tags", []), "set": set_of(r), "unscorable": 0,
-                                          "legacy": 0, "case_hash": set(), "scorer": set(), "trace": set()})
+        name = r.get("case") if isinstance(r.get("case"), str) else "(no name)"
+        c = cases.setdefault(name, {"runs": [], "n": 0, "tags": r.get("tags") if isinstance(r.get("tags"), list) else [],
+                                    "set": set_of(r) if set_of(r) in SETS else "scored", "unscorable": 0, "invalid": 0,
+                                    "legacy": 0, **{f: set() for f in PROVENANCE}})
         o = outcome(r)
-        c["runs"].append(o == "pass")
+        c["n"] += 1
+        if o in ("pass", "fail"):
+            c["runs"].append(o == "pass")     # scorable runs only: an unscorable one is no zero
         c["unscorable"] += o == "unscorable"
+        c["invalid"] += o == "invalid"
         if any(f not in r for f in MANIFEST):
             c["legacy"] += 1
-        for f in MANIFEST:
+        for f in PROVENANCE:
             if f in r:
                 c[f].add(json.dumps(r[f], sort_keys=True))
     return cases
@@ -161,14 +285,19 @@ def share(c):
     return sum(c["runs"]) / len(c["runs"])
 
 
-EXCLUDED = (("case_hash", "changed case"), ("scorer", "different scorer"), ("trace", "traced against untraced"))
+EXCLUDED = (("case_hash", "changed case"), ("scorer", "different scorer"), ("trace", "traced against untraced"),
+            ("fixtures", "different fixtures"))
 
 
-def pair_problem(b, v):
-    """Why a case on both sides cannot be compared, or None. Only the fields both sides recorded count."""
+def pair_problem(b, v, strict=False):
+    """Why a case on both sides cannot be compared, or None. Only the fields both sides recorded count, but
+    with STRICT (a release) a field recorded on one side only is a difference too."""
     for field, why in EXCLUDED:
-        if len(b[field]) > 1 or len(v[field]) > 1 or (b[field] and v[field] and b[field] != v[field]):
+        if len(b[field]) > 1 or len(v[field]) > 1 or (b[field] and v[field] and b[field] != v[field]) \
+                or (strict and bool(b[field]) != bool(v[field])):
             return why
+    if not b["runs"] or not v["runs"]:
+        return "no scorable run"
     return None
 
 
@@ -217,8 +346,9 @@ def matched_first_words(base_res, var_res, compared):
 
 
 # ---------------------------------------------------------------- the comparison
-def compare(a, base_res, var_res, load_problems=(), out=None):
-    """Prints the report to OUT and returns the verdict as a dict (what --verdict writes)."""
+def compare(a, base_res, var_res, load_problems=(), out=None, roster=None):
+    """Prints the report to OUT and returns the verdict as a dict (what --verdict writes). ROSTER (load_roster)
+    is what a release is measured against."""
     out = out or sys.stdout
     say = lambda *x: print(*x, file=out)
     table = Table(a.markdown, out)
@@ -232,12 +362,16 @@ def compare(a, base_res, var_res, load_problems=(), out=None):
     for s in require:
         if s not in SETS:
             incomplete.append("--require names %r, which is not a test set (%s)" % (s, ", ".join(SETS)))
+    invalid = [(r.get("_file", "?"), r.get("case"), record_problems(r)) for r in base_res + var_res if record_problems(r)]
+    if invalid:
+        incomplete.append("%d records are not valid results (never a pass): %s" % (
+            len(invalid), "; ".join("%s %s: %s" % (f, c, ", ".join(w)) for f, c, w in invalid[:4]) + ("; ..." if len(invalid) > 4 else "")))
 
     # ---- which cases can be compared
     common = sorted(c for c in set(B) & set(V) if keep(c, B) and keep(c, V))
     excluded = {}
     for c in common:
-        why = pair_problem(B[c], V[c])
+        why = pair_problem(B[c], V[c], strict=a.release)
         if why:
             excluded.setdefault(why, []).append(c)
     gone = {c for cs in excluded.values() for c in cs}
@@ -250,6 +384,7 @@ def compare(a, base_res, var_res, load_problems=(), out=None):
         vc = [c for c in V if V[c]["set"] == s and keep(c, V)]
         sets[s] = {"baseline_cases": len(bc), "variant_cases": len(vc),
                    "compared": sum(1 for c in compared if V[c]["set"] == s),
+                   "unscorable": [sum(X[c]["unscorable"] + X[c]["invalid"] for c in cs) for X, cs in ((B, bc), (V, vc))],
                    "excluded": {why: sum(1 for c in cs if V[c]["set"] == s) for why, cs in excluded.items()},
                    "variant_only": sum(1 for c in vc if c not in B), "baseline_only": sum(1 for c in bc if c not in V)}
         sets[s]["excluded"] = {k: n for k, n in sets[s]["excluded"].items() if n}
@@ -269,6 +404,10 @@ def compare(a, base_res, var_res, load_problems=(), out=None):
     if not_run:
         say("not run by the variant on purpose (--not-run, %d): %s" % (len(not_run), ", ".join(sorted(not_run)[:12])
                                                                        + (", ..." if len(not_run) > 12 else "")))
+    for side, X in (("baseline", B), ("variant", V)):
+        u = sorted(c for c in X if X[c]["unscorable"] or X[c]["invalid"])
+        if u:
+            say("%s: unscorable or invalid runs in %d cases (not counted as passes or as failures): %s" % (side, len(u), short(u)))
     if legacy:
         notes.append("no case hashes: comparison by name only for %d of %d cases (results from before the manifest "
                      "fields; a changed case or scorer cannot be seen)" % (len(legacy), len(compared)))
@@ -285,19 +424,44 @@ def compare(a, base_res, var_res, load_problems=(), out=None):
                    "no %s case can be compared (%s)" % (s, ", ".join("%s %d" % kv for kv in sorted(x["excluded"].items()))
                                                         or "no name on both sides"))
             incomplete.append(why)
+    hashed = [c for c in common if pair_problem(B[c], V[c], strict=a.release) in (None, "no scorable run")]
+    for side, X in (("baseline", B), ("variant", V)):
+        runs = sum(X[c]["n"] for c in hashed)
+        bad = sum(X[c]["unscorable"] + X[c]["invalid"] for c in hashed)
+        if runs and bad > a.max_unscorable * runs:
+            incomplete.append("%d of the %s's %d runs of the cases on both sides are unscorable or invalid (more than %.0f%%)"
+                              % (bad, side, runs, 100 * a.max_unscorable))
     if a.release:   # --require holds both sets (main), so a set missing on a side is reported above
+        if skip:
+            incomplete.append("a release judges every case: --skip-tags is not allowed")
         for side, cases in (("baseline", B), ("variant", V)):
             n = sum(x["legacy"] for x in cases.values())
             if n:
                 incomplete.append("%d %s runs lack %s (results from before 2026-11-19's runners): run the %s again "
                                   "with the current runners" % (n, side, ", ".join(MANIFEST), side))
-        for s, x in sets.items():
-            if x["baseline_cases"] and x["variant_cases"] and x["compared"] < a.min_coverage * x["variant_cases"]:
-                incomplete.append("%s: only %d of the variant's %d cases compared (at least %.0f%% needed)"
-                                  % (s, x["compared"], x["variant_cases"], 100 * a.min_coverage))
-        lost = sorted(c for c in B if critical(c, B[c]["tags"]) and keep(c, B) and c not in V and c not in not_run)
-        if lost:
-            incomplete.append("critical cases the variant did not run: " + ", ".join(lost))
+        if roster is None:
+            incomplete.append("a release needs the roster of cases (load_roster), and it could not be read")
+        else:
+            crit_roster = roster_critical(roster)
+            named = set().union(*[set(x) for x in roster["sets"].values()])
+            for c in sorted(not_run & crit_roster):
+                incomplete.append("critical case %s cannot be left out of a release (--not-run)" % c)
+            if not_run - named:
+                notes.append("--not-run names cases not in the roster: " + short(not_run - named))
+            excused = not_run - crit_roster
+            incomplete += roster_gaps(var_res, roster, "variant", 1.0, excused)
+            for s, cases in sorted(roster["sets"].items()):
+                expected = [n for n in cases if n not in excused]
+                fresh = [n for n in expected if n in compared_set and V[n]["case_hash"] == {json.dumps(cases[n]["hash"])}]
+                if len(fresh) < a.min_coverage * len(expected):
+                    incomplete.append("%s: %d of the %d cases defined now compared (at least %.0f%% needed)"
+                                      % (s, len(fresh), len(expected), 100 * a.min_coverage))
+                lost = sorted(n for n in expected if n in crit_roster and n not in fresh)
+                if lost:
+                    incomplete.append("critical cases not compared on both sides as defined now: " + ", ".join(lost))
+            extra = sorted(c for c in V if not any(c in x for x in roster["sets"].values()))
+            if extra:
+                notes.append("variant results of cases no longer defined: " + short(extra))
     if not compared:
         incomplete.append("no case can be compared" + (" (no name on both sides)" if not common else ""))
 
@@ -310,10 +474,10 @@ def compare(a, base_res, var_res, load_problems=(), out=None):
         mean = sum(diffs) / len(diffs)
         rows = []
         for side, X in (("baseline", B), ("variant", V)):
-            rows.append([side, sum(len(X[c]["runs"]) for c in compared), sum(sum(X[c]["runs"]) for c in compared),
-                         sum(X[c]["unscorable"] for c in compared),
+            rows.append([side, sum(X[c]["n"] for c in compared), sum(sum(X[c]["runs"]) for c in compared),
+                         sum(X[c]["unscorable"] + X[c]["invalid"] for c in compared),
                          "%.1f%%" % (100 * sum(share(X[c]) for c in compared) / len(compared))])
-        table(["side", "runs", "passed", "unscorable", "mean share passed per case"], rows)
+        table(["side", "runs", "passed", "unscorable or invalid", "mean share of scorable runs passed per case"], rows)
         say("paired difference: %+.1f cases per 100 (95%% interval %+.1f to %+.1f); tolerable loss -%.1f\n"
             % (100 * mean, 100 * lo, 100 * hi, a.tolerance))
         if hi < 0:
@@ -336,9 +500,9 @@ def compare(a, base_res, var_res, load_problems=(), out=None):
                              "%+.1f to %+.1f" % (100 * slo, 100 * shi)])
             say("By set:\n")
             table(["set", "cases", "baseline", "variant", "change", "95% interval"], rows)
-        unbalanced = [c for c in compared if len(B[c]["runs"]) != len(V[c]["runs"])]
+        unbalanced = [c for c in compared if B[c]["n"] != V[c]["n"]]
         if unbalanced:
-            show = lambda c: "%s %d/%d" % (c, len(B[c]["runs"]), len(V[c]["runs"]))
+            show = lambda c: "%s %d/%d" % (c, B[c]["n"], V[c]["n"])
             inconclusive.append("repeats unbalanced: %d cases have a different number of runs a side (baseline/variant: %s%s)"
                                 % (len(unbalanced), ", ".join(show(c) for c in unbalanced[:8]), ", ..." if len(unbalanced) > 8 else ""))
 
@@ -378,18 +542,25 @@ def compare(a, base_res, var_res, load_problems=(), out=None):
         else:
             to_repeat.append(c)
 
-    crit = sorted(c for c in V if critical(c, V[c]["tags"]) and keep(c, V))
+    crit = {c for c in V if critical(c, V[c]["tags"]) and keep(c, V)} | (roster_critical(roster) if roster else set())
     if crit:
         say("## Critical cases (must pass every run on the variant)\n")
         bad = []
-        for c in crit:
+        for c in sorted(crit):
+            if c not in V:
+                continue   # a release reports what it lacks above
             passed, n = sum(V[c]["runs"]), len(V[c]["runs"])
             base = "%d/%d" % (sum(B[c]["runs"]), len(B[c]["runs"])) if c in B else "-"
             if passed < n:
                 bad.append(c)
-                failures.append("critical case %s passed %d of %d runs on the variant (baseline %s)" % (c, passed, n, base))
-        say("%d critical cases, %d passed every run%s\n" % (len(crit), len(crit) - len(bad),
-                                                             ("; not: " + ", ".join(bad)) if bad else ""))
+                failures.append("critical case %s passed %d of %d scorable runs on the variant (baseline %s)" % (c, passed, n, base))
+            for side, X in (("baseline", B), ("variant", V)):
+                if c in X and (X[c]["unscorable"] or X[c]["invalid"]):
+                    incomplete.append("critical case %s has %d unscorable or invalid runs on the %s"
+                                      % (c, X[c]["unscorable"] + X[c]["invalid"], side))
+        say("%d critical cases, %d of them run on the variant, %d passed every scorable run%s\n"
+            % (len(crit), sum(1 for c in crit if c in V), sum(1 for c in crit if c in V) - len(bad),
+               ("; not: " + ", ".join(bad)) if bad else ""))
 
     # ---- latency, calls, tokens
     if compared:
@@ -440,6 +611,7 @@ def compare(a, base_res, var_res, load_problems=(), out=None):
     say("gate: %s\n" % (verdict + (" (with warnings)" if warnings and verdict == "passes" else "")))
     return {"verdict": verdict, "failures": failures, "incomplete": incomplete, "inconclusive": inconclusive,
             "warnings": warnings, "notes": notes, "compared": len(compared), "sets": sets, "release": bool(a.release),
+            "invalid": len(invalid),
             "interval": [lo, hi] if compared else None, "mean": mean, "tolerance": a.tolerance}
 
 
@@ -457,8 +629,10 @@ def parse(argv):
     ap.add_argument("--require", default="", help="sets that must be compared: scored, suite")
     ap.add_argument("--release", action="store_true", help="both sets, manifest fields, coverage and critical cases required")
     ap.add_argument("--min-coverage", type=float, default=MIN_COVERAGE)
-    ap.add_argument("--not-run", default="", help="cases the variant left out on purpose (tests/run.py --no-search): "
-                                                   "a critical one among them does not make a release incomplete")
+    ap.add_argument("--max-unscorable", type=float, default=MAX_UNSCORABLE,
+                    help="share of a side's runs that may be unscorable (default %.2f)" % MAX_UNSCORABLE)
+    ap.add_argument("--not-run", default="", help="cases the variant left out on purpose (tests/run.py --no-search); "
+                                                   "never a critical case in a release")
     ap.add_argument("--verdict", default="", help="write the verdict as JSON to this file")
     ap.add_argument("--self-test", action="store_true")
     return ap.parse_args(argv)
@@ -474,7 +648,13 @@ def main(argv=None):
         a.require = ",".join(SETS)
     base_res, p1 = load(a.base)
     var_res, p2 = load(a.variant)
-    v = compare(a, base_res, var_res, p1 + p2)
+    roster = None
+    if a.release:
+        try:
+            roster = load_roster()
+        except Exception as e:   # reported as incomplete evidence by compare()
+            p2 = p2 + ["the roster of cases could not be read: %s" % e]
+    v = compare(a, base_res, var_res, p1 + p2, roster=roster)
     if a.verdict:
         with open(a.verdict, "w", encoding="utf-8") as f:
             json.dump(v, f, indent=1)
@@ -483,6 +663,7 @@ def main(argv=None):
 
 # ---------------------------------------------------------------- the gate's own test
 def self_test():
+    global load_roster
     failed, counted = [], [0]
 
     def check(what, ok, got=None):
@@ -498,12 +679,22 @@ def self_test():
             t["timed_out"] = True
         r = {"case": name, "requests": ["x"], "problems": [] if ok else ["wrong"], "turns": [t]}
         if unscorable:
-            r["problems"], r["unscorable"] = [], ["no state"]
+            r["problems"] = ["unscorable: no state after turn 1"]
         if suite:
             r["tags"] = tags if tags is not None else [name.split("-")[0]]
-        if not legacy:
-            r.update(case_hash=h or "h-" + name, scorer=scorer, trace=trace)
+        if not legacy:   # as the runners write them from 2026-11-19
+            o = "unscorable" if unscorable else "pass" if ok else "fail"
+            r.update(case_hash=h or "h-" + name, scorer=scorer, trace=trace, outcome=o, unscorable=o == "unscorable",
+                     set="suite" if suite else "scored")
+            if not trace:
+                del t["trace"]
         return r
+
+    def roster_of(records, scorer="s1"):
+        out = {"scorer": scorer, "sets": {"scored": {}, "suite": {}}}
+        for r in records:
+            out["sets"][set_of(r)][r["case"]] = {"hash": r.get("case_hash") or "h-" + r["case"], "tags": r.get("tags", [])}
+        return out
 
     def side(n_scored=40, n_suite=60, fail=(), runs=1, **kw):
         out = []
@@ -512,12 +703,15 @@ def self_test():
             out += [rec("timer-%03d" % i, ok="timer-%03d" % i not in fail, suite=True, **kw) for i in range(n_suite)]
         return out
 
-    def gate(base, var, *args):
+    FULL = side() + [rec("home_ask_first_no"), rec("home-045", suite=True, tags=["home", "confirm"])]
+    ROSTER = roster_of(FULL)
+
+    def gate(base, var, *args, roster=None):
         a = parse(list(args))
         if a.release and not a.require:
             a.require = ",".join(SETS)
         buf = io.StringIO()
-        v = compare(a, base, var, out=buf)
+        v = compare(a, base, var, out=buf, roster=(roster or roster_of(base + var)) if a.release else None)
         return v, buf.getvalue()
 
     # passes: the same results on both sides
@@ -560,8 +754,9 @@ def self_test():
     v, _ = gate(side() + [rec("home-045", suite=True, tags=["home", "confirm"])],
                 side() + [rec("home-045", suite=True, tags=["home", "confirm"], ok=False)])
     check("a critical suite case (by tag) fails the gate", v["verdict"] == "fails", v)
-    v, _ = gate(side(), side() + [rec("review_stale_yes")] * 3 + [rec("review_stale_yes", unscorable=True)])
-    check("an unscorable run of a critical case is not a pass", v["verdict"] == "fails", v)
+    v, _ = gate(side() + [rec("review_stale_yes")] * 4, side() + [rec("review_stale_yes")] * 3 + [rec("review_stale_yes", unscorable=True)])
+    check("an unscorable run of a critical case: incomplete, not a pass and not a failure", v["verdict"] == "incomplete" and
+          "critical case review_stale_yes has 1 unscorable" in " ".join(v["incomplete"]) and not v["failures"], v)
     check("critical names", critical("home_after_web_later", []) and critical("home_ask_first", []) and
           not critical("home_on", []) and not critical("home_ask_first_maybe", []))
 
@@ -594,17 +789,17 @@ def self_test():
     # results without the manifest fields: by name, said; incomplete for a release
     v, text = gate(side(legacy=True), side(legacy=True))
     check("old results compare by name", v["verdict"] == "passes" and "no case hashes: comparison by name only" in text, (v, text[:400]))
-    v, text = gate(side(legacy=True), side(), "--release")
+    v, text = gate(side(legacy=True), side(), "--release", roster=roster_of(side()))
     check("a release with old results is incomplete", v["verdict"] == "incomplete" and "lack case_hash" in " ".join(v["incomplete"]), v)
 
-    v, _ = gate(side(legacy=True), side(legacy=True, fail=lost), "--release")
+    v, _ = gate(side(legacy=True), side(legacy=True, fail=lost), "--release", roster=roster_of(side()))
     check("a failure outranks incomplete evidence", v["verdict"] == "fails" and v["incomplete"], v["verdict"])
 
     # a release needs both sets, compared
-    v, _ = gate(side(n_scored=0), side(), "--release")
+    v, _ = gate(side(n_scored=0), side(), "--release", roster=roster_of(side()))
     check("a release without the baseline's scored set is incomplete", v["verdict"] == "incomplete" and
           "the baseline has no scored results" in v["incomplete"], v["incomplete"])
-    v, _ = gate(side(), side(n_scored=0), "--release")
+    v, _ = gate(side(), side(n_scored=0), "--release", roster=roster_of(side()))
     check("a release without the variant's scored set is incomplete", v["verdict"] == "incomplete", v["incomplete"])
     v, _ = gate(side(n_scored=0), side(), "--require", "scored")
     check("--require: a set the baseline lacks is incomplete", v["verdict"] == "incomplete", v)
@@ -613,15 +808,89 @@ def self_test():
     var = side()
     for r in var[:10]:
         r["case_hash"] = "changed"
-    v, _ = gate(side(), var, "--release")
+    v, _ = gate(side(), var, "--release", roster=roster_of(side()))
     check("a release with too few scored cases compared is incomplete", v["verdict"] == "incomplete" and
-          "only 30 of the variant's 40" in " ".join(v["incomplete"]), v["incomplete"])
+          "scored: 30 of the 40 cases defined now compared" in " ".join(v["incomplete"]), v["incomplete"])
     v, _ = gate(side() + [rec("home_after_web_no")], side(), "--release")
     check("a release missing a critical case is incomplete", v["verdict"] == "incomplete" and
           "home_after_web_no" in " ".join(v["incomplete"]), v["incomplete"])
     v, text = gate(side() + [rec("home_after_web_no")], side(), "--release", "--not-run", "home_after_web_no")
-    check("... unless the run left it out on purpose (no search), which is said", v["verdict"] == "passes" and
-          "not run by the variant on purpose (--not-run, 1): home_after_web_no" in text, v)
+    check("... and a critical case cannot be left out on purpose", v["verdict"] == "incomplete" and
+          "critical case home_after_web_no cannot be left out" in " ".join(v["incomplete"]), v["incomplete"])
+    v, text = gate(side() + [rec("x09")], side(), "--release", "--not-run", "x09")
+    check("another case left out on purpose (no search) is said, not counted", v["verdict"] == "passes" and
+          "not run by the variant on purpose (--not-run, 1): x09" in text, v)
+
+    # N1: a release is measured against the roster of cases defined, not against what the variant sent
+    partial = side(n_suite=0) + [rec("timer-000", suite=True), rec("home_ask_first_no")]
+    v, _ = gate(FULL, partial, "--release", roster=ROSTER)
+    check("a release of the scored set and one suite case is incomplete", v["verdict"] == "incomplete" and
+          "the variant has a scorable run of the current case for 1 of the 61 suite cases" in " ".join(v["incomplete"])
+          and "critical cases not compared on both sides as defined now: home-045" in " ".join(v["incomplete"]), v["incomplete"])
+    v, _ = gate(FULL, [r for r in FULL if "confirm" not in r.get("tags", [])], "--release", "--skip-tags", "confirm", roster=ROSTER)
+    check("a release with --skip-tags is incomplete", v["verdict"] == "incomplete" and
+          "--skip-tags is not allowed" in " ".join(v["incomplete"]), v["incomplete"])
+    v, _ = gate(FULL, FULL, "--release", roster=ROSTER)
+    check("the full roster passes", v["verdict"] == "passes", (v["incomplete"], v["inconclusive"]))
+    v, _ = gate(FULL, [dict(r, scorer="s2") for r in FULL], "--release", roster=ROSTER)
+    check("a release scored by another scorer than the current one is incomplete", v["verdict"] == "incomplete" and
+          "another scorer" in " ".join(v["incomplete"]), v["incomplete"])
+    stale = [dict(r, case_hash="old") if r["case"] == "home-045" else r for r in FULL]
+    v, _ = gate(stale, FULL, "--release", roster=ROSTER)
+    check("a critical case changed since the baseline is incomplete", v["verdict"] == "incomplete" and
+          "home-045" in " ".join(v["incomplete"]), v["incomplete"])
+    check("roster gaps: an untraced baseline for a traced release", any("untraced" in g for g in
+          roster_gaps([dict(r, trace=False) for r in FULL], ROSTER, "baseline", MIN_COVERAGE, trace=True)))
+    check("roster gaps: a full traced baseline has none", roster_gaps(FULL, ROSTER, "baseline", MIN_COVERAGE, trace=True) == [])
+    untagged = [dict(r, tags=["home"]) if r["case"] == "home-045" else r for r in FULL]
+    failing = [dict(r, tags=["home"], outcome="fail", problems=["switched on without a yes"]) if r["case"] == "home-045" else r
+               for r in FULL]
+    v, _ = gate(untagged, failing, "--release", roster=ROSTER)
+    check("a release judges the critical cases the roster names, whatever the results' tags say", v["verdict"] == "fails" and
+          "critical case home-045" in " ".join(v["failures"]), v["failures"])
+    real = load_roster()
+    check("the roster holds both sets and the critical cases", len(real["sets"]["scored"]) > 100 and len(real["sets"]["suite"]) > 500
+          and "home_ask_first_no" in roster_critical(real) and any(n.startswith("home-") for n in roster_critical(real)),
+          sorted(roster_critical(real))[:5])
+
+    # N2: a damaged record is no result, and unscorable evidence never reads as a pass or as a zero
+    for what, r in (("outcome fail with no problems", dict(rec("s05"), outcome="fail")),
+                    ("no list of problems", {k: v for k, v in rec("s05").items() if k != "problems"}),
+                    ("outcome pass with problems", dict(rec("s05"), problems=["wrong"])),
+                    ("unscorable True with outcome pass", dict(rec("s05"), unscorable=True)),
+                    ("marked untraced, but its turns carry a trace", dict(rec("s05", trace=False),
+                                                                          turns=[dict(rec("s05")["turns"][0], trace=[{"ev": "call"}])])),
+                    ("marked traced, but no turn has a trace", dict(rec("s05"), turns=[{"answer": "a", "total": 1}])),
+                    ("case_hash without outcome", {k: v for k, v in rec("s05").items() if k != "outcome"})):
+        check("invalid record: " + what, record_problems(r) != [] and outcome(r) == "invalid", record_problems(r))
+        v, _ = gate(side(), [x for x in side() if x["case"] != "s05"] + [r])
+        check("an invalid record makes the gate incomplete: " + what, v["verdict"] == "incomplete" and v["invalid"] == 1, v["incomplete"])
+    check("a valid record has no problems", record_problems(rec("s05")) == [] and record_problems(rec("s05", ok=False)) == []
+          and record_problems(rec("s05", unscorable=True)) == [] and record_problems(rec("s05", legacy=True)) == [])
+    many = ["s%02d" % i for i in range(10)]
+    v, text = gate([rec(r["case"], unscorable=True) if r["case"] in many else r for r in side()],
+                   [rec(r["case"], unscorable=True) if r["case"] in many else r for r in side()])
+    check("the same cases unscorable on both sides: incomplete beyond 2%, not a pass", v["verdict"] == "incomplete" and
+          "unscorable or invalid" in " ".join(v["incomplete"]) and v["sets"]["scored"]["excluded"].get("no scorable run") == 10,
+          (v["incomplete"], v["sets"]))
+    v, _ = gate([rec(r["case"], unscorable=True) if r["case"] == "s00" else r for r in side()],
+                [rec(r["case"], unscorable=True) if r["case"] == "s00" else r for r in side()])
+    check("one case unscorable on both sides: left out and said, under the threshold", v["verdict"] == "passes" and
+          v["sets"]["scored"]["excluded"].get("no scorable run") == 1, (v["verdict"], v["incomplete"]))
+    base = side() + [rec("x01")] * 6
+    var = side() + [rec("x01")] * 5 + [rec("x01", unscorable=True)]
+    v, text = gate(base, var, "--max-unscorable", "0.05")
+    check("an unscorable run is not a zero", v["verdict"] == "passes" and "x01" not in text.split("worse (")[1].split("\n")[0], text[-900:])
+    var = side()
+    for r in var:
+        if r["case"] == "s07":
+            r["fixtures"] = "web-2"
+    base = [dict(r, fixtures="web-1") if r["case"] == "s07" else r for r in side()]
+    v, _ = gate(base, var)
+    check("different fixtures are left out", v["sets"]["scored"]["excluded"].get("different fixtures") == 1, v["sets"])
+    v, _ = gate(side(), var, "--release", roster=roster_of(side()))
+    check("a release: fixtures recorded on one side only are left out", v["sets"]["scored"]["excluded"].get("different fixtures") == 1,
+          v["sets"])
     v, _ = gate([], side())
     check("nothing to compare is incomplete", v["verdict"] == "incomplete", v)
 
@@ -645,12 +914,20 @@ def self_test():
             json.dump(side(), f)
         with open(bad, "w") as f:
             f.write("{\"not\": \"a list\"}")
-        with contextlib.redirect_stdout(io.StringIO()):
-            rc = main(["--base", good + "," + os.path.join(d, "missing.json"), "--variant", good, "--verdict", vfile])
-            v = json.load(open(vfile))
-            rc2 = main(["--base", good, "--variant", bad])
-            rc3 = main(["--base", good, "--variant", good, "--release", "--verdict", vfile])
-            v3 = json.load(open(vfile))
+        saved_roster = load_roster
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = main(["--base", good + "," + os.path.join(d, "missing.json"), "--variant", good, "--verdict", vfile])
+                v = json.load(open(vfile))
+                rc2 = main(["--base", good, "--variant", bad])
+                load_roster = lambda: roster_of(side())
+                rc3 = main(["--base", good, "--variant", good, "--release", "--verdict", vfile])
+                v3 = json.load(open(vfile))
+                load_roster = lambda: ROSTER
+                rc4 = main(["--base", good, "--variant", good, "--release", "--verdict", vfile])
+        finally:
+            load_roster = saved_roster
+        check("--release measures against the roster, not the files", rc4 == 4, rc4)
         check("a missing file is incomplete evidence", rc == 4 and v["verdict"] == "incomplete" and
               "cannot be read" in " ".join(v["incomplete"]), (rc, v["incomplete"]))
         check("a file that is not results is incomplete", rc2 == 4)

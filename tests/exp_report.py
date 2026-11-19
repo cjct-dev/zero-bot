@@ -64,6 +64,13 @@ def turn_trace(t):
     return calls, (reqs[0] if reqs else None), [e for e in tr if e.get("ev") == "tts"]
 
 
+def passed(r):
+    """The run passed: its outcome (when recorded) is "pass", it has a list of problems and it is empty, and
+    it is not unscorable. Anything else, a damaged record included, is no pass."""
+    return r.get("outcome", "pass") == "pass" and isinstance(r.get("problems"), list) and not r["problems"] \
+        and not r.get("unscorable")
+
+
 def completed(t):
     """The turn ran to an answer: started, not timed out, with a time and an answer (agent_eval.py's
     timing summary counts the same way; results saved before "unstarted" and "timed_out" have neither)."""
@@ -132,7 +139,7 @@ def main():
     print("## Pass rates\n")
     rows = []
     for name, res in runs:
-        ok = sum(1 for r in res if not r["problems"] and not r.get("unscorable"))
+        ok = sum(1 for r in res if passed(r))
         turns = [t for r in res for t in r["turns"]]
         rows.append([name, "%d/%d" % (ok, len(res)), "%.1f%%" % (100.0 * ok / max(1, len(res))), len(turns), done(turns)])
     table(["file", "passed", "rate", "turns", "completed"], rows)
@@ -143,7 +150,7 @@ def main():
             for r in res:
                 for t in r.get("tags", []):
                     ok, n = tags.setdefault(t, {}).get(name, (0, 0))
-                    tags[t][name] = (ok + (not r["problems"] and not r.get("unscorable")), n + 1)
+                    tags[t][name] = (ok + passed(r), n + 1)
         if tags:
             print("## By tag (the first tag of a suite case is its category)\n")
             names = [n for n, _ in runs]
@@ -160,7 +167,7 @@ def main():
     outcome = {}
     for name, res in runs:
         for r in res:
-            outcome.setdefault(r["case"], []).append(not r["problems"] and not r.get("unscorable"))
+            outcome.setdefault(r["case"], []).append(passed(r))
     flaky = sorted(c for c, v in outcome.items() if any(v) and not all(v))
     always = sorted(c for c, v in outcome.items() if not any(v))
     print("## Cases\n")
@@ -168,11 +175,11 @@ def main():
     print("passed and failed (%d): %s\n" % (len(flaky), ", ".join("%s %d/%d" % (c, sum(outcome[c]), len(outcome[c])) for c in flaky) or "-"))
     if a.cases:
         for name, res in runs:
-            bad = [r for r in res if r["problems"]][:a.cases]
+            bad = [r for r in res if not passed(r)][:a.cases]
             if bad:
                 print("failures in %s:" % name)
                 for r in bad:
-                    print("  %-22s %s" % (r["case"], "; ".join(r["problems"])[:240]))
+                    print("  %-22s %s" % (r["case"], "; ".join(map(str, r.get("problems") or [r.get("outcome", "no problems listed")]))[:240]))
                 print()
 
     # ---------------------------------------------------------------- latency
@@ -223,12 +230,12 @@ def main():
             continue
         ttfb = [c["ttfb_ms"] / 1000.0 for c in cs if c.get("ttfb_ms", -1) >= 0]
         gen = [(c["done_ms"] - c["ttfb_ms"]) / 1000.0 for c in cs if c.get("ttfb_ms", -1) >= 0]
-        done = [c["done_ms"] / 1000.0 for c in cs]
+        call_s = [c["done_ms"] / 1000.0 for c in cs]
         pt = [usage(c, "prompt_tokens") for c in cs]
         ct = [usage(c, "completion_tokens") for c in cs]
         cached = [usage(c, "cached") for c in cs]
         share = sum(x or 0 for x in cached) / max(1, sum(x or 0 for x in pt))
-        rows.append([p, len(cs), fmt(med(ttfb)), fmt(p90(ttfb)), fmt(med(gen)), fmt(med(done)), fmt(p90(done)),
+        rows.append([p, len(cs), fmt(med(ttfb)), fmt(p90(ttfb)), fmt(med(gen)), fmt(med(call_s)), fmt(p90(call_s)),
                      fmt(med(pt), "", 0), fmt(med(ct), "", 0), "%.0f%%" % (100 * share),
                      fmt(med([c["body_bytes"] / 1000.0 for c in cs])), sum(1 for c in cs if c.get("attempts", 1) > 1),
                      sum(1 for c in cs if c.get("outcome") == "error")])

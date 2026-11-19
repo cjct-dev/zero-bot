@@ -6,8 +6,8 @@ one line per group and a short summary instead of each script's own output.
     tests/run.py --profile quick                 every offline group but the slow ones (a few minutes)
     tests/run.py --profile change [--base REF]   the groups that cover the files changed since REF
     tests/run.py --profile offline               every offline group
-    tests/run.py --profile release --baseline EVAL.json,SUITE.json [--no-search] [--build]
-                                                 offline, the scored set and the suite once, the gate
+    tests/run.py --profile release --baseline EVAL.json,SUITE.json [--no-search] [--no-build]
+                                                 build, offline, the scored set and the suite once, the gate
     tests/run.py --groups unit,hue               these groups only
     tests/run.py --groups live-suite --tags timer --repeat 5 --no-search
     tests/run.py --groups live-scored --scored-only radio_ --repeat 5
@@ -22,16 +22,21 @@ set this run ran, and a live run with failed cases passes only when the gate's v
 run folder) is "passes" and covers its set. Live runs are always traced (--trace), so their baseline
 must be traced too.
 
-The release profile starts only with a baseline of both sets recorded by the current runners (records
-with case_hash, scorer and trace) and fresh builds (--build makes them; a build older than its sources
-fails its groups); the gate then runs with --release: both sets, the manifest fields, coverage and the
-critical cases. Record a baseline with tests/run.py --groups live-scored,live-suite (eval.json and
-suite.json in its run folder).
+A release (--profile release, or --groups release: the same thing) runs every case of both sets as they
+are defined: --tags, --sample, --skip-tags, --only, --scored-only, --fast and --exp are refused, and
+--no-search is the one declared exception (the gate is told what it left out). It builds first unless
+--no-build, and then a build older than any of its inputs (src, third_party, cmake, CMakeLists.txt,
+CMakePresets.json) stops it. It starts only with a baseline measured against the roster of cases defined
+in this tree (tests/exp_compare.py load_roster): valid records of both sets, a scorable, traced run of the
+current version of at least 90% of each set's cases and of every critical case, by the current scorer. The
+live sets run only on a cli build that is an experiments build whose hardware guard holds and which writes
+the evaluator's records (probe_cli). The gate then runs with --release. Record a baseline with
+tests/run.py --groups live-scored,live-suite (eval.json and suite.json in its run folder).
 
 Groups never inherit switches that change what they test (ZB_UPDATE_SHOTS, ZB_UPDATE_SNAPSHOTS,
-ZB_UNIT_BUILD_ONLY, ZB_UNIT_SKIP_SCRIPTS, HUE_E2E_ONLY, ZB_FAST_MODE, any ZB_EXP_*); a variant's live
-runs get their experiment switches from --exp. A change to code the device build shares adds the
-sim-build group, which compiles the sim build (no experiments, the screen code) incrementally.
+ZB_UNIT_BUILD_ONLY, ZB_UNIT_SKIP_SCRIPTS, HUE_E2E_ONLY, ZB_FAST_MODE, ZB_EVAL_TRACE, any ZB_EXP_*); a
+variant's live runs get their experiment switches from --exp. A change to code the device build shares
+adds the sim-build group, which compiles the sim build (no experiments, the screen code) incrementally.
 
 Groups that need a build fail with a clear message when it is missing; --build builds what the chosen
 groups need first (cmake --preset X the first time, then cmake --build --preset X -j2; the unit test
@@ -168,7 +173,10 @@ LIVE_SET = {"live-scored": "scored", "live-suite": "suite"}            # tests/e
 LIVE_FILE = {"live-scored": "eval.json", "live-suite": "suite.json"}   # their results in the run folder
 # Inherited switches that change what a group tests: never passed on (the runner sets its own).
 SCRUB = ("ZB_UNIT_BUILD_ONLY", "ZB_UNIT_SKIP_SCRIPTS", "ZB_UPDATE_SHOTS", "ZB_UPDATE_SNAPSHOTS", "HUE_E2E_ONLY",
-         "ZB_FAST_MODE")
+         "ZB_FAST_MODE", "ZB_EVAL_TRACE")   # ZB_EVAL_TRACE: the live runs are traced by --trace, which records it
+# What a release refuses: it runs every case of both sets as they are defined (--no-search is declared, and
+# the gate is told what it left out).
+RELEASE_REFUSES = ("tags", "sample", "skip_tags", "only", "scored_only", "fast", "exp")
 RUNNER_EXP = ("ZB_EXP_TRACE", "ZB_EXP_WEB", "ZB_EXP_NO_HARDWARE")   # set by the live sets' runners per case
 
 PROFILES = {
@@ -198,8 +206,11 @@ PATH_RULES = [
     (r"^tests/agent_eval\.py$", ["scorer", "cases", "loop"],
      "the scored set and the scoring both live sets use (agent_loop_test.py reads its parser)"),
     (r"^tests/agent_suite\.py$", ["scorer", "cases"], "the suite's runner"),
-    (r"^tests/suite/", ["cases"], "the generated suite"),
-    (r"^tests/mocks/fake_web\.py$", ["tools"], "the stand-in web (the live sets' web cases; tools_cli.py starts it)"),
+    (r"^tests/suite/from_conversation\.py$", ["cases", "scorer", "loop"],
+     "drafts a case from a saved conversation (agent_loop_test.py runs it)"),
+    (r"^tests/suite/", ["cases", "scorer"], "the generated suite (scorer_test.py reads its cases)"),
+    (r"^tests/mocks/fake_web\.py$", ["cases", "scorer", "tools"],
+     "the stand-in web (its fixtures: the validators and scorer_test.py; tools_cli.py starts it)"),
     (r"^tests/(golden/|shots/|shots_compare\.py$)", ["screens"], "the golden screenshots"),
     (r"^tests/mocks/mock_tapo\.py$", ["tapo", "loop"],
      "the simulated Tapo plugs (home_chat_e2e.py and selfheal_chat_e2e.py start them too)"),
@@ -509,7 +520,7 @@ def gate_command(o, run):
     variant = [os.path.join(run, LIVE_FILE[g]) for g in ran if run == "<run>" or os.path.exists(os.path.join(run, LIVE_FILE[g]))]
     cmd = py("tests/exp_compare.py", "--base", o.baseline or "<baseline>", "--variant", ",".join(variant) or "<none>",
              "--tags", "--verdict", os.path.join(run, "gate.json"))
-    if o.profile == "release":
+    if release_mode(o):
         cmd += ["--release", "--require", "scored,suite"]
     elif ran:
         cmd += ["--require", ",".join(LIVE_SET[g] for g in ran)]
@@ -572,6 +583,8 @@ def need_path(need):
 
 # What the driver test programs are built from (tests/run_unit.sh), besides every header in src/.
 SIM_ONLY = ("src/ui/", "src/platform/display.", "src/platform/input.")    # not in the cli build
+# What the cli and sim builds are made from: the sources, the bundled libraries and the build's own files.
+BUILD_INPUTS = ("src", "third_party", "cmake", "CMakeLists.txt", "CMakePresets.json")
 UNIT_SOURCES = ("src/smarthome/", "src/net/", "src/core/util.", "src/platform/proc.", "src/platform/sys.", "tests/unit/")
 
 
@@ -580,7 +593,7 @@ def stale_note(need):
     whenever a source it uses changed. (ninja -n cannot tell: the build's globs always look out of date.)"""
     if need in ("cli", "sim"):
         made = os.path.join(ROOT, need_path(need))
-        tops, wanted = ("src", "CMakeLists.txt"), (lambda rel: need == "sim" or not rel.startswith(SIM_ONLY))
+        tops, wanted = BUILD_INPUTS, (lambda rel: need == "sim" or not rel.startswith(SIM_ONLY))
     elif need.startswith("unit:"):
         made = os.path.join(ROOT, "build", "unit", ".stamp")
         tops = ("src", os.path.join("tests", "unit"))
@@ -591,6 +604,8 @@ def stale_note(need):
         return ""
     t = os.path.getmtime(made)
     for top in tops:
+        if not os.path.exists(os.path.join(ROOT, top)):
+            continue
         walk = [(ROOT, [], [top])] if os.path.isfile(os.path.join(ROOT, top)) else os.walk(os.path.join(ROOT, top))
         for d, _, files in walk:
             for f in files:
@@ -600,12 +615,67 @@ def stale_note(need):
     return ""
 
 
+def release_mode(o):
+    """A release, however it was asked for: --profile release or --groups release."""
+    return o.profile == "release" or "release" in [g.strip() for g in o.groups.split(",")]
+
+
+def probe_cli(path):
+    """Why the cli build at PATH cannot run live cases, or '': it must be an experiments build (an unknown
+    ZB_EXP_DECIDE stops it), its hardware guard must hold (under ZB_EXP_NO_HARDWARE a stand-in camera
+    program that would work is never started), and it must write the evaluator's records (ZB_EVAL_RECORDS:
+    a start and an end even for a run of no turns). Nothing here reaches a service or a device."""
+    if not os.access(path, os.X_OK):
+        return "%s is missing" % os.path.relpath(path, ROOT)
+    tmp = tempfile.mkdtemp(prefix="zb-probe-")
+    try:
+        base = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tmp, "TZ": "UTC", "ZB_DRY_RUN": "1", "ZB_NO_AUDIO": "1",
+                "XDG_CONFIG_HOME": tmp + "/config", "XDG_DATA_HOME": tmp + "/data", "XDG_CACHE_HOME": tmp + "/cache"}
+
+        def run(args, stdin="", **extra):
+            return subprocess.run([path] + args, env=dict(base, **extra), input=stdin, capture_output=True, text=True,
+                                  timeout=30, cwd=tmp)
+        r = run(["--prompt"], ZB_EXP_DECIDE="zb-probe")
+        if r.returncode != 2 or "is not a variant this build knows" not in r.stderr:
+            return "it is not an experiments build (ZB_EXPERIMENTS): no hardware guard, no records"
+        stand_ins, marker = tmp + "/bin", tmp + "/camera-used"
+        os.makedirs(stand_ins)
+        with open(stand_ins + "/rpicam-jpeg", "w") as f:
+            f.write('#!/bin/sh\ntouch "%s"\nfor a; do out="$a"; done\nhead -c 4000 /dev/zero > "$out"\n' % marker)
+        os.chmod(stand_ins + "/rpicam-jpeg", 0o755)
+        r = run(["--tool", "look", "{}"], ZB_EXP_NO_HARDWARE="1", PATH=stand_ins + os.pathsep + base["PATH"])
+        if "switched off for this test run" not in r.stdout or os.path.exists(marker):
+            return "its hardware guard does not hold (ZB_EXP_NO_HARDWARE did not keep the camera out)"
+        records = tmp + "/records.jsonl"
+        run(["--chat"], ZB_EVAL_RECORDS=records)
+        lines = [json.loads(l) for l in open(records, encoding="utf-8")] if os.path.exists(records) else []
+        if not lines or lines[0].get("ev") != "start" or lines[-1].get("ev") != "end":
+            return "it writes no evaluator's records (ZB_EVAL_RECORDS)"
+        return ""
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        return "it could not be probed (%s)" % e.__class__.__name__
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def cli_problem(o):
+    """probe_cli for build/cli/zero_bot, once per binary in a run."""
+    path = os.path.join(ROOT, need_path("cli"))
+    key = "%s@%s" % (path, os.path.getmtime(path) if os.path.exists(path) else "-")
+    cache = o.__dict__.setdefault("probed", {})
+    if key not in cache:
+        cache[key] = probe_cli(path)
+    return cache[key]
+
+
 def missing(group, o, run):
     """What stops GROUP from running now, or ''."""
     for need in group["needs"]:
         if need == "live":
             if not live_prefix() and not (os.environ.get("ZB_API_BASE") and os.environ.get("ZB_API_KEY")):
                 return "needs ZB_API_BASE and ZB_API_KEY, or ZB_EVAL_WRAPPER (a command that sets them)"
+            if "cli" in group["needs"] and os.path.exists(os.path.join(ROOT, need_path("cli"))) and cli_problem(o):
+                return "build/cli/zero_bot cannot run live cases: " + cli_problem(o)
         elif need == "baseline":
             if not o.baseline:
                 return "needs --baseline"
@@ -676,9 +746,9 @@ def choose(o):
                          + " and the live sets")
     if not names:
         names = []
-    if (o.baseline or profile == "release") and any(n in names for n in LIVE):
+    if (o.baseline or release_mode(o)) and any(n in names for n in LIVE):
         names.append("gate")
-        why["gate"] = "the release profile" if profile == "release" else "--baseline with a live run"
+        why["gate"] = "a release" if release_mode(o) else "--baseline with a live run"
     chosen = [g["name"] for g in GROUPS if g["name"] in set(names)]
     o.chosen = chosen
     return chosen, why, notes, advice
@@ -770,9 +840,11 @@ def print_plan(chosen, why, notes, advice, o, out=None):
 
 
 def release_problems(o):
-    """Why a release run would stop before running anything: its baseline (both sets, recorded by the
-    current runners, readable) and, without --build, builds older than their sources."""
-    if o.profile != "release":
+    """Why a release would stop before running anything: its baseline (readable, valid, both sets, and the
+    cases as defined now, measured against the roster of cases in this tree: at least 90% of each set and
+    every critical case, scored by the current scorer and traced), a cli build that cannot run live cases,
+    and, with --no-build, builds older than any of their inputs."""
+    if not release_mode(o):
         return []
     out = []
     if not o.baseline:
@@ -783,24 +855,37 @@ def release_problems(o):
         try:
             import exp_compare as ec
             records, problems = ec.load(o.baseline)
+            out += ["the baseline: " + p for p in problems]
+            have = {ec.set_of(r) for r in records}
+            for s in ec.SETS:
+                if s not in have:
+                    out.append("the baseline has no %s results: a release is judged on both sets" % s)
+            bad = [r for r in records if ec.record_problems(r)]
+            if bad:
+                out.append("%d baseline records are not valid results (%s: %s)" % (len(bad), bad[0].get("case"),
+                                                                                    ", ".join(ec.record_problems(bad[0]))))
+            old = sum(1 for r in records if any(f not in r for f in ec.MANIFEST))
+            if old:
+                out.append("%d baseline runs lack %s (recorded before 2026-11-19's runners): record a new baseline "
+                           "(tests/run.py --groups live-scored,live-suite)" % (old, ", ".join(ec.MANIFEST)))
+            else:
+                try:
+                    roster = ec.load_roster()
+                except Exception as e:
+                    out.append("the roster of cases could not be read: %s" % e)
+                else:
+                    out += ec.roster_gaps(records, roster, "baseline", ec.MIN_COVERAGE, trace=True)
         finally:
             if sys.path and sys.path[0] == HERE:
                 sys.path.pop(0)
-        out += ["the baseline: " + p for p in problems]
-        have = {ec.set_of(r) for r in records}
-        for s in ec.SETS:
-            if s not in have:
-                out.append("the baseline has no %s results: a release is judged on both sets" % s)
-        old = sum(1 for r in records if any(f not in r for f in ec.MANIFEST))
-        if old:
-            out.append("%d baseline runs lack %s (recorded before 2026-11-19's runners): record a new baseline "
-                       "(tests/run.py --groups live-scored,live-suite)" % (old, ", ".join(ec.MANIFEST)))
-    if not o.build:
+    if o.no_build:
         for need in ("cli", "sim"):
             if not os.path.exists(os.path.join(ROOT, need_path(need))):
-                out.append("%s is missing (--build builds it)" % need_path(need))
+                out.append("%s is missing (a release builds it without --no-build)" % need_path(need))
             elif stale_note(need):
-                out.append("a release needs fresh builds: %s (--build rebuilds)" % stale_note(need))
+                out.append("a release needs fresh builds: %s (leave out --no-build to rebuild)" % stale_note(need))
+    if (o.no_build or not o.build) and os.path.exists(os.path.join(ROOT, need_path("cli"))) and cli_problem(o):
+        out.append("build/cli/zero_bot cannot run live cases: " + cli_problem(o))
     return out
 
 
@@ -918,7 +1003,7 @@ def run_group(group, o, run, gate_follows, warnings):
         return "fail", problem, 0
     for need in group["needs"] + group.get("uses", []):
         note = stale_note(need) if need_path(need) and os.path.exists(os.path.join(ROOT, need_path(need))) else ""
-        if note and o.profile == "release":
+        if note and release_mode(o):
             with open(logpath, "w") as log:
                 log.write("stale build: %s\n" % note)
             return "fail", "stale build: %s (--build rebuilds)" % note, 0
@@ -1065,7 +1150,8 @@ def parse(argv):
     ap.add_argument("--base", default="main", help="for --profile change: compare with this ref (default main)")
     ap.add_argument("--list", action="store_true", help="show the groups, profiles and path rules")
     ap.add_argument("--plan", action="store_true", help="say what would run and why, then stop")
-    ap.add_argument("--build", action="store_true", help="build what the chosen groups need first")
+    ap.add_argument("--build", action="store_true", help="build what the chosen groups need first (a release always does)")
+    ap.add_argument("--no-build", action="store_true", help="a release: do not build; any build older than an input stops it")
     ap.add_argument("--live", action="store_true", help="for --profile change: also run the live suite it advises")
     ap.add_argument("--baseline", default="", help="results file(s) to gate the live runs against (A.json[,B.json])")
     ap.add_argument("--no-search", action="store_true", help="leave out what needs web search (key over quota)")
@@ -1087,8 +1173,13 @@ def parse(argv):
         k = e.split("=", 1)[0]
         if "=" not in e or not k.startswith("ZB_EXP_") or k in RUNNER_EXP:
             ap.error("--exp %s: give ZB_EXP_NAME=VALUE; %s are set by the runners" % (e, ", ".join(RUNNER_EXP)))
-    if o.exp and o.profile == "release":
-        ap.error("--exp: a release measures the build as it is, with no experiment switch")
+    if release_mode(o):
+        given = ["--" + k.replace("_", "-") for k in RELEASE_REFUSES if getattr(o, k)]
+        if given:
+            ap.error("a release runs every case of both sets as defined, with the build as it is: %s cannot be "
+                     "given (--no-search is the one declared exception)" % ", ".join(given))
+        if not o.no_build:
+            o.build = True   # a release always builds, unless --no-build: then a stale build stops it
     return o
 
 
@@ -1120,6 +1211,7 @@ def main(argv=None):
 
 # ---------------------------------------------------------------- the runner's own test
 def self_test():
+    global RUN_COMMAND, ROOT, changed_paths, diff_reader, stale_note, need_path
     failures, counted = [], [0]
 
     def check(what, ok, got=None):
@@ -1142,7 +1234,10 @@ def self_test():
     for path in ("src/agent/experiment.h", "src/core/radio.cpp", "src/net/http.cpp", "src/platform/camera.cpp",
                  "src/smarthome/home.h", "src/platform/display.cpp", "CMakeLists.txt"):
         check("%s compiles the no-experiments build too" % path, "sim-build" in groups(path), groups(path))
-    check("suite templates", groups("tests/suite/generate.py") == ["cases"])
+    check("suite templates: the cases and the scorer that reads them", groups("tests/suite/generate.py") == ["cases", "scorer"],
+          groups("tests/suite/generate.py"))
+    check("from_conversation.py: the loop test runs it", groups("tests/suite/from_conversation.py") == ["cases", "scorer", "loop"],
+          groups("tests/suite/from_conversation.py"))
     check("docs only", groups("docs/agent-architecture.html", "README.md", "AGENTS.md") == [],
           groups("docs/agent-architecture.html", "README.md", "AGENTS.md"))
     check("a mock", groups("tests/mocks/kasa/mock_kasa.py") == ["kasa"])
@@ -1150,7 +1245,8 @@ def self_test():
           groups("tests/mocks/mock_tapo.py"))
     check("hue's mock files: its unit test reads them", groups("tests/mocks/hue/certs/bridge.pem") == ["unit", "hue"])
     check("firetv's mock files: its unit test reads them", groups("tests/mocks/firetv/mock_firetv.py") == ["unit", "firetv"])
-    check("the stand-in web", groups("tests/mocks/fake_web.py") == ["tools"], groups("tests/mocks/fake_web.py"))
+    check("the stand-in web: validators, scorer and tools", groups("tests/mocks/fake_web.py") == ["cases", "scorer", "tools"],
+          groups("tests/mocks/fake_web.py"))
     check("a driver's e2e", groups("tests/wiz_e2e.py") == ["wiz"])
     check("a driver's unit test", groups("tests/unit/shelly_test.cpp") == ["unit", "shelly"])
     check("golden shots", groups("tests/golden/shots/01-chat.png") == ["screens"])
@@ -1163,7 +1259,7 @@ def self_test():
     check("the build", groups("CMakeLists.txt") == want, groups("CMakeLists.txt"))
     check("an unknown path", groups("somewhere/new.txt") == PROFILES["quick"][1])
     check("bytecode", groups("tests/__pycache__/run.cpython-314.pyc") == [])
-    check("several paths add up", groups("src/ui/app.cpp", "tests/suite/x.py") == ["unit", "cases", "sim-build", "screens"],
+    check("several paths add up", groups("src/ui/app.cpp", "tests/suite/x.py") == ["unit", "cases", "scorer", "sim-build", "screens"],
           groups("src/ui/app.cpp", "tests/suite/x.py"))
     for _, gs, _ in PATH_RULES:
         for g in gs:
@@ -1188,7 +1284,6 @@ def self_test():
         check("--scored-only radio_ picks the radio cases", n >= 5, n)
         check("--scored-only goes to the scored set only", "radio_" in eval_command(parse(["--scored-only", "radio_", "--only", "timer-001"]), "/r")
               and "radio_" not in " ".join(suite_command(parse(["--scored-only", "radio_", "--only", "timer-001"]), "/r")))
-    global changed_paths, diff_reader
     saved_git = changed_paths, diff_reader
     changed_paths, diff_reader = (lambda base: ("f" * 40, ["src/core/radio.cpp"])), (lambda fork: (lambda p: ""))
     try:
@@ -1288,7 +1383,7 @@ def self_test():
 
     # What a group inherits: no switch that changes what it tests; the runner's own; --exp for live runs.
     keys = ("ZB_UPDATE_SHOTS", "ZB_UPDATE_SNAPSHOTS", "ZB_UNIT_BUILD_ONLY", "ZB_UNIT_SKIP_SCRIPTS", "ZB_EXP_TOOLS", "HUE_E2E_ONLY",
-            "ZB_FAST_MODE")
+            "ZB_FAST_MODE", "ZB_EVAL_TRACE")
     saved_env = {k: os.environ.get(k) for k in keys}
     tmp = tempfile.mkdtemp(prefix="zb-run-selftest-")
     try:
@@ -1321,10 +1416,20 @@ def self_test():
         old = os.path.join(tmp, "old.json")
         with open(old, "w") as f:
             json.dump([{"case": "timer-001", "tags": ["timer"], "problems": [], "turns": []}], f)
-        good = os.path.join(tmp, "good.json")
-        with open(good, "w") as f:
-            json.dump([{"case": n, "problems": [], "turns": [], "case_hash": "h", "scorer": "1", "trace": True, **extra}
-                       for n, extra in (("timer_oven", {}), ("timer-001", {"tags": ["timer"]}))], f)
+        sys.path.insert(0, HERE)
+        import exp_compare as ec
+        roster = ec.load_roster()
+
+        def baseline(drop=(), **change):
+            return [dict({"case": n, "set": s, "problems": [], "turns": [{"answer": "a", "trace": []}], "case_hash": x["hash"],
+                          "scorer": roster["scorer"], "trace": True, "outcome": "pass", "unscorable": False,
+                          **({"tags": x["tags"]} if s == "suite" else {})}, **change)
+                    for s, cases in roster["sets"].items() for n, x in cases.items() if n not in drop]
+        good, partial, untraced = (os.path.join(tmp, n + ".json") for n in ("good", "partial", "untraced"))
+        for path, recs in ((good, baseline()), (untraced, baseline(trace=False, turns=[{"answer": "a"}])),
+                           (partial, baseline(drop=[n for n in roster["sets"]["suite"] if not n.startswith("timer-")]))):
+            with open(path, "w") as f:
+                json.dump(recs, f)
         p = release_problems(parse(["--profile", "release"]))
         check("a release needs a baseline", any("--baseline is needed" in x for x in p), p)
         p = release_problems(parse(["--profile", "release", "--baseline", old, "--build"]))
@@ -1332,7 +1437,105 @@ def self_test():
         check("a release needs the manifest fields", any("lack case_hash" in x for x in p), p)
         p = release_problems(parse(["--profile", "release", "--baseline", os.path.join(tmp, "none.json"), "--build"]))
         check("a release's baseline must be readable", any("cannot be read" in x for x in p), p)
-        check("a good baseline with --build", release_problems(parse(["--profile", "release", "--baseline", good, "--build"])) == [])
+        check("a full baseline of the cases as defined now", release_problems(parse(["--profile", "release", "--baseline", good])) == [],
+              release_problems(parse(["--profile", "release", "--baseline", good])))
+        p = release_problems(parse(["--profile", "release", "--baseline", partial]))
+        check("a baseline of the timer cases alone cannot start a release", any("suite cases" in x for x in p) and
+              any("critical" in x for x in p), p)
+        p = release_problems(parse(["--profile", "release", "--baseline", untraced]))
+        check("an untraced baseline cannot start a release (its runs are traced)", any("untraced" in x for x in p), p)
+        p = release_problems(parse(["--groups", "release", "--baseline", partial]))
+        check("--groups release is the same release", any("suite cases" in x for x in p), p)
+
+        # N1: a release runs every case; the filters that would make it partial are refused, both spellings.
+        for argv in (["--profile", "release", "--tags", "timer", "--sample", "1", "--skip-tags", "confirm"],
+                     ["--groups", "release", "--tags", "timer", "--sample", "1", "--skip-tags", "confirm"],
+                     ["--profile", "release", "--only", "timer-001"], ["--groups", "release", "--scored-only", "radio_"],
+                     ["--profile", "release", "--fast", "0"]):
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    parse(argv)
+                check("refused: " + " ".join(argv), False)
+            except SystemExit:
+                check("refused: " + " ".join(argv), True)
+        o = parse(["--groups", "release", "--baseline", good, "--no-search"])
+        chosen = choose(o)[0]
+        gate = gate_command(o, "<run>")
+        check("--groups release: the release's groups, its gate and its build", chosen == PROFILES["release"][1] + ["gate"] and
+              "--release" in gate and o.build, (chosen, gate))
+        check("a release builds unless --no-build", parse(["--profile", "release"]).build and
+              not parse(["--profile", "release", "--no-build"]).build)
+
+        # N5: the cli build must be able to run live cases: an experiments build, its guard, its records.
+        fake = os.path.join(tmp, "zero_bot")
+        with open(fake, "w") as f:
+            f.write("#!/bin/sh\necho 'a prompt'\nexit 0\n")
+        os.chmod(fake, 0o755)
+        check("a build without experiments cannot run live cases", "not an experiments build" in probe_cli(fake), probe_cli(fake))
+        saved_root, ROOT = ROOT, os.path.join(tmp, "probe-tree")
+        saved_wrap = os.environ.get("ZB_EVAL_WRAPPER")
+        try:
+            os.makedirs(os.path.join(ROOT, "build", "cli"))
+            shutil.copy(fake, os.path.join(ROOT, "build", "cli", "zero_bot"))
+            os.environ["ZB_EVAL_WRAPPER"] = "true"
+            why = missing(BY_NAME["live-suite"], parse([]), tmp)
+            check("live cases refuse a cli build that cannot run them", "cannot run live cases: it is not an experiments build" in why, why)
+        finally:
+            ROOT = saved_root
+            if saved_wrap is None:
+                os.environ.pop("ZB_EVAL_WRAPPER", None)
+            else:
+                os.environ["ZB_EVAL_WRAPPER"] = saved_wrap
+        for built, ok in (("cli", True), ("sim", False)):
+            path = os.path.join(ROOT, need_path(built))
+            if os.path.exists(path):
+                check("probe of build/%s" % built, (probe_cli(path) == "") == ok, probe_cli(path))
+
+        # N9: a build is stale when any of its inputs is newer, the bundled libraries and presets included.
+        saved_root, ROOT = ROOT, os.path.join(tmp, "tree")
+        try:
+            for rel in ("build/cli/zero_bot", "src/main.cpp", "third_party/json.hpp", "CMakePresets.json"):
+                os.makedirs(os.path.dirname(os.path.join(ROOT, rel)), exist_ok=True)
+                open(os.path.join(ROOT, rel), "w").close()
+            for rel, t in (("src/main.cpp", 100), ("CMakePresets.json", 100), ("build/cli/zero_bot", 200), ("third_party/json.hpp", 300)):
+                os.utime(os.path.join(ROOT, rel), (t, t))
+            check("a newer bundled library makes the build stale", "third_party/json.hpp" in stale_note("cli"), stale_note("cli"))
+            os.utime(os.path.join(ROOT, "third_party/json.hpp"), (100, 100))
+            os.utime(os.path.join(ROOT, "CMakePresets.json"), (300, 300))
+            check("so do newer presets", "CMakePresets.json" in stale_note("cli"), stale_note("cli"))
+            os.utime(os.path.join(ROOT, "CMakePresets.json"), (100, 100))
+            check("and nothing newer, nothing stale", stale_note("cli") == "")
+        finally:
+            ROOT = saved_root
+
+        # N8: the report's entry point, on a saved result with traced turns.
+        call = {"ev": "call", "purpose": "main", "role": "main", "ttfb_ms": 800, "done_ms": 1200, "body_bytes": 9000, "attempts": 1,
+                "outcome": "ok", "usage": {"prompt_tokens": 3000, "completion_tokens": 20, "prompt_tokens_details": {"cached_tokens": 2800}},
+                "usage_asked": True}
+        req = {"ev": "request", "first_sentence_ms": 1300, "tools": [{"name": "timer", "outcome": "ok", "ms": 5, "result_bytes": 40}],
+               "guards": [{"guard": "claims_action"}], "second_look": "ok"}
+        saved = os.path.join(tmp, "saved.json")
+        with open(saved, "w") as f:
+            json.dump([{"case": "timer-001", "tags": ["timer"], "set": "suite", "outcome": "pass", "unscorable": False, "problems": [],
+                        "case_hash": "h", "scorer": "s", "trace": True,
+                        "turns": [{"answer": "Timer set.", "first": 1.1, "total": 1.4, "error": "", "tools": [["timer", "{}"]],
+                                   "results": ["ok"], "trace": [call, req]}]},
+                       {"case": "calc-001", "tags": ["calc"], "set": "suite", "outcome": "fail", "unscorable": False, "problems": ["wrong"],
+                        "case_hash": "h2", "scorer": "s", "trace": True,
+                        "turns": [{"answer": "", "first": None, "total": None, "error": "timeout", "timed_out": True, "tools": [],
+                                   "results": [], "trace": []}]}], f)
+        r = subprocess.run([PY, "-B", os.path.join(HERE, "exp_report.py"), saved, "--tags", "--cases", "2"], capture_output=True, text=True,
+                           timeout=60)
+        check("exp_report.py runs on a saved result", r.returncode == 0 and "## Model calls" in r.stdout and "## Answers" in r.stdout
+              and "1/2 (50%)" in r.stdout, (r.returncode, r.stderr[-300:]))
+
+        # N5: CMake refuses experiments in a device or sim configuration.
+        cmake = shutil.which("cmake", path=tool_path())
+        if cmake:
+            r = subprocess.run([cmake, "-S", ROOT, "-B", os.path.join(tmp, "cmake-sim"), "-DZB_CLI_ONLY=OFF", "-DZB_EXPERIMENTS=ON"],
+                               capture_output=True, text=True, timeout=120)
+            check("CMake: ZB_EXPERIMENTS=ON outside the cli build is an error", r.returncode != 0 and
+                  "ZB_EXPERIMENTS=ON is for the cli build only" in r.stdout + r.stderr, (r.returncode, (r.stdout + r.stderr)[-300:]))
         check("not a release: no such check", release_problems(parse(["--groups", "live-suite"])) == [])
 
         # A live run with failed cases passes only under a gate verdict that covers its set.
@@ -1351,7 +1554,6 @@ def self_test():
                   "inconclusive" in r[0][2], r)
 
         # A release runs on fresh builds only: a stale one fails its group (elsewhere it is a warning).
-        global stale_note, need_path
         saved_stale = stale_note, need_path
         stale_note, need_path = (lambda need: "build/cli is older than src/a.cpp"), (lambda need: "tests/run.py")
         group = dict(name="x", needs=[], uses=["cli"], cmds=[], about="x")
@@ -1381,7 +1583,6 @@ def self_test():
 
     # --plan runs nothing and writes nothing.
     calls = []
-    global RUN_COMMAND
     saved_run, RUN_COMMAND = RUN_COMMAND, (lambda cmd, *a, **k: calls.append(cmd) or 0)
     runs = os.path.join(ROOT, "build", "test-runs")
     before = sorted(os.listdir(runs)) if os.path.isdir(runs) else []
