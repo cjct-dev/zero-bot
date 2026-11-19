@@ -283,7 +283,7 @@ What exists:
   conversation (`chk_moved_item`: one saved, then exactly one at the new time). Numbers keep their
   sign and times their am or pm. A run that times out counts once, in the turn it stopped in; later
   turns are "not started", and the summary gives the completion rate and the time to the first
-  sentence (from the trace) beside the time to the first text. `web(fixture)` in a case's env sends
+  sentence (with `--trace`) beside the time to the first text. `web(fixture)` in a case's env sends
   web search, forecasts and place names to a stand-in (`tests/mocks/fake_web.py`, through the `cli`
   build's `ZB_EXP_WEB`, honoured only for an `http://127.x` address and compiled out of the device
   build): canned answers, and search without a key. **The scorer's own test**: `tests/scorer_test.py`

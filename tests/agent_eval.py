@@ -1208,10 +1208,11 @@ def run_case(binary, base_env, c):
             with open(os.path.join(stand_ins, name), "w") as f: f.write("#!/bin/sh\nexit 0\n")
             os.chmod(os.path.join(stand_ins, name), 0o755)
         env["PATH"] = stand_ins + os.pathsep + env.get("PATH", "")
-    # The experiments' trace (src/agent/experiment.h; cli build), one file per case: always, for each turn's
-    # time to its first sentence (what the user would hear first); with --trace all of it goes into --json.
-    trace = state + "/trace.jsonl"
-    env["ZB_EXP_TRACE"] = trace
+    # --trace: the experiments' trace (src/agent/experiment.h; cli build), one file per case: each turn's time
+    # to its first sentence (what the user would hear first), and all of it into --json. Only when asked: the
+    # trace asks the service for token counts, a change to what is sent.
+    trace = state + "/trace.jsonl" if base_env.get("ZB_EVAL_TRACE") else None
+    if trace: env["ZB_EXP_TRACE"] = trace
     cmd = [binary, "--chat"] + (["--steer", c["steer"]] if c["steer"] else [])
     t0 = time.time()
     try:
@@ -1222,7 +1223,7 @@ def run_case(binary, base_env, c):
         out, failed = (e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or ""), "timeout"
     elapsed = time.time() - t0
     events = []
-    if os.path.exists(trace):
+    if trace and os.path.exists(trace):
         for line in open(trace, encoding="utf-8", errors="replace"):
             try: events.append(json.loads(line))
             except ValueError: pass
@@ -1237,7 +1238,7 @@ def run_case(binary, base_env, c):
         mine = [e for e in events if e.get("req") == i + 1]
         req = next((e for e in mine if e.get("ev") == "request"), None)
         if req and req.get("first_sentence_ms", -1) >= 0: t["first_sentence"] = req["first_sentence_ms"] / 1000.0
-        if base_env.get("ZB_EVAL_TRACE"): t["trace"] = mine
+        if trace: t["trace"] = mine
     return turns
 
 def trace_summary(results):
@@ -1276,7 +1277,7 @@ def timing_summary(results):
     return ("per request: total median %.1fs, mean %.1fs, 90th %.1fs, worst %.1fs | first words: median %.1fs, 90th %.1fs | "
             "first sentence: %s | completed %d/%d turns, %d timeout%s"
             % (med(totals), sum(totals) / max(1, len(totals)), p90(totals), totals[-1] if totals else 0, med(firsts), p90(firsts),
-               "median %.1fs, 90th %.1fs" % (med(sentences), p90(sentences)) if sentences else "not recorded",
+               "median %.1fs, 90th %.1fs" % (med(sentences), p90(sentences)) if sentences else "with --trace",
                completed, len(turns), timeouts, "" if timeouts == 1 else "s"))
 
 def score(c, turns):
