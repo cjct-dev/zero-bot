@@ -41,6 +41,7 @@ const char *const kNotUnderstood = "The Shelly's answer could not be understood.
 namespace {
 
 constexpr size_t kMaxBody = 256 * 1024;
+constexpr int kMaxDepth = 32;             // of a reply's JSON, as detail::too_deep's default
 constexpr int kListMs = 4000;             // enumerate, read and pair
 constexpr size_t kMaxThings = 32;
 constexpr size_t kMaxChannels = 16;       // of one kind (Gen1 arrays)
@@ -84,11 +85,7 @@ int whole(const json *v, int lo, int hi, int fallback) {
 int rounded(double d) { return static_cast<int>(std::lround(d)); }
 
 // Parses text from a device: refused when too long, nested too deep or not JSON.
-bool parse(const std::string &body, json &out) {
-    if (body.size() > kMaxBody || detail::too_deep(body)) return false;
-    out = json::parse(body, nullptr, false);
-    return !out.is_discarded();
-}
+bool parse(const std::string &body, json &out) { return support::parse_reply(body, kMaxBody, kMaxDepth, out); }
 
 bool token_chars(const std::string &s, const char *extra, size_t max) {
     if (s.empty() || s.size() > max) return false;

@@ -129,6 +129,7 @@ namespace detail {
 
 namespace {
 std::atomic<int> g_wake_port{9};   // the conventional Wake-on-LAN port (firehose WakeOnLan.PORT)
+constexpr int kMaxDepth = 32;      // of an answer's JSON, as too_deep's default
 
 std::string trim(const std::string &s) {
     const char *ws = " \t\r\n\f\v";
@@ -389,9 +390,8 @@ PinReply read_pin_reply(long http_status, const std::string &body, std::string &
 }
 
 bool parse_capabilities(const std::string &body, Capabilities &out) {
-    if (body.size() > 64 * 1024 || too_deep(body)) return false;
-    const json j = json::parse(body, nullptr, false);
-    if (j.is_discarded() || !j.is_object()) return false;
+    json j;
+    if (!support::parse_reply(body, 64 * 1024, kMaxDepth, j) || !j.is_object()) return false;
     Capabilities c;
     const auto level_supported = [&j](const char *key) {
         const auto it = j.find(key);
