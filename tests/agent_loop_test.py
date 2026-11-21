@@ -29,6 +29,9 @@ timer's alarm, transcription of recorded speech.
 import argparse
 import json
 import os
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import netguard   # noqa: E402  the network boundary (tests/netguard.py)
 import re
 import shutil
 import subprocess
@@ -153,16 +156,18 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
         json.dump(script, open(state + "/script.json", "w"))
         log = state + "/requests.jsonl"
         model = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "fake_model.py"), state + "/script.json", log],
-                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
         line = model.stdout.readline().split()
         if line[:2] != ["MODEL", "listening"]:
             raise RuntimeError("the fake model did not start: %r" % line)
         e = dict(os.environ, HOME=state, XDG_CONFIG_HOME=state + "/config", XDG_DATA_HOME=state + "/data",
                  XDG_CACHE_HOME=state + "/cache", ZB_API_BASE="http://127.0.0.1:%s/v1" % line[2], ZB_API_KEY="test-key",
                  ZB_DRY_RUN="1", ZB_NO_AUDIO="1", ZB_FAST_MODE="1" if fast else "0", TZ=os.environ.get("TZ", "Europe/London"))
-        for v in ("ZB_SEARCH_KEY", "ZB_FAKE_CAMERA", "ZB_TEST_NETWORK", "ZB_DATE_ORDER", "http_proxy", "HTTP_PROXY",
-                  "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+        for v in ("ZB_FAKE_CAMERA", "ZB_DATE_ORDER"):
             e.pop(v, None)
+        # No inherited key or proxy; every proxy at the trap; the stand-in network always, home or not, so the real
+        # one is never identified (no packet to the router).
+        e = netguard.child_env(e, keep=("ZB_API_BASE", "ZB_API_KEY"), ZB_TEST_NETWORK="1")
         for v in [k for k in e if k.startswith("ZB_EXP_")]:   # experiments' switches: only as a scenario sets them
             e.pop(v)
         if trace:
@@ -1054,7 +1059,7 @@ def exp_tools_variants():
              "calendar_update": ["never add a second event"], "breathe": ["Start it at once"]}
     missing = [(k, w) for k, ws in rules.items() for w in ws if w not in L.get(k, {}).get("description", "")]
     check(n + ": lean keeps the boundary rules", not missing, missing)
-    out = subprocess.run([APP, "--schema"], env=dict(os.environ, ZB_EXP_TOOLS="sayone"), capture_output=True, text=True, timeout=30)
+    out = subprocess.run([APP, "--schema"], env=netguard.child_env(ZB_EXP_TOOLS="sayone", ZB_TEST_NETWORK="1"), capture_output=True, text=True, timeout=30)
     check(n + ": an unknown variant stops the run", out.returncode == 2 and "not a variant" in out.stderr, (out.returncode, out.stderr))
 
 
@@ -1307,8 +1312,7 @@ def exp_reply_held():
 
 
 def main():
-    if not os.access(APP, os.X_OK):
-        sys.exit("no app at %s (build the cli preset first)" % APP)
+    netguard.require_experiments(APP)   # a build without the experiments sends a search to the real service
     wanted = [w for w in ONLY.split(",") if w]
     for f in SCENARIOS:
         if not wanted or any(w in f.__name__ for w in wanted):

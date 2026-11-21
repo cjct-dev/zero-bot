@@ -25,6 +25,8 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import netguard   # noqa: E402  the network boundary (tests/netguard.py)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
@@ -43,7 +45,7 @@ def check(name, ok, detail=""):
 
 
 def start(cmd, tag):
-    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
     line = p.stdout.readline().split()
     if line[:2] != [tag, "listening"]:
         p.kill()
@@ -53,7 +55,7 @@ def start(cmd, tag):
 
 def mock_call(port, path, body=None):
     data = None if body is None else json.dumps(body).encode()
-    with urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:%d%s" % (port, path), data=data), timeout=5) as r:
+    with netguard.local_opener().open(urllib.request.Request("http://127.0.0.1:%d%s" % (port, path), data=data), timeout=5) as r:
         return json.load(r)
 
 
@@ -87,9 +89,9 @@ def converse(script, said, plug=False, refuse=False, ask_first=False, stations=N
     try:
         env = dict(os.environ, XDG_CONFIG_HOME=state + "/config", XDG_DATA_HOME=state + "/data", XDG_CACHE_HOME=state + "/cache",
                    HOME=state + "/home", ZB_TEST_NETWORK="1", ZB_NO_AUDIO="1", ZB_API_KEY="test-key", TZ="UTC")
-        for v in ("ZB_DRY_RUN", "ZB_FAKE_CAMERA", "ZB_SEARCH_KEY", "http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY",
-                  "all_proxy", "ALL_PROXY"):
+        for v in ("ZB_DRY_RUN", "ZB_FAKE_CAMERA"):
             env.pop(v, None)
+        env = netguard.child_env(env, keep=("ZB_API_KEY",))   # the test key only; no inherited key, base or proxy
         for d in ("config/zero-bot", "data/zero-bot", "home"):
             os.makedirs(os.path.join(state, d))
         plug_port = None
@@ -140,8 +142,7 @@ def converse(script, said, plug=False, refuse=False, ask_first=False, stations=N
 
 
 def main():
-    if not os.access(APP, os.X_OK):
-        sys.exit("no app at %s (build the cli preset first)" % APP)
+    netguard.require_experiments(APP)   # a build without the experiments sends a search to the real service
 
     # ---- the service itself: a failure on the way is tried again, a refusal is not
     r = converse({"user": [["two plus two", [{"status": 503}, {"tool": "calculator", "args": {"expression": "2+2"}}]]],

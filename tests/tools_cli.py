@@ -6,14 +6,19 @@ temporary state folder (HOME and the XDG folders), with ZB_DRY_RUN (no music, in
 is used), ZB_NO_AUDIO, ZB_TEST_NETWORK and no AI service configured. Each result must be the right
 one or an ERROR sentence that says what to change, the program must not crash, and nothing may be
 written outside the state folder. Tools that need the internet (weather, currency, stocks, web
-search, a place looked up by name, the photo's description) are not run here, except web search against
-the local stand-in (tests/mocks/fake_web.py) to check the experiments' guards: ZB_EXP_NO_HARDWARE keeps
-the camera and the infrared transmitter out of a test run, a bad ZB_EXP_WEB stops the run cleanly, and a
-request to the stand-in takes no proxy and follows no redirect.
+search, a place looked up by name, the photo's description) are run only against the local stand-in
+(tests/mocks/fake_web.py), to check the experiments' guards: ZB_EXP_NO_HARDWARE keeps the camera and the
+infrared transmitter out of a test run, a bad ZB_EXP_WEB stops the run cleanly, and a request to the
+stand-in takes no proxy and follows no redirect. no_real_web runs one case through the live sets' own runner
+(tests/agent_eval.py run_case) against a scripted model (tests/mocks/fake_model.py) that calls every tool
+that reads the web, with every proxy variable pointing at a trap: no request leaves 127.x (the trap sees
+none), each service is answered by the stand-in, the search carries the dummy key and never the inherited
+one, and a case whose environment holds a real key is refused before the app starts.
 
 usage: tests/tools_cli.py [path/to/zero_bot]          (default: build/cli/zero_bot)
 """
 import json
+import re
 import os
 import shutil
 import stat
@@ -22,6 +27,9 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.dont_write_bytecode = True
+import netguard   # noqa: E402  the network boundary (tests/netguard.py)
 APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
 
 checks = failed = 0
@@ -45,6 +53,7 @@ class State:
         env = {k: v for k, v in os.environ.items() if not k.startswith("ZB_") and k not in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME")}
         env.update(HOME=self.dir + "/home", XDG_CONFIG_HOME=self.dir + "/config", XDG_DATA_HOME=self.dir + "/data",
                    XDG_CACHE_HOME=self.dir + "/cache", ZB_DRY_RUN="1", ZB_NO_AUDIO="1", ZB_TEST_NETWORK="1", TZ="UTC")
+        env = netguard.child_env(env)   # no key, every proxy at the trap, only 127.0.0.1 and localhost exempt
         for k, v in extra.items():   # None leaves a variable out
             if v is None:
                 env.pop(k, None)
@@ -88,8 +97,7 @@ def ok(state, name, args, *wanted, **extra):
 
 
 def main():
-    if not os.access(APP, os.X_OK):
-        sys.exit("no app at %s (build the cli preset first)" % APP)
+    netguard.require_experiments(APP)   # a build without the experiments sends a search to the real service
     root = tempfile.mkdtemp(prefix="zb-tools-cli-")
     try:
         run_all(root)
@@ -318,6 +326,9 @@ def run_all(root):
     error(s, "smart_home", {"action": "on", "target": "lamp"}, "no smart-home device")
 
     guards(root)
+    no_real_web(root)
+    web_wraps()
+    test_network_everywhere(root)
 
 
 class Trap:
@@ -341,7 +352,7 @@ class Trap:
                 self.send_header("Location", "http://127.0.0.1:%d/landed" % self.server.server_address[1])
                 self.send_header("Content-Length", "0")
                 self.end_headers()
-            do_GET = do_POST = answer
+            do_GET = do_POST = do_CONNECT = answer   # CONNECT: an https request sent through it as a proxy
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.url = "http://127.0.0.1:%d" % self.server.server_address[1]
@@ -400,7 +411,7 @@ def guards(root):
     # followed: tests/mocks/fake_web.py answers the search, the trap must see nothing.
     trap = Trap()
     web = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "fake_web.py")], stdin=subprocess.PIPE,
-                           stdout=subprocess.PIPE, text=True)
+                           stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
     try:
         line = web.stdout.readline().split()
         check("the stand-in web starts", line[:2] == ["WEB", "listening"], line)
@@ -431,6 +442,139 @@ def guards(root):
         trap.close()
         web.stdin.close()
         web.wait(timeout=10)
+
+
+
+def no_real_web(root):
+    """A live set's case, run by the live sets' own runner with a scripted model, reaches no web service but the
+    stand-in: the runner's trap, where every proxy variable of the app points, sees no request; no child gets the
+    real key; a case whose environment holds one is refused."""
+    import agent_eval as ev
+    g = State(root, "no-real-web")
+    log, weblog = g.dir + "/model.log", g.dir + "/web.log"
+    calls = [{"name": "web_search", "args": {"query": "louvre opening hours on sunday"}},
+             {"name": "weather", "args": {"location": "Lisbon", "days": 2}},
+             {"name": "convert_currency", "args": {"amount": 10, "from": "EUR", "to": "GBP"}},
+             {"name": "stock_price", "args": {"symbol": "Rolls Royce"}},
+             {"name": "stock_price", "args": {"symbol": "AAPL"}},
+             {"name": "world_time", "args": {"place": "Auckland"}}]
+    with open(g.dir + "/script.json", "w") as f:
+        json.dump({"rules": [{"when": {"said": "check everything", "last": "user"}, "reply": {"calls": calls}},
+                             {"when": {"last": "tool"}, "reply": {"text": "Here is what I found."}}],
+                   "default": {"text": "Here is what I found."}}, f)
+    model = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "fake_model.py"), g.dir + "/script.json", log],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
+    sentinel = "inherited-key-0001"
+    saved = {k: os.environ.get(k) for k in ("ZB_SEARCH_KEY",)}
+    saved_web, saved_log = dict(ev._web), ev.WEB_LOG
+    try:
+        mline = model.stdout.readline().split()
+        check("the scripted model starts", mline[:2] == ["MODEL", "listening"], mline)
+        # The runner starts its own stand-in, logging, while this process holds a key: the stand-in must not get it.
+        os.environ["ZB_SEARCH_KEY"] = sentinel
+        ev._web.clear()
+        ev.WEB_LOG = weblog
+        ev.web_base()
+        with open("/proc/%d/environ" % ev._web["proc"].pid, "rb") as f:
+            environ = f.read()
+        check("the stand-in web gets no key (its environment is its own)", sentinel.encode() not in environ and
+              b"ZB_SEARCH_KEY" not in environ and b"ZB_API_KEY" not in environ)
+        base = dict(g.env(), ZB_API_BASE="http://127.0.0.1:%s/v1" % mline[2], ZB_API_KEY="test", ZB_SEARCH_KEY=sentinel,
+                    ZB_EXP_WEB="http://127.0.0.1:9/elsewhere", no_proxy="*", NO_PROXY="*",
+                    https_proxy="http://127.0.0.1:9", http_proxy="http://127.0.0.1:9")
+        base.pop("ZB_TEST_NETWORK", None)
+        case = {"name": "no-real-web", "turns": ["check everything"], "env": {}, "steer": None, "checks": [], "must": []}
+        ev.REAL_KEYS[:] = [sentinel]
+        try:
+            ev.run_case(APP, dict(base, OTHER="x " + sentinel), case)
+            check("a case whose environment holds a real key is refused", False)
+        except RuntimeError as e:
+            check("a case whose environment holds a real key is refused", "OTHER holds a real web-service key" in str(e), str(e))
+        check("the refused case never started the app", not os.path.exists(log) or not open(log).read().strip())
+        trap = netguard.trap()
+        before = trap.count()
+        run = ev.run_case(APP, base, case)
+        turn = (run["turns"] or [{}])[0]
+        got = {}
+        for name, args in turn.get("tools", []):
+            got.setdefault(name, []).append(args)
+        results = [r for r in turn.get("results", [])] if isinstance(turn.get("results"), list) else []
+        check("the scripted turn ran every web tool", sorted(got) == sorted({c["name"] for c in calls}), sorted(got))
+        check("no tool failed", not any(str(r).startswith("ERROR") for r in results), results[:3])
+        check("zero requests left 127.x (the runner's trap, every proxy of the app, saw none)", trap.since(before) == [], trap.since(before))
+        check("the run is not marked as having tried to leave", not any("tried to leave" in x for x in run["unscorable"]), run["unscorable"])
+        seen = [json.loads(l) for l in open(weblog)] if os.path.exists(weblog) else []
+        hosts = {w["host"].split(".")[0] + "." + w["path"].strip("/").split("/")[0] for w in seen}
+        for want in ("api.search", "geocoding-api.v1", "api.v1", "open.v6", "query1.v1", "query1.v8"):
+            check("the stand-in answered %s" % want, want in hosts, sorted(hosts))
+        check("every stand-in answer was a success", seen and all(w["status"] == 200 for w in seen), [w for w in seen if w["status"] != 200])
+        check("the search carried the dummy key, not the inherited one", [w.get("key") for w in seen if w["path"] == "/search"] == ["stand-in"],
+              [w.get("key") for w in seen])
+        check("the run used the runner's stand-in, not an inherited ZB_EXP_WEB", all(w["fixture"] == "default" for w in seen))
+        # A request that does get past the app's own rules is caught: the trap, at loopback, refuses it, and the
+        # run says so (here sent by hand through the proxy the app was given, to a name that resolves nowhere).
+        import urllib.request
+        env = netguard.child_env()
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": env["http_proxy"]}))
+        n0 = trap.count()
+        try:
+            opener.open("http://forgotten-wrap.invalid/x", timeout=5)
+        except Exception:   # noqa: BLE001  refused by the trap (403)
+            pass
+        check("the trap records and refuses a request for anywhere else", any("forgotten-wrap.invalid" in x for x in trap.since(n0)), trap.since(n0))
+    finally:
+        ev.REAL_KEYS[:] = []
+        if ev._web.get("proc"):
+            ev._web["proc"].stdin.close()
+            ev._web["proc"].wait(timeout=10)
+        ev._web.clear()
+        ev._web.update(saved_web)
+        ev.WEB_LOG = saved_log
+        for k, v in saved.items():
+            if v is None: os.environ.pop(k, None)
+            else: os.environ[k] = v
+        model.stdin.close()
+        model.wait(timeout=10)
+
+
+def web_wraps():
+    """Every web read a tool makes goes through experiment::web(), so a forgotten wrap is caught here, before any
+    run: in src/agent/tools.cpp every fetch_json call's address is experiment::web(...), and the only http::send
+    calls in the app's own code are the reviewed ones (fetch_json, the AI service, the radio's check of a stream,
+    the smart-home drivers and the http layer itself)."""
+    src = os.path.join(HERE, "..", "src")
+    with open(os.path.join(src, "agent", "tools.cpp"), encoding="utf-8") as f:
+        text = f.read()
+    calls = [m.start() for m in re.finditer(r"\bfetch_json\(", text)]
+    defs = [i for i in calls if re.match(r"fetch_json\(const std::string &url", text[i:])]
+    bad = [text[i:i + 90].replace("\n", " ") for i in calls if i not in defs and not re.match(r"fetch_json\(\s*experiment::web\(", text[i:])]
+    check("every fetch_json call in tools.cpp goes through experiment::web()", calls and not bad, bad)
+    allowed = {"agent/tools.cpp", "agent/llm.cpp", "core/radio.cpp", "net/http.cpp", "net/http.h"}
+    senders = []
+    for d, _, files in os.walk(src):
+        for name in files:
+            rel = os.path.relpath(os.path.join(d, name), src)
+            if rel.startswith("smarthome/") or not name.endswith((".cpp", ".h")):
+                continue
+            with open(os.path.join(d, name), encoding="utf-8", errors="replace") as f:
+                if re.search(r"http::send(_retrying)?\(", f.read()) and rel not in allowed:
+                    senders.append(rel)
+    check("no code but the reviewed files sends HTTP (a new sender must go through experiment::web or be reviewed)", not senders, senders)
+    with open(os.path.join(src, "agent", "tools.cpp"), encoding="utf-8") as f:
+        sends = len(re.findall(r"http::send(_retrying)?\(", f.read()))
+    check("tools.cpp sends HTTP only in fetch_json", sends == 1, sends)
+
+
+def test_network_everywhere(root):
+    """ZB_TEST_NETWORK, which every test run sets so that the real network is never identified (no packet to the
+    router), changes nothing a request without a saved home is given: the same prompt and the same tools."""
+    g = State(root, "test-network")
+    outs = []
+    for flag in ("1", None):
+        e = g.env(ZB_TEST_NETWORK=flag, ZB_SEARCH_KEY="stand-in")
+        outs.append([subprocess.run([APP, what], env=e, capture_output=True, text=True, timeout=60).stdout for what in ("--prompt", "--schema")])
+    check("without a home, the test network changes neither the prompt nor the tools", outs[0] == outs[1] and outs[0][1].strip(),
+          [len(x) for o in outs for x in o])
 
 
 if __name__ == "__main__":

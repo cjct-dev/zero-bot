@@ -17,8 +17,9 @@ Other options as in tests/agent_eval.py: --bin, --repeat, --jobs (keep 1 for tim
 experiments' trace of each turn in --json: model calls, tokens, timings; tests/exp_report.py).
 --validate compiles every case offline (kinds, nested ones too, what each needs, regular expressions,
 the turns checks look at, homes, the stand-in web's fixtures) and exits non-zero on a problem. It needs
-ZB_API_BASE and ZB_API_KEY (and model names in ZB_EVAL_LLM_MODEL etc.); cases tagged "search" are
-left out without ZB_SEARCH_KEY. Every case starts from an empty state with ZB_DRY_RUN, as in the
+ZB_API_BASE and ZB_API_KEY (and model names in ZB_EVAL_LLM_MODEL etc.); no search key: every case's
+web reads (search included) go to the stand-in web, as in the scored set, and a run refuses to start if a
+case could reach a real web service (tests/agent_eval.py preflight). Every case starts from an empty state with ZB_DRY_RUN, as in the
 scored set, and a small stand-in music library (MUSIC_LIBRARY: tags only, no sound) unless
 ZB_EVAL_MUSIC_DIR names a folder; ZB_EVAL_MUSIC_DIR= (empty) gives an empty library, as runs before
 2026-11-19 had. The summary gives the pass rate per tag and the slowest cases.
@@ -241,12 +242,24 @@ def k_local_time(s): return ev.chk_local_time
 
 
 def k_currency(s):
+    """A conversion asked for: the call (amount, from, to), and the answer gives what it returned: the converted
+    amount, rounded as speech rounds it, or for "what's the rate" the rate (either way round)."""
     def check(t):
-        for c in ev.calls(t, "convert_currency"):
+        for c, r in ev._made(t, "convert_currency"):
+            if not ev.worked(r): continue
             if s.get("amount") is not None and not ev._same(c.get("amount"), s["amount"]): continue
             if s.get("from") and str(c.get("from", "")).upper() != s["from"]: continue
             if s.get("to") and str(c.get("to", "")).upper() != s["to"]: continue
-            return []
+            try: got = json.loads(r)
+            except (TypeError, ValueError): return [ev.UNSCORABLE + "the conversion's result is not readable"]
+            rate, amount = float(got.get("rate", 0)), got.get("amount")
+            if s.get("amount") is None:
+                if ev.says_about(t["answer"], rate, max(0.005, rate * 0.01)) or (rate and ev.says_about(t["answer"], 1 / rate, max(0.005, 0.01 / rate))):
+                    return []
+                return ["the answer should give the rate the conversion returned, %.4g" % rate]
+            want = float(amount) * rate
+            if ev.says_money(t["answer"], want, ev.money_tol(want)): return []
+            return ["the answer should give the converted amount, %.2f %s" % (want, got.get("to", ""))]
         return ["convert_currency should convert %s %s to %s, got %s" % (s.get("amount"), s.get("from") or "?", s.get("to") or "?",
                                                                          ev.calls(t, "convert_currency"))]
     return check
@@ -260,7 +273,7 @@ def k_converted(s):
             if code not in got: problems.append("no convert_currency call to " + code)
             else:
                 want = s["amount"] * got[code]["rate"]
-                if not ev.says_about(t["answer"], want, max(0.06, want * 0.006)): problems.append("answer should give %.2f %s" % (want, code))
+                if not ev.says_money(t["answer"], want, ev.money_tol(want)): problems.append("answer should give %.2f %s" % (want, code))
         return problems
     return check
 
@@ -270,7 +283,7 @@ def k_converted_share(s):
         res = [r for r in ev.results(t, "convert_currency") if isinstance(r, dict) and "rate" in r]
         if not res: return ["no usable convert_currency result"]
         want = s["amount"] * s["factor"] * res[0]["rate"]
-        return [] if ev.says_about(t["answer"], want, 0.06) else ["answer should give %.2f" % want]
+        return [] if ev.says_money(t["answer"], want, ev.money_tol(want)) else ["answer should give %.2f" % want]
     return check
 
 
@@ -358,6 +371,8 @@ def k_either(s):
 
 def k_asks(s): return ev.asks_about(s["name"])
 def k_forecast_seen(s): return ev.chk_forecast_seen(s["days"], s["rain"])
+def k_served(s): return ev.chk_served(s["rule"], s["slots"], s.get("as", "name"), s.get("any", False))
+def k_weather_served(s): return ev.chk_weather_served
 def k_nothing_set(s): return ev.chk_said_nothing_set
 
 
@@ -367,7 +382,7 @@ def k_event_time(s):
     import fake_web
     from zoneinfo import ZoneInfo
     def check(t):
-        when = fake_web.event_time(s["event"]).astimezone(ZoneInfo(s.get("zone", "Europe/London")))
+        when = fake_web.event_time(s["event"], ev.web_day(t)).astimezone(ZoneInfo(s.get("zone", "Europe/London")))
         return [] if ev.says_time(t["answer"], when, 0, affirmed=True) else \
             ["answer should give the event's time in %s, %s" % (s.get("zone", "Europe/London"), when.strftime("%H:%M (%-I:%M %p) on %-d %B"))]
     return check
@@ -468,7 +483,8 @@ SPEC = {"answer": {"re": "re", "what": "str?"}, "not_answer": {"re": "re", "what
         "home_switched": {"name": "str"}, "home_not_switched": {"name": "str"}, "home_all_off": {}, "home_step": {"sign": "int"},
         "home_no_action": {"actions": "list"}, "asks": {"name": "str"}, "forecast_seen": {"days": "int", "rain": "int?"},
         "nothing_set": {}, "event_time": {"event": "str", "zone": "str?"}, "unannounced_time": {"usual": "list?"},
-        "device_set": {"setting": "str", "value": "num"}, "music_playing": {"genre": "str"}}
+        "device_set": {"setting": "str", "value": "num"}, "music_playing": {"genre": "str"},
+        "served": {"rule": "str", "slots": "list", "as": "str?", "any": "bool?"}, "weather_served": {}}
 ONE_OF = {"arg": ("has", "num", "is", "any"), "weekday_of": ("md", "date")}
 TYPES = {"str": str, "num": (int, float), "int": int, "list": list, "dict": dict, "bool": bool}
 
@@ -540,8 +556,14 @@ def validate(cases):
             if s["kind"] == "either":
                 for g, group in enumerate(s.get("of") or []):
                     for k, x in enumerate(group if isinstance(group, list) else [group]): one(x, "%s, alternative %d.%d" % (where, g + 1, k + 1))
+            if s["kind"] == "served":
+                rule = fake_web.ALL_RULES.get(s.get("rule"))
+                if rule is None: err("%s: no stand-in search rule %r" % (where, s.get("rule")))
+                elif any(x not in rule.get("slots", {}) for x in s.get("slots") or []) or not s.get("slots"):
+                    err("%s: rule %s has slots %s, not %s" % (where, s["rule"], sorted(rule.get("slots", {})), s.get("slots")))
+                if s.get("as", "name") not in ("name", "winner", "time", "number", "date", "score", "open_closed"): err("%s: no way to read %r" % (where, s.get("as")))
             if s["kind"] == "event_time" and s.get("event") not in fake_web.EVENTS: err("%s: no stand-in event %r" % (where, s.get("event")))
-            if s["kind"] == "unannounced_time" and "ZB_EXP_WEB" not in c["env"]: err("%s: unannounced_time needs the stand-in web" % where)
+            if s["kind"] == "unannounced_time" and c["env"].get("ZB_EXP_WEB") != "@web/events": err("%s: unannounced_time needs the stand-in's events (@web/events)" % where)
             if s["kind"] == "language" and s.get("lang") not in LANGUAGE: err("%s: no language %r" % (where, s.get("lang")))
             if s["kind"] in ("time_in", "time_conv") and isinstance(s.get("zone"), str):
                 from zoneinfo import ZoneInfo
@@ -549,8 +571,8 @@ def validate(cases):
                 except Exception:   # noqa: BLE001
                     err("%s: no time zone %r" % (where, s["zone"]))
         for i, s in enumerate(c["checks"] if isinstance(c["checks"], list) else []): one(s, "check %d" % (i + 1))
-        if any(isinstance(s, dict) and s.get("kind") == "event_time" for s in c["checks"]) and "ZB_EXP_WEB" not in c["env"]:
-            err("event_time needs the stand-in web (env ZB_EXP_WEB)")
+        if any(isinstance(s, dict) and s.get("kind") == "event_time" for s in c["checks"]) and c["env"].get("ZB_EXP_WEB") != "@web/events":
+            err("event_time needs the stand-in's events (env ZB_EXP_WEB @web/events)")
         if any(e.startswith(name + ":") for e in errors): continue
         try: compiled = compile_case(c)
         except Exception as e:   # noqa: BLE001
@@ -604,7 +626,12 @@ def main():
     ap.add_argument("--trace", action="store_true", help="record the experiments' trace (cli build, ZB_EXP_TRACE) into each turn of --json")
     ap.add_argument("--slowest", type=int, default=10, help="how many of the slowest cases to list")
     ap.add_argument("--validate", action="store_true", help="compile and check every case offline, run nothing (non-zero on any problem)")
+    ap.add_argument("--web-seed", type=int, default=None, help="the stand-in web's seed (default ZB_EVAL_SEED, else %d)" % ev.EVERYDAY_SEED)
+    ap.add_argument("--held-out", action="store_true", help="the release profile's held-out run: a seed from %d up (default %d)"
+                    % (ev.HELD_OUT_FROM, ev.HELD_OUT_SEED))
     args = ap.parse_args()
+    if not (args.validate or args.list):
+        ev.set_web_seed(args.web_seed if args.web_seed is not None else ev.HELD_OUT_SEED if args.held_out else ev.WEB_SEED, args.held_out)
 
     cases = json.load(open(args.cases, encoding="utf-8"))
     if args.validate:
@@ -613,13 +640,6 @@ def main():
         print("%d cases, %d problems" % (len(cases), len(errors)))
         sys.exit(1 if errors else 0)
     chosen = selected(cases, args)
-    if not args.rescore and not args.list and not os.environ.get("ZB_SEARCH_KEY"):
-        # Cases whose search comes from the stand-in web (env ZB_EXP_WEB) need no key.
-        dropped = [c for c in chosen if "search" in c["tags"] and not c.get("env", {}).get("ZB_SEARCH_KEY", "x") is None
-                   and "ZB_EXP_WEB" not in c.get("env", {})]
-        if dropped:
-            print("no ZB_SEARCH_KEY: leaving out %d cases tagged search" % len(dropped))
-            chosen = [c for c in chosen if c not in dropped]
     if args.list:
         tags = {}
         for c in chosen:
@@ -643,6 +663,11 @@ def main():
     if args.fast is not None: env["ZB_FAST_MODE"] = args.fast
     if args.trace: env["ZB_EVAL_TRACE"] = "1"
     compiled = {c["name"]: compile_case(c) for c in chosen}
+    if not args.rescore:
+        refused = ev.preflight(env, list(compiled.values()), validate(chosen))
+        if refused:
+            shutil.rmtree(home, ignore_errors=True)
+            sys.exit("refused: a case could reach a real web service or carry a real key:\n  " + "\n  ".join(refused))
     jobs = [c for c in chosen for _ in range(len(saved.get(c["name"], [])) if args.rescore else args.repeat)]
     run = (lambda c: ev.run_from_saved(saved[c["name"]].pop(0), compiled[c["name"]])) if args.rescore else (lambda c: ev.run_case(args.bin, env, compiled[c["name"]]))
     traced = args.trace if not args.rescore else None
@@ -672,6 +697,7 @@ def main():
         print("no cases selected")
         return
     print("\n%s | %s" % (ev.outcome_line(results), ev.timing_summary(results)))
+    print("stand-in web: seed %d%s, fixtures %s" % (ev.WEB_SEED, " (held out)" if ev.WEB_SEED >= ev.HELD_OUT_FROM else "", ev.web_version()[:12]))
     print("by tag: " + ", ".join("%s %d/%d%s" % (t, ok, k, " (%d unscorable)" % u if u else "")
                                  for t, (ok, k, u) in sorted(per_tag.items(), key=lambda kv: (kv[1][0] / kv[1][1], kv[0]))))
     slow = sorted(results, key=lambda r: -r["seconds"])[:args.slowest]

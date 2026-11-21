@@ -16,9 +16,12 @@ own records, missing evidence taken for a pass.
 
 usage: tests/scorer_test.py [-v]
 """
+import contextlib
 import datetime
+import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -29,6 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.dont_write_bytecode = True   # importing the runners leaves no __pycache__ in tests/
 import agent_eval as ev   # noqa: E402
+import netguard   # noqa: E402
 import agent_suite as suite   # noqa: E402
 
 VERBOSE = "-v" in sys.argv[1:]
@@ -97,7 +101,7 @@ def records(c, *turns, end=True):
     counts; one response with all of them when left out); {"new": True} is "/new". A turn without "answer"
     never ended."""
     asked = [t for t in c["turns"] if t != "/new"]
-    out, n, on = [{"ev": "start", "caps": ["records", "web", "no_hardware"]}], 0, set()
+    out, n, on = [{"ev": "start", "caps": ["records", "web", "web_all", "no_hardware"]}], 0, set()
     home = c.get("home") if isinstance(c.get("home"), dict) else None
     for t in turns:
         if "answer" not in t and not t.get("new") and n < len(asked): end = False   # a turn that never ended: no end of the run
@@ -378,7 +382,10 @@ def claims_and_must():
     check("calls(): a change waiting for a yes is not counted",
           ev.calls(one_turn(calls=[("smart_home", {"action": "on"}, HEATER_CONFIRM)]), "smart_home") == [])
     check("calls(): a read that failed counts (an outage is not the model's)",
-          ev.calls(one_turn(calls=[("web_search", {"query": "x"}, "ERROR: over quota")]), "web_search") == [{"query": "x"}])
+          ev.calls(one_turn(calls=[("music", {"action": "search", "query": "x"}, "ERROR: nothing matches")]), "music") ==
+          [{"action": "search", "query": "x"}])
+    check("calls(): a web read that failed does not count: every case is on the stand-in (W6)",
+          ev.calls(one_turn(calls=[("web_search", {"query": "x"}, "ERROR: over quota")]), "web_search") == [])
     t = one_turn(calls=[("web_search", {"query": "x"}, "ERROR: the stand-in has nothing at /x")])
     t["strict_reads"] = True
     check("calls(): on the stand-in web, a read that failed does not count", ev.calls(t, "web_search") == [])
@@ -843,6 +850,267 @@ def event_times():
     check("unannounced: a time given as this one's fails", got[0] == "fail" and "gives a time the search did not" in str(got[1]), got)
 
 
+# ------------------------------------------------------------------ what the stand-in web served (ZB-086)
+@test
+def served_checks():
+    """Each check that reads what the stand-in served: a right answer passes, a wrong or made-up one fails."""
+    import fake_web
+    seed = ev.WEB_SEED
+
+    def searched(query, fixture="default"):
+        fx = dict(fake_web.FIXTURES[fixture], name=fixture)
+        return ("web_search", {"query": query}, json.dumps(fake_web.search(fx, query, seed)))
+
+    def fact(rule, slot):
+        f = fake_web.facts(rule, seed)
+        return fake_web.fill(fake_web.shown(f[slot]), f)
+
+    # name: the winner the search gave
+    wimbledon = suite_case(["who won the mens singles at wimbledon this year"])
+    call = searched("wimbledon mens singles winner")
+    winner, loser = fact("wimbledon-mens", "winner"), fact("wimbledon-mens", "loser")
+    passes("served name: the winner the search gave passes", wimbledon, {"calls": [call], "answer": "%s won it this year." % winner})
+    other = next(x for x in ("Jannik Sinner", "Carlos Alcaraz", "Novak Djokovic") if x != winner)
+    trips("served name: another winner fails", wimbledon, [{"calls": [call], "answer": "%s won it this year." % other}],
+          "the answer should give what the search found")
+    # W7: by meaning, not by mention.
+    trips("served winner: the roles swapped fails", wimbledon, [{"calls": [call], "answer": "%s beat %s in the final." % (loser, winner)}],
+          "the answer should give what the search found")
+    trips("served winner: '... lost to' the other way round fails", wimbledon,
+          [{"calls": [call], "answer": "%s lost to %s in the final." % (winner, loser)}], "the answer should give what the search found")
+    passes("served winner: the right way round passes", wimbledon, {"calls": [call], "answer": "%s beat %s in the final." % (winner, loser)})
+    trips("served: an answer naming every candidate fails", wimbledon,
+          [{"calls": [call], "answer": "It was %s, or maybe Jannik Sinner, Carlos Alcaraz or Novak Djokovic." % winner}], "which the search did not")
+    trips("served: an appended contradiction fails", wimbledon,
+          [{"calls": [call], "answer": "%s won. Actually, I think %s won." % (winner, other)}], "which the search did not")
+    trips("served: a search for something else is the model's fault", wimbledon,
+          [{"calls": [searched("tennis results")], "answer": "%s won it." % winner}], "the search was for something else")
+    trips("served (W6): no search, a lucky right answer, fails", wimbledon, [{"answer": "%s won it." % winner}], "")
+    trips("served (W6): a failed search, then a lucky right answer, fails", wimbledon,
+          [{"calls": [("web_search", {"query": "wimbledon mens winner"}, "ERROR: the service answered with an error (HTTP 503)")],
+            "answer": "%s won it." % winner}], "")
+    shadow = {"id": "shadow", "match": "wimbledon", "answer": ["Wimbledon is in London."], "answer_held_out": ["x"],
+              "results": [{"title": "Wimbledon", "url": "https://example.org/w", "content": "A district of London."}]}
+    saved_default = fake_web.FIXTURES["default"]
+    fake_web.FIXTURES["default"] = {"search": [shadow] + fake_web.RULES}
+    fake_web.ALL_RULES["shadow"] = shadow
+    try:
+        got = verdict(wimbledon, {"calls": [searched("wimbledon mens singles winner")], "answer": "%s won it." % winner})
+    finally:
+        fake_web.FIXTURES["default"] = saved_default
+        del fake_web.ALL_RULES["shadow"]
+    check("served (W6): a search about the subject that the stand-in matched to another rule is the fixture's fault: unscorable",
+          got[0] == "unscorable" and "fixture" in got[1][0], got)
+    # time: the opening time, am or pm right
+    louvre = suite_case(["what time does the louvre open on sundays"])
+    call = searched("louvre sunday opening hours")
+    opens = fact("louvre-hours", "open")
+    passes("served time: the opening time passes", louvre, {"calls": [call], "answer": "On Sundays it opens at %s." % opens})
+    trips("served time: another time fails", louvre, [{"calls": [call], "answer": "On Sundays it opens at 11 am."}], "should give what the search found")
+    trips("served time: no search, a time from memory, fails", louvre, [{"answer": "It opens at 11 am."}], "")
+    # number: the ticket price, give or take 2 per cent
+    eiffel = suite_case(["how much is a ticket to the top of the eiffel tower"])
+    call = searched("eiffel tower summit ticket price")
+    top = float(re.search(r"\d+\.\d+", fact("eiffel-ticket", "top")).group())
+    passes("served number: about the price passes", eiffel, {"calls": [call], "answer": "About %d euros for an adult." % round(top)})
+    trips("served number: a price of its own fails", eiffel, [{"calls": [call], "answer": "It's 52 euros for an adult."}], "should give what the search found")
+    # score: both numbers, in order
+    arsenal = suite_case(["what was the score in the arsenal game last night"])
+    call = searched("arsenal result last night")
+    score = fact("arsenal-result", "score")
+    x, y = re.search(r"(\d+)-(\d+)", fake_web.facts("arsenal-result", seed)["score"].split("|")[-1]).groups()
+    verb = {"beat": "won", "lost": "lost", "drew": "drew"}[score.split()[0]]
+    wrong = {"won": "lost", "lost": "won", "drew": "won"}[verb]
+    passes("served score: the score and the result pass", arsenal, {"calls": [call], "answer": "Arsenal %s %s-%s last night." % (verb, x, y)})
+    trips("served score (W7): the right numbers with the result reversed fail", arsenal,
+          [{"calls": [call], "answer": "Arsenal %s %s-%s last night." % (wrong, x, y)}], "should give what the search found")
+    # open or closed
+    museum = suite_case(["is the british museum open on mondays"])
+    call = searched("british museum monday opening")
+    closed = fake_web.facts("british-museum", seed)["status"].split("|")[-1] == "closed"
+    right, wrong = ("It's closed on Mondays this month.", "Yes, it's open on Mondays.") if closed else \
+                   ("Yes, it's open on Mondays.", "It's closed on Mondays this month.")
+    passes("served open/closed: the right one passes", museum, {"calls": [call], "answer": right})
+    trips("served open/closed: the other fails", museum, [{"calls": [call], "answer": wrong}], "should give what the search found")
+    # any of: one headline is enough
+    news = suite_case(["whats in the news today"])
+    call = searched("news today")
+    story = fact("news-today", "story2")
+    passes("served any: one headline passes", news, {"calls": [call], "answer": "Today: %s." % story})
+    trips("served any: headlines of its own fail", news, [{"calls": [call], "answer": "Parliament debated fishing quotas today."}],
+          "should give what the search found")
+    # a follow-up reuses what the search found
+    starling = suite_case(["whats the stock market listing date for starling bank", "which exchange will it list on",
+                           "and is it likely to be a good long-term investment"])
+    exchange = fact("starling-ipo", "exchange")
+    first = {"calls": [searched("starling bank ipo date")], "answer": "Starling has not set a date yet."}
+    last = {"answer": "It's hard to say; it depends on growth and the price it lists at. Nobody can promise a good return."}
+    passes("served follow-up: the exchange the search gave passes", starling, first, {"answer": "It plans to list on %s." % exchange}, last)
+    other = "the New York Stock Exchange" if "London" in exchange else "the London Stock Exchange"
+    trips("served follow-up: another exchange fails", starling, [first, {"answer": "It plans to list on %s." % other}, last],
+          "turn 2: the answer should give what the search found")
+
+    # Weather: every temperature the answer gives was served.
+    lisbon = case("weather")   # "whats the weather like in lisbon tomorrow"
+    d0 = NOW.date()
+    forecast = ("weather", {"location": "Lisbon"}, json.dumps({"place": "Lisbon, Portugal", "now": "Overcast, 14.2C (feels like 13C)",
+                                                            "forecast": ["%s: Sunny, 15.0 to 24.0C, rain chance 5%%" % d0.isoformat(),
+                                                                         "%s: Light rain, 11.4 to 16.8C, rain chance 60%%" % (d0 + datetime.timedelta(days=1)).isoformat()]}))
+    passes("weather served: the served figures, rounded, pass", lisbon, {"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain, 11 to 17 degrees."})
+    trips("weather served (W8): today's high given for tomorrow fails", lisbon,
+          [{"calls": [forecast], "answer": "Tomorrow in Lisbon: sunny and 24 degrees."}], "did not serve for the day asked about")
+    trips("weather served (W8): the rain chance read as a temperature fails", lisbon,
+          [{"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain and 60 degrees."}], "did not serve")
+    trips("weather served (W8): each end of a range counts ('99 to 17')", lisbon,
+          [{"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain, 99 to 17 degrees."}], "99")
+    passes("weather served: a decimal comma is one number", case("spanish_weather"),
+           {"calls": [("weather", {"location": "Madrid"}, json.dumps({"place": "Madrid, Spain", "now": "Overcast, 11.5C (feels like 9.4C)",
+                                                                  "forecast": ["%s: Overcast, 8.5 to 20.8C, rain chance 34%%" % d0.isoformat()]}))],
+            "answer": "En Madrid está nublado, con 11,5 grados y entre 8,5 y 20,8 grados hoy."})
+    passes("missing rate: 'couldn't fetch', with a rough guide, passes", case("currency_missing_rate"),
+           {"calls": [("convert_currency", {"amount": 50, "from": "EUR", "to": "GBP"}, "ERROR: no exchange rate available for EUR to GBP")],
+            "answer": "I'm sorry, I couldn't fetch a live exchange rate just now. As a rough guide it's around 43 pounds."})
+    trips("weather served: the date is no temperature", lisbon, [{"calls": [forecast], "answer": "It will be 22°C on the 22nd."}],
+          "did not serve")
+    trips("weather error: a temperature with no forecast at all fails", case("weather_error"),
+          [{"calls": [("weather", {"location": "Lisbon"}, "ERROR: the service answered with an error (HTTP 503)")],
+            "answer": "I couldn't get the forecast, but expect about 15 degrees."}], "did not serve")
+    passes("weather error: saying so passes", case("weather_error"),
+           {"calls": [("weather", {"location": "Lisbon"}, "ERROR: the service answered with an error (HTTP 503)")],
+            "answer": "I couldn't get the forecast right now; the weather service isn't responding."})
+
+    # W8: a conversion's answer gives what it returned.
+    cur = suite_case(["how much is 20 euros in pounds"])
+    conv = ("convert_currency", {"amount": 20, "from": "EUR", "to": "GBP"},
+            json.dumps({"amount": 20, "from": "EUR", "to": "GBP", "rate": 0.8561, "result": "17.12 GBP", "rate_date": "Sat, 21 Nov 2026"}))
+    passes("currency (W8): the converted amount passes", cur, {"calls": [conv], "answer": "20 euros is about 17.12 pounds."})
+    passes("currency: rounded as speech rounds it passes", cur, {"calls": [conv], "answer": "That's about 17 pounds."})
+    trips("currency (W8): 'I don't know' after a working conversion fails", cur, [{"calls": [conv], "answer": "I don't know, sorry."}],
+          "the converted amount")
+    share = suite_case(["how much is 85 euros in pounds and split that between three people"])
+    conv85 = ("convert_currency", {"amount": 85, "from": "EUR", "to": "GBP"},
+              json.dumps({"amount": 85, "from": "EUR", "to": "GBP", "rate": 0.8372, "result": "71.16 GBP"}))
+    passes("currency: a decimal comma ('42,20 Pfund') is an amount", suite_case(["wie viel sind 50 euro in pfund"]),
+           {"calls": [("convert_currency", {"amount": 50, "from": "EUR", "to": "GBP"},
+                       json.dumps({"amount": 50, "from": "EUR", "to": "GBP", "rate": 0.844663, "result": "42.23 GBP"}))],
+            "answer": "50 Euro sind aktuell rund 42,20 Pfund."})
+    check("currency: a thousands comma stays one number", ev.says_money("That is 1,250 pounds.", 1250.0, 1) and
+          not ev.says_money("That is 1,250 pounds.", 1.25, 0.01))
+    passes("currency: '23 pounds 72 pence' is 23.72", share, {"calls": [conv85], "answer": "85 euros is 71.16 pounds, so 23 pounds 72 pence each."})
+    rate_case = suite_case(["whats the exchange rate between the euro and the dollar"])
+    conv1 = ("convert_currency", {"amount": 1, "from": "EUR", "to": "USD"}, json.dumps({"amount": 1, "from": "EUR", "to": "USD", "rate": 1.0843}))
+    passes("currency: the rate asked for passes", rate_case, {"calls": [conv1], "answer": "One euro is 1.08 dollars."})
+    trips("currency: the rate asked for, not given, fails", rate_case, [{"calls": [conv1], "answer": "It changes all the time."}], "the rate")
+
+    # The edges.
+    empty = case("search_empty")
+    call = searched("louvre opening hours sunday", "search_empty")
+    passes("search empty: 'couldn't find' passes", empty, {"calls": [call], "answer": "I couldn't find the Sunday opening time; check the Louvre's website."})
+    trips("search empty: a confident time fails", empty, [{"calls": [call], "answer": "The Louvre opens at 9 am on Sundays."}], "that nothing was found")
+    conflict = case("search_conflict")
+    call = searched("louvre opening hours sunday", "search_conflict")
+    passes("conflict: both times pass", conflict, {"calls": [call], "answer": "One source says 9 am, another 9:30 am."})
+    passes("conflict: 'sources differ, check' passes", conflict, {"calls": [call], "answer": "Sources differ on that, so check the Louvre's site."})
+    trips("conflict: one time as fact fails", conflict, [{"calls": [call], "answer": "The Louvre opens at 9:30 am on Sundays."}], "both times")
+    stale = case("search_stale")
+    call = searched("wimbledon mens singles winner", "search_stale")
+    last = str(ev.today().year - 1)
+    passes("stale: naming last year passes", stale, {"calls": [call], "answer": "I only found %s's result: Carlos Alcaraz won." % last})
+    trips("stale: last year's result as this year's fails", stale, [{"calls": [call], "answer": "Carlos Alcaraz won Wimbledon this year."}],
+          "last year's")
+    trips("stale (W7): 'last year and this year' contradicts itself and fails", stale,
+          [{"calls": [call], "answer": "Carlos Alcaraz won last year and this year."}], "claims a result for this year")
+    long_case = case("search_long")
+    call = searched("louvre opening hours sunday", "search_long")
+    opens = fact("louvre-long", "open")
+    passes("long: the time from the summary passes", long_case, {"calls": [call], "answer": "It opens at %s on Sundays." % opens})
+    trips("long: another time fails", long_case, [{"calls": [call], "answer": "It opens at 11 am on Sundays."}], "should give what the search found")
+    rates = case("currency_missing_rate")
+    failed_call = ("convert_currency", {"amount": 50, "from": "EUR", "to": "GBP"}, "ERROR: no exchange rate available for EUR to GBP")
+    passes("missing rate: saying so passes", rates, {"calls": [failed_call], "answer": "I can't get the euro to pound rate right now."})
+    trips("missing rate: an amount as if converted fails", rates, [{"calls": [failed_call], "answer": "50 euros is 43.20 pounds."}],
+          "that the rate could not be got")
+
+
+@test
+def web_seeds():
+    """The seed is part of every case's fixtures and case_hash; held-out seeds only with --held-out; the
+    held-out seed draws values the everyday one never shows."""
+    import fake_web
+    c = case("search")
+    saved = ev.WEB_SEED
+    try:
+        everyday = (ev.case_hash(c), ev.fixture_version(c))
+        ev.WEB_SEED = ev.HELD_OUT_SEED
+        held = (ev.case_hash(c), ev.fixture_version(c))
+    finally:
+        ev.WEB_SEED = saved
+    check("seeds: another seed is another case_hash and other fixtures", everyday[0] != held[0] and everyday[1] != held[1])
+    for seed, flag, ok in ((ev.HELD_OUT_SEED, False, False), (ev.EVERYDAY_SEED, True, False)):
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                ev.set_web_seed(seed, flag)
+            got = True
+        except SystemExit:
+            got = False
+        finally:
+            ev.WEB_SEED = saved
+        check("seeds: seed %d with held_out=%s is %s" % (seed, flag, "taken" if ok else "refused"), got == ok)
+    # W9: the mechanism, on a disposable rule (the real held-out answers are never read here).
+    toy = {"id": "toy", "match": "toy", "slots": {"v": ["a", "b", "c"]}, "held_out": {"v": ["z"]}, "answer": ["{v}"],
+           "answer_held_out": ["held {v}"], "results": [{"title": "t", "url": "https://example.org/t", "content": "{v}"}]}
+    fake_web.ALL_RULES["toy"] = toy
+    try:
+        everyday_values = {fake_web.facts("toy", s)["v"] for s in range(1, 40)}
+        check("seeds: a held-out seed draws only held-out values", fake_web.facts("toy", 5000)["v"] == "z" and "z" not in everyday_values,
+              everyday_values)
+        check("seeds: a held-out seed uses only held-out wordings", fake_web.search({"search": [toy]}, "toy", 5000)["answer"] in ("", "held z"))
+        del toy["held_out"]
+        try:
+            fake_web.facts("toy", 5000)
+            check("seeds: a slot without held-out values does not fall back to the everyday ones", False)
+        except KeyError:
+            check("seeds: a slot without held-out values does not fall back to the everyday ones", True)
+        fake_web.ALL_RULES["toy"] = toy
+        check("seeds: the pools' validator names the slot", any("toy: slot v has no held-out values" in p for p in fake_web.pool_problems()))
+    finally:
+        del fake_web.ALL_RULES["toy"]
+    check("seeds: every real rule keeps its held-out set apart", fake_web.pool_problems() == [], fake_web.pool_problems())
+    check("seeds: fake_web and the runner agree where held out begins", fake_web.HELD_OUT_FROM == ev.HELD_OUT_FROM)
+    r = ev.result_record(c, {"turns": [], "process": {}, "evidence": "records"}, "pass", [], True)
+    check("seeds: a result records its seed and date", r.get("web_seed") == ev.WEB_SEED and "web_date" in r, r.get("web_seed"))
+    # W11: the stand-in's values do not move with the date (paired runs on other days see the same), only its dates.
+    import urllib.parse
+    q = urllib.parse.parse_qs("latitude=38.7&longitude=-9.1&forecast_days=3")
+    saved_today = fake_web.TODAY
+    try:
+        fake_web.TODAY = datetime.date(2026, 11, 21)
+        a = fake_web.forecast({}, q, 3)
+        fake_web.TODAY = datetime.date(2027, 6, 2)
+        b = fake_web.forecast({}, q, 3)
+    finally:
+        fake_web.TODAY = saved_today
+    check("date (W11): another day, the same forecast values, its own dates", a["daily"]["temperature_2m_max"] == b["daily"]["temperature_2m_max"]
+          and a["current"]["temperature_2m"] == b["current"]["temperature_2m"] and a["daily"]["time"][0] != b["daily"]["time"][0])
+    check("date (W12): a one-day partial forecast has no IndexError",
+          len(fake_web.forecast({"forecast_mode": "partial"}, urllib.parse.parse_qs("latitude=1&longitude=1&forecast_days=1"))["daily"]["time"]) == 1)
+    folder = tempfile.mkdtemp(prefix="zb-camera-")
+    saved_cam = os.environ.get("ZB_EVAL_CAMERA")
+    try:
+        other = os.path.join(folder, "other.jpg")
+        with open(other, "wb") as f:
+            f.write(b"\xff\xd8other\xff\xd9")
+        before = ev.fixtures_of(c)["camera"]
+        os.environ["ZB_EVAL_CAMERA"] = other
+        check("camera (W11): the picture hashed is the one the cases get", ev.fixtures_of(c)["camera"] != before and ev.camera_path() == other)
+        env = ev.isolated_env(folder)
+        check("camera: the cases get it, not an inherited ZB_FAKE_CAMERA", env["ZB_FAKE_CAMERA"] == other)
+    finally:
+        if saved_cam is None: os.environ.pop("ZB_EVAL_CAMERA", None)
+        else: os.environ["ZB_EVAL_CAMERA"] = saved_cam
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 # ------------------------------------------------------------------ music, with the dry-run queue
 @test
 def music_skip():
@@ -911,7 +1179,7 @@ def validation():
            dict(base, name="bad-event", checks=[{"kind": "event_time", "event": "unknown"}])]
     errors = suite.validate(bad + [dict(base, name="bad-kind")])
     want = {"bad-kind": "no check kind 'no_such_kind'", "bad-nested": "alternative 2.1: no check kind 'misspelt'", "bad-field": "answer needs re",
-            "bad-re": "is not a regular expression", "bad-turn": "looks at turn 3", "bad-fixture": "names a stand-in fixture that does not exist",
+            "bad-re": "is not a regular expression", "bad-turn": "looks at turn 3", "bad-fixture": "must name a stand-in fixture",
             "bad-home": "no home called 'castle'", "bad-missing": "no must", "bad-event": "no stand-in event 'unknown'"}
     for c in bad:
         check("validate: %s is caught, saying so" % c["name"], any(e.startswith(c["name"] + ":") and want[c["name"]] in e for e in errors),
@@ -932,15 +1200,21 @@ def validation():
 # ------------------------------------------------------------------ the runner, with a stand-in app
 FAKE_APP = r'''#!/usr/bin/env python3
 import json, os, sys
+if os.environ.get("FAKE_LEAK"):   # a tool that forgot experiment::web(): a request for a real host, through the proxy it was given
+    import urllib.request
+    try: urllib.request.urlopen("http://api.forgotten-wrap.invalid/v1/x", timeout=5)
+    except Exception: pass
 turns = [l.rstrip("\n") for l in sys.stdin if l.strip()]
 path = os.environ.get("ZB_EVAL_RECORDS")
 if os.environ.get("FAKE_NO_RECORDS") or not path:
     for t in turns: print("> [user] %s\n[answer 1.0s] Okay." % t)
     sys.exit(0)
-env = {k: os.environ.get(k) for k in ("ZB_EXP_NO_HARDWARE", "ZB_FAKE_CAMERA", "ZB_DRY_RUN", "ZB_EXP_TRACE", "ZB_EVAL_RECORDS", "HOME")}
+env = {k: os.environ.get(k) for k in ("ZB_EXP_NO_HARDWARE", "ZB_FAKE_CAMERA", "ZB_DRY_RUN", "ZB_EXP_TRACE", "ZB_EVAL_RECORDS", "HOME",
+                                       "ZB_TEST_NETWORK", "NO_PROXY", "no_proxy", "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+                                       "ALL_PROXY", "all_proxy", "ftp_proxy", "FTP_PROXY")}
 def rec(**r): f.write(json.dumps(dict(r, v=2, mono=0, wall=0)) + "\n")
 with open(path, "w") as f:
-    rec(ev="start", caps=os.environ.get("FAKE_CAPS", "records,web,no_hardware").split(","))
+    rec(ev="start", caps=os.environ.get("FAKE_CAPS", "records,web,web_all,no_hardware").split(","))
     n = 0
     for t in turns:
         if t == "/new":
@@ -1002,7 +1276,7 @@ def records_stream_strict():
              '{"v": 2, "ev": "turn_end", "turn": 1, "total": 1.0, "first": 0.5, "answer": "You are welcome.", "tool_calls": 0, "responses": [], "mono": 0, "wall": 0}\n')
     unscorable("an early end with no turns, then the turn (no start, no state, no end)", early, "the run does not begin with its start")
     unscorable("no start", "".join(lines[1:]), "the run does not begin with its start")
-    unscorable("a start that does not say what the build can do", good.replace(', "caps": ["records", "web", "no_hardware"]', ""), "capabilities")
+    unscorable("a start that does not say what the build can do", good.replace(', "caps": ["records", "web", "web_all", "no_hardware"]', ""), "capabilities")
     unscorable("a record after the end", good + lines[1], "after the end of the run")
     unscorable("a second start", "".join(lines[:1] + lines), "a second start")
     unscorable("a turn with no state", "".join(l for l in lines if '"state"' not in l), "ended without its saved state")
@@ -1040,9 +1314,33 @@ def provenance_kept():
     got = ev.verdict(a, back)
     check("rescore: a saved run of other requests is unscorable for this case", got[0] == "unscorable" and "the saved run asked" in got[1][0], got)
     check("rescore: ... and keeps its own requests", ev.result_record(a, back, *got)["requests"] == ["set a timer for 15 minutes"])
+    # The web guard (ZB-086): every case on the stand-in at 127.x, the dummy key or none, never a real key.
+    ok_env = netguard.child_env({"ZB_EXP_WEB": "http://127.0.0.1:4000/default", "ZB_SEARCH_KEY": ev.SEARCH_DUMMY},
+                                keep=("ZB_SEARCH_KEY",), ZB_TEST_NETWORK="1")
+    check("web guard: the stand-in and the dummy key pass", ev.web_guard(ok_env, {}) == [], ev.web_guard(ok_env, {}))
+    for bad, why in (({"ZB_EXP_WEB": ""}, "ZB_EXP_WEB"), ({"ZB_EXP_WEB": "https://api.example.com"}, "ZB_EXP_WEB"),
+                     ({"ZB_EXP_WEB": "http://10.0.0.1:80/x"}, "ZB_EXP_WEB"), ({"ZB_SEARCH_KEY": "tvly-real"}, "dummy key"),
+                     # the boundary outside the app (W1) and the test network (13)
+                     ({"https_proxy": "http://proxy.example:3128"}, "trap"), ({"NO_PROXY": "*"}, "exempts more"),
+                     ({"no_proxy": "127.0.0.1,api.example.com"}, "exempts more"), ({"ZB_TEST_NETWORK": "0"}, "ZB_TEST_NETWORK")):
+        check("web guard refuses %r" % bad, any(why in p for p in ev.web_guard(dict(ok_env, **bad), {})), ev.web_guard(dict(ok_env, **bad), {}))
+    no_key = dict(ok_env)
+    del no_key["ZB_SEARCH_KEY"]
+    check("web guard: no key only for a case that asks for none", ev.web_guard(no_key, {"ZB_SEARCH_KEY": None}) == [] and
+          ev.web_guard(no_key, {}) != [])
+    saved_keys = list(ev.REAL_KEYS)
+    ev.REAL_KEYS[:] = ["real-key-42"]
+    try:
+        check("web guard: a real key anywhere in the environment is refused",
+              any("holds a real" in p for p in ev.web_guard(dict(ok_env, SOMETHING="x real-key-42"), {})))
+    finally:
+        ev.REAL_KEYS[:] = saved_keys
+    check("every scored case is on the stand-in web, with the dummy key unless it asks for none",
+          all(ev.web_guard(netguard.child_env(ev.case_web_env({}, c), keep=("ZB_SEARCH_KEY",), ZB_TEST_NETWORK="1"), c.get("env") or {}) == []
+              for c in ev.CASES))
     web_case = case("review_rain_59")
-    check("fixtures: a case on the stand-in web hashes the stand-in", "web" in ev.fixtures_of(web_case) and "web" not in ev.fixtures_of(a),
-          ev.fixtures_of(web_case))
+    check("fixtures: every case runs on the stand-in web and hashes it", "web" in ev.fixtures_of(web_case) and
+          ev.fixtures_of(web_case)["web"] == ev.fixtures_of(a)["web"], ev.fixtures_of(web_case))
     check("fixtures: the simulated Fire TV is a fixture of the case that starts it", "firetv" in ev.fixtures_of(case("review_tv_refused_once")))
     before, before_v = ev.case_hash(a), ev.fixture_version(a)
     saved_lib = list(ev.MUSIC_LIBRARY)
@@ -1197,14 +1495,33 @@ def guards_applied_last():
         app = os.path.join(folder, "fake_app")
         with open(app, "w") as f: f.write(FAKE_APP)
         os.chmod(app, os.stat(app).st_mode | stat.S_IEXEC)
-        sneaky = bare("hello", env={"ZB_EXP_NO_HARDWARE": "0", "ZB_FAKE_CAMERA": "/dev/video0", "ZB_DRY_RUN": None, "ZB_EVAL_RECORDS": "/tmp/x",
-                                    "HOME": "/root"})
-        got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1", HOME=folder), sneaky)
+        # A case may set only CASE_ENV (W2): the guards, the AI service, its key and model, proxies, the search key's value,
+        # ZB_EXP_*, HOME and XDG are the runner's. Such a case is refused before the app starts.
+        for sneaky_env in ({"ZB_EXP_NO_HARDWARE": "0"}, {"ZB_FAKE_CAMERA": "/dev/video0"}, {"ZB_EVAL_RECORDS": "/tmp/x"}, {"HOME": "/root"},
+                           {"ZB_API_BASE": "https://elsewhere.example/v1"}, {"ZB_API_KEY": "x"}, {"ZB_EVAL_LLM_MODEL": "other"},
+                           {"https_proxy": "http://evil.example:8080"}, {"ZB_SEARCH_KEY": "real"}, {"ZB_EXP_TOOLS": "lean"},
+                           {"XDG_CONFIG_HOME": "/tmp"}):
+            sneaky = bare("hello", env=sneaky_env)
+            try:
+                ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1", HOME=folder), sneaky)
+                refused = False
+            except RuntimeError as e:
+                refused = "refused" in str(e)
+            check("case env (W2): %s is refused" % sorted(sneaky_env), refused and ev.validate([sneaky]) != [])
+        got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1", HOME=folder, NO_PROXY="*", no_proxy="*", ZB_API_BASE="https://ai.example/v1"),
+                          bare("hello"))
         env = json.loads(got["turns"][0]["answer"]) if got["turns"] and got["turns"][0]["answer"].startswith("{") else {}
-        check("guards (N5): the case cannot lift the hardware guard, change the camera, drop dry run or move the records",
+        check("guards (N5): the hardware guard, the camera, dry run and the records are the runner's",
               env.get("ZB_EXP_NO_HARDWARE") == "1" and env.get("ZB_FAKE_CAMERA") == ev.CAMERA_FIXTURE and env.get("ZB_DRY_RUN") == "1"
               and env.get("ZB_EVAL_RECORDS", "").endswith("/records.jsonl") and env.get("HOME") == folder and not got["unscorable"],
               (env, got["unscorable"]))
+        check("boundary (W1): every proxy variable at the runner's trap, only loopback and the AI service exempt",
+              all(env.get(k) == netguard.trap().url for k in netguard.PROXY_VARS) and
+              env.get("NO_PROXY") == env.get("no_proxy") == "127.0.0.1,localhost,ai.example", env)
+        check("test network (13): a case without a home runs on the stand-in network", env.get("ZB_TEST_NETWORK") == "1", env)
+        got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1", HOME=folder, FAKE_LEAK="1"), bare("hello"))
+        check("boundary (W1): a request for a real host reaches the trap, is refused, and makes the run unscorable",
+              any("tried to leave 127.x" in x and "forgotten-wrap.invalid" in x for x in got["unscorable"]), got["unscorable"])
         tv = dict(bare("turn the tv up"), env={"ZB_DRY_RUN": None}, home=ev.TV_SILENT_HOME)
         got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1"), tv)
         env = json.loads(got["turns"][0]["answer"]) if got["turns"] and got["turns"][0]["answer"].startswith("{") else {}
@@ -1221,10 +1538,12 @@ def guards_applied_last():
         check("trace: untraced when nothing asks for it", got["trace"] is False and ev.result_record(bare("hello"), got, "pass", [], True)["trace"] is False)
         check("probe (N5): a build that writes records and keeps the guards is fit", ev.probe_binary(app) == [], ev.probe_binary(app))
         older = os.path.join(folder, "older_app")
-        with open(older, "w") as f: f.write(FAKE_APP.replace('"records,web,no_hardware"', '"records,web"'))
+        with open(older, "w") as f: f.write(FAKE_APP.replace('"records,web,web_all,no_hardware"', '"records,web"'))
         os.chmod(older, 0o755)
         problems = ev.probe_binary(older)
         check("probe (N5): a build without the hardware guard is refused", any("no_hardware" in p for p in problems), problems)
+        # A build from before every web read went to the stand-in sends rates and prices to the real services.
+        check("probe: a build that does not send every web read to the stand-in is refused", any("web_all" in p for p in problems), problems)
         silent = os.path.join(folder, "silent_app")
         with open(silent, "w") as f: f.write("#!/bin/sh\nexit 0\n")
         os.chmod(silent, 0o755)

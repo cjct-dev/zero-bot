@@ -197,23 +197,48 @@ groups need first. Which to use:
 - To see that everything offline still passes: `tests/run.py --profile quick` (about 5 minutes; it
   leaves out Fire TV's end-to-end test and the live sets). `--profile offline` includes Fire TV.
 - Named groups: `tests/run.py --groups unit,hue`; a live check:
-  `tests/run.py --groups live-suite --tags timer --repeat 5 --no-search`; a variant against a
+  `tests/run.py --groups live-suite --tags timer --repeat 5`; a variant against a
   baseline: `--exp ZB_EXP_TOOLS=lean --baseline B.json` (inherited `ZB_EXP_*` are never passed on).
 - Before a release: `tests/run.py --profile release --baseline EVAL.json,SUITE.json` (or `--groups
   release`, the same mode) builds (unless `--no-build`: then a build older than any input stops it),
   runs every offline group, every case of both live sets once, then the gate of `tests/exp_compare.py`
   with `--release`. It refuses `--tags`, `--sample`, `--skip-tags`, `--only`, `--scored-only`,
-  `--fast` and `--exp`; `--no-search` is the declared exception. Live cases run only on a cli build
+  `--fast` and `--exp`. Live cases run only on a cli build
   that is an experiments build, whose hardware guard holds and which writes the records. It does not
   start without a baseline that covers the roster (below): record one with
   `tests/run.py --groups live-scored,live-suite` (its `eval.json` and `suite.json`). It also builds
   the device binary (cp0; with `--no-build` a stale one stops it) and fails when its version is not
   CMakeLists.txt's or it holds a cli-only string (`ZB_EXP_`, `ZB_EVAL_RECORDS`, `tool_done`, `[call]`,
-  `[state]`) or a build machine's path (`/home/`).
+  `[state]`) or a build machine's path (`/home/`). Last it runs the **held-out run** (group `held-out`, release
+  only): both sets once on the held-out seed, judged on its own, not against the baseline
+  (`exp_compare.py --held-out`, against the roster at the held-out seed: every case defined, run exactly as
+  often as asked, by the current case and scorer; each set's pass rate, and that of the cases that rest on a
+  web service (`web`), at least its floor, `HELD_OUT_FLOOR`; every critical case of the roster passing), reported
+  beside the gate. The held-out run is refused anywhere else (`--groups held-out` outside the release, the
+  scorers' `--held-out` without the `ZB_HELD_OUT_RUN` the release sets). **Recalibrating the floors** (after a
+  change to the sets or the stand-in that moves the pass rates): `tests/run.py --groups held-out --calibrate 3`
+  runs the held-out set three times and prints each group's mean, spread and a floor (the mean less the larger of
+  2 points and two standard deviations); put those in `HELD_OUT_FLOOR` and say so in the commit. A change that wins on the everyday seed but loses on the held-out
+  one is fitted to the everyday answers; never tune on the held-out results. **Before a release**, also run
+  `tests/run.py --groups web-contract` (or `tests/web_contract.py`): a handful of direct requests, no model, to
+  the real weather, place-name, exchange-rate and stock-price services, checking that the stand-in's shapes
+  (keys and types, and every field the app reads) still match theirs. It needs the internet, so it is in no
+  profile; it never calls the search.
 
 `ZB_EVAL_WRAPPER` prefixes every live run (a lock, or a script that sets the service's variables);
-live runs always use `--jobs 1`. `--no-search` leaves out what needs the real web search (cases on
-the stand-in web stay). Groups never inherit switches that change what they test (`ZB_UPDATE_SHOTS`,
+live runs always use `--jobs 1`. **No test uses a live web service** (the owner's search allowance is
+spent by test runs otherwise): every live case's web reads, search included, go to the stand-in web
+(below), with a dummy search key; the runners remove any inherited `ZB_SEARCH_KEY` and refuse to start
+when a case or the binary could still reach a real web service (`agent_eval.py` `preflight`, `web_guard`,
+`probe_binary`'s `web_all`). **The network boundary** (`tests/netguard.py`): every test process that runs the
+app gets `child_env` (no key it does not need, the inherited proxy settings dropped, every proxy variable at a
+local trap that records and refuses, only 127.0.0.1, localhost and a live run's AI service exempt); mocks get
+`mock_env` (a PATH and nothing else); a live case whose app sends anything to the trap is unscorable; every entry
+point that runs the cli refuses a build without the experiments (`require_experiments`); a case may set only
+`CASE_ENV`; every case runs with `ZB_TEST_NETWORK=1`, so the real router is never sent a packet. `tools_cli.py`
+(`no_real_web`, `web_wraps`) proves it: a case run by the runner itself against a scripted model that calls every
+web tool makes no request outside 127.x, and every `fetch_json` address goes through `experiment::web()`.
+`--no-search` is accepted and changes nothing. Groups never inherit switches that change what they test (`ZB_UPDATE_SHOTS`,
 `ZB_UPDATE_SNAPSHOTS`, `ZB_UNIT_*`, `HUE_E2E_ONLY`, `ZB_FAST_MODE`, `ZB_EXP_*`). A new test script
 gets a line in the group table at the top of `tests/run.py`, and a rule in its path map for the
 files it covers.
@@ -333,7 +358,7 @@ What exists:
   `--shots DIR` (render every screen to PNG; `sim` build), `--keydump`, `--version`.
 - **Scored agent set**: `tests/agent_eval.py` runs spoken-style requests through the `cli`
   build against a live service and checks tool calls, arguments and answers. It needs
-  `ZB_API_BASE`, `ZB_API_KEY`, optionally `ZB_SEARCH_KEY`, and model names in `ZB_EVAL_LLM_MODEL`
+  `ZB_API_BASE`, `ZB_API_KEY` (no search key), and model names in `ZB_EVAL_LLM_MODEL`
   etc. Use `--only`, `--repeat N` (models are not deterministic: repeat a changed case 5 to 8
   times) and `--fast 0|1`. Expect one or two flaky cases; compare against a run of the
   previous code before blaming a change. Cases run with `ZB_DRY_RUN`, except those that must reach a
@@ -357,11 +382,39 @@ What exists:
   conversation (`chk_moved_item`: one saved, then exactly one at the new time). Numbers keep their
   sign and times their am or pm. A run that times out counts once, in the turn it stopped in; later
   turns are "not started", and the summary gives the completion rate and the time to the first
-  sentence (with `--trace`) beside the time to the first text. `web(fixture)` in a case's env sends
-  web search, forecasts and place names to a stand-in (`tests/mocks/fake_web.py`, through the `cli`
-  build's `ZB_EXP_WEB`, honoured only for an `http://127.x` address and compiled out of the device
-  build): canned answers, search without a key, forecasts (`rain59`, `rain60`, `rainmissing`) and event
-  times (`events`: one published, one not announced). **The scorer's own test**: `tests/scorer_test.py`
+  sentence (with `--trace`) beside the time to the first text. Every case's web reads (search,
+  forecasts, place names, exchange rates, stock prices) go to the stand-in web (`tests/mocks/fake_web.py`
+  and its data in `tests/mocks/web/`, through the `cli` build's `ZB_EXP_WEB`, honoured only for an
+  `http://127.x` address and compiled out of the device build); `web(fixture)` in a case's env picks a
+  fixture other than `default`: forecasts (`rain59`, `rain60`, `rainmissing`), event times (`events`: one
+  published, one not announced) and the edges (`search_empty`, `search_error`, `search_irrelevant`,
+  `search_conflict`, `search_stale`, `search_long`, `weather_error`, `weather_partial`, `rates_missing`, each
+  with a scored case of its own). **Variety, not volume:** every answer is drawn from a seed (values, wording,
+  number of results, an unrelated result mixed in; forecasts made up for the place and season; rates and
+  prices moved a few per cent), the same for the same seed and request, so checks work the right answer out
+  from what was served, never from a number written into the case: `chk_served(rule, slots, how)` (suite
+  kind `served`) reads what each search of the conversation served (`annotate_served`: the rule its query
+  matched and that rule's facts for the run's seed and date) and requires that evidence: no search, a failed one
+  or one for another subject fails, one about the subject that the stand-in matched to another rule is a fixture
+  fault (unscorable). It scores meaning, not mention: the winner not as the side that lost, a score with its
+  result the right way round, a date for "when", and no other value the slot can take said beside the served
+  one. `chk_weather_served` (added to every case that must call the weather) fails any temperature, both ends of
+  a range, that the forecast did not serve for the day asked about (a rain chance is no temperature); the
+  currency checks require the answer to give the converted amount (rounded as speech rounds it) or the rate.
+  A web read that failed never counts as a `must` call (an expected failure uses `tried`).
+  Search answers live in `tests/mocks/web/search.json` (a rule per question: `match`, `slots` with
+  `held_out` values, answer and result wordings); add a rule with any case that searches something new.
+  **Seeds:** day-to-day runs use one fixed seed (`EVERYDAY_SEED`, or `ZB_EVAL_SEED`/`--web-seed`), so a
+  variant and its baseline see the same world; the seed is part of every case's `fixtures` and `case_hash`
+  and is recorded in each result (`web_seed`), so results of different seeds are never paired. Seeds from
+  1000 up are held out: they draw only held-out values and wordings (every slot has its own, disjoint from the
+  everyday ones; `fake_web.pool_problems` checks; nothing falls back), and the search cases ask their held-out
+  question forms (`held_out_turns`); the runners take one only with `--held-out` in the release's held-out run
+  (`HELD_OUT_SEED`). The stand-in's clock is frozen per run (`--date`, recorded as `web_date` in each turn and
+  result) and no served value depends on the date (forecasts for a fixed season, by days from today), so runs on
+  other days see the same answers with their dates moved and stay paired; the date is therefore not hashed. The
+  camera picture hashed is the one the cases get (`ZB_EVAL_CAMERA` or the fixture). The fixtures are versioned
+  (`fake_web.VERSION`, and every file of `tests/mocks/web/` is hashed into `case_hash`). **The scorer's own test**: `tests/scorer_test.py`
   (offline, no service) feeds deliberately wrong transcripts that must fail and right ones that must
   pass, one per check, each asserting its problem text; run it after any change to a check, and add a
   wrong transcript for any new kind of mistake.
@@ -730,6 +783,9 @@ key, real audio), say so plainly rather than implying it was.
 - When several agents share this PC: compile through `.local-notes/tools/buildlock` (four
   compiles at a time, memory is short), build a checkout only with `.local-notes/tools/repobuild`
   (one build per checkout), and give test servers ephemeral ports.
+- Never edit the test scripts while a live run is going: a result's `case_hash` fingerprints its checks from their
+  source on disk, so an edit part-way through crashed the scored set's held-out run at its last case and lost
+  three repeats (40 minutes). Run what changed afterwards, or in another checkout.
 - A multi-agent workflow resumed after an interruption reuses finished steps only when it makes
   the same calls in the same order. To continue with a changed plan, save the finished results to
   a file and start a new run from there.

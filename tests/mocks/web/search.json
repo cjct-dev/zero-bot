@@ -1,0 +1,1241 @@
+{
+ "version": "web-4",
+ "rules": [
+  {
+   "id": "sunset",
+   "match": "sun ?set",
+   "slots": {
+    "set": [
+     "4:05 pm|16:05",
+     "3:58 pm|15:58",
+     "4:12 pm|16:12"
+    ]
+   },
+   "held_out": {
+    "set": [
+     "3:54 pm|15:54"
+    ]
+   },
+   "answer": [
+    "Sunset in London today is at {set}.",
+    "The sun sets in London at {set} today."
+   ],
+   "results": [
+    {
+     "title": "Sunrise and sunset times, London",
+     "url": "https://example.org/sun/london",
+     "content": [
+      "Today in London the sun rises at 7:21 am and sets at {set}.",
+      "London, {day:0}: sunrise 7:21 am, sunset {set}, daylight about 8 hours 40 minutes."
+     ]
+    },
+    {
+     "title": "Sunset tonight: what time is it where you are?",
+     "url": "https://example.net/news/sunset-times",
+     "content": "Sunsets are at their earliest in mid-December. In London tonight the sun goes down at {set}."
+    }
+   ],
+   "no_answer": 0,
+   "answer_held_out": [
+    "Today the sun goes down over London at {set}."
+   ]
+  },
+  {
+   "id": "louvre-hours",
+   "match": "louvre",
+   "slots": {
+    "open": [
+     "9:00 am|9 am|09:00",
+     "9:30 am|09:30"
+    ],
+    "close": [
+     "6:00 pm|6 pm|18:00"
+    ]
+   },
+   "held_out": {
+    "open": [
+     "10:00 am|10 am|10:00"
+    ],
+    "close": [
+     "7:00 pm|7 pm|19:00"
+    ]
+   },
+   "answer": [
+    "The Louvre opens at {open} on Sundays and closes at {close}; it is closed on Tuesdays.",
+    "On Sundays the Louvre is open from {open} to {close}."
+   ],
+   "answer_held_out": [
+    "Sunday opening: {open} to {close} (last entry an hour before closing). Closed Tuesdays."
+   ],
+   "results": [
+    {
+     "title": "Opening hours | Louvre Museum",
+     "url": "https://example.org/louvre/hours",
+     "content": [
+      "The museum is open from {open} to {close} on Mondays, Thursdays, Saturdays and Sundays, and until 9:45 pm on Wednesdays and Fridays. Closed on Tuesdays.",
+      "Hours: {open} – {close} every day except Tuesday, when the museum is closed. Rooms begin closing 30 minutes before closing time."
+     ]
+    },
+    {
+     "title": "Visiting the Louvre: tickets, times and tips",
+     "url": "https://example.net/travel/louvre-guide",
+     "content": "Book a timed ticket online; Sunday mornings are busy from opening at {open}. The pyramid entrance queues are shortest after 3 pm."
+    },
+    {
+     "title": "Louvre free first Friday evenings",
+     "url": "https://example.com/paris/louvre-evenings",
+     "content": "Entry is free on the first Friday evening of each month, from 6 pm to 9:45 pm, except in July and August."
+    }
+   ]
+  },
+  {
+   "id": "british-museum",
+   "match": "british museum",
+   "slots": {
+    "status": [
+     "is open on Mondays, from 10 am to 5 pm|open",
+     "is open daily, Mondays included, 10:00 to 17:00|open",
+     "is closed on Mondays this month for gallery works|closed"
+    ]
+   },
+   "held_out": {
+    "status": [
+     "is open on Mondays but closes early, at 2 pm, this month|open"
+    ]
+   },
+   "answer": [
+    "The British Museum {status}.",
+    "Yes and no: the British Museum {status}; entry is free."
+   ],
+   "results": [
+    {
+     "title": "Visit | British Museum",
+     "url": "https://example.org/britishmuseum/visit",
+     "content": [
+      "The Museum {status}. Admission is free; booking is recommended.",
+      "Opening times: the British Museum {status}. Last entry is 30 minutes before closing."
+     ]
+    },
+    {
+     "title": "Free things to do in London this week",
+     "url": "https://example.net/london/free-week",
+     "content": "The British Museum, the National Gallery and the Tate are free to visit; check each one's times before you go."
+    }
+   ],
+   "answer_held_out": [
+    "Monday hours for the British Museum: it {status}."
+   ]
+  },
+  {
+   "id": "champions-league",
+   "match": "champions league",
+   "slots": {
+    "winner": [
+     "Paris Saint-Germain|PSG|Paris Saint Germain",
+     "Real Madrid",
+     "Bayern Munich|Bayern"
+    ],
+    "loser": [
+     "Inter Milan|Inter",
+     "Borussia Dortmund|Dortmund",
+     "Arsenal"
+    ],
+    "score": [
+     "2-0",
+     "3-1",
+     "1-0"
+    ]
+   },
+   "held_out": {
+    "winner": [
+     "Barcelona|Barça|Barca"
+    ],
+    "loser": [
+     "Liverpool"
+    ],
+    "score": [
+     "4-2",
+     "2-1 after extra time"
+    ]
+   },
+   "answer": [
+    "{winner} won the Champions League final {year}, beating {loser} {score}.",
+    "{winner} are the {year} champions of Europe after a {score} win over {loser} in the final."
+   ],
+   "results": [
+    {
+     "title": "Champions League final {year}: {winner} beat {loser}",
+     "url": "https://example.org/sport/ucl-final",
+     "content": [
+      "{winner} won the {year} Champions League final, beating {loser} {score} in Munich.",
+      "Report: {winner} {score} {loser}. {winner} lifted the trophy for the first time in three years."
+     ]
+    },
+    {
+     "title": "Champions League: how the final was won",
+     "url": "https://example.net/football/final-analysis",
+     "content": "Tactical analysis of the final, in which {loser} never recovered from conceding early."
+    },
+    {
+     "title": "Champions League {year:1} draw: dates and format",
+     "url": "https://example.com/ucl/next-season",
+     "content": "The league phase of next season's competition begins in September with 36 clubs."
+    }
+   ],
+   "answer_held_out": [
+    "Final result ({year}): {winner} {score} {loser}; {winner} are European champions."
+   ],
+   "about": "champions league|\\bucl\\b|european cup"
+  },
+  {
+   "id": "eiffel-ticket",
+   "match": "eiffel",
+   "slots": {
+    "top": [
+     "€36.10|36.10|36.1",
+     "€35.30|35.30|35.3",
+     "€29.40|29.40|29.4"
+    ],
+    "second": [
+     "€23.10|23.10",
+     "€22.60|22.60"
+    ]
+   },
+   "held_out": {
+    "top": [
+     "€38.50|38.50|38.5"
+    ],
+    "second": [
+     "€24.90|24.90"
+    ]
+   },
+   "answer": [
+    "An adult ticket to the top of the Eiffel Tower by lift costs {top}; to the second floor it is {second}.",
+    "The summit ticket (lift) is {top} for adults."
+   ],
+   "results": [
+    {
+     "title": "Tickets and prices | Eiffel Tower",
+     "url": "https://example.org/eiffel/tickets",
+     "content": [
+      "Lift to the top: adults {top}, young people 12-24 half price. Lift to the second floor: adults {second}.",
+      "Prices: summit by lift {top} (adult); second floor by lift {second}; stairs to the second floor are cheaper."
+     ]
+    },
+    {
+     "title": "Is the Eiffel Tower worth it? A visitor's guide",
+     "url": "https://example.net/travel/eiffel",
+     "content": "Book ahead in summer. Going to the top takes about two hours including queues; sunset slots sell out first."
+    }
+   ],
+   "answer_held_out": [
+    "Adult summit ticket with the lift: {top}. Second floor only: {second}."
+   ]
+  },
+  {
+   "id": "arsenal-result",
+   "match": "arsenal",
+   "slots": {
+    "opponent": [
+     "Chelsea",
+     "Everton",
+     "Newcastle",
+     "Aston Villa",
+     "Brighton"
+    ],
+    "score": [
+     "beat {opponent} 2-1|2-1",
+     "beat {opponent} 3-0|3-0",
+     "drew 1-1 with {opponent}|1-1",
+     "lost 0-1 to {opponent}|0-1"
+    ]
+   },
+   "held_out": {
+    "score": [
+     "beat {opponent} 4-2|4-2"
+    ],
+    "opponent": [
+     "Tottenham",
+     "Fulham"
+    ]
+   },
+   "answer": [
+    "Arsenal {score} at the Emirates last night.",
+    "Last night Arsenal {score}."
+   ],
+   "results": [
+    {
+     "title": "Arsenal v {opponent}: match report",
+     "url": "https://example.org/football/arsenal",
+     "content": [
+      "Arsenal {score} in the Premier League on {day:-1}.",
+      "Full time at the Emirates: Arsenal {score}."
+     ]
+    },
+    {
+     "title": "Premier League table",
+     "url": "https://example.net/football/table",
+     "content": "Arsenal are second, two points off the top, after last night's game."
+    },
+    {
+     "title": "Player ratings",
+     "url": "https://example.com/football/ratings",
+     "content": "Saka was the standout as Arsenal {score}."
+    }
+   ],
+   "answer_held_out": [
+    "Full time last night: Arsenal {score}."
+   ]
+  },
+  {
+   "id": "yankees-result",
+   "match": "yankees",
+   "slots": {
+    "opponent": [
+     "Boston Red Sox",
+     "Toronto Blue Jays",
+     "Baltimore Orioles"
+    ],
+    "score": [
+     "beat the {opponent} 5-3|5-3",
+     "lost 2-4 to the {opponent}|2-4",
+     "beat the {opponent} 7-6 in extra innings|7-6"
+    ]
+   },
+   "held_out": {
+    "score": [
+     "lost 1-3 to the {opponent}|1-3"
+    ],
+    "opponent": [
+     "Tampa Bay Rays",
+     "Houston Astros"
+    ]
+   },
+   "answer": [
+    "The Yankees {score} last night.",
+    "Last night the New York Yankees {score}."
+   ],
+   "results": [
+    {
+     "title": "Yankees vs {opponent}: final score",
+     "url": "https://example.org/mlb/yankees",
+     "content": [
+      "The Yankees {score} on {day:-1}.",
+      "Final: the Yankees {score}. Judge homered in the sixth."
+     ]
+    },
+    {
+     "title": "Yankees schedule",
+     "url": "https://example.net/mlb/yankees-schedule",
+     "content": "Next up for the Yankees: a three-game series at home."
+    }
+   ],
+   "answer_held_out": [
+    "Final score last night: the Yankees {score}."
+   ]
+  },
+  {
+   "id": "uk-strikes",
+   "match": "strike",
+   "slots": {
+    "operator": [
+     "Avanti West Coast|Avanti",
+     "LNER",
+     "Northern",
+     "Southern"
+    ],
+    "day": [
+     "{day:+2}",
+     "{day:+3}",
+     "{day:+4}"
+    ]
+   },
+   "held_out": {
+    "operator": [
+     "TransPennine Express|TransPennine"
+    ],
+    "day": [
+     "{day:+5}",
+     "{day:+6}"
+    ]
+   },
+   "answer": [
+    "Train drivers at {operator} will strike on {day}; other operators are running normally this week.",
+    "There is one strike this week: {operator}, on {day}."
+   ],
+   "results": [
+    {
+     "title": "Rail strikes this week: what you need to know",
+     "url": "https://example.org/travel/rail-strikes",
+     "content": [
+      "Drivers at {operator} are walking out on {day}. No other strikes are planned on the railways this week.",
+      "Strike dates: {operator}, {day}. Check before you travel."
+     ]
+    },
+    {
+     "title": "{operator} timetable changes",
+     "url": "https://example.net/rail/changes",
+     "content": "{operator} will run a reduced timetable on {day}."
+    }
+   ],
+   "answer_held_out": [
+    "Strike action this week: {operator} drivers walk out on {day}; nothing else is planned."
+   ],
+   "about": "strike|walkout|industrial action"
+  },
+  {
+   "id": "bulls-home-game",
+   "match": "bulls",
+   "slots": {
+    "opponent": [
+     "Milwaukee Bucks|Bucks",
+     "Boston Celtics|Celtics",
+     "Miami Heat|Heat",
+     "New York Knicks|Knicks"
+    ],
+    "day": [
+     "{day:+2}",
+     "{day:+3}",
+     "{day:+5}"
+    ]
+   },
+   "held_out": {
+    "opponent": [
+     "Denver Nuggets|Nuggets"
+    ],
+    "day": [
+     "{day:+4}",
+     "{day:+6}"
+    ]
+   },
+   "answer": [
+    "The Chicago Bulls' next home game is against the {opponent} on {day} at the United Center, 7 pm Central.",
+    "Next at the United Center: Bulls v {opponent}, {day}."
+   ],
+   "results": [
+    {
+     "title": "Chicago Bulls schedule",
+     "url": "https://example.org/nba/bulls-schedule",
+     "content": [
+      "Next home game: {opponent} at the United Center, {day}, tip-off 7:00 pm CT.",
+      "Upcoming: v {opponent} (home), {day}; then two away games."
+     ]
+    },
+    {
+     "title": "Bulls tickets",
+     "url": "https://example.net/tickets/bulls",
+     "content": "Tickets for the {opponent} game start at $45."
+    }
+   ],
+   "answer_held_out": [
+    "Bulls home schedule: {opponent} visit the United Center on {day}."
+   ],
+   "about": "bulls|united center"
+  },
+  {
+   "id": "wimbledon-mens",
+   "match": "wimbledon",
+   "slots": {
+    "winner": [
+     "Jannik Sinner|Sinner",
+     "Carlos Alcaraz|Alcaraz",
+     "Novak Djokovic|Djokovic"
+    ],
+    "loser": [
+     "Alexander Zverev|Zverev",
+     "Taylor Fritz|Fritz",
+     "Daniil Medvedev|Medvedev"
+    ]
+   },
+   "held_out": {
+    "winner": [
+     "Jack Draper|Draper"
+    ],
+    "loser": [
+     "Ben Shelton|Shelton",
+     "Holger Rune|Rune"
+    ]
+   },
+   "answer": [
+    "{winner} won the men's singles at Wimbledon in {year}, beating {loser} in the final.",
+    "The {year} Wimbledon men's champion is {winner}."
+   ],
+   "results": [
+    {
+     "title": "Wimbledon {year}: {winner} wins the men's singles",
+     "url": "https://example.org/tennis/wimbledon",
+     "content": [
+      "{winner} beat {loser} in four sets to win the gentlemen's singles title at Wimbledon in July {year}.",
+      "Gentlemen's singles final, {year}: {winner} d. {loser}."
+     ]
+    },
+    {
+     "title": "Wimbledon {year}: the women's final",
+     "url": "https://example.net/tennis/womens-final",
+     "content": "The ladies' singles title went to the second seed after three sets."
+    },
+    {
+     "title": "Wimbledon {year:1} dates",
+     "url": "https://example.com/tennis/next-year",
+     "content": "Next year's championships begin on the last Monday of June."
+    }
+   ],
+   "answer_held_out": [
+    "Men's singles champion at Wimbledon {year}: {winner}, who beat {loser} in the final."
+   ]
+  },
+  {
+   "id": "sagrada-hours",
+   "match": "sagrada",
+   "slots": {
+    "open": [
+     "9:00 am|9 am|09:00",
+     "9:30 am|09:30"
+    ],
+    "close": [
+     "8:00 pm|8 pm|20:00",
+     "6:00 pm|6 pm|18:00",
+     "7:00 pm|7 pm|19:00"
+    ]
+   },
+   "held_out": {
+    "open": [
+     "10:00 am|10 am|10:00"
+    ],
+    "close": [
+     "5:30 pm|17:30"
+    ]
+   },
+   "answer": [
+    "The Sagrada Família is open from {open} to {close} Monday to Saturday, and from 10:30 am on Sundays.",
+    "Opening hours: {open} to {close}."
+   ],
+   "results": [
+    {
+     "title": "Opening times | Sagrada Família",
+     "url": "https://example.org/sagradafamilia/hours",
+     "content": [
+      "Monday to Saturday {open} – {close}; Sundays 10:30 am – {close}. Last entry 30 minutes before closing.",
+      "Hours from November to February: {open} to {close} (Sundays from 10:30 am)."
+     ]
+    },
+    {
+     "title": "Barcelona: how to visit the Sagrada Família",
+     "url": "https://example.net/travel/sagrada",
+     "content": "Tickets are sold for timed entry only; the towers cost extra."
+    }
+   ],
+   "answer_held_out": [
+    "The basilica's hours: {open} until {close}, Monday to Saturday."
+   ]
+  },
+  {
+   "id": "stripe-ipo",
+   "match": "stripe",
+   "slots": {
+    "status": [
+     "has not filed for an IPO, and no date has been set",
+     "is reported to be preparing a listing for next year; no date or time has been announced"
+    ]
+   },
+   "answer": [
+    "Stripe {status}.",
+    "There is no confirmed Stripe IPO date: the company {status}."
+   ],
+   "results": [
+    {
+     "title": "Stripe IPO: what we know",
+     "url": "https://example.org/markets/stripe-ipo",
+     "content": [
+      "Stripe {status}. The payments company's last private valuation was about $90 billion.",
+      "No Stripe IPO date yet: the company {status}. Employees have been offered share sales instead."
+     ]
+    },
+    {
+     "title": "Fintech listings to watch",
+     "url": "https://example.net/markets/fintech-ipos",
+     "content": "Stripe, Revolut and Monzo are the most watched possible listings; none has set a date."
+    }
+   ],
+   "held_out": {
+    "status": [
+     "has said it is in no hurry to list, and there is no IPO date"
+    ]
+   },
+   "answer_held_out": [
+    "No date: Stripe {status}."
+   ]
+  },
+  {
+   "id": "revolut-ipo",
+   "match": "revolut",
+   "slots": {
+    "status": [
+     "has not announced a date for its IPO",
+     "says a listing is at least a year away; no date or venue has been chosen"
+    ]
+   },
+   "answer": [
+    "Revolut {status}.",
+    "There is no Revolut IPO date yet: the company {status}."
+   ],
+   "results": [
+    {
+     "title": "Revolut IPO plans",
+     "url": "https://example.org/markets/revolut-ipo",
+     "content": [
+      "Revolut {status}. Its chief executive has said London and New York are both being considered.",
+      "Revolut {status}; when it does list, pricing would be set the evening before trading begins."
+     ]
+    },
+    {
+     "title": "Fintech listings to watch",
+     "url": "https://example.net/markets/fintech-ipos",
+     "content": "Stripe, Revolut and Monzo are the most watched possible listings; none has set a date."
+    }
+   ],
+   "held_out": {
+    "status": [
+     "has given no timetable for a listing"
+    ]
+   },
+   "answer_held_out": [
+    "Revolut IPO: the company {status}."
+   ]
+  },
+  {
+   "id": "monzo-ipo",
+   "match": "monzo",
+   "slots": {
+    "mood": [
+     "upbeat: analysts expect strong demand from investors",
+     "cautious: investors want proof of steady profits first"
+    ],
+    "lockup": [
+     "180 days",
+     "12 months"
+    ]
+   },
+   "answer": [
+    "Monzo has not set a date for its IPO. Market mood is {mood}. Staff shares would be under a {lockup} lock-up after listing."
+   ],
+   "results": [
+    {
+     "title": "Monzo IPO: market mood",
+     "url": "https://example.org/markets/monzo-ipo",
+     "content": [
+      "Monzo has not set a date or time for a listing. The mood among investors is {mood}.",
+      "No date yet for a Monzo IPO; sentiment is {mood}."
+     ]
+    },
+    {
+     "title": "Can Monzo staff sell their shares after an IPO?",
+     "url": "https://example.net/markets/monzo-lockup",
+     "content": "Employees and early investors are usually barred from selling for a lock-up period, here expected to be {lockup}, so a flood of sales on day one is unlikely."
+    }
+   ],
+   "min_results": 2,
+   "no_answer": 0.3,
+   "held_out": {
+    "mood": [
+     "mixed: some funds are keen, others wary of the valuation"
+    ],
+    "lockup": [
+     "nine months"
+    ]
+   },
+   "answer_held_out": [
+    "No Monzo listing date yet. Investor mood: {mood}. Staff would face a {lockup} lock-up."
+   ]
+  },
+  {
+   "id": "shell-results",
+   "match": "\\bshell\\b",
+   "slots": {
+    "profit": [
+     "$5.4 billion|5.4",
+     "$6.1 billion|6.1",
+     "$4.9 billion|4.9"
+    ]
+   },
+   "held_out": {
+    "profit": [
+     "$5.8 billion|5.8"
+    ]
+   },
+   "answer": [
+    "Analysts expect Shell to report adjusted earnings of about {profit} for the quarter on Thursday."
+   ],
+   "results": [
+    {
+     "title": "Shell results preview",
+     "url": "https://example.org/markets/shell-preview",
+     "content": [
+      "The consensus forecast is for adjusted earnings of {profit}, down on a year ago as oil prices eased.",
+      "Analysts polled by the company expect {profit} in adjusted earnings; buybacks are expected to continue."
+     ]
+    },
+    {
+     "title": "Oil majors' shares and earnings surprises",
+     "url": "https://example.net/markets/oil-earnings",
+     "content": "A miss of a few per cent has typically moved oil majors' shares by 2 to 4 per cent on the day."
+    }
+   ],
+   "min_results": 2,
+   "answer_held_out": [
+    "The consensus for Shell's quarter: adjusted earnings near {profit}, reported Thursday."
+   ]
+  },
+  {
+   "id": "canva-ipo",
+   "match": "canva",
+   "slots": {
+    "status": [
+     "has not set a date for an IPO",
+     "says it has no plans to list in the next twelve months"
+    ]
+   },
+   "answer": [
+    "Canva {status}.",
+    "No Canva IPO date has been announced: the company {status}."
+   ],
+   "results": [
+    {
+     "title": "Canva and the IPO question",
+     "url": "https://example.org/markets/canva-ipo",
+     "content": [
+      "Canva {status}. It has run share sales for staff, who hold equity that vests over four years.",
+      "Canva {status}; employees can sell some vested shares in company-run secondary sales."
+     ]
+    }
+   ],
+   "held_out": {
+    "status": [
+     "is staying private for now and has no IPO date"
+    ]
+   },
+   "answer_held_out": [
+    "Canva {status}."
+   ]
+  },
+  {
+   "id": "discord-ipo-default",
+   "match": "discord",
+   "slots": {
+    "lockup": [
+     "180 days",
+     "90 days"
+    ]
+   },
+   "answer": [
+    "Discord has filed to go public; no date has been set. Staff and early investors would be under a {lockup} lock-up after the listing."
+   ],
+   "results": [
+    {
+     "title": "Discord IPO: lock-up and timing",
+     "url": "https://example.org/markets/discord-ipo",
+     "content": [
+      "Discord has filed to list in New York. No date has been set. The lock-up period would run {lockup} after the first day of trading.",
+      "When Discord lists, insiders will be barred from selling for {lockup}. The date is not yet known."
+     ]
+    }
+   ],
+   "held_out": {
+    "lockup": [
+     "120 days"
+    ]
+   },
+   "answer_held_out": [
+    "Discord's planned listing has no date; insiders would be locked up for {lockup}."
+   ]
+  },
+  {
+   "id": "shein-ipo",
+   "match": "shein",
+   "slots": {
+    "exchange": [
+     "the London Stock Exchange|London|LSE",
+     "the Hong Kong stock exchange|Hong Kong"
+    ]
+   },
+   "answer": [
+    "Shein is preparing to list on {exchange}; no date, price or ticker symbol has been announced."
+   ],
+   "results": [
+    {
+     "title": "Shein listing plans",
+     "url": "https://example.org/markets/shein-ipo",
+     "content": [
+      "Shein has filed to list on {exchange}. The date, price and ticker symbol have not been announced.",
+      "Shein's planned listing on {exchange} has no date yet; the ticker will be set when the listing is approved."
+     ]
+    }
+   ],
+   "held_out": {
+    "exchange": [
+     "the Singapore Exchange|Singapore|SGX"
+    ]
+   },
+   "answer_held_out": [
+    "Shein's listing is planned for {exchange}; date, price and ticker are not yet known."
+   ]
+  },
+  {
+   "id": "starling-ipo",
+   "match": "starling",
+   "slots": {
+    "exchange": [
+     "the London Stock Exchange|London|LSE",
+     "the New York Stock Exchange|New York|NYSE"
+    ]
+   },
+   "answer": [
+    "Starling Bank has not set a listing date; it has said it would list on {exchange}."
+   ],
+   "results": [
+    {
+     "title": "Starling Bank IPO",
+     "url": "https://example.org/markets/starling-ipo",
+     "content": [
+      "Starling Bank has no listing date yet. Its chief executive said a float would be on {exchange}.",
+      "Starling has said it favours {exchange} for an eventual listing; no date has been announced."
+     ]
+    }
+   ],
+   "held_out": {
+    "exchange": [
+     "Euronext Amsterdam|Amsterdam|Euronext",
+     "the Nasdaq|Nasdaq"
+    ]
+   },
+   "answer_held_out": [
+    "Starling has named {exchange} for a future float, with no date set."
+   ]
+  },
+  {
+   "id": "news-today",
+   "match": "\\bnews\\b|headlines|top stories",
+   "slots": {
+    "story1": [
+     "The Bank of England held interest rates at 4 per cent|interest rates|Bank of England",
+     "The government announced a review of rail fares in England|rail fares|train fares|fares",
+     "Ministers set out a plan to build 300,000 homes a year|homes|housing"
+    ],
+    "story2": [
+     "Storm Imogen brought gales and flooding to the north of England|Storm Imogen|storm|flooding|gales",
+     "Heavy snow closed schools across the Scottish Highlands|snow|schools",
+     "A power cut left 40,000 homes in Kent without electricity|power cut|electricity"
+    ],
+    "story3": [
+     "Scientists reported a new treatment for hay fever in trials|hay fever",
+     "England's women's cricket team won their series in Australia|cricket",
+     "A lost painting by Turner sold at auction for 3.2 million pounds|Turner|painting|auction"
+    ]
+   },
+   "held_out": {
+    "story1": [
+     "Inflation fell to 2.1 per cent, the lowest in four years|inflation"
+    ],
+    "story2": [
+     "A heatwave warning was issued for southern Spain|heatwave"
+    ],
+    "story3": [
+     "A comet will be visible to the naked eye this weekend|comet"
+    ]
+   },
+   "answer": [
+    "Today's main stories: {story1}; {story2}; and {story3}.",
+    "In the news today: {story1}. Also, {story2}, and {story3}."
+   ],
+   "results": [
+    {
+     "title": "Today's headlines, {day:0}",
+     "url": "https://example.org/news/today",
+     "content": [
+      "{story1}. {story2}. {story3}.",
+      "Top stories: {story1}; {story2}; {story3}."
+     ]
+    },
+    {
+     "title": "Live: the day's news as it happens",
+     "url": "https://example.net/live/news",
+     "content": "Updates through the day: {story2}. Earlier, {story1}."
+    },
+    {
+     "title": "Morning briefing",
+     "url": "https://example.com/briefing/morning",
+     "content": "{story3}. Plus the weather, sport and what to watch tonight."
+    }
+   ],
+   "answer_held_out": [
+    "The day's headlines: {story1}; {story2}; {story3}."
+   ],
+   "about": "\\bnews\\b|headlines|stories|happening today"
+  },
+  {
+   "id": "f1-last-race",
+   "match": "formula (one|1)|\\bf1\\b|grand prix",
+   "slots": {
+    "winner": [
+     "Lando Norris|Norris",
+     "Max Verstappen|Verstappen",
+     "Oscar Piastri|Piastri",
+     "Charles Leclerc|Leclerc",
+     "George Russell|Russell"
+    ],
+    "race": [
+     "Las Vegas Grand Prix|Las Vegas",
+     "São Paulo Grand Prix|São Paulo|Sao Paulo|Brazil|Interlagos"
+    ]
+   },
+   "held_out": {
+    "winner": [
+     "Lewis Hamilton|Hamilton",
+     "Carlos Sainz|Sainz"
+    ],
+    "race": [
+     "Qatar Grand Prix|Qatar"
+    ]
+   },
+   "answer": [
+    "{winner} won the most recent Formula 1 race, the {race}, on {day:-6}.",
+    "The last race, the {race}, was won by {winner}."
+   ],
+   "results": [
+    {
+     "title": "{race}: {winner} wins",
+     "url": "https://example.org/f1/latest",
+     "content": [
+      "{winner} took the chequered flag at the {race} on {day:-6}, ahead of two rivals separated by under a second.",
+      "Race report: {winner} wins the {race}. The championship goes down to the final rounds."
+     ]
+    },
+    {
+     "title": "F1 calendar: what's next",
+     "url": "https://example.net/f1/calendar",
+     "content": "Two rounds remain this season after the {race}."
+    },
+    {
+     "title": "Driver standings after the {race}",
+     "url": "https://example.com/f1/standings",
+     "content": "{winner}'s win closes the gap at the top of the standings."
+    }
+   ],
+   "answer_held_out": [
+    "Most recent Grand Prix: the {race}, won by {winner}."
+   ],
+   "about": "formula (one|1)|\\bf1\\b|grand prix|chequered flag"
+  },
+  {
+   "id": "cinema-films",
+   "match": "cinema|films?\\b|movies?|leicester square",
+   "slots": {
+    "film1": [
+     "The Lantern Keeper",
+     "Copper Sky",
+     "Paper Kingdoms"
+    ],
+    "film2": [
+     "Northern Lights Express",
+     "The Glass Orchard",
+     "Small Hours"
+    ],
+    "film3": [
+     "Midnight at the Majestic",
+     "A Quiet Harbour",
+     "Blue Line to Brighton"
+    ]
+   },
+   "held_out": {
+    "film1": [
+     "The Salt Road"
+    ],
+    "film2": [
+     "Winter Garden"
+    ],
+    "film3": [
+     "Harbour Lights"
+    ]
+   },
+   "answer": [
+    "Tonight in Leicester Square: {film1}, {film2} and {film3}.",
+    "Showing this evening: {film1} (7:15 pm), {film2} (8:00 pm) and {film3} (8:45 pm)."
+   ],
+   "results": [
+    {
+     "title": "What's on tonight | Leicester Square cinemas",
+     "url": "https://example.org/cinema/leicester-square",
+     "content": [
+      "Tonight: {film1} 6:30 pm and 9:10 pm; {film2} 7:45 pm; {film3} 8:20 pm.",
+      "Screenings today: {film1}, {film2}, {film3}. Book online to choose seats."
+     ]
+    },
+    {
+     "title": "Film reviews this week",
+     "url": "https://example.net/film/reviews",
+     "content": "{film2} is the pick of the week: four stars."
+    },
+    {
+     "title": "London cinema listings",
+     "url": "https://example.com/london/listings",
+     "content": "Also showing across London: {film3} and {film1}."
+    }
+   ],
+   "answer_held_out": [
+    "On tonight near Leicester Square: {film1}, {film2}, {film3}."
+   ],
+   "about": "cinema|films?\\b|movies?|showing|leicester square"
+  },
+  {
+   "id": "japan-pm",
+   "match": "japan|japanese",
+   "slots": {
+    "pm": [
+     "Sanae Takaichi|Takaichi",
+     "Shigeru Ishiba|Ishiba",
+     "Shinjiro Koizumi|Koizumi"
+    ]
+   },
+   "held_out": {
+    "pm": [
+     "Yoshimasa Hayashi|Hayashi"
+    ]
+   },
+   "answer": [
+    "The current prime minister of Japan is {pm}.",
+    "{pm} is Japan's prime minister."
+   ],
+   "results": [
+    {
+     "title": "Prime Minister of Japan",
+     "url": "https://example.org/japan/prime-minister",
+     "content": [
+      "{pm} is the prime minister of Japan and leader of the Liberal Democratic Party.",
+      "The office is held by {pm}, who leads the Liberal Democratic Party."
+     ]
+    },
+    {
+     "title": "Japan's cabinet: who's who",
+     "url": "https://example.net/asia/japan-cabinet",
+     "content": "{pm}'s cabinet includes a new finance minister."
+    }
+   ],
+   "answer_held_out": [
+    "Japan's head of government is Prime Minister {pm}."
+   ],
+   "about": "japan|japanese"
+  }
+ ],
+ "noise": [
+  {
+   "title": "Ten easy autumn recipes",
+   "url": "https://example.org/food/autumn",
+   "content": "From squash soup to apple crumble, ten dishes that take under half an hour."
+  },
+  {
+   "title": "How to choose a winter coat",
+   "url": "https://example.net/style/coats",
+   "content": "Look for a coat that keeps out wind and rain; down is warmest when dry."
+  },
+  {
+   "title": "The best walks in the Lake District",
+   "url": "https://example.com/outdoors/lakes",
+   "content": "Twelve routes from easy lakeside paths to the scramble up Striding Edge."
+  },
+  {
+   "title": "Louvre Abu Dhabi: exhibitions",
+   "url": "https://example.org/abudhabi/louvre",
+   "content": "The museum on Saadiyat Island opens a new exhibition of Islamic art this winter."
+  },
+  {
+   "title": "Hotel deals in Paris",
+   "url": "https://example.net/hotels/paris",
+   "content": "Rooms near the Champs-Élysées from 140 euros a night in the low season."
+  },
+  {
+   "title": "Learn to play chess online",
+   "url": "https://example.com/games/chess",
+   "content": "Free lessons for beginners, with puzzles that adapt to your level."
+  },
+  {
+   "title": "Garden jobs for November",
+   "url": "https://example.org/garden/november",
+   "content": "Plant tulip bulbs, rake leaves into leaf mould and protect tender plants from frost."
+  },
+  {
+   "title": "The history of the London Underground",
+   "url": "https://example.net/history/tube",
+   "content": "The first line opened in 1863 between Paddington and Farringdon."
+  }
+ ],
+ "fixtures": {
+  "events": [
+   {
+    "id": "product-launch",
+    "match": "apple|product launch|keynote",
+    "answer": [
+     "Apple's next product launch event is on {date:product_launch} at {time:product_launch}."
+    ],
+    "results": [
+     {
+      "title": "Apple announces its next product launch event",
+      "url": "https://example.org/apple/event",
+      "content": "Apple will hold its next product launch event on {date:product_launch}, starting at {time:product_launch}, streamed from Apple Park in Cupertino."
+     }
+    ],
+    "no_answer": 0,
+    "noise": 0,
+    "answer_held_out": [
+     "Apple has scheduled its next launch event for {date:product_launch}, {time:product_launch}."
+    ]
+   },
+   {
+    "id": "discord-ipo",
+    "match": "discord",
+    "answer": [
+     "Discord has filed for an initial public offering on the New York Stock Exchange; the date and the time its shares begin trading have not been announced."
+    ],
+    "results": [
+     {
+      "title": "Discord files for IPO",
+      "url": "https://example.org/discord/ipo",
+      "content": "Discord has filed to list its shares on the New York Stock Exchange. The company has not yet announced a date or a time for the start of trading; neither has the exchange."
+     }
+    ],
+    "no_answer": 0,
+    "noise": 0,
+    "answer_held_out": [
+     "Discord has filed to go public in New York; neither a date nor a start time for trading has been given."
+    ]
+   }
+  ],
+  "conflict": [
+   {
+    "id": "louvre-conflict",
+    "match": "louvre",
+    "slots": {
+     "open_a": [
+      "9:00 am|9 am|09:00"
+     ],
+     "open_b": [
+      "9:30 am|09:30"
+     ]
+    },
+    "answer": [
+     ""
+    ],
+    "results": [
+     {
+      "title": "Louvre opening hours",
+      "url": "https://example.org/louvre/hours-a",
+      "content": "The Louvre opens at {open_a} every day except Tuesday."
+     },
+     {
+      "title": "Paris museums: opening times",
+      "url": "https://example.net/paris/museums",
+      "content": "Louvre: Sundays from {open_b}; closed Tuesdays."
+     }
+    ],
+    "no_answer": 1,
+    "noise": 0,
+    "min_results": 2,
+    "held_out": {
+     "open_a": [
+      "10:00 am|10 am|10:00"
+     ],
+     "open_b": [
+      "10:30 am|10:30"
+     ]
+    },
+    "answer_held_out": [
+     ""
+    ]
+   }
+  ],
+  "stale": [
+   {
+    "id": "wimbledon-stale",
+    "match": "wimbledon",
+    "slots": {
+     "winner": [
+      "Carlos Alcaraz|Alcaraz"
+     ],
+     "loser": [
+      "Novak Djokovic|Djokovic"
+     ]
+    },
+    "answer": [
+     "{winner} won the men's singles at Wimbledon in {year:-1}, beating {loser} in the final."
+    ],
+    "results": [
+     {
+      "title": "Wimbledon {year:-1}: {winner} retains his title",
+      "url": "https://example.org/tennis/wimbledon-last-year",
+      "content": "{winner} beat {loser} in straight sets in the {year:-1} gentlemen's singles final."
+     },
+     {
+      "title": "Wimbledon {year:-1} in pictures",
+      "url": "https://example.net/tennis/wimbledon-pictures",
+      "content": "The best photographs from the {year:-1} championships."
+     }
+    ],
+    "no_answer": 0,
+    "noise": 0,
+    "held_out": {
+     "winner": [
+      "Jannik Sinner|Sinner"
+     ],
+     "loser": [
+      "Carlos Alcaraz|Alcaraz"
+     ]
+    },
+    "answer_held_out": [
+     "Wimbledon {year:-1}: {winner} won the men's singles, beating {loser}."
+    ]
+   }
+  ],
+  "long": [
+   {
+    "id": "louvre-long",
+    "match": "louvre",
+    "slots": {
+     "open": [
+      "9:00 am|9 am|09:00",
+      "9:30 am|09:30"
+     ]
+    },
+    "answer": [
+     "The Louvre opens at {open} on Sundays."
+    ],
+    "results": [
+     {
+      "title": "The Louvre: a complete visitor's guide",
+      "url": "https://example.org/louvre/guide",
+      "content": "The Louvre is the world's most visited museum, home to some 35,000 works on display across eight curatorial departments, from Egyptian antiquities to Italian Renaissance painting. Built as a fortress in the late twelfth century under Philip II, it became a royal palace and then, after the Revolution, a public museum in 1793. The glass pyramid designed by I. M. Pei opened in 1989 and is now the main entrance. Visitors are advised to plan a route in advance: the Denon wing holds the Mona Lisa, the Sully wing the medieval moats, and the Richelieu wing the Napoleon III apartments. Tickets are timed, and booking online is strongly recommended, particularly at weekends and during school holidays. On Sundays the museum opens at {open}."
+     },
+     {
+      "title": "Paris in a weekend",
+      "url": "https://example.net/travel/paris-weekend",
+      "content": "Two days in Paris: start with a walk along the Seine from Notre-Dame to the Musée d'Orsay, then lunch in the Marais. Two days in Paris: start with a walk along the Seine from Notre-Dame to the Musée d'Orsay, then lunch in the Marais. Two days in Paris: start with a walk along the Seine from Notre-Dame to the Musée d'Orsay, then lunch in the Marais. Two days in Paris: start with a walk along the Seine from Notre-Dame to the Musée d'Orsay, then lunch in the Marais. Two days in Paris: start with a walk along the Seine from Notre-Dame to the Musée d'Orsay, then lunch in the Marais. "
+     },
+     {
+      "title": "Museum passes compared",
+      "url": "https://example.com/paris/museum-pass",
+      "content": "The Paris Museum Pass covers more than 50 museums and monuments, including the Louvre, for two, four or six days. The Paris Museum Pass covers more than 50 museums and monuments, including the Louvre, for two, four or six days. The Paris Museum Pass covers more than 50 museums and monuments, including the Louvre, for two, four or six days. The Paris Museum Pass covers more than 50 museums and monuments, including the Louvre, for two, four or six days. The Paris Museum Pass covers more than 50 museums and monuments, including the Louvre, for two, four or six days. "
+     }
+    ],
+    "no_answer": 0,
+    "noise": 0,
+    "min_results": 3,
+    "held_out": {
+     "open": [
+      "10:00 am|10 am|10:00"
+     ]
+    },
+    "answer_held_out": [
+     "Sunday opening at the Louvre: {open}."
+    ]
+   }
+  ]
+ }
+}

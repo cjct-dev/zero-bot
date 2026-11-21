@@ -84,6 +84,7 @@ import argparse
 import contextlib
 import io
 import json
+import math
 import os
 import random
 import re
@@ -105,6 +106,15 @@ PROVENANCE = MANIFEST + ("fixtures",)             # compared wherever recorded
 OUTCOMES = ("pass", "fail", "unscorable")
 SETS = ("scored", "suite")
 VERDICT_EXIT = {"passes": 0, "fails": 1, "inconclusive": 3, "incomplete": 4}
+# The held-out run (tests/run.py's release profile: both sets once on the stand-in web's held-out seed and
+# variants, which no day-to-day run uses) is judged on its own, never paired with a baseline: each set's pass
+# rate must reach its floor, and every critical case must pass. A change that wins on the everyday seed but loses
+# here is fitted to the everyday answers.
+# Calibrated 2026-11-21 from three held-out runs (tests/run.py --groups held-out --calibrate 3, scorer 2026-11-21.4):
+# scored 97.9/95.1/97.2% (mean 96.7, sd 1.5), suite 97.7/96.5/97.0% (mean 97.1, sd 0.6), web 95.0/96.5/94.3%
+# (mean 95.3, sd 1.1); each floor is the mean less the larger of 2 points and two standard deviations.
+HELD_OUT_FLOOR = {"scored": 0.93, "suite": 0.95, "web": 0.93}
+HELD_OUT_FROM = 1000   # tests/mocks/fake_web.py: seeds from here on are held out
 
 # Cases that must pass every run on the variant. Scored-set names, and suite cases by tag (the suite's
 # names are positions, its tags are not).
@@ -122,16 +132,23 @@ def critical(name, tags):
 
 
 # ---------------------------------------------------------------- the roster
-def load_roster():
-    """Every case defined in this tree: {"scorer": the current scorer, "sets": {set: {name: {"hash", "tags"}}}},
-    from tests/agent_eval.py's CASES and tests/suite/cases.json, hashed as the runners hash them."""
+def load_roster(seed=None):
+    """Every case defined in this tree: {"scorer": the current scorer, "seed": the stand-in's seed, "sets": {set: {name:
+    {"hash", "tags", "web"}}}}, from tests/agent_eval.py's CASES and tests/suite/cases.json, hashed as the runners
+    hash them with SEED (default: the runners' own, the everyday one). "web": the case rests on a web service."""
     import agent_eval as ev
     import agent_suite as su
     with open(os.path.join(HERE, "suite", "cases.json"), encoding="utf-8") as f:
         suite = json.load(f)
-    return {"scorer": ev.SCORER_VERSION,
-            "sets": {"scored": {c["name"]: {"hash": ev.case_hash(c), "tags": []} for c in ev.CASES},
-                     "suite": {c["name"]: {"hash": ev.case_hash(su.compile_case(c)), "tags": c["tags"]} for c in suite}}}
+    saved = ev.WEB_SEED
+    ev.WEB_SEED = saved if seed is None else seed
+    try:
+        compiled = [(c, su.compile_case(c)) for c in suite]
+        return {"scorer": ev.SCORER_VERSION, "seed": ev.WEB_SEED,
+                "sets": {"scored": {c["name"]: {"hash": ev.case_hash(c), "tags": [], "web": ev.web_backed(c)} for c in ev.CASES},
+                         "suite": {c["name"]: {"hash": ev.case_hash(k), "tags": c["tags"], "web": ev.web_backed(k)} for c, k in compiled}}}
+    finally:
+        ev.WEB_SEED = saved
 
 
 def roster_critical(roster):
@@ -634,6 +651,12 @@ def parse(argv):
     ap.add_argument("--not-run", default="", help="cases the variant left out on purpose (tests/run.py --no-search); "
                                                    "never a critical case in a release")
     ap.add_argument("--verdict", default="", help="write the verdict as JSON to this file")
+    ap.add_argument("--held-out", default="", help="judge a held-out run (results files, comma-separated) on its own: "
+                                                   "pass-rate floors and critical cases; no baseline")
+    ap.add_argument("--repeats", type=int, default=1, help="--held-out: runs each case must have (default 1)")
+    ap.add_argument("--calibrate", action="store_true", help="--held-out: also suggest floors from the per-run pass rates")
+    ap.add_argument("--floor", default="", help="--held-out floors, e.g. scored=0.8,suite=0.8 (default %s)"
+                                                % ",".join("%s=%.2f" % kv for kv in sorted(HELD_OUT_FLOOR.items())))
     ap.add_argument("--self-test", action="store_true")
     return ap.parse_args(argv)
 
@@ -642,6 +665,24 @@ def main(argv=None):
     a = parse(sys.argv[1:] if argv is None else argv)
     if a.self_test:
         return self_test()
+    if a.held_out:
+        res, problems = load(a.held_out)
+        floors = dict(HELD_OUT_FLOOR, **{k: float(v) for k, v in (x.split("=", 1) for x in a.floor.split(",") if x)})
+        import agent_eval as ev
+        try:
+            roster = load_roster(ev.HELD_OUT_SEED)
+        except Exception as e:   # noqa: BLE001  no roster: incomplete, never a pass
+            roster, problems = {"scorer": None, "seed": None, "sets": {}}, problems + ["the roster could not be read: %s" % e]
+        v = held_out_verdict(res, problems, floors, roster, a.repeats, a.max_unscorable)
+        if a.calibrate:
+            v["calibration"] = calibration(v)
+            for g, c in sorted(v["calibration"].items()):
+                print("calibrate %-6s mean %.1f%%, sd %.1f, runs %.1f%% to %.1f%%: floor %.0f%%"
+                      % (g, 100 * c["mean"], 100 * c["sd"], 100 * c["min"], 100 * c["max"], 100 * c["floor"]))
+        if a.verdict:
+            with open(a.verdict, "w", encoding="utf-8") as f:
+                json.dump(v, f, indent=1)
+        return VERDICT_EXIT[v["verdict"]]
     if not a.base or not a.variant:
         sys.exit("--base and --variant are needed (or --self-test)")
     if a.release and not a.require:
@@ -659,6 +700,97 @@ def main(argv=None):
         with open(a.verdict, "w", encoding="utf-8") as f:
             json.dump(v, f, indent=1)
     return VERDICT_EXIT[v["verdict"]]
+
+
+def held_out_verdict(results, load_problems, floors, roster, repeats=1, max_unscorable=MAX_UNSCORABLE, out=None):
+    """The held-out run judged on its own, against ROSTER (load_roster at the held-out seed): every case it defines
+    with exactly REPEATS valid runs of its current version (its case_hash at that seed, the current scorer, the
+    roster's seed); the pass rate of each set, and of the cases that rest on a web service ("web"), against its
+    floor; every critical case of the roster passing every run. "fails" (a floor missed, a critical case not
+    passing), "incomplete" (a case missing, run too often or not defined, a stale or other-seed record, records not
+    valid, too many unscorable runs) or "passes"; printed, and returned with the figures. Pass rates per repeat
+    (the k-th run of every case) are given too, for calibrating the floors (HELD_OUT_FLOOR)."""
+    out = out or sys.stdout
+    v = {"verdict": "passes", "sets": {}, "reasons": list(load_problems), "critical_failed": [], "per_repeat": {}}
+    incomplete = bool(load_problems)
+    defined = {n: (s_, x) for s_, cases in roster["sets"].items() for n, x in cases.items()}
+    runs = {}
+    for r in results:
+        runs.setdefault(str(r.get("case")), []).append(r)
+    unknown = sorted(n for n in runs if n not in defined)
+    if unknown:
+        v["reasons"].append("cases the roster does not define: %s" % short(unknown))
+        incomplete = True
+    good = {}
+    stale, wrong_count = [], []
+    for n, (s_, x) in defined.items():
+        rs = runs.get(n, [])
+        ok = [r for r in rs if not record_problems(r) and set_of(r) == s_ and r.get("case_hash") == x["hash"]
+              and r.get("scorer") == roster["scorer"] and r.get("web_seed") == roster["seed"]]
+        if len(ok) != len(rs): stale.append(n)
+        if len(rs) != repeats: wrong_count.append(n)
+        good[n] = ok
+    if stale:
+        v["reasons"].append("%d cases have records that are not valid runs of the current case at seed %s: %s"
+                            % (len(stale), roster["seed"], short(stale)))
+        incomplete = True
+    if wrong_count:
+        v["reasons"].append("%d cases do not have exactly %d runs: %s" % (len(wrong_count), repeats, short(wrong_count)))
+        incomplete = True
+    groups = {s_: [n for n, (t, _) in defined.items() if t == s_] for s_ in SETS}
+    groups["web"] = [n for n, (_, x) in defined.items() if x.get("web")]
+    for g, names in groups.items():
+        rs = [r for n in names for r in good[n]]
+        scorable = [r for r in rs if outcome(r) in ("pass", "fail")]
+        passed = sum(1 for r in scorable if outcome(r) == "pass")
+        rate = passed / len(scorable) if scorable else None
+        v["sets"][g] = {"cases": len(names), "runs": len(rs), "scorable": len(scorable), "passed": passed, "rate": rate,
+                        "floor": floors.get(g)}
+        if rs and len(rs) - len(scorable) > max_unscorable * len(rs):
+            v["reasons"].append("%d of %d %s runs are unscorable" % (len(rs) - len(scorable), len(rs), g))
+            incomplete = True
+        if rate is None:
+            v["reasons"].append("no scorable %s run" % g)
+            incomplete = True
+        elif floors.get(g) is not None and rate < floors[g]:
+            v["reasons"].append("%s: %.1f%% passed, under the floor of %.0f%%" % (g, 100 * rate, 100 * floors[g]))
+            v["verdict"] = "fails"
+        v["per_repeat"][g] = [(lambda k_runs: sum(1 for r in k_runs if outcome(r) == "pass") / max(1, len(k_runs)))(
+            [good[n][k] for n in names if len(good[n]) > k and outcome(good[n][k]) in ("pass", "fail")]) for k in range(repeats)]
+    for n in sorted(roster_critical(roster)):
+        if not good.get(n):
+            continue   # counted as missing or stale above
+        if any(outcome(r) != "pass" for r in good[n]):
+            v["critical_failed"].append(n)
+    if v["critical_failed"]:
+        v["reasons"].append("critical cases not passing: %s" % short(v["critical_failed"]))
+        v["verdict"] = "fails"
+    if incomplete and v["verdict"] == "passes":
+        v["verdict"] = "incomplete"
+    for g, x in v["sets"].items():
+        if x["rate"] is not None:
+            print("held-out %-6s %d/%d passed (%.1f%%), floor %s, %d cases, seed %s%s" % (
+                g, x["passed"], x["scorable"], 100 * x["rate"], "%.0f%%" % (100 * x["floor"]) if x["floor"] is not None else "none",
+                x["cases"], roster["seed"], "; per run: " + ", ".join("%.1f%%" % (100 * p) for p in v["per_repeat"][g]) if repeats > 1 else ""),
+                file=out)
+    for reason in v["reasons"]:
+        print("  " + reason, file=out)
+    print("held-out: %s" % v["verdict"], file=out)
+    return v
+
+
+def calibration(v, margin_points=2.0, sd_factor=2.0):
+    """Suggested floors from a held-out run of several repeats (v: held_out_verdict's result): each group's mean
+    pass rate per run, less the larger of MARGIN_POINTS and SD_FACTOR standard deviations, rounded down."""
+    import statistics
+    out = {}
+    for g, rates in v["per_repeat"].items():
+        if not rates: continue
+        mean = statistics.mean(rates)
+        sd = statistics.stdev(rates) if len(rates) > 1 else 0.0
+        out[g] = {"mean": mean, "sd": sd, "min": min(rates), "max": max(rates),
+                  "floor": math.floor(100 * (mean - max(margin_points / 100.0, sd_factor * sd))) / 100.0}
+    return out
 
 
 # ---------------------------------------------------------------- the gate's own test
@@ -932,6 +1064,59 @@ def self_test():
               "cannot be read" in " ".join(v["incomplete"]), (rc, v["incomplete"]))
         check("a file that is not results is incomplete", rc2 == 4)
         check("--release passes with both sets", rc3 == 0 and v3["release"] and v3["sets"]["scored"]["compared"] == 40, (rc3, v3))
+
+    # The held-out run, judged on its own against the roster at the held-out seed (W3).
+    def h_roster():
+        sets = {"scored": {("s%02d" % k): {"hash": "h-s%02d" % k, "tags": [], "web": k < 5} for k in range(20)},
+                "suite": {("t-%03d" % k): {"hash": "h-t-%03d" % k, "tags": ["confirm"] if k == 0 else ["timer"], "web": False}
+                          for k in range(20)}}
+        sets["scored"]["home_after_web_no"] = {"hash": "h-home_after_web_no", "tags": [], "web": True}
+        return {"scorer": "s1", "seed": HELD_OUT_FROM + 1, "sets": sets}
+
+    def held(roster, fail=(), seed=HELD_OUT_FROM + 1, drop=(), extra=(), repeats=1, stale=()):
+        out = []
+        for s_, cases in roster["sets"].items():
+            for name in cases:
+                if name in drop: continue
+                for _ in range(repeats):
+                    r = rec(name, ok=name not in fail, suite=s_ == "suite", tags=cases[name]["tags"] if s_ == "suite" else None,
+                            h="stale" if name in stale else None)
+                    r["web_seed"] = seed
+                    out.append(r)
+        for name in extra:
+            r = rec(name)
+            r["web_seed"] = seed
+            out.append(r)
+        return out
+    quiet, ro, fl = io.StringIO(), h_roster(), {"scored": 0.8, "suite": 0.8, "web": 0.8}
+    v = held_out_verdict(held(ro, fail=("s06", "s07")), [], fl, ro, out=quiet)
+    check("held-out: 90% of the roster against floors of 80% passes", v["verdict"] == "passes" and abs(v["sets"]["scored"]["rate"] - 19 / 21) < 1e-9, v)
+    v = held_out_verdict(held(ro, fail=["s%02d" % k for k in range(6, 12)]), [], fl, ro, out=quiet)
+    check("held-out: a set under its floor fails", v["verdict"] == "fails" and "under the floor" in str(v["reasons"]), v)
+    v = held_out_verdict(held(ro, fail=["s00", "s01", "s02"]), [], fl, ro, out=quiet)
+    check("held-out: the web cases under their floor fail, though the set passes", v["verdict"] == "fails" and
+          "web:" in str(v["reasons"]) and v["sets"]["scored"]["rate"] >= 0.8, v["reasons"])
+    v = held_out_verdict(held(ro, fail=("home_after_web_no",)), [], fl, ro, out=quiet)
+    check("held-out: a critical case by name that failed fails it", v["verdict"] == "fails" and v["critical_failed"] == ["home_after_web_no"], v)
+    v = held_out_verdict(held(ro, fail=("t-000",)), [], fl, ro, out=quiet)
+    check("held-out: a critical case by the roster's tags that failed fails it", v["critical_failed"] == ["t-000"], v)
+    v = held_out_verdict(held(ro, drop=("home_after_web_no", "t-000")), [], fl, ro, out=quiet)
+    check("held-out: critical cases missing make it incomplete, never a pass", v["verdict"] == "incomplete", v)
+    v = held_out_verdict(held(ro, seed=1), [], fl, ro, out=quiet)
+    check("held-out: records of another seed are no held-out run", v["verdict"] == "incomplete", v)
+    v = held_out_verdict(held(ro, extra=("invented",)), [], fl, ro, out=quiet)
+    check("held-out: a case the roster does not define makes it incomplete", v["verdict"] == "incomplete" and "invented" in str(v["reasons"]), v)
+    one = [r for r in held(ro) if r["case"] in ("s10", "t-005")]
+    v = held_out_verdict(one, [], fl, ro, out=quiet)
+    check("held-out: one easy pass from each set is incomplete, not a pass", v["verdict"] == "incomplete", v)
+    v = held_out_verdict(held(ro, stale=("s03",)), [], fl, ro, out=quiet)
+    check("held-out: a stale record is not counted", v["verdict"] == "incomplete" and "not valid runs" in str(v["reasons"]), v)
+    v = held_out_verdict(held(ro, repeats=2), [], fl, ro, out=quiet)
+    check("held-out: twice the runs asked for is incomplete", v["verdict"] == "incomplete", v)
+    v = held_out_verdict(held(ro, repeats=3, fail=("s08",)), [], fl, ro, repeats=3, out=quiet)
+    cal = calibration(v)
+    check("held-out: three repeats, per-run rates and a floor under their mean", v["verdict"] == "passes" and len(v["per_repeat"]["scored"]) == 3
+          and cal["scored"]["floor"] <= cal["scored"]["mean"] - 0.02, (v["per_repeat"], cal))
 
     for f in failed:
         print("FAIL " + f)

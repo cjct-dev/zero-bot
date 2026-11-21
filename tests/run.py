@@ -6,10 +6,10 @@ one line per group and a short summary instead of each script's own output.
     tests/run.py --profile quick                 every offline group but the slow ones (a few minutes)
     tests/run.py --profile change [--base REF]   the groups that cover the files changed since REF
     tests/run.py --profile offline               every offline group
-    tests/run.py --profile release --baseline EVAL.json,SUITE.json [--no-search] [--no-build]
+    tests/run.py --profile release --baseline EVAL.json,SUITE.json [--no-build]
                                                  build, offline, the scored set and the suite once, the gate
     tests/run.py --groups unit,hue               these groups only
-    tests/run.py --groups live-suite --tags timer --repeat 5 --no-search
+    tests/run.py --groups live-suite --tags timer --repeat 5
     tests/run.py --groups live-scored --scored-only radio_ --repeat 5
     tests/run.py --groups live-suite --exp ZB_EXP_TOOLS=lean --baseline B.json    a variant, gated
     tests/run.py ... --plan                      say what would run and why; run nothing
@@ -24,7 +24,9 @@ must be traced too.
 
 A release (--profile release, or --groups release: the same thing) runs every case of both sets as they
 are defined: --tags, --sample, --skip-tags, --only, --scored-only, --fast and --exp are refused, and
---no-search is the one declared exception (the gate is told what it left out). It builds first unless
+--no-search is accepted and changes nothing: every live case's web reads go to the stand-in web
+(tests/mocks/fake_web.py; the runners refuse a case that could reach a real web service), so no run spends
+a search allowance and none needs a search key. It builds first unless
 --no-build, and then a build older than any of its inputs (src, third_party, cmake, CMakeLists.txt,
 CMakePresets.json) stops it. It also builds the device binary (cp0), which no group runs, and fails when that
 binary's version is not the one in CMakeLists.txt or it holds a cli-only string or a path of the build machine. It starts only with a baseline measured against the roster of cases defined
@@ -32,7 +34,11 @@ in this tree (tests/exp_compare.py load_roster): valid records of both sets, a s
 current version of at least 90% of each set's cases and of every critical case, by the current scorer. The
 live sets run only on a cli build that is an experiments build whose hardware guard holds and which writes
 the evaluator's records (probe_cli). The gate then runs with --release. Record a baseline with
-tests/run.py --groups live-scored,live-suite (eval.json and suite.json in its run folder).
+tests/run.py --groups live-scored,live-suite (eval.json and suite.json in its run folder). Last, the release
+runs the held-out group: both sets once on the stand-in web's held-out seed (never used day to day), judged on
+its own by tests/exp_compare.py --held-out (pass-rate floors, critical cases), its verdict in heldout.json
+beside gate.json. The web-contract group (tests/web_contract.py: the stand-in's shapes against the real
+weather, place, rate and price services; never the search) is in no profile: run it by name before a release.
 
 Groups never inherit switches that change what they test (ZB_UPDATE_SHOTS, ZB_UPDATE_SNAPSHOTS,
 ZB_UNIT_BUILD_ONLY, ZB_UNIT_SKIP_SCRIPTS, HUE_E2E_ONLY, ZB_FAST_MODE, ZB_EVAL_TRACE, any ZB_EXP_*); a
@@ -68,6 +74,8 @@ import time
 sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+import netguard   # noqa: E402  the network boundary of every child (tests/netguard.py)
 PY = sys.executable or "python3"
 FAMILIES = ("tapo", "hue", "firetv", "homekit", "kasa", "wiz", "shelly")
 MAX_LIVE_SECONDS = 6 * 3600
@@ -100,6 +108,21 @@ def _gate_cmd(o, run):
     return gate_command(o, run)
 
 
+def _heldout_eval_cmd(o, run):
+    return heldout_command(eval_command(o, run), os.path.join(run, "eval-heldout.json"), o)
+
+
+def _heldout_suite_cmd(o, run):
+    return heldout_command(suite_command(o, run), os.path.join(run, "suite-heldout.json"), o)
+
+
+def _heldout_judge_cmd(o, run):
+    files = ",".join(os.path.join(run, n) for n in ("eval-heldout.json", "suite-heldout.json"))
+    n = max(1, getattr(o, "calibrate", 0))
+    return py("tests/exp_compare.py", "--held-out", files, "--verdict", os.path.join(run, "heldout.json"), "--repeats", str(n)) + \
+        (["--calibrate"] if getattr(o, "calibrate", 0) else [])
+
+
 def _validate(script):
     """SCRIPT --validate (every case compiled offline), when SCRIPT has it; None (nothing to run) when not."""
     def cmd(o, run):
@@ -117,7 +140,8 @@ def _sim_build_cmd(o, run):
 
 
 GROUPS = [
-    dict(name="runner", secs=4, needs=[], cmds=[py("tests/run.py", "--self-test"), py("tests/exp_compare.py", "--self-test")],
+    dict(name="runner", secs=4, needs=[], cmds=[py("tests/run.py", "--self-test"), py("tests/exp_compare.py", "--self-test"),
+                                              py("tests/web_contract.py", "--self-test"), py("tests/netguard.py", "--self-test")],
          about="this runner (the path map, the profiles, --plan, the summaries) and the gate's verdicts"),
     dict(name="unit", secs=60, needs=[], uses=["cli"], timeout=2400,
          cmds=[["sh", "tests/run_unit.sh"]], env={"ZB_UNIT_SKIP_SCRIPTS": "1"},
@@ -166,17 +190,25 @@ GROUPS = [
     dict(name="gate", secs=5, needs=["baseline"], auto=True, cmds=[_gate_cmd],
          about="tests/exp_compare.py's no-regression gate: this run's live results against --baseline "
                "(added when --baseline is given with a live group, and always in the release profile)"),
+    dict(name="held-out", secs=2700, needs=["cli", "live"], heldout=True, judged=True, timeout=MAX_LIVE_SECONDS,
+         cmds=[_heldout_eval_cmd, _heldout_suite_cmd, _heldout_judge_cmd],
+         about="the release's held-out run: both sets once on the stand-in web's held-out seed and variants, which no "
+               "day-to-day run uses, judged on its own (tests/exp_compare.py --held-out: a pass-rate floor per set, every "
+               "critical case passing); reported beside the gate. Only in the release profile: never tune on it"),
+    dict(name="web-contract", secs=15, needs=[], ondemand=True, internet=True, cmds=[py("tests/web_contract.py")],
+         about="the stand-in web's shapes against the real weather, place, rate and price services (a handful of direct "
+               "requests, never the search; needs the internet): on demand, before a release, in no profile"),
 ]
 BY_NAME = {g["name"]: g for g in GROUPS}
-OFFLINE = [g["name"] for g in GROUPS if not g.get("live") and not g.get("auto") and not g.get("build")]
+OFFLINE = [g["name"] for g in GROUPS if not g.get("live") and not g.get("auto") and not g.get("build") and not g.get("heldout")
+           and not g.get("ondemand")]
 LIVE = [g["name"] for g in GROUPS if g.get("live")]
 LIVE_SET = {"live-scored": "scored", "live-suite": "suite"}            # tests/exp_compare.py's names for them
 LIVE_FILE = {"live-scored": "eval.json", "live-suite": "suite.json"}   # their results in the run folder
 # Inherited switches that change what a group tests: never passed on (the runner sets its own).
 SCRUB = ("ZB_UNIT_BUILD_ONLY", "ZB_UNIT_SKIP_SCRIPTS", "ZB_UPDATE_SHOTS", "ZB_UPDATE_SNAPSHOTS", "HUE_E2E_ONLY",
          "ZB_FAST_MODE", "ZB_EVAL_TRACE")   # ZB_EVAL_TRACE: the live runs are traced by --trace, which records it
-# What a release refuses: it runs every case of both sets as they are defined (--no-search is declared, and
-# the gate is told what it left out).
+# What a release refuses: it runs every case of both sets as they are defined.
 RELEASE_REFUSES = ("tags", "sample", "skip_tags", "only", "scored_only", "fast", "exp")
 RUNNER_EXP = ("ZB_EXP_TRACE", "ZB_EXP_WEB", "ZB_EXP_NO_HARDWARE")   # set by the live sets' runners per case
 
@@ -188,7 +220,8 @@ PROFILES = {
                "included; for a change to what the model is told, which live cases to run five times "
                "(suite tags, scored-set names; run only with --live)", None),
     "release": ("every offline group on fresh builds, then the scored set and the suite once, then the gate "
-                "against --baseline (results of both sets, recorded by the current runners)", OFFLINE + LIVE),
+                "against --baseline (results of both sets, recorded by the current runners), then the held-out run, "
+                "judged on its own", OFFLINE + LIVE + ["held-out"]),
 }
 
 # ---------------------------------------------------------------- what a changed file needs
@@ -202,7 +235,8 @@ PATH_RULES = [
     (r"^(.*/)?__pycache__/|.*\.pyc$", [], "Python's bytecode cache"),
     (r"^(scripts/|packaging/|extras/|\.github/)", [], "packaging and deployment: no offline test covers it"),
     (r"^tests/run\.py$", ["runner"], "this runner"),
-    (r"^tests/(exp_compare|exp_report)\.py$", ["runner"], "the gate and the reports (their self-test is in runner)"),
+    (r"^tests/netguard\.py$", ["runner", "tools", "loop", "scorer"], "the network boundary of every test process"),
+    (r"^tests/(exp_compare|exp_report|web_contract)\.py$", ["runner"], "the gate and the reports (their self-test is in runner)"),
     (r"^tests/scorer_test\.py$", ["scorer"], "the scorer's own test"),
     (r"^tests/agent_eval\.py$", ["scorer", "cases", "loop"],
      "the scored set and the scoring both live sets use (agent_loop_test.py reads its parser)"),
@@ -210,7 +244,7 @@ PATH_RULES = [
     (r"^tests/suite/from_conversation\.py$", ["cases", "scorer", "loop"],
      "drafts a case from a saved conversation (agent_loop_test.py runs it)"),
     (r"^tests/suite/", ["cases", "scorer"], "the generated suite (scorer_test.py reads its cases)"),
-    (r"^tests/mocks/fake_web\.py$", ["cases", "scorer", "tools"],
+    (r"^tests/mocks/(fake_web\.py|web/)", ["cases", "scorer", "tools"],
      "the stand-in web (its fixtures: the validators and scorer_test.py; tools_cli.py starts it)"),
     (r"^tests/(golden/|shots/|shots_compare\.py$)", ["screens"], "the golden screenshots"),
     (r"^tests/mocks/mock_tapo\.py$", ["tapo", "loop"],
@@ -349,82 +383,6 @@ def diff_reader(fork):
 
 
 # ---------------------------------------------------------------- the live sets
-def stand_in_web(c):
-    """The case's web search goes to the stand-in (tests/mocks/fake_web.py), which needs no key."""
-    return "ZB_EXP_WEB" in (c.get("env") or {})
-
-
-def exact_only(cases, keep):
-    """KEEP as one --only value when it selects exactly those names among CASES (--only matches any name
-    containing one of its parts), else None."""
-    want = set(keep)
-    return ",".join(keep) if {c["name"] for c in cases if any(k in c["name"] for k in keep)} == want else None
-
-
-def search_free_eval_cases(only):
-    """The scored set's names that need no real web search (the stand-in's cases are kept), as an --only
-    that selects exactly them, or None when that cannot be done cleanly (names that contain one another)."""
-    try:
-        sys.path.insert(0, HERE)
-        import agent_eval as ev
-        cases = ev.CASES
-    except Exception:  # the scored set could not be read: say the search cases are void instead
-        return None
-    finally:
-        if sys.path and sys.path[0] == HERE:
-            sys.path.pop(0)
-    wanted = [w for w in only.split(",") if w]
-
-    def picked(c, words):
-        return not words or any(w in c["name"] for w in words)
-
-    def needs_search(c):
-        if stand_in_web(c):
-            return False
-        if "ZB_SEARCH_KEY" in c.get("env", {}) and c["env"]["ZB_SEARCH_KEY"] is None:
-            return False
-        said = " ".join(t for t in c["turns"] if isinstance(t, str))
-        return "web_search" in c.get("must", []) or \
-            bool(re.search(r"\blook (it )?up\b|\bsearch\b|\bgoogle\b", said, re.I))
-
-    keep = [c["name"] for c in cases if picked(c, wanted) and not needs_search(c)]
-    if keep and exact_only(cases, keep) is None:
-        return None
-    left_out = [c["name"] for c in cases if picked(c, wanted) and needs_search(c)]
-    return keep, left_out
-
-
-def suite_cases():
-    with open(os.path.join(HERE, "suite", "cases.json"), encoding="utf-8") as f:
-        return json.load(f)
-
-
-def suite_selected(o, skip):
-    sys.path.insert(0, HERE)
-    try:
-        import agent_suite as su
-        return su.selected(suite_cases(), argparse.Namespace(tags=o.tags, skip_tags=skip, only=o.only,
-                                                             sample=o.sample, seed=o.seed))
-    finally:
-        if sys.path and sys.path[0] == HERE:
-            sys.path.pop(0)
-
-
-def search_free_suite(o):
-    """With --no-search: the suite's chosen cases but those that need the real web search (tagged search,
-    without the stand-in), as (--only value, kept names, left-out names); None when that cannot be done
-    cleanly, and then --skip-tags search leaves out the stand-in's cases too."""
-    try:
-        chosen = suite_selected(o, o.skip_tags)
-        cases = suite_cases()
-    except Exception:
-        return None
-    keep = [c["name"] for c in chosen if "search" not in c["tags"] or stand_in_web(c)]
-    left = [c["name"] for c in chosen if "search" in c["tags"] and not stand_in_web(c)]
-    only = exact_only(cases, keep) if keep else ""
-    return None if only is None else (only, keep, left)
-
-
 PER_CASE = 3.6   # seconds a live case takes at --jobs 1 (whole runs: 480 s for 123, 2100 s for 601)
 
 
@@ -433,14 +391,8 @@ def live_count(name, o):
     sys.path.insert(0, HERE)
     try:
         if name == "live-suite":
-            free = search_free_suite(o) if o.no_search else None
-            if free is not None:
-                return len(free[1])
-            return len(suite_selected(o, skip_tags(o)))
+            return len(suite_selected(o, o.skip_tags))
         only = scored_only(o)
-        free = search_free_eval_cases(only) if o.no_search else None
-        if free is not None:
-            return len(free[0])
         import agent_eval as ev
         words = [w for w in only.split(",") if w]
         return sum(1 for c in ev.CASES if not words or any(w in c["name"] for w in words))
@@ -467,15 +419,23 @@ def scored_only(o):
     return o.scored_only or o.only
 
 
+def heldout_command(cmd, out, o=None):
+    """A live set's command for the held-out run: the held-out seed, its own results file, and with --calibrate N
+    each case N times."""
+    cmd = list(cmd)
+    cmd[cmd.index("--json") + 1] = out
+    if "--repeat" in cmd:
+        k = cmd.index("--repeat")
+        del cmd[k:k + 2]
+    n = getattr(o, "calibrate", 0) if o is not None else 0
+    return cmd + ["--held-out"] + (["--repeat", str(n)] if n > 1 else [])
+
+
 def eval_command(o, run):
     # --trace always: a traced run sends stream_options.include_usage, so a baseline and a variant must
     # both be traced (tests/exp_compare.py leaves out traced-against-untraced pairs).
     cmd = live_prefix() + py("tests/agent_eval.py", "--jobs", "1", "--trace", "--json", os.path.join(run, "eval.json"))
     only = scored_only(o)
-    if o.no_search:
-        free = search_free_eval_cases(only)
-        if free and free[0]:
-            only = ",".join(free[0])
     if only:
         cmd += ["--only", only]
     if o.repeat > 1:
@@ -485,25 +445,13 @@ def eval_command(o, run):
     return cmd
 
 
-def skip_tags(o):
-    """The suite's --skip-tags: the user's, and search when --no-search cannot keep the stand-in's cases."""
-    tags = [t for t in o.skip_tags.split(",") if t]
-    if o.no_search and "search" not in tags:
-        tags.append("search")
-    return ",".join(tags)
-
-
 def suite_command(o, run):
     cmd = live_prefix() + py("tests/agent_suite.py", "--jobs", "1", "--trace", "--json", os.path.join(run, "suite.json"))
-    free = search_free_suite(o) if o.no_search else None
-    if free is not None:
-        cmd += ["--only", free[0]] if free[0] else []    # the selection, made here, minus the real-search cases
-    else:
-        for flag, value in (("--tags", o.tags), ("--skip-tags", skip_tags(o)), ("--only", o.only)):
-            if value:
-                cmd += [flag, value]
-        if o.sample:
-            cmd += ["--sample", str(o.sample), "--seed", str(o.seed)]
+    for flag, value in (("--tags", o.tags), ("--skip-tags", o.skip_tags), ("--only", o.only)):
+        if value:
+            cmd += [flag, value]
+    if o.sample:
+        cmd += ["--sample", str(o.sample), "--seed", str(o.seed)]
     if o.repeat > 1:
         cmd += ["--repeat", str(o.repeat)]
     if o.fast is not None:
@@ -527,11 +475,6 @@ def gate_command(o, run):
         cmd += ["--require", ",".join(LIVE_SET[g] for g in ran)]
     if o.skip_tags:
         cmd += ["--skip-tags", o.skip_tags]
-    if o.no_search:   # what this run left out on purpose, so that a critical one is not read as missing
-        left = (search_free_eval_cases(scored_only(o)) or ((), ()))[1] if "live-scored" in ran else ()
-        left = list(left) + (list((search_free_suite(o) or ((), (), ()))[2]) if "live-suite" in ran else [])
-        if left:
-            cmd += ["--not-run", ",".join(left)]
     return cmd
 
 
@@ -542,20 +485,8 @@ def exp_env(o):
 
 def live_notes(o, chosen):
     notes = []
-    if o.no_search and "live-scored" in chosen:
-        free = search_free_eval_cases(scored_only(o))
-        if free:
-            notes.append("scored set without search: left out %s (the stand-in web's cases are kept)"
-                         % (", ".join(free[1]) or "nothing"))
-        else:
-            notes.append("scored set: its search cases could not be left out cleanly; count them as void")
-    if o.no_search and "live-suite" in chosen:
-        free = search_free_suite(o)
-        if free:
-            notes.append("suite without search: left out %d cases that need the real web search (the stand-in "
-                         "web's are kept)" % len(free[2]))
-        else:
-            notes.append("suite: --skip-tags search (the stand-in web's search cases are left out too)")
+    if o.no_search and any(n in chosen for n in LIVE):
+        notes.append("--no-search changes nothing: every live case's web reads go to the stand-in web, search included")
     if any(n in chosen for n in LIVE):
         exp = sorted(k for k in os.environ if k.startswith("ZB_EXP_"))
         if exp:
@@ -795,6 +726,9 @@ def choose(o):
                          + " and the live sets")
     if not names:
         names = []
+    if "held-out" in names and not (release_mode(o) or o.calibrate):
+        raise SystemExit("the held-out run is the release profile's alone (or --groups held-out --calibrate N, to set its "
+                         "floors): never tune on it")
     if (o.baseline or release_mode(o)) and any(n in names for n in LIVE):
         names.append("gate")
         why["gate"] = "a release" if release_mode(o) else "--baseline with a live run"
@@ -819,7 +753,7 @@ def advice_lines(advice, o):
     if not advice:
         return []
     tags, hit, scored = advice
-    ns = " --no-search" if o.no_search else ""
+    ns = ""
     out = ["what the model is told changed (%s): run the live cases it touches five times," % ", ".join(hit)]
     if tags == "all":
         out.append("  tests/run.py --groups live-suite --sample 60 --repeat 5%s   (a few from every category)" % ns)
@@ -966,7 +900,7 @@ def key_line(text):
     counts = [(int(a) + (int(b) if kind == "passed" else 0), int(b)) for l in lines for a, kind, b in COUNT.findall(l)]
     if len(counts) > 1:
         return "%d checks, %d failed (%d parts)" % (sum(a for a, _ in counts), sum(b for _, b in counts), len(counts))
-    for pattern in (r"^gate: .*", r"^\d+/\d+ passed[^|]*", r".*\d+ checks, \d+ failed.*", r".*\d+ screens, \d+ differ.*",
+    for pattern in (r"^gate: .*", r"^held-out: .*", r"^\d+/\d+ passed[^|]*", r".*\d+ checks, \d+ failed.*", r".*\d+ screens, \d+ differ.*",
                     r".*(up to date|OUT OF DATE).*", r"^no cases selected$", r"^ninja: no work to do\.?$",
                     r"^\[\d+/\d+\] Linking .*"):
         for l in reversed(lines):
@@ -1013,10 +947,20 @@ def stop(p):
 RUN_COMMAND = start   # the self-test puts a recorder here
 
 
-def group_env(tmp, extra):
+def group_env(tmp, extra, group=None):
     """The environment a group runs in: fresh state folders, and none of the inherited switches that would
-    change what it tests (SCRUB, ZB_EXP_*); EXTRA is what the runner sets itself."""
+    change what it tests (SCRUB, ZB_EXP_*); EXTRA is what the runner sets itself. No group gets the search key; only
+    the live groups get the AI service's address and key; every group but the one that must reach the internet
+    (web-contract) has its proxies at the trap, only 127.0.0.1 and localhost exempt (tests/netguard.py)."""
+    group = group or {}
     env = {k: v for k, v in os.environ.items() if k not in SCRUB and not k.startswith("ZB_EXP_")}
+    live = group.get("live") or group.get("heldout")
+    if group.get("internet"):
+        for k in netguard.KEYS:
+            env.pop(k, None)
+    else:
+        env = netguard.child_env(env, keep=("ZB_API_BASE", "ZB_API_KEY") if live else (),
+                                 allow_hosts=(netguard.host_of(env.get("ZB_API_BASE")),) if live else ())
     for k in ("CONFIG", "DATA", "CACHE"):
         d = os.path.join(tmp, k.lower())
         os.makedirs(d, exist_ok=True)
@@ -1070,12 +1014,18 @@ def run_group(group, o, run, gate_follows, warnings):
     t0 = time.time()
     rc_all = 0
     try:
-        env = group_env(tmp, dict(group.get("env") or {}, **(exp_env(o) if group.get("live") else {})))
+        extra = dict(group.get("env") or {}, **(exp_env(o) if group.get("live") else {}))
+        if group.get("heldout"):
+            extra["ZB_HELD_OUT_RUN"] = "calibrate" if o.calibrate else "release"   # the scorers take --held-out only then
+        env = group_env(tmp, extra, group)
         with open(logpath, "w") as log:
             log.write("# %s: %s\n" % (name, group["about"]))
-            for cmd in commands_of(group, o, run):
+            cmds = commands_of(group, o, run)
+            for k, cmd in enumerate(cmds):
                 rc = RUN_COMMAND(cmd, log, env, group.get("timeout", 900))
                 log.write("(exit %d)\n" % rc)
+                if group.get("judged") and k < len(cmds) - 1 and rc == 1:
+                    rc = 0   # cases that failed: the last command (the judge) decides
                 rc_all = rc_all or rc
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -1215,7 +1165,8 @@ def parse(argv):
     ap.add_argument("--no-build", action="store_true", help="a release: do not build; any build older than an input stops it")
     ap.add_argument("--live", action="store_true", help="for --profile change: also run the live suite it advises")
     ap.add_argument("--baseline", default="", help="results file(s) to gate the live runs against (A.json[,B.json])")
-    ap.add_argument("--no-search", action="store_true", help="leave out what needs web search (key over quota)")
+    ap.add_argument("--no-search", action="store_true", help="changes nothing (kept for old command lines): every live case "
+                    "uses the stand-in web, search included")
     ap.add_argument("--tags", default="", help="live suite: cases with any of these tags (a+b means both)")
     ap.add_argument("--skip-tags", default="", help="live suite and gate: leave out cases with these tags")
     ap.add_argument("--sample", type=int, default=0, help="live suite: a stratified sample of this many cases")
@@ -1226,6 +1177,8 @@ def parse(argv):
                     help="live sets: an experiment switch for a variant's run (inherited ZB_EXP_* are not passed on)")
     ap.add_argument("--repeat", type=int, default=1, help="live sets: run each case this many times")
     ap.add_argument("--fast", default=None, help="live sets: force fast mode on (1) or off (0)")
+    ap.add_argument("--calibrate", type=int, default=0, metavar="N",
+                    help="with --groups held-out only: run the held-out set N times and suggest its floors (HELD_OUT_FLOOR)")
     ap.add_argument("--self-test", action="store_true", help="check this runner and exit")
     o = ap.parse_args(argv)
     if o.baseline:
@@ -1234,11 +1187,14 @@ def parse(argv):
         k = e.split("=", 1)[0]
         if "=" not in e or not k.startswith("ZB_EXP_") or k in RUNNER_EXP:
             ap.error("--exp %s: give ZB_EXP_NAME=VALUE; %s are set by the runners" % (e, ", ".join(RUNNER_EXP)))
+    if o.calibrate and ([g.strip() for g in o.groups.split(",") if g.strip()] != ["held-out"] or o.profile or
+                        any(getattr(o, k) for k in RELEASE_REFUSES)):
+        ap.error("--calibrate N goes with --groups held-out alone, and no filter or variant")
     if release_mode(o):
         given = ["--" + k.replace("_", "-") for k in RELEASE_REFUSES if getattr(o, k)]
         if given:
             ap.error("a release runs every case of both sets as defined, with the build as it is: %s cannot be "
-                     "given (--no-search is the one declared exception)" % ", ".join(given))
+                     "given" % ", ".join(given))
         if not o.no_build:
             o.build = True   # a release always builds, unless --no-build: then a stale build stops it
     return o
@@ -1271,6 +1227,11 @@ def main(argv=None):
 
 
 # ---------------------------------------------------------------- the runner's own test
+def LIVE_ORDER(names):
+    """NAMES with the gate, in run order (GROUPS' order: the gate after the live sets, the held-out run last)."""
+    return [g["name"] for g in GROUPS if g["name"] in set(names) | {"gate"}]
+
+
 def self_test():
     global RUN_COMMAND, ROOT, changed_paths, diff_reader, stale_note, need_path
     failures, counted = [], [0]
@@ -1363,12 +1324,44 @@ def self_test():
     check("offline has every offline group", set(PROFILES["offline"][1]) == set(OFFLINE) and "firetv" in OFFLINE)
     check("sim-build only from the path map", all("sim-build" not in g for _, g in PROFILES.values() if g))
     rel = PROFILES["release"][1]
-    check("release: offline, then the live sets", rel[:len(OFFLINE)] == OFFLINE and rel[len(OFFLINE):] == LIVE, rel)
+    check("release: offline, then the live sets, then the held-out run", rel[:len(OFFLINE)] == OFFLINE and
+          rel[len(OFFLINE):] == LIVE + ["held-out"], rel)
+    check("the held-out run and the web contract are in no other profile", all("held-out" not in g and "web-contract" not in g
+                                                                                for n, (_, g) in PROFILES.items() if g and n != "release"))
+    check("the web contract is in no profile at all (it reaches the internet)", all("web-contract" not in g for _, g in PROFILES.values() if g))
     o = parse(["--profile", "release", "--baseline", "b.json"])
     chosen = choose(o)[0]
-    check("release with a baseline ends with the gate", chosen[-1] == "gate" and chosen[-3:-1] == LIVE, chosen)
+    check("release with a baseline: the live sets, the gate, then the held-out run", chosen[-4:] == LIVE + ["gate", "held-out"], chosen)
     chosen = choose(parse(["--profile", "release"]))[0]
-    check("release always has the gate", chosen[-1] == "gate", chosen)
+    check("release always has the gate", chosen[-2:] == ["gate", "held-out"], chosen)
+    # The held-out run: both runners with --held-out into files of their own, then the judge on its own.
+    o = parse(["--profile", "release", "--baseline", "b.json"])
+    choose(o)
+    cmds = commands_of(BY_NAME["held-out"], o, "/r")
+    check("held-out: both sets on the held-out seed, then the judge", len(cmds) == 3 and all("--held-out" in c for c in cmds) and
+          cmds[0][cmds[0].index("--json") + 1] == "/r/eval-heldout.json" and cmds[1][cmds[1].index("--json") + 1] == "/r/suite-heldout.json" and
+          "tests/exp_compare.py" in cmds[2] and "/r/heldout.json" in cmds[2] and "--base" not in cmds[2], cmds)
+    for argv in (["--groups", "held-out"], ["--groups", "held-out,live-suite"]):
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                choose(parse(argv))
+            check("held-out outside the release is refused: %s" % " ".join(argv), False)
+        except SystemExit:
+            check("held-out outside the release is refused: %s" % " ".join(argv), True)
+    o = parse(["--groups", "held-out", "--calibrate", "3"])
+    chosen = choose(o)[0]
+    cmds = commands_of(BY_NAME["held-out"], o, "/r")
+    check("--calibrate 3: the held-out set three times, judged with three repeats and a calibration",
+          chosen == ["held-out"] and all(c[c.index("--repeat") + 1] == "3" for c in cmds[:2]) and
+          cmds[2][cmds[2].index("--repeats") + 1] == "3" and "--calibrate" in cmds[2], cmds)
+    for argv in (["--groups", "live-suite", "--calibrate", "3"], ["--groups", "held-out", "--calibrate", "3", "--tags", "timer"]):
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                parse(argv)
+            check("--calibrate refused: %s" % " ".join(argv), False)
+        except SystemExit:
+            check("--calibrate refused: %s" % " ".join(argv), True)
+    check("held-out: the key line is the judge's", key_line("held-out scored 9/10 passed\nheld-out: passes\n") == "held-out: passes")
     check("no gate for live runs without a baseline", "gate" not in choose(parse(["--groups", "live-suite"]))[0])
     chosen = choose(parse(["--groups", "hue,unit,quick"]))[0]
     check("groups run in table order, once", chosen == [g for g in OFFLINE if g in set(quick)], chosen)
@@ -1382,7 +1375,7 @@ def self_test():
               (cmd is not None and cmd[-1] == "--validate") == has, cmd)
     check("a command that has nothing to run is left out", None not in commands_of(BY_NAME["cases"], parse([]), "<run>"))
 
-    # The live commands: --jobs 1 and --trace always, the pass-through options, --no-search.
+    # The live commands: --jobs 1 and --trace always, the pass-through options.
     o = parse(["--groups", "live-suite", "--tags", "timer", "--repeat", "5", "--sample", "9"])
     cmd = suite_command(o, "/r")
     check("suite command", cmd[cmd.index("--jobs") + 1] == "1" and "--trace" in cmd and cmd[cmd.index("--tags") + 1] == "timer" and
@@ -1396,48 +1389,27 @@ def self_test():
             del os.environ["ZB_EVAL_WRAPPER"]
         else:
             os.environ["ZB_EVAL_WRAPPER"] = saved
-    o = parse(["--baseline", "b.json", "--no-search", "--skip-tags", "camera", "--groups", "live-suite"])
+    o = parse(["--baseline", "b.json", "--skip-tags", "camera", "--groups", "live-suite"])
     choose(o)
     gate = gate_command(o, "<run>")
-    check("gate: only the asked-for skips (no search: the run left those cases out)", gate[gate.index("--skip-tags") + 1] == "camera", gate)
-    check("gate: the cases left out for no search are named", "--not-run" in gate and
-          "search-001" in gate[gate.index("--not-run") + 1].split(","), gate)
+    check("gate: only the asked-for skips", gate[gate.index("--skip-tags") + 1] == "camera" and "--not-run" not in gate, gate)
     check("gate: a verdict file, and the sets this run ran required", "--verdict" in gate and
           gate[gate.index("--require") + 1] == "suite" and "--release" not in gate, gate)
     o = parse(["--profile", "release", "--baseline", "b.json"])
     choose(o)
     gate = gate_command(o, "<run>")
     check("gate in a release: both sets and the manifest", "--release" in gate and gate[gate.index("--require") + 1] == "scored,suite", gate)
-    free = search_free_eval_cases("")
-    if free is not None:
-        keep, left = free
-        check("no-search leaves out the scored set's search cases", "search" in left and "search_news" in left and
-              "search" not in keep, left)
-        check("no-search keeps the case that runs without a key", "search_no_key" in keep)
-        check("no-search keeps the stand-in web's cases", "home_after_web_no" in keep and "home_after_web_later" in keep, left)
-    o = parse(["--no-search", "--groups", "live-suite"])
-    free = search_free_suite(o)
-    if free is not None:
-        only, keep, left = free
-        check("no-search, suite: the stand-in web's search case is kept", "home-055" in keep and "home-055" not in left, left)
-        check("no-search, suite: real search cases are left out", "search-001" in left and "dialogue-001" in left and
-              "search-001" not in keep, left)
-        cases = suite_cases()
-        check("no-search, suite: --only selects exactly the kept cases",
-              {c["name"] for c in cases if any(k in c["name"] for k in only.split(","))} == set(keep))
-        cmd = suite_command(o, "/r")
-        check("no-search, suite command: the selection, not --skip-tags search", "--skip-tags" not in cmd and "--only" in cmd, cmd[:12])
-        check("no-search, suite count", live_count("live-suite", o) == len(keep))
-        o = parse(["--no-search", "--tags", "home", "--groups", "live-suite"])
-        free = search_free_suite(o)
-        tagged = {c["name"] for c in cases if "home" in c["tags"]}
-        # home-055 and home-056 both take their search from the stand-in web, so both are kept; nothing left out
-        # uses it.
-        by_name = {c["name"]: c for c in cases}
-        check("no-search with --tags: the tags still choose", free and "home-055" in free[1] and "home-056" in free[1]
-              and set(free[1]) <= tagged and not any(stand_in_web(by_name[n]) for n in free[2]), free and free[2][:5])
+    # --no-search is kept for old command lines and changes nothing: every live case uses the stand-in web.
+    for argv in (["--groups", "live-suite,live-scored", "--tags", "search"], ["--profile", "release", "--baseline", "b.json"]):
+        a, b = parse(argv), parse(argv + ["--no-search"])
+        choose(a)
+        choose(b)
+        check("--no-search changes no command (%s)" % " ".join(argv),
+              (suite_command(a, "/r"), eval_command(a, "/r"), gate_command(a, "<run>")) ==
+              (suite_command(b, "/r"), eval_command(b, "/r"), gate_command(b, "<run>")))
+    check("--no-search says it changes nothing", any("changes nothing" in n for n in live_notes(b, LIVE)))
 
-    n = live_count("live-suite", parse(["--only", "timer-001,calc-001", "--no-search"]))
+    n = live_count("live-suite", parse(["--only", "timer-001,calc-001"]))
     check("a live subset's size", n in (None, 2), n)
     if n is not None:
         check("a live subset's time", group_secs("live-suite", parse(["--only", "timer-001", "--repeat", "3"])) < 60)
@@ -1454,6 +1426,24 @@ def self_test():
               sorted(k for k in keys if k in env))
         check("the runner's own switch is", env.get("ZB_UNIT_SKIP_SCRIPTS") == "1")
         check("fresh state folders", env["XDG_DATA_HOME"].startswith(tmp))
+        # W4: no group gets the search key; only live groups get the AI service; proxies at the trap.
+        before = {k: os.environ.get(k) for k in ("ZB_SEARCH_KEY", "ZB_API_KEY", "ZB_API_BASE", "NO_PROXY", "https_proxy")}
+        os.environ.update(ZB_SEARCH_KEY="sentinel-search", ZB_API_KEY="sentinel-api", ZB_API_BASE="https://ai.example/v1",
+                          NO_PROXY="*", https_proxy="http://corp.example:3128")
+        offline, live = group_env(tmp, {}, BY_NAME["unit"]), group_env(tmp, {}, BY_NAME["live-suite"])
+        contract = group_env(tmp, {}, BY_NAME["web-contract"])
+        check("an offline group gets no key, no AI service, and its proxies at the trap",
+              not any(k in offline for k in netguard.KEYS) and offline["https_proxy"] == netguard.trap().url and
+              offline["NO_PROXY"] == "127.0.0.1,localhost", {k: offline.get(k) for k in netguard.KEYS + ("NO_PROXY",)})
+        check("a live group gets the AI service but not the search key, and only its host exempt",
+              "ZB_SEARCH_KEY" not in live and live.get("ZB_API_KEY") == "sentinel-api" and live["NO_PROXY"] == "127.0.0.1,localhost,ai.example",
+              {k: live.get(k) for k in netguard.KEYS + ("NO_PROXY",)})
+        check("the contract group gets no key", not any(k in contract for k in netguard.KEYS))
+        for k, v in before.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         for k, v in saved_env.items():
@@ -1519,10 +1509,10 @@ def self_test():
                 check("refused: " + " ".join(argv), False)
             except SystemExit:
                 check("refused: " + " ".join(argv), True)
-        o = parse(["--groups", "release", "--baseline", good, "--no-search"])
+        o = parse(["--groups", "release", "--baseline", good])
         chosen = choose(o)[0]
         gate = gate_command(o, "<run>")
-        check("--groups release: the release's groups, its gate and its build", chosen == PROFILES["release"][1] + ["gate"] and
+        check("--groups release: the release's groups, its gate and its build", chosen == LIVE_ORDER(PROFILES["release"][1]) and
               "--release" in gate and o.build, (chosen, gate))
         check("a release builds unless --no-build", parse(["--profile", "release"]).build and
               not parse(["--profile", "release", "--no-build"]).build)

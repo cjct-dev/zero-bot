@@ -31,7 +31,8 @@
 //                          call begins: spoken if it is reply, never if it is a real tool; with no call at
 //                          all the second look runs as before)
 //   ZB_EXP_CHECK_MODEL=ID  the model the parallel check asks (default: the main model)
-//   ZB_EXP_WEB=BASE        the web search, weather and place-name requests go to a stand-in at BASE
+//   ZB_EXP_WEB=BASE        every web read a tool makes (search, forecasts, place names, exchange rates,
+//                          stock prices) goes to a stand-in at BASE
 //                          (tests/mocks/fake_web.py) instead of the internet: https://HOST/PATH?Q is
 //                          sent as BASE/HOST/PATH?Q. BASE must be http://127.x...; anything else stops
 //                          the run. For the test sets: canned results, and search without a key. A

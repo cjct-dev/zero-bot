@@ -21,6 +21,8 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import netguard   # noqa: E402  the network boundary (tests/netguard.py)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
@@ -44,7 +46,7 @@ def check(name, ok, detail=""):
 
 
 def start(cmd, tag):
-    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
     line = p.stdout.readline().split()
     if line[:2] != [tag, "listening"]:
         p.kill()
@@ -58,7 +60,7 @@ def stop(p):
 
 
 def stats(port):
-    with urllib.request.urlopen("http://127.0.0.1:%d/mock/stats" % port, timeout=5) as r:
+    with netguard.local_opener().open("http://127.0.0.1:%d/mock/stats" % port, timeout=5) as r:
         return json.load(r)
 
 
@@ -79,8 +81,9 @@ def converse(name, plugs, adjust, script, said, photo=False):
             ports.append(port)
         env = dict(os.environ, XDG_CONFIG_HOME=state + "/config", XDG_DATA_HOME=state + "/data", XDG_CACHE_HOME=state + "/cache",
                    ZB_TEST_NETWORK="1", ZB_NO_AUDIO="1", ZB_API_KEY="test-key")
-        for v in ("ZB_DRY_RUN", "ZB_FAKE_CAMERA", "http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+        for v in ("ZB_DRY_RUN", "ZB_FAKE_CAMERA"):
             env.pop(v, None)
+        env = netguard.child_env(env, keep=("ZB_API_KEY",))   # the test key only; no inherited key, base or proxy
         os.makedirs(state + "/config/zero-bot")
         os.makedirs(state + "/data/zero-bot")
         out = subprocess.run([APP, "--home-refresh"], env=env, capture_output=True, text=True, timeout=60).stdout
@@ -186,8 +189,7 @@ def everything_off_scenario(name, reply, answer, want_off):
 
 
 def main():
-    if not os.access(APP, os.X_OK):
-        sys.exit("no app at %s (build the cli preset first)" % APP)
+    netguard.require_experiments(APP)   # a build without the experiments sends a search to the real service
     # Asked, and answered yes: switched, and the say sentence is spoken without another model call.
     scenario("asked, then yes", ["yes"], ASK, True,
              ("the confirmation sentence is spoken", lambda a, r: len(a) == 2 and "The fan heater is on." in a[1]))
