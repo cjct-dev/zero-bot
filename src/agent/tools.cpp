@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "agent/calc.h"
+#include "agent/controls.h"
 #include "agent/experiment.h"
 #include "agent/llm.h"
 #include "core/music_lib.h"
@@ -482,6 +483,7 @@ std::string past_error() {
 // naming the nearest date that is that weekday, before anything is saved or said. Only English
 // names, and only when `say` names exactly one weekday ("Tuesdays and Thursdays" is left alone).
 std::string weekday_slip(const json &a, Context &ctx, time_t when, const char *field) {
+    if (!controls::on(controls::WeekdayCheck)) return "";
     static const char *const names[] = {"sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"};
     static const char *const shown[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
     const std::string say = util::lower(str_arg(a, "say"));
@@ -513,6 +515,7 @@ std::string weekday_slip(const json &a, Context &ctx, time_t when, const char *f
 // new was set or moved, and not in a question ("Shall I set a new one for 10?"): "Cancelled your
 // 9 o'clock reminder" and "It is now cancelled" pass.
 std::string claims_new(const json &a, Context &ctx, const std::string &done, const std::string &fix) {
+    if (!controls::on(controls::CancelClaims)) return "";
     static const char *const makers[] = {"reminder_set", "calendar_add", "calendar_update", "timer:start", "timer:add_time", "memory_save"};
     for (const std::string &w : ctx.worked)
         if (std::find(std::begin(makers), std::end(makers), w) != std::end(makers)) return "";
@@ -1544,6 +1547,18 @@ json schema() {
         arr.push_back({{"type", "function"},
                        {"function", {{"name", t.name}, {"description", description}, {"parameters", parameters}}}});
     }
+    // The small-model control "say" switched off (controls.h, cli build only): no tool offers it.
+    if (!controls::on(controls::Say))
+        for (json &t : arr) {
+            json &params = t["function"]["parameters"];
+            if (params.contains("properties") && params["properties"].is_object()) params["properties"].erase("say");
+            if (params.contains("required") && params["required"].is_array()) {
+                json kept = json::array();
+                for (const json &r : params["required"])
+                    if (r != "say") kept.push_back(r);
+                params["required"] = kept;
+            }
+        }
     return arr;
 }
 
@@ -1558,6 +1573,7 @@ bool failed(const std::string &result) {
 }
 
 std::string confirmation(const std::string &name, const std::string &raw_args, const std::string &result) {
+    if (!controls::on(controls::Say)) return "";
     if (std::find_if(std::begin(kConfirmable), std::end(kConfirmable), [&](const char *n) { return name == n; }) ==
         std::end(kConfirmable))
         return "";

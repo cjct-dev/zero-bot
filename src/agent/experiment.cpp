@@ -18,6 +18,7 @@
 #include <random>
 #include <thread>
 
+#include "agent/controls.h"
 #include "agent/llm.h"
 #include "agent/tools.h"
 
@@ -201,7 +202,7 @@ void trace(json event) {
     if (!g_started) {
         g_started = true;
         write_line({{"ev", "start"}, {"version", ZB_VERSION}, {"pid", static_cast<long>(getpid())},
-                    {"cache_bust", get().cache_bust}, {"tts_probe", get().tts_probe}});
+                    {"cache_bust", get().cache_bust}, {"tts_probe", get().tts_probe}, {"off", controls::off_names()}});
     }
     if (!event.contains("ev")) event["ev"] = "note";
     event["at_ms"] = ms_since(g_process_start);
