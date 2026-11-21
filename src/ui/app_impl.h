@@ -1,7 +1,7 @@
 // The app controller's state and parts, shared by the files that make it up: app.cpp (wiring, the
-// agent's events, recording, the first-run guide, run_app), app_keys.cpp (what each key does) and
-// app_status.cpp (the status bar and footer, timers, alerts, the screen's light, the periodic work).
-// Nothing else includes it: the rest of the program sees only ui/app.h.
+// agent's events, recording, the first-run guide, run_app), app_keys.cpp (what each key does),
+// app_status.cpp (the status bar and footer, timers, alerts, the screen's light, the periodic work)
+// and shots.cpp (--shots). Nothing else includes it: the rest of the program sees only ui/app.h.
 #pragma once
 #include <atomic>
 #include <ctime>
@@ -115,7 +115,7 @@ struct App {
     void tick_screen(unsigned long now, bool busy);
     void periodic();
 
-    // ------------------------------------------------------------ screenshots
+    // ------------------------------------------------------------ screenshots (shots.cpp)
     int render_shots(const std::string &dir);
     template <typename Snap>
     bool diagnostics_shots(Snap &snap);
