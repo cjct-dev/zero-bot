@@ -305,6 +305,10 @@ void Agent::run_turn() {
     bool failure_guarded = false;   // a "done" after calls that all failed has been withdrawn once
     bool nudged = false;            // an empty reply has been sent back once
     std::string done_said;          // the confirmations ("say") of calls that worked, for an answer made here
+    // A claim guard may still fire in this request: each kind fires at most once (guards::Claim).
+    auto claim_open = [&](const guards::Claim &c) {
+        return c.scope == guards::Claim::NoTool ? !acted && !guarded : acted && !any_ok && !failure_guarded;
+    };
     auto new_request = [&] {
         rt.begin();
         acted = guarded = any_ok = failure_guarded = nudged = false;
@@ -356,13 +360,14 @@ void Agent::run_turn() {
             std::lock_guard<std::mutex> lk(mtx_);
             for (auto &m : history_) messages.push_back(m);
         }
-        if (round == kMaxRounds - 1) add_note(messages, "You have used many tool calls. Answer now with what you have.");
+        if (round == kMaxRounds - 1) add_note(messages, guards::kLastRound);
 
         const bool corrected = !correction.empty();
         if (corrected) add_note(messages, correction);
         correction.clear();
 
-        bool began = false, speech_started = false, steered = false, unbacked = false;
+        bool began = false, speech_started = false, steered = false;
+        const guards::Claim *unbacked = nullptr;   // the claim guard a sentence tripped as it streamed
         std::vector<std::string> unsaid;   // sentences composed while the microphone was open
         SpeechQueue::Chunker chunker;
         llm::ChatOptions opt;
@@ -410,12 +415,13 @@ void Agent::run_turn() {
                 // Checked before the first words are spoken: once said, a claim cannot be taken back.
                 // "Done" is false when no tool has run, and when every one that ran failed or is
                 // waiting for the user's yes.
-                if (!speech_started && ((!acted && !guarded && guards::claims_action(sentence)) ||
-                                        (acted && !any_ok && !failure_guarded && guards::claims_done(sentence)))) {
-                    unbacked = true;
-                    round_cancel_ = true;
-                    return;
-                }
+                if (!speech_started)
+                    for (const guards::Claim &c : guards::kClaims)
+                        if (c.as_it_streams && claim_open(c) && c.test(sentence)) {
+                            unbacked = &c;
+                            round_cancel_ = true;
+                            return;
+                        }
                 // The user has started talking: keep the words back until they have finished.
                 if (listening_ || !unsaid.empty()) { unsaid.push_back(sentence); continue; }
                 speech_started = true;
@@ -513,40 +519,16 @@ void Agent::run_turn() {
             }
         }
 
-        // "Done" after tool calls that all failed or wait for the user's yes: nothing was done, and
-        // the user must hear what went wrong, or the question, instead.
-        if (acted && (unbacked || (!any_ok && !failure_guarded && !speech_started && res.tool_calls.empty() && guards::claims_done(res.content)))) {
-            failure_guarded = true;
-            rt.guard("claims_done");
+        // A draft that claims what no tool call backs is withdrawn, and the model told why (guards::kClaims).
+        const guards::Claim *claim = unbacked;
+        if (!claim && !speech_started && res.tool_calls.empty())
+            for (const guards::Claim &c : guards::kClaims)
+                if (claim_open(c) && c.test(res.content)) { claim = &c; break; }
+        if (claim) {
+            (claim->scope == guards::Claim::NothingWorked ? failure_guarded : guarded) = true;
+            rt.guard(claim->name);
             if (began && ev_.answer_discard) ev_.answer_discard();
-            correction = "(Automatic note, not from the user.) Your draft reply began \"" + util::truncate_utf8(res.content, 160) +
-                         "\" but nothing has been done: every tool call for this request failed or is waiting for the "
-                         "user's answer (see the ERROR and CONFIRM results above), and the user has not heard that reply. "
-                         "Tell them plainly what did not work, or put to them the question a CONFIRM result gives.";
-            continue;
-        }
-        // "Done, it's in your calendar" with no tool call behind it: withdraw the draft and make
-        // the model either do the thing or admit it cannot.
-        if (unbacked || (!acted && !guarded && !speech_started && res.tool_calls.empty() && guards::claims_action(res.content))) {
-            guarded = true;
-            rt.guard("claims_action");
-            if (began && ev_.answer_discard) ev_.answer_discard();
-            correction = "(Automatic note, not from the user.) Your draft reply began \"" + util::truncate_utf8(res.content, 160) +
-                         "\" but no tool has been called for this request, so nothing has actually been done and the "
-                         "user has not heard that reply. If they asked for something a tool does, call that tool now. "
-                         "If no tool can do it, tell them plainly that you cannot. If they were only chatting or "
-                         "asking a question, answer without claiming to have done anything.";
-            continue;
-        }
-        // "I don't have Dad's birthday saved", said without looking: the calendar may well have it.
-        if (!unbacked && !acted && !guarded && !speech_started && res.tool_calls.empty() && guards::claims_not_saved(res.content)) {
-            guarded = true;
-            rt.guard("claims_not_saved");
-            if (began && ev_.answer_discard) ev_.answer_discard();
-            correction = "(Automatic note, not from the user.) Your draft reply began \"" + util::truncate_utf8(res.content, 160) +
-                         "\" but you have not looked: no tool has been called for this request, and the user has not "
-                         "heard that reply. Call calendar_list with search (or reminder_list) now and answer from "
-                         "what it returns.";
+            correction = claim->note(res.content);
             continue;
         }
         // An empty reply leaves the user with silence: it goes back to the model once, and if the
@@ -556,9 +538,7 @@ void Agent::run_turn() {
             rt.guard(nudged || round >= kMaxRounds - 1 ? "empty_answered_here" : "empty");
             if (!nudged && round < kMaxRounds - 1) {
                 nudged = true;
-                correction = std::string("(Automatic note, not from the user.) Your reply was empty, so the user has heard "
-                                         "nothing. Answer them now in words") +
-                             (failures ? ": a tool call failed, so say plainly what did not work." : ".");
+                correction = guards::empty_reply_note(failures);
                 continue;
             }
             deliver(done_said + (failures ? "Sorry, something I tried did not work." : "Sorry, I have no answer to that."));

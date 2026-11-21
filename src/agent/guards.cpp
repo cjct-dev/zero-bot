@@ -2,7 +2,36 @@
 
 #include <regex>
 
+#include "core/util.h"
+
 namespace guards {
+
+namespace {
+
+// Typographic apostrophes as plain ones, so that one pattern matches "I've" written either way.
+std::string plain_apostrophes(std::string text) {
+    for (size_t at; (at = text.find("\xE2\x80\x99")) != std::string::npos;) text.replace(at, 3, "'");
+    return text;
+}
+
+// claims_action on text whose apostrophes are already plain.
+bool action_claimed(const std::string &text) {
+    static const std::regex re(
+        "\\b(i'?ve|i have|i just|i) (now |just |already )?(added|saved|set|scheduled|put|noted|cancell?ed|deleted|removed|"
+        "moved|sent|booked|turned|changed|updated|switched|stopped|started|reserved|ordered|called|texted|messaged)\\b"
+        "|\\b(is|it'?s|that'?s) (now |already )?(on|in|added to|saved (in|to)) your (calendar|diary|memory)"
+        "|\\b(timer|reminder|alarm|event|message|text|volume|brightness) (is|has been|was) (now |already )?"
+        "(set|saved|added|cancell?ed|sent|scheduled|deleted|turned|changed)"
+        "|\\bnow playing\\b|\\bi'?ll (remember|keep that in mind|remind you)|\\bi will (remember|remind you)"
+        "|^\\W*(done|all set|all done|got it|noted|saved|sorted|sent)\\b"
+        "|^\\W*(listo|hecho|fertig|erledigt|fait|c'est fait|feito|pronto|fatto)\\b"
+        "|\\b(he|ich habe|j'ai|ho) [^.!?]{0,40}(añadido|guardado|puesto|programado|gestellt|gespeichert|eingetragen|"
+        "hinzugefügt|ajouté|enregistré|programmé|réglé|aggiunto|salvato|impostato)",
+        std::regex::icase | std::regex::optimize);
+    return std::regex_search(text, re);
+}
+
+}  // namespace
 
 // Appended after a reply that was drafted without tools (fast mode only). The second look reuses
 // the whole prompt, so the server answers it from its prefix cache in a fraction of a normal
@@ -31,39 +60,51 @@ const char *const kDecideNote =
     "information, a date or a sum worked out, or the camera, call the tool now instead of replying. Reply in words "
     "only when no tool applies.)";
 
-// True when a draft tells the user that something has been done. Said in a turn where no tool
-// ran, that is a false claim, and it is cheaper to catch here than to pay for the model's
-// reasoning on every call. Covers English and the commonest phrasings in a few other languages.
-// True when a draft says something is not in the calendar or reminders. Only meaningful in a
-// turn where nothing was looked up.
+const char *const kLastRound = "You have used many tool calls. Answer now with what you have.";
+
+// Tried in this order:
+// - "Done" after tool calls that all failed or wait for the user's yes: nothing was done, and the user
+//   must hear what went wrong, or the question, instead.
+// - "Done, it's in your calendar" with no tool call behind it: the model must either do the thing or
+//   admit it cannot.
+// - "I don't have Dad's birthday saved", said without looking: the calendar may well have it. Tried on
+//   the whole draft only.
+const Claim kClaims[3] = {
+    {"claims_done", Claim::NothingWorked, true, claims_done,
+     "nothing has been done: every tool call for this request failed or is waiting for the "
+     "user's answer (see the ERROR and CONFIRM results above), and the user has not heard that reply. "
+     "Tell them plainly what did not work, or put to them the question a CONFIRM result gives."},
+    {"claims_action", Claim::NoTool, true, claims_action,
+     "no tool has been called for this request, so nothing has actually been done and the "
+     "user has not heard that reply. If they asked for something a tool does, call that tool now. "
+     "If no tool can do it, tell them plainly that you cannot. If they were only chatting or "
+     "asking a question, answer without claiming to have done anything."},
+    {"claims_not_saved", Claim::NoTool, false, claims_not_saved,
+     "you have not looked: no tool has been called for this request, and the user has not "
+     "heard that reply. Call calendar_list with search (or reminder_list) now and answer from "
+     "what it returns."},
+};
+
+std::string Claim::note(const std::string &draft) const {
+    return "(Automatic note, not from the user.) Your draft reply began \"" + util::truncate_utf8(draft, 160) + "\" but " + why;
+}
+
+std::string empty_reply_note(bool failures) {
+    return std::string("(Automatic note, not from the user.) Your reply was empty, so the user has heard "
+                       "nothing. Answer them now in words") +
+           (failures ? ": a tool call failed, so say plainly what did not work." : ".");
+}
+
 bool claims_not_saved(const std::string &raw) {
-    std::string text = raw;
-    for (size_t at; (at = text.find("\xE2\x80\x99")) != std::string::npos;) text.replace(at, 3, "'");
     static const std::regex re(
         "\\b(don'?t|do not|doesn'?t) (have|see|know|seem to have) [^.!?]{0,60}"
         "(birthday|anniversary|appointment|calendar|reminder|event|saved|on record|booked|scheduled)"
         "|\\b(no|nothing|isn'?t|not) [^.!?]{0,40}\\b(in|on) your (calendar|diary|reminders)",
         std::regex::icase | std::regex::optimize);
-    return std::regex_search(text, re);
+    return std::regex_search(plain_apostrophes(raw), re);
 }
 
-bool claims_action(const std::string &raw) {
-    std::string text = raw;
-    for (size_t at; (at = text.find("\xE2\x80\x99")) != std::string::npos;) text.replace(at, 3, "'");  // typographic apostrophe
-    static const std::regex re(
-        "\\b(i'?ve|i have|i just|i) (now |just |already )?(added|saved|set|scheduled|put|noted|cancell?ed|deleted|removed|"
-        "moved|sent|booked|turned|changed|updated|switched|stopped|started|reserved|ordered|called|texted|messaged)\\b"
-        "|\\b(is|it'?s|that'?s) (now |already )?(on|in|added to|saved (in|to)) your (calendar|diary|memory)"
-        "|\\b(timer|reminder|alarm|event|message|text|volume|brightness) (is|has been|was) (now |already )?"
-        "(set|saved|added|cancell?ed|sent|scheduled|deleted|turned|changed)"
-        "|\\bnow playing\\b|\\bi'?ll (remember|keep that in mind|remind you)|\\bi will (remember|remind you)"
-        "|^\\W*(done|all set|all done|got it|noted|saved|sorted|sent)\\b"
-        "|^\\W*(listo|hecho|fertig|erledigt|fait|c'est fait|feito|pronto|fatto)\\b"
-        "|\\b(he|ich habe|j'ai|ho) [^.!?]{0,40}(añadido|guardado|puesto|programado|gestellt|gespeichert|eingetragen|"
-        "hinzugefügt|ajouté|enregistré|programmé|réglé|aggiunto|salvato|impostato)",
-        std::regex::icase | std::regex::optimize);
-    return std::regex_search(text, re);
-}
+bool claims_action(const std::string &raw) { return action_claimed(plain_apostrophes(raw)); }
 
 // "Done" said after tool calls that all failed or wait for the user's yes. An offer put as a
 // question is not that claim, and is often the right answer then: "Shall I put it in for next
@@ -83,9 +124,8 @@ bool claims_done(const std::string &raw) {
         std::regex::icase | std::regex::optimize);
     static const std::regex says_no("\\b(no|not|nothing|none|nobody|never|neither|nor|cannot|unable|failed|sorry)\\b|n't\\b",
                                     std::regex::icase | std::regex::optimize);
-    std::string text = std::regex_replace(raw, offer, "$1");
-    for (size_t at; (at = text.find("\xE2\x80\x99")) != std::string::npos;) text.replace(at, 3, "'");  // typographic apostrophe
-    if (claims_action(text)) return true;
+    const std::string text = plain_apostrophes(std::regex_replace(raw, offer, "$1"));
+    if (action_claimed(text)) return true;
     for (size_t from = 0; from < text.size();) {
         const size_t end = text.find_first_of(".!?", from);
         const std::string sentence = text.substr(from, end == std::string::npos ? std::string::npos : end - from);
