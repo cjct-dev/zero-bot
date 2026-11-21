@@ -1,5 +1,6 @@
 #include "ui/app.h"
 
+#include <algorithm>
 #include <atomic>
 #include <csignal>
 #include <cstdio>
@@ -782,6 +783,25 @@ struct App {
             if (!display::save_png(path)) fprintf(stderr, "could not write %s\n", path);
             else printf("%s\n", path);
         };
+        // The labels of the rows on the page on top, read by moving the cursor down to its last row.
+        auto page_rows = [&] {
+            KeyEvent key; key.key = Key::Down; key.state = 1;
+            std::vector<std::string> rows{menu.selected()};
+            for (int i = 0; i < 80; ++i) {
+                menu.key(key);
+                if (menu.selected() == rows.back()) break;
+                rows.push_back(menu.selected());
+            }
+            return rows;
+        };
+        // "Start at power-on" was removed (ZB-085): its row must not come back, on the Device page or in the guide.
+        auto without_power_on = [&](const char *page, std::initializer_list<const char *> expected) {
+            const std::vector<std::string> rows = page_rows();
+            bool ok = std::find(rows.begin(), rows.end(), "Start at power-on") == rows.end();
+            for (const char *row : expected) ok = ok && std::find(rows.begin(), rows.end(), row) != rows.end();
+            if (!ok) fprintf(stderr, "the %s page lists \"Start at power-on\", or its rows could not be read\n", page);
+            return ok;
+        };
         // The status bar shows the name it is given from the first call on, an empty one included.
         chat.set_status("", theme::kFaint);
         bool failed = !chat.status_name().empty();
@@ -1242,6 +1262,7 @@ struct App {
             for (int i = 0; i < 6; ++i) menu.key(down);
             menu.key(enter);
             snap("setup-extras");
+            if (!without_power_on("setup guide's extras", {"Speak replies", "Finish"})) failed = true;
             menu.close();
         }
 
@@ -1264,6 +1285,7 @@ struct App {
         menu.key(down);                                // "Device"
         menu.key(enter);
         snap("settings-device");
+        if (!without_power_on("Device", {"Time zone", "Internet via phone"})) failed = true;
         menu.key(esc);
         menu.key(down);                                // "Your data", whose first row is "Calendar"
         menu.key(enter);

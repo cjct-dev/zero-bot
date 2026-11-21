@@ -47,6 +47,8 @@ RADIO="src/core/radio.cpp src/core/tether.cpp"
 TOOLS="src/agent/calc.cpp"
 # DIAGNOSTICS (temporary): the activity log and saved conversations, with util.cpp from above.
 DIAG="src/core/activity.cpp src/core/settings.cpp"
+# What an older version left behind (core_test), with util.cpp and proc.cpp from above.
+UPGRADE="src/core/upgrade.cpp"
 # What every thread shares: files saved at once, the settings, the calendar's alerts (store.cpp
 # from TIMERS, util.cpp from above, settings.cpp from DIAG).
 
@@ -54,7 +56,7 @@ obj_of() { echo "$OUT/$(echo "$1" | tr '/' '_' | sed 's/\.cpp$/.o/')"; }
 
 # Objects are rebuilt only when their source or a header in src/ is newer.
 newest_header=$(find src -name '*.h' -newer "$OUT/.stamp" 2>/dev/null | head -n 1 || true)
-for src in $APP $TIMERS $RADIO $TOOLS $DIAG tests/unit/activity_test.cpp tests/unit/core_test.cpp tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp tests/unit/mic_route_test.cpp tests/unit/music_test.cpp \
+for src in $APP $TIMERS $RADIO $TOOLS $DIAG $UPGRADE tests/unit/activity_test.cpp tests/unit/core_test.cpp tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp tests/unit/mic_route_test.cpp tests/unit/music_test.cpp \
            tests/unit/radio_test.cpp tests/unit/tools_test.cpp tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp \
            tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp tests/unit/hue_test.cpp tests/unit/hue_cli.cpp \
            tests/unit/kasa_test.cpp tests/unit/kasa_cli.cpp tests/unit/wiz_test.cpp tests/unit/wiz_cli.cpp \
@@ -105,7 +107,7 @@ $WRAP $CXX -o "$OUT/key_guide_test" "$OUT/tests_unit_key_guide_test.o" "$(obj_of
 $WRAP $CXX -o "$OUT/screen_idle_test" "$OUT/tests_unit_screen_idle_test.o" "$(obj_of src/ui/screen_idle.cpp)" "$(obj_of src/platform/sys.cpp)"
 # Files saved by two threads at once, the settings shared between threads, all-day alerts when the clocks change.
 $WRAP $CXX -o "$OUT/core_test" "$OUT/tests_unit_core_test.o" "$(obj_of src/core/settings.cpp)" "$(obj_of src/core/store.cpp)" \
-    "$(obj_of src/core/util.cpp)" -lpthread
+    "$(obj_of src/core/upgrade.cpp)" "$(obj_of src/core/util.cpp)" "$(obj_of src/platform/proc.cpp)" -lpthread
 # DIAGNOSTICS (temporary): saved conversations.
 $WRAP $CXX -o "$OUT/activity_test" "$OUT/tests_unit_activity_test.o" "$(obj_of src/core/activity.cpp)" \
     "$(obj_of src/core/settings.cpp)" "$(obj_of src/core/util.cpp)" -lpthread
@@ -135,7 +137,7 @@ echo "=== keys"
 "$OUT/key_guide_test" || failed=1
 echo "=== screen off"
 "$OUT/screen_idle_test" || failed=1
-echo "=== core: files saved at once, settings shared between threads, all-day alerts and clock changes"
+echo "=== core: files saved at once, settings shared between threads, all-day alerts and clock changes, an old drop-in"
 "$OUT/core_test" "$state/core" || failed=1
 echo "=== diagnostics: saved conversations (temporary)"
 "$OUT/activity_test" "$state/activity" || failed=1

@@ -14,9 +14,11 @@
 #include <thread>
 #include <type_traits>
 #include <vector>
+#include <unistd.h>
 
 #include "core/settings.h"
 #include "core/store.h"
+#include "core/upgrade.h"
 #include "core/util.h"
 
 namespace {
@@ -217,6 +219,37 @@ void test_all_day_alerts(const std::string &root) {
     (void)root;
 }
 
+// ZB-085: "Start at power-on" is gone; the drop-in it wrote for the launcher is removed at start,
+// but only when Zero Bot wrote it, and its folder only when nothing else is left in it.
+void test_power_on_leftover(const std::string &root) {
+    const std::string home = root + "/upgrade-home";
+    const std::string dir = home + "/.config/systemd/user/APPLaunch.service.d";
+    const std::string ours = dir + "/zero-bot.conf";
+    const std::string old_text = "# Written by Zero Bot (Settings > Start at power-on).\n[Service]\n"
+                                 "ExecStartPre=-/usr/bin/zero_bot --boot\nTimeoutStartSec=infinity\n";
+    auto exists = [](const std::string &p) { return access(p.c_str(), F_OK) == 0; };
+    CHECK(!upgrade::remove_power_on_dropin(home));                   // nothing there: nothing to do
+    CHECK(!upgrade::remove_power_on_dropin(""));
+    util::make_dirs(dir);
+    CHECK(util::write_file_atomic(ours, old_text, 0644));
+    CHECK(upgrade::remove_power_on_dropin(home));                    // ours, alone: file and folder go
+    CHECK(!exists(ours) && !exists(dir));
+    CHECK(exists(home + "/.config/systemd/user"));
+    CHECK(!upgrade::remove_power_on_dropin(home));                   // once
+    util::make_dirs(dir);
+    CHECK(util::write_file_atomic(ours, old_text, 0644));
+    CHECK(util::write_file_atomic(dir + "/other.conf", "[Service]\nNice=5\n", 0644));
+    CHECK(upgrade::remove_power_on_dropin(home));                    // ours goes; the folder stays for the other
+    CHECK(!exists(ours) && exists(dir + "/other.conf"));
+    const std::string foreign = "[Service]\n# Written by Zero Bot, said the second line\nNice=5\n";
+    CHECK(util::write_file_atomic(ours, foreign, 0644));
+    CHECK(!upgrade::remove_power_on_dropin(home));                   // a file of that name someone else wrote
+    std::string kept;
+    CHECK(util::read_file(ours, kept) && kept == foreign);
+    CHECK(util::write_file_atomic(ours, "", 0644));
+    CHECK(!upgrade::remove_power_on_dropin(home) && exists(ours));   // an empty one too
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -233,6 +266,7 @@ int main(int argc, char **argv) {
     test_atomic_writes(root);
     test_settings_threads(root);
     test_all_day_alerts(root);
+    test_power_on_leftover(root);
     printf("core: %d checks, %d failed\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

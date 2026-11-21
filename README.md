@@ -159,8 +159,6 @@ service's list. You can change every model under *Assistant* in settings.
   Wi-Fi, Zero Bot then connects through the phone by itself the next time you ask something.
   *Device → Internet via phone* connects or disconnects by hand, and *Use phone when offline*
   turns the automatic behaviour off.
-- **Start at power-on:** turn on *Device → Start at power-on* to go straight into Zero Bot when
-  the device is switched on. Holding **ESC** still returns to the launcher.
 
 ## Settings
 
@@ -172,7 +170,7 @@ settings from any page.
 | Section | What is there |
 |---|---|
 | Assistant | Language, vision, speech-to-text and text-to-speech models; voice; spoken replies on/off; fast replies; the assistant's name |
-| Device | Volume, brightness, screen off after, microphone gain, time zone, start at power-on, internet via phone, microphone, flip camera image, home city and country, your name, date order, units |
+| Device | Volume, brightness, screen off after, microphone gain, time zone, internet via phone, microphone, flip camera image, home city and country, your name, date order, units |
 | Your data | Calendar (edit, add, delete, delete all), reminders and timers (cancel one or all), memory (edit, add, delete, forget everything), TV remote, smart home (devices by room, setting up, the Tapo account), music library, radio stations (what was read from your list, play one to try it), saved conversations (how many, delete them all; see [Diagnostics (temporary)](#diagnostics-temporary)), start a new conversation |
 | AI service | Address, API key, web search key, compress audio |
 | About | Status and connection test, the setup guide again, exit to launcher |
