@@ -57,6 +57,8 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include "smarthome/drivers/support.h"
+
 namespace homekit {
 
 namespace {
@@ -796,47 +798,7 @@ int HttpReader::feed(const Bytes &buf, size_t &pos) {
 // ---------------------------------------------------------------------------------------------
 // Text from accessories
 // ---------------------------------------------------------------------------------------------
-namespace {
-// Decodes one UTF-8 sequence at i. Returns its length (0 when invalid) and the code point.
-size_t utf8_at(const unsigned char *p, size_t n, size_t i, uint32_t &cp) {
-    const unsigned char c = p[i];
-    if (c < 0x80) {
-        cp = c;
-        return 1;
-    }
-    size_t len;
-    uint32_t min;
-    if ((c & 0xE0) == 0xC0) len = 2, cp = c & 0x1F, min = 0x80;
-    else if ((c & 0xF0) == 0xE0) len = 3, cp = c & 0x0F, min = 0x800;
-    else if ((c & 0xF8) == 0xF0) len = 4, cp = c & 0x07, min = 0x10000;
-    else return 0;
-    if (n - i < len) return 0;
-    for (size_t k = 1; k < len; k++) {
-        if ((p[i + k] & 0xC0) != 0x80) return 0;
-        cp = cp << 6 | (p[i + k] & 0x3F);
-    }
-    if (cp < min || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;
-    return len;
-}
-}  // namespace
-
-Bytes sanitize_utf8(const Bytes &in) {
-    Bytes out;
-    out.reserve(in.size());
-    const unsigned char *p = u8(in);
-    for (size_t i = 0; i < in.size();) {
-        uint32_t cp = 0;
-        const size_t len = utf8_at(p, in.size(), i, cp);
-        if (!len) {
-            out += "\xEF\xBF\xBD";
-            i++;
-            continue;
-        }
-        out.append(in, i, len);
-        i += len;
-    }
-    return out;
-}
+Bytes sanitize_utf8(const Bytes &in) { return support::sanitize_utf8(in, support::BadUtf8::ReplacementCharacter); }
 
 namespace {
 // Unicode White_Space (PropList.txt).
@@ -866,7 +828,7 @@ std::string clean_name(const std::string &raw) {
     bool space = false;
     for (size_t i = 0; i < s.size() && count < 40;) {
         uint32_t cp = 0;
-        const size_t len = utf8_at(p, s.size(), i, cp);
+        const size_t len = support::utf8_at(p, s.size(), i, cp);
         const size_t at = i;
         i += len ? len : 1;
         if (len && space_char(cp)) {

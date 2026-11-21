@@ -89,39 +89,9 @@ constexpr size_t kMaxThings = 400;
 }  // namespace
 
 // ---------------------------------------------------------------- text from the bridge
-std::string sanitize_utf8(const std::string &s) {
-    // RFC 3629 well-formed sequences only (no overlong forms, no surrogates), so that the JSON
-    // parser, which is as strict, never rejects a whole reply for one bad byte in a name.
-    std::string out;
-    out.reserve(s.size());
-    size_t i = 0;
-    const size_t n = s.size();
-    auto cont = [&](size_t k, unsigned char lo = 0x80, unsigned char hi = 0xBF) {
-        if (k >= n) return false;
-        const unsigned char c = static_cast<unsigned char>(s[k]);
-        return c >= lo && c <= hi;
-    };
-    while (i < n) {
-        const unsigned char c = static_cast<unsigned char>(s[i]);
-        size_t len = 0;
-        if (c < 0x80) len = 1;
-        else if (c >= 0xC2 && c <= 0xDF) len = cont(i + 1) ? 2 : 0;
-        else if (c == 0xE0) len = cont(i + 1, 0xA0, 0xBF) && cont(i + 2) ? 3 : 0;
-        else if ((c >= 0xE1 && c <= 0xEC) || c == 0xEE || c == 0xEF) len = cont(i + 1) && cont(i + 2) ? 3 : 0;
-        else if (c == 0xED) len = cont(i + 1, 0x80, 0x9F) && cont(i + 2) ? 3 : 0;
-        else if (c == 0xF0) len = cont(i + 1, 0x90, 0xBF) && cont(i + 2) && cont(i + 3) ? 4 : 0;
-        else if (c >= 0xF1 && c <= 0xF3) len = cont(i + 1) && cont(i + 2) && cont(i + 3) ? 4 : 0;
-        else if (c == 0xF4) len = cont(i + 1, 0x80, 0x8F) && cont(i + 2) && cont(i + 3) ? 4 : 0;
-        if (len == 0) {
-            out += '?';
-            ++i;
-        } else {
-            out.append(s, i, len);
-            i += len;
-        }
-    }
-    return out;
-}
+// RFC 3629 well-formed sequences only (no overlong forms, no surrogates), so that the JSON parser,
+// which is as strict, never rejects a whole reply for one bad byte in a name.
+std::string sanitize_utf8(const std::string &s) { return support::sanitize_utf8(s, support::BadUtf8::QuestionMark); }
 
 std::string clean_name(const std::string &raw, size_t max) {
     const std::string s = sanitize_utf8(raw.size() > 4096 ? raw.substr(0, 4096) : raw);

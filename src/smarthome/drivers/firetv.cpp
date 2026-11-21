@@ -150,16 +150,6 @@ int hex_digit(char c) {
     return -1;
 }
 
-// Decodes one code point of valid UTF-8 at s[i]; returns its length (s must be valid UTF-8).
-size_t decode(const std::string &s, size_t i, uint32_t &cp) {
-    const unsigned char c = static_cast<unsigned char>(s[i]);
-    size_t len = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
-    if (i + len > s.size()) len = 1;
-    cp = len == 1 ? c : len == 2 ? (c & 0x1Fu) : len == 3 ? (c & 0x0Fu) : (c & 0x07u);
-    for (size_t k = 1; k < len; k++) cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3Fu);
-    return len;
-}
-
 // Characters that display as nothing, and so can make a name look like another one or like
 // nothing at all: C0 and C1 controls, DEL, and Unicode's Default_Ignorable_Code_Point set (soft
 // hyphen, combining grapheme joiner, Arabic letter mark, Hangul fillers, Khmer inherent vowels,
@@ -207,52 +197,17 @@ std::vector<WakeSend> wake_destinations(const std::vector<Ipv4Interface> &interf
 }
 
 std::string sanitize_utf8(const std::string &raw) {
-    static const char kReplacement[] = "\xEF\xBF\xBD";
-    std::string out;
-    out.reserve(raw.size());
-    const size_t n = raw.size();
-    for (size_t i = 0; i < n;) {
-        const unsigned char c = static_cast<unsigned char>(raw[i]);
-        if (c < 0x80) {
-            out += static_cast<char>(c);
-            i++;
-            continue;
-        }
-        size_t len;
-        uint32_t cp, min;
-        if ((c & 0xE0) == 0xC0) len = 2, cp = c & 0x1Fu, min = 0x80;
-        else if ((c & 0xF0) == 0xE0) len = 3, cp = c & 0x0Fu, min = 0x800;
-        else if ((c & 0xF8) == 0xF0) len = 4, cp = c & 0x07u, min = 0x10000;
-        else {
-            out += kReplacement;
-            i++;
-            continue;
-        }
-        bool ok = i + len <= n;
-        for (size_t k = 1; ok && k < len; k++) {
-            const unsigned char d = static_cast<unsigned char>(raw[i + k]);
-            if ((d & 0xC0) != 0x80) ok = false;
-            else cp = (cp << 6) | (d & 0x3Fu);
-        }
-        if (ok && (cp < min || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))) ok = false;
-        if (!ok) {
-            out += kReplacement;
-            i++;
-            continue;
-        }
-        out.append(raw, i, len);
-        i += len;
-    }
-    return out;
+    return support::sanitize_utf8(raw, support::BadUtf8::ReplacementCharacter);
 }
 
 std::string clean_name(const std::string &raw, size_t max) {
     const std::string s = sanitize_utf8(raw.size() > 4096 ? raw.substr(0, 4096) : raw);
+    const unsigned char *p = reinterpret_cast<const unsigned char *>(s.data());
     std::string out;
     bool space = false;
     for (size_t i = 0; i < s.size();) {
         uint32_t cp;
-        const size_t len = decode(s, i, cp);
+        const size_t len = support::utf8_at(p, s.size(), i, cp);   // never 0: s is well-formed UTF-8
         if (white_space(cp)) {
             space = true;   // keep words apart
         } else if (invisible(cp)) {
