@@ -1,30 +1,22 @@
 #include "ui/app.h"
 #include "ui/app_impl.h"
 
-#include <algorithm>
 #include <atomic>
 #include <csignal>
-#include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <dirent.h>
-#include <fstream>
 #include <functional>
 #include <memory>
+#include <string>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
 #include "agent/agent.h"
-#include "agent/speech.h"
-#include "ui/alarm_view.h"
-#include "ui/breath_view.h"
 #include "agent/llm.h"
-#include "core/activity.h"
-#include "core/music_lib.h"
-#include "core/radio.h"
 #include "core/settings.h"
-#include "core/store.h"
 #include "core/tether.h"
-#include "core/timers.h"
 #include "core/ui_queue.h"
 #include "core/util.h"
 #include "lvgl.h"
@@ -32,11 +24,6 @@
 #include "platform/display.h"
 #include "platform/keys.h"
 #include "platform/proc.h"
-#include "smarthome/home.h"
-#include "ui/chat_view.h"
-#include "ui/key_guide.h"
-#include "ui/menu.h"
-#include "ui/screen_idle.h"
 #include "ui/settings_pages.h"
 #include "ui/theme.h"
 
