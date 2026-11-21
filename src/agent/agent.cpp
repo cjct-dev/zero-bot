@@ -281,7 +281,38 @@ public:
     void run();
 
 private:
+    // What one request has done so far. Input that steers the request joins it; a request typed
+    // while the answer to the last one was spoken starts afresh (reset()).
+    struct Request {
+        bool acted = false;             // a tool has run for the current request
+        bool guarded = false;           // the unbacked-claim guard fires at most once per request
+        bool any_ok = false;            // a tool call of this request did what it was asked
+        int failures = 0;               // tool calls of this request that failed
+        bool failure_guarded = false;   // a "done" after calls that all failed has been withdrawn once
+        bool nudged = false;            // an empty reply has been sent back once
+        std::string done_said;          // the confirmations ("say") of calls that worked, for an answer made here
+        // Tool calls that failed in this request, by what they asked (call_key), with their error. The
+        // same call is not run again until the user says something more: a change that may have
+        // reached a device is never repeated by the model on its own, and a model that keeps trying one
+        // thing is told so instead of spending the request on it.
+        std::map<std::string, std::string> failed_calls;
+        tools::Context tool_ctx;        // what the tools are given (tool_ctx.worked: the calls that worked)
+
+        // A claim guard may still fire in this request: each kind fires at most once (guards::Claim).
+        bool claim_open(const guards::Claim &c) const {
+            return c.scope == guards::Claim::NoTool ? !acted && !guarded : acted && !any_ok && !failure_guarded;
+        }
+        void reset() {
+            acted = guarded = any_ok = failure_guarded = nudged = false;
+            failures = 0;
+            failed_calls.clear();
+            done_said.clear();
+            tool_ctx.worked.clear();
+        }
+    };
+
     Agent &a_;
+    Request req_;
 };
 
 void Agent::run_turn() { Turn(*this).run(); }
@@ -297,7 +328,7 @@ void Agent::Turn::run() {
     activity::request();   // DIAGNOSTICS (temporary): the activity log
 
     const json tool_schema = tools::schema();
-    tools::Context tool_ctx;
+    tools::Context &tool_ctx = req_.tool_ctx;
     tool_ctx.in_conversation = true;
     tool_ctx.cancel = &a_.cancel_;
     tool_ctx.on_image = a_.ev_.image;
@@ -305,36 +336,16 @@ void Agent::Turn::run() {
     SpeechQueue &speech = SpeechQueue::get();
     const bool speak = Settings::get().speak_replies && !getenv("ZB_NO_AUDIO");
 
-    bool acted = false;       // a tool has run for the current request
-    bool guarded = false;     // the unbacked-claim guard fires at most once per request
     std::string correction;   // one-off note for the next model call; never stored in the history
-    // Tool calls that failed in this request, by what they asked (call_key), with their error. The
-    // same call is not run again until the user says something more: a change that may have
-    // reached a device is never repeated by the model on its own, and a model that keeps trying one
-    // thing is told so instead of spending the request on it.
-    std::map<std::string, std::string> failed_calls;
-    bool any_ok = false;            // a tool call of this request did what it was asked
-    int failures = 0;               // tool calls of this request that failed
-    bool failure_guarded = false;   // a "done" after calls that all failed has been withdrawn once
-    bool nudged = false;            // an empty reply has been sent back once
-    std::string done_said;          // the confirmations ("say") of calls that worked, for an answer made here
-    // A claim guard may still fire in this request: each kind fires at most once (guards::Claim).
-    auto claim_open = [&](const guards::Claim &c) {
-        return c.scope == guards::Claim::NoTool ? !acted && !guarded : acted && !any_ok && !failure_guarded;
-    };
     auto new_request = [&] {
         rt.begin();
-        acted = guarded = any_ok = failure_guarded = nudged = false;
-        failures = 0;
-        failed_calls.clear();
-        done_said.clear();
-        tool_ctx.worked.clear();
+        req_.reset();
     };
     // Input that arrived meanwhile joins this request. It may be "try that again", so the calls
     // that failed may be made once more.
     auto steer_in = [&] {
         const int added = a_.absorb_inputs(false);
-        if (added > 0) { failed_calls.clear(); rt.steered(); }
+        if (added > 0) { req_.failed_calls.clear(); rt.steered(); }
         return added;
     };
 
@@ -394,7 +405,7 @@ void Agent::Turn::run() {
         // In fast mode the model's commonest mistake is to answer in words when it should have
         // used a tool: "done" with nothing done, or a price or opening time from memory. So a reply
         // that arrives with no tool call is held back and checked before a word of it is spoken.
-        const bool fast_decision = deciding && !acted && !guarded && opt.fast;
+        const bool fast_decision = deciding && !req_.acted && !req_.guarded && opt.fast;
         // Experiments only (E3b, ZB_EXP_DECIDE=required): the decision is forced into a tool call, words
         // come through the reply tool and stream as they are written; nothing is held for a second look.
         if (fast_decision && experiment::decide_required()) opt.tool_choice = "required";
@@ -430,7 +441,7 @@ void Agent::Turn::run() {
                 // waiting for the user's yes.
                 if (!speech_started)
                     for (const guards::Claim &c : guards::kClaims)
-                        if (c.as_it_streams && claim_open(c) && c.test(sentence)) {
+                        if (c.as_it_streams && req_.claim_open(c) && c.test(sentence)) {
                             unbacked = &c;
                             a_.round_cancel_ = true;
                             return;
@@ -482,10 +493,10 @@ void Agent::Turn::run() {
             if (a_.ev_.error) a_.ev_.error(res.error);
             // Tools have run, so something may have changed, or failed, that the user has not been
             // told about. Say what is known rather than leave them with silence.
-            if (acted) {
+            if (req_.acted) {
                 const char *lost = "I lost the connection to the AI service before I could finish, so please ask again.";
                 deliver(speech_started ? lost
-                        : done_said + (failures ? "Something I tried did not work, and I lost the connection to the AI "
+                        : req_.done_said + (req_.failures ? "Something I tried did not work, and I lost the connection to the AI "
                                                   "service before I could say what. Please ask again."
                                                 : lost));
             }
@@ -536,9 +547,9 @@ void Agent::Turn::run() {
         const guards::Claim *claim = unbacked;
         if (!claim && !speech_started && res.tool_calls.empty())
             for (const guards::Claim &c : guards::kClaims)
-                if (claim_open(c) && c.test(res.content)) { claim = &c; break; }
+                if (req_.claim_open(c) && c.test(res.content)) { claim = &c; break; }
         if (claim) {
-            (claim->scope == guards::Claim::NothingWorked ? failure_guarded : guarded) = true;
+            (claim->scope == guards::Claim::NothingWorked ? req_.failure_guarded : req_.guarded) = true;
             rt.guard(claim->name);
             if (began && a_.ev_.answer_discard) a_.ev_.answer_discard();
             correction = claim->note(res.content);
@@ -548,13 +559,13 @@ void Agent::Turn::run() {
         // next one is empty too, an answer is made here from what is known.
         if (res.tool_calls.empty() && util::trim(res.content).empty() && !speech_started && unsaid.empty()) {
             if (began && a_.ev_.answer_discard) a_.ev_.answer_discard();
-            rt.guard(nudged || round >= kMaxRounds - 1 ? "empty_answered_here" : "empty");
-            if (!nudged && round < kMaxRounds - 1) {
-                nudged = true;
-                correction = guards::empty_reply_note(failures);
+            rt.guard(req_.nudged || round >= kMaxRounds - 1 ? "empty_answered_here" : "empty");
+            if (!req_.nudged && round < kMaxRounds - 1) {
+                req_.nudged = true;
+                correction = guards::empty_reply_note(req_.failures);
                 continue;
             }
-            deliver(done_said + (failures ? "Sorry, something I tried did not work." : "Sorry, I have no answer to that."));
+            deliver(req_.done_said + (req_.failures ? "Sorry, something I tried did not work." : "Sorry, I have no answer to that."));
             if (a_.absorb_inputs(false) > 0) { new_request(); round = -1; continue; }   // a new request: fresh budget
             break;
         }
@@ -594,10 +605,10 @@ void Agent::Turn::run() {
                 if (a_.ev_.tool) a_.ev_.tool(label);
                 const auto tool_started = std::chrono::steady_clock::now();
                 const std::string key = call_key(c.name, c.args);
-                const auto earlier = failed_calls.find(key);
+                const auto earlier = req_.failed_calls.find(key);
                 std::string result;
                 if (a_.cancel_) result = "ERROR: cancelled by the user";
-                else if (earlier != failed_calls.end())
+                else if (earlier != req_.failed_calls.end())
                     result = "ERROR: this exact call already failed in this request, so it was not made again. It said: " +
                              earlier->second + ". Change what that asks you to change, or tell the user it did not work";
                 else result = tools::run(c.name, c.args, tool_ctx);
@@ -610,21 +621,21 @@ void Agent::Turn::run() {
 #endif
                 if (result.size() > kMaxToolResult) result = util::truncate_utf8(result, kMaxToolResult, " …[truncated]");
                 if (tools::failed(result)) {
-                    ++failures;
+                    ++req_.failures;
                     // Refused only for what its "say" claimed, nothing done: it may come again
                     // with another say, or after the step it lacked.
-                    if (!tool_ctx.say_refused) failed_calls.emplace(key, error_words(result));
+                    if (!tool_ctx.say_refused) req_.failed_calls.emplace(key, error_words(result));
                 } else if (result.compare(0, 7, "CONFIRM") != 0) {
-                    any_ok = true;
+                    req_.any_ok = true;
                 }
                 const std::string say = a_.cancel_ ? "" : tools::confirmation(c.name, c.args, result);
                 if (say.empty()) all_confirmed = false;
                 else if (confirm.find(say) == std::string::npos) confirm += (confirm.empty() ? "" : " ") + say;
-                if (!say.empty() && done_said.find(say) == std::string::npos) done_said += say + " ";
+                if (!say.empty() && req_.done_said.find(say) == std::string::npos) req_.done_said += say + " ";
                 std::lock_guard<std::mutex> lk(a_.mtx_);
                 a_.history_.push_back({{"role", "tool"}, {"tool_call_id", c.id}, {"content", result}});
             }
-            acted = true;
+            req_.acted = true;
             wait_while_listening();
             // Anything said meanwhile steers the next step, so the model has to look again.
             if (steer_in() > 0 || a_.cancel_ || !all_confirmed) continue;
@@ -653,6 +664,6 @@ void Agent::Turn::run() {
     }
     // Leaving by running out of rounds means the last one asked to go round again, so nothing has
     // been said for this request. Say so rather than falling silent.
-    if (round >= kMaxRounds && !a_.cancel_) deliver(done_said + "Sorry, that took more steps than I can do in one go. Please ask again.");
+    if (round >= kMaxRounds && !a_.cancel_) deliver(req_.done_said + "Sorry, that took more steps than I can do in one go. Please ask again.");
     speech.end_of_answer();
 }
