@@ -254,87 +254,79 @@ std::vector<std::string> target_names(const std::vector<Item> &items, bool *over
     return things;
 }
 
-bool resolve(const std::vector<Item> &items, const std::string &said_raw, Resolved &out, std::string &err) {
-    out = Resolved();
-    const std::string said = clean_name(said_raw);
-    // What was said as it stands, and without a leading "the" ("the desk lamp", "the bedroom").
-    // The exact matches try the first before the second, so that a value listed with a "The" of
-    // its own ("The lights", a room called "The Snug") is what it was listed as, and never what
-    // its name means without the "The" (every light, a plug called "Snug").
-    const std::string full = plain(said);
-    const std::string want = starts_with(full, "the ") ? full.substr(4) : full;
-    if (want.empty()) { err = "say which device, room or group (target)"; return false; }
+namespace {
+// The steps of resolve(), in its order. `said` is what was said, cleaned; `rooms` are rooms_of(items).
 
-    // The exact matches, in the order that makes every value target_names() lists mean what it
-    // was listed as: a thing's listed name, then "<Room> (room)", then a room's name, then a
-    // group, and only then a thing's other name (the maker's, or the user's own). So a plug the
-    // maker's app calls "Bedroom", renamed "Bed heater", never answers to the room, and a plug
-    // called "Lights" is that plug, not every light.
-    auto exact_things = [&](const std::function<bool(const Item &)> &match) -> int {
-        std::vector<const Item *> hits;
-        for (const auto &i : items)
-            if (match(i)) hits.push_back(&i);
-        if (hits.empty()) return 0;
-        if (hits.size() == 1) { out = thing_target(*hits[0]); return 1; }
-        std::vector<std::string> names;
-        bool same = true;
-        for (const auto *h : hits) { names.push_back(h->label); same = same && plain(h->label) == plain(hits[0]->label); }
-        err = same ? "more than one device is called " + in_quotes(said) + ". Tell the user to give one of them another name in "
-                     "Settings, Smart home"
-                   : in_quotes(said) + " could mean any of: " + list_of(names) + ". Ask which one";
-        return -1;
-    };
-    const std::vector<std::string> rooms = rooms_of(items, false);
-    auto find_room = [&](const std::string &name) -> const std::string * {
-        for (const auto &r : rooms)
-            if (plain(r) == name) return &r;
-        return nullptr;
-    };
-    // "Bedroom (room)" is how a room is listed when a thing has the same name.
-    std::string as_room;
-    if (ends_with(util::lower(said), "(room)")) as_room = plain(said.substr(0, said.size() - 6));
-    auto listed_as = [&](const std::string &name, const std::string &room_name) -> int {
-        if (const int found = exact_things([&](const Item &i) { return plain(i.label) == name; })) return found;
-        if (!room_name.empty())
-            if (const std::string *room = find_room(room_name)) { out = room_target(items, *room); return 1; }
-        if (const std::string *room = find_room(name)) { out = room_target(items, *room); return 1; }
-        // "all" always means everything (a status of everything works in any home); the other
-        // groups exist only when they have members.
-        for (const auto &g : kGroups)
-            if (g.scope == Scope::Everything || group_present(items, g.scope))
-                for (const char *phrase : g.phrases)
-                    if (name == phrase) { out = group_target(items, g); return 1; }
-        return 0;
-    };
-    if (const int found = listed_as(full, as_room)) return found > 0;
-    if (want != full)
-        if (const int found = listed_as(want, starts_with(as_room, "the ") ? as_room.substr(4) : as_room)) return found > 0;
+// The things `match` picks: 1 with `out` set when it is exactly one, -1 with `err` set when it is
+// several (named alike, or not), 0 when none.
+int exact_things(const std::vector<Item> &items, const std::string &said, const std::function<bool(const Item &)> &match,
+                 Resolved &out, std::string &err) {
+    std::vector<const Item *> hits;
+    for (const auto &i : items)
+        if (match(i)) hits.push_back(&i);
+    if (hits.empty()) return 0;
+    if (hits.size() == 1) { out = thing_target(*hits[0]); return 1; }
+    std::vector<std::string> names;
+    bool same = true;
+    for (const auto *h : hits) { names.push_back(h->label); same = same && plain(h->label) == plain(hits[0]->label); }
+    err = same ? "more than one device is called " + in_quotes(said) + ". Tell the user to give one of them another name in "
+                 "Settings, Smart home"
+               : in_quotes(said) + " could mean any of: " + list_of(names) + ". Ask which one";
+    return -1;
+}
 
-    for (const std::string &name : {full, want})
-        if (const int found = exact_things([&](const Item &i) {
-                return plain(i.thing.name) == name || (!i.thing.alias.empty() && plain(i.thing.alias) == name);
-            }))
-            return found > 0;
-    // "bedroom lights", "the lights in the bedroom"; for a room called "The Snug", "the snug
-    // lights" and "snug lights" as well.
-    auto room_called = [&](const std::string &name) -> const std::string * {
-        if (const std::string *room = find_room(name)) return room;
-        for (const auto &r : rooms)
-            if (plain(r) == "the " + name) return &r;
-        return nullptr;
-    };
+const std::string *find_room(const std::vector<std::string> &rooms, const std::string &name) {
+    for (const auto &r : rooms)
+        if (plain(r) == name) return &r;
+    return nullptr;
+}
+
+// What `name` was listed as by target_names(): a thing's listed name, then the room `room_name`
+// ("Bedroom (room)" when a thing has the room's name; "" when that is not what was said), then a
+// room's name, then a group. 1, -1 or 0 as exact_things().
+int listed_as(const std::vector<Item> &items, const std::vector<std::string> &rooms, const std::string &said,
+              const std::string &name, const std::string &room_name, Resolved &out, std::string &err) {
+    if (const int found = exact_things(items, said, [&](const Item &i) { return plain(i.label) == name; }, out, err)) return found;
+    if (!room_name.empty())
+        if (const std::string *room = find_room(rooms, room_name)) { out = room_target(items, *room); return 1; }
+    if (const std::string *room = find_room(rooms, name)) { out = room_target(items, *room); return 1; }
+    // "all" always means everything (a status of everything works in any home); the other
+    // groups exist only when they have members.
+    for (const auto &g : kGroups)
+        if (g.scope == Scope::Everything || group_present(items, g.scope))
+            for (const char *phrase : g.phrases)
+                if (name == phrase) { out = group_target(items, g); return 1; }
+    return 0;
+}
+
+// A room called `name`, or "the <name>" (a room called "The Snug" for "snug").
+const std::string *room_called(const std::vector<std::string> &rooms, const std::string &name) {
+    if (const std::string *room = find_room(rooms, name)) return room;
+    for (const auto &r : rooms)
+        if (plain(r) == "the " + name) return &r;
+    return nullptr;
+}
+
+// "bedroom lights", "the lights in the bedroom"; for a room called "The Snug", "the snug lights"
+// and "snug lights" as well. True with `out` set to the room.
+bool room_phrase(const std::vector<Item> &items, const std::vector<std::string> &rooms, const std::string &full,
+                 const std::string &want, Resolved &out) {
     for (const std::string &name : {full, want})
         for (const char *suffix : {" lights", " light", " lamps", " lamp", " room"})
             if (ends_with(name, suffix) && name.size() > strlen(suffix))
-                if (const std::string *room = room_called(name.substr(0, name.size() - strlen(suffix)))) { out = room_target(items, *room); return true; }
+                if (const std::string *room = room_called(rooms, name.substr(0, name.size() - strlen(suffix)))) { out = room_target(items, *room); return true; }
     for (const char *prefix : {"lights in the ", "lights in ", "all lights in the ", "all lights in ", "all the lights in the ",
                                "the lights in the ", "the lights in "})
         if (starts_with(full, prefix))
-            if (const std::string *room = room_called(full.substr(strlen(prefix)))) { out = room_target(items, *room); return true; }
+            if (const std::string *room = room_called(rooms, full.substr(strlen(prefix)))) { out = room_target(items, *room); return true; }
+    return false;
+}
 
-    // Partial. A name with a word that starts with what was said counts first ("lamp" for "Desk
-    // lamp"); only when there is none does a name contained in what was said ("the desk lamp
-    // please"), longest first.
+// Partial. A name with a word that starts with what was said counts first ("lamp" for "Desk
+// lamp"); only when there is none does a name contained in what was said ("the desk lamp
+// please"), longest first. True with `out` set when exactly one fits; else `err` says so.
+bool partial(const std::vector<Item> &items, const std::vector<std::string> &rooms, const std::string &said,
+             const std::string &want, Resolved &out, std::string &err) {
     struct Candidate { std::string name, shown; const Item *item; const std::string *room; };
     std::vector<Candidate> all, found;
     std::set<std::string> seen;
@@ -369,6 +361,41 @@ bool resolve(const std::vector<Item> &items, const std::string &said_raw, Resolv
         err = in_quotes(said) + " could mean any of: " + list_of(names) + ". Ask which one";
     }
     return false;
+}
+}  // namespace
+
+bool resolve(const std::vector<Item> &items, const std::string &said_raw, Resolved &out, std::string &err) {
+    out = Resolved();
+    const std::string said = clean_name(said_raw);
+    // What was said as it stands, and without a leading "the" ("the desk lamp", "the bedroom").
+    // The exact matches try the first before the second, so that a value listed with a "The" of
+    // its own ("The lights", a room called "The Snug") is what it was listed as, and never what
+    // its name means without the "The" (every light, a plug called "Snug").
+    const std::string full = plain(said);
+    const std::string want = starts_with(full, "the ") ? full.substr(4) : full;
+    if (want.empty()) { err = "say which device, room or group (target)"; return false; }
+
+    // The exact matches, in the order that makes every value target_names() lists mean what it
+    // was listed as: a thing's listed name, then "<Room> (room)", then a room's name, then a
+    // group, and only then a thing's other name (the maker's, or the user's own). So a plug the
+    // maker's app calls "Bedroom", renamed "Bed heater", never answers to the room, and a plug
+    // called "Lights" is that plug, not every light.
+    const std::vector<std::string> rooms = rooms_of(items, false);
+    // "Bedroom (room)" is how a room is listed when a thing has the same name.
+    std::string as_room;
+    if (ends_with(util::lower(said), "(room)")) as_room = plain(said.substr(0, said.size() - 6));
+    if (const int found = listed_as(items, rooms, said, full, as_room, out, err)) return found > 0;
+    if (want != full)
+        if (const int found = listed_as(items, rooms, said, want, starts_with(as_room, "the ") ? as_room.substr(4) : as_room, out, err))
+            return found > 0;
+
+    for (const std::string &name : {full, want})
+        if (const int found = exact_things(items, said, [&](const Item &i) {
+                return plain(i.thing.name) == name || (!i.thing.alias.empty() && plain(i.thing.alias) == name);
+            }, out, err))
+            return found > 0;
+    if (room_phrase(items, rooms, full, want, out)) return true;
+    return partial(items, rooms, said, want, out, err);
 }
 
 }  // namespace home
