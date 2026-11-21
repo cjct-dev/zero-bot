@@ -178,7 +178,7 @@ void App::periodic() {
     const unsigned long now = display::now_ms();
     if (esc_armed && now - esc_down >= kEscHoldMs) { g_exit = true; return; }
     settle_keys(now);   // DIAGNOSTICS (temporary)
-    if (now - last_tick >= 66) {
+    if (now - last_tick >= kTickMs) {
         last_tick = now;
         update_footer();
         chat.tick();

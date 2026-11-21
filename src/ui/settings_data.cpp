@@ -251,6 +251,8 @@ void open_reminders(Menu &menu) {
 // ---------------------------------------------------------------- memory
 namespace {
 
+constexpr size_t kMemoryRowChars = 46;   // characters of a memory's text on one row of its page
+
 void open_memory_item(Menu &menu, int id) {
     MenuPage page;
     page.title = "Memory";
@@ -263,7 +265,7 @@ void open_memory_item(Menu &menu, int id) {
         // Show the whole text wrapped over a few rows, since rows are a single line.
         size_t pos = 0;
         while (pos < text.size()) {
-            size_t len = std::min<size_t>(46, text.size() - pos);
+            size_t len = std::min<size_t>(kMemoryRowChars, text.size() - pos);
             if (pos + len < text.size()) {
                 const size_t space = text.rfind(' ', pos + len);
                 if (space != std::string::npos && space > pos) len = space - pos + 1;

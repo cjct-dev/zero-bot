@@ -81,6 +81,8 @@ public:
     static int pair_text_width();
     // Splits a paragraph into Text rows that fit the screen width.
     static void add_paragraph(std::vector<MenuItem> &items, const std::string &paragraph);
+    static constexpr size_t kParagraphChars = 47;   // characters of body text that fit across the screen
+    static constexpr int kToastTicks = 28;          // ticks a toast stays: about 2 s
 
 private:
     void render();

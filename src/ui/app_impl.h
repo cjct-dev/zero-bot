@@ -26,6 +26,9 @@ inline constexpr unsigned long kDoubleTapMs = 450;     // two presses this close
 inline constexpr unsigned long kEscHoldMs = 1200;      // hold ESC this long to leave the app
 inline constexpr double kMinSpeechSeconds = 0.4;
 inline constexpr double kMaxSpeechSeconds = 90;
+// The footer, the chat, the menu, the breathing exercise and the timers are updated this often (about
+// 15 times a second: ChatView::tick and Menu::tick count in these ticks).
+inline constexpr unsigned long kTickMs = 66;
 
 extern std::atomic<bool> g_exit;   // set to leave the main loop (run_app)
 

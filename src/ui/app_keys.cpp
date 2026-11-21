@@ -248,7 +248,7 @@ void App::handle_key(const KeyEvent &ev) {
             chat.typing_end();
             if (!text.empty()) when_online([text] { Agent::get().submit_text(text); });
         } else if (ev.key == Key::Up || ev.key == Key::Down) {
-            chat.scroll(ev.key == Key::Up ? 34 : -34);
+            chat.scroll(ev.key == Key::Up ? ChatView::kLineScroll : -ChatView::kLineScroll);
         } else {
             chat.typing_key(ev);
         }
@@ -269,10 +269,10 @@ void App::handle_key(const KeyEvent &ev) {
             if (space_tap.press(now)) save_conversation();
             break;
         case ChatKey::Guide: open_key_guide(menu, false); break;
-        case ChatKey::ScrollUp: chat.scroll(34); break;
-        case ChatKey::ScrollDown: chat.scroll(-34); break;
-        case ChatKey::PageUp: chat.scroll(110); break;
-        case ChatKey::PageDown: chat.scroll(-110); break;
+        case ChatKey::ScrollUp: chat.scroll(ChatView::kLineScroll); break;
+        case ChatKey::ScrollDown: chat.scroll(-ChatView::kLineScroll); break;
+        case ChatKey::PageUp: chat.scroll(ChatView::kPageScroll); break;
+        case ChatKey::PageDown: chat.scroll(-ChatView::kPageScroll); break;
         case ChatKey::TypeHint: show_level("Press ENTER to type"); break;
         // W, E, A, S, D: the fn layer's media and volume keys, without fn.
         case ChatKey::PreviousTrack: case ChatKey::NextTrack: case ChatKey::Mute:

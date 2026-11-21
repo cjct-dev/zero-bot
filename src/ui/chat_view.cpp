@@ -13,6 +13,8 @@ constexpr int kInnerW = kScreenW - 2 * kPadX;
 constexpr int kBars = 30;
 constexpr int kListenH = 46;
 constexpr int kMaxRows = 80;
+constexpr int kBubbleMaxW = 236;    // the widest a bubble of the user's words gets
+constexpr int kDotTicks = 4;        // the busy footer's dots move every this many ticks
 // The status bar's right-hand side: the now-playing text, then a running timer, the network
 // icon, and the clock and battery. A timer takes its room from the now-playing text.
 constexpr int kPlayingW = 118, kPlayingRight = kPadX + 86;
@@ -170,7 +172,7 @@ lv_obj_t *ChatView::add_user(const std::string &text, bool steering) {
     lv_obj_set_style_radius(bubble, 7, 0);
     lv_obj_set_style_pad_hor(bubble, 7, 0);
     lv_obj_set_style_pad_ver(bubble, 3, 0);
-    fit_width(bubble, 236);   // not LV_SIZE_CONTENT with a max width: that lost the last wrapped word
+    fit_width(bubble, kBubbleMaxW);   // not LV_SIZE_CONTENT with a max width: that lost the last wrapped word
     after_add();
     return bubble;
 }
@@ -480,11 +482,11 @@ void ChatView::tick() {
         answer_dirty_ = false;
         after_add();
     }
-    if (mode_ == Mode::Busy && anim_ % 4 == 0) {
+    if (mode_ == Mode::Busy && anim_ % kDotTicks == 0) {
         static const char *dots[] = {"", ".", "..", "..."};
         // Labels that already carry a hint (after a separator) are shown as they are.
         const bool plain = busy_label_.find("\xC2\xB7") != std::string::npos;
-        const std::string text = busy_label_ + (plain ? "" : dots[(anim_ / 4) % 4]);
+        const std::string text = busy_label_ + (plain ? "" : dots[(anim_ / kDotTicks) % 4]);
         lv_label_set_text(foot_label_, text.c_str());
     }
 }

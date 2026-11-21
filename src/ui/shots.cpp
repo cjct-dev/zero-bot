@@ -625,7 +625,7 @@ void App::shots_setup(Shots &shots) {
         handle_key(space);
         const bool kept_above = menu.open() && menu.title() == "Language model";
         menu.pop();
-        for (int i = 0; i < 28; ++i) menu.tick();   // the hint goes, for the screens to come
+        for (int i = 0; i < Menu::kToastTicks; ++i) menu.tick();   // the hint goes, for the screens to come
         if (!kept || !kept_above) {
             fprintf(stderr, "SPACE closed the setup guide (on its page %d, on a page opened from it %d)\n", kept, kept_above);
             failed = true;
