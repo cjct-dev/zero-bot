@@ -264,6 +264,7 @@ PATH_RULES = [
     (r"^src/smarthome/tapo\.(h|cpp)$", ["unit", "tapo", "sim-build"], "the Tapo transport"),
     (r"^src/smarthome/", ["unit"] + DRIVERS + ["loop", "sim-build"], "the shared smart-home layer"),
     (r"^src/net/", ["unit", "tools", "loop"] + DRIVERS + ["sim-build"], "the HTTP layer (service and devices)"),
+    (r"^src/lv_conf\.h$", ["sim-build", "screens"], "LVGL's settings (not in the cli build)"),
     (r"^src/ui/", ["unit", "sim-build", "screens"], "the screens and keys"),
     (r"^src/platform/(display|input)", ["sim-build", "screens"], "the screen and keyboard (sim build)"),
     (r"^src/platform/", ["unit", "tools", "loop", "sim-build"], "audio, camera, helper programs"),
@@ -514,7 +515,7 @@ def need_path(need):
 
 
 # What the driver test programs are built from (tests/run_unit.sh), besides every header in src/.
-SIM_ONLY = ("src/ui/", "src/platform/display.", "src/platform/input.")    # not in the cli build
+SIM_ONLY = ("src/ui/", "src/platform/display.", "src/platform/input.", "src/lv_conf.h")    # not in the cli build
 # What the cli and sim builds are made from: the sources, the bundled libraries and the build's own files.
 BUILD_INPUTS = ("src", "third_party", "cmake", "CMakeLists.txt", "CMakePresets.json")
 UNIT_SOURCES = ("src/smarthome/", "src/net/", "src/core/util.", "src/platform/proc.", "src/platform/sys.", "tests/unit/")
@@ -1257,6 +1258,7 @@ def self_test():
     check("shared smart-home layer", set(shared) == {"unit", "loop", "sim-build"} | set(FAMILIES), shared)
     check("smart-home tool", "firetv" in groups("src/smarthome/tool.cpp"))
     check("ui: compiled, then the screens", groups("src/ui/app.cpp") == ["unit", "sim-build", "screens"], groups("src/ui/app.cpp"))
+    check("LVGL's settings: the sim build and the screens", groups("src/lv_conf.h") == ["sim-build", "screens"], groups("src/lv_conf.h"))
     check("agent", groups("src/agent/agent.cpp") == ["unit", "tools", "loop", "sim-build"], groups("src/agent/agent.cpp"))
     check("main.cpp", groups("src/main.cpp") == ["unit", "tools", "loop", "sim-build"], groups("src/main.cpp"))
     for path in ("src/agent/experiment.h", "src/core/radio.cpp", "src/net/http.cpp", "src/platform/camera.cpp",
@@ -1552,10 +1554,11 @@ def self_test():
         # N9: a build is stale when any of its inputs is newer, the bundled libraries and presets included.
         saved_root, ROOT = ROOT, os.path.join(tmp, "tree")
         try:
-            for rel in ("build/cli/zero_bot", "src/main.cpp", "third_party/json.hpp", "CMakePresets.json"):
+            for rel in ("build/cli/zero_bot", "src/main.cpp", "third_party/json.hpp", "CMakePresets.json", "src/lv_conf.h"):
                 os.makedirs(os.path.dirname(os.path.join(ROOT, rel)), exist_ok=True)
                 open(os.path.join(ROOT, rel), "w").close()
-            for rel, t in (("src/main.cpp", 100), ("CMakePresets.json", 100), ("build/cli/zero_bot", 200), ("third_party/json.hpp", 300)):
+            for rel, t in (("src/main.cpp", 100), ("CMakePresets.json", 100), ("src/lv_conf.h", 100), ("build/cli/zero_bot", 200),
+                           ("third_party/json.hpp", 300)):
                 os.utime(os.path.join(ROOT, rel), (t, t))
             check("a newer bundled library makes the build stale", "third_party/json.hpp" in stale_note("cli"), stale_note("cli"))
             os.utime(os.path.join(ROOT, "third_party/json.hpp"), (100, 100))
@@ -1563,6 +1566,12 @@ def self_test():
             check("so do newer presets", "CMakePresets.json" in stale_note("cli"), stale_note("cli"))
             os.utime(os.path.join(ROOT, "CMakePresets.json"), (100, 100))
             check("and nothing newer, nothing stale", stale_note("cli") == "")
+            os.utime(os.path.join(ROOT, "src/lv_conf.h"), (300, 300))
+            check("LVGL's settings are not the cli build's", stale_note("cli") == "", stale_note("cli"))
+            os.makedirs(os.path.join(ROOT, "build", "sim"))
+            open(os.path.join(ROOT, "build", "sim", "zero_bot"), "w").close()
+            os.utime(os.path.join(ROOT, "build", "sim", "zero_bot"), (200, 200))
+            check("but the sim build's", "src/lv_conf.h" in stale_note("sim"), stale_note("sim"))
         finally:
             ROOT = saved_root
 
