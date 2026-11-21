@@ -108,10 +108,12 @@ SETS = ("scored", "suite")
 VERDICT_EXIT = {"passes": 0, "fails": 1, "inconclusive": 3, "incomplete": 4}
 # The held-out run (tests/run.py's release profile: both sets once on the stand-in web's held-out seed and
 # variants, which no day-to-day run uses) is judged on its own, never paired with a baseline: each set's pass
-# rate must reach its floor, and every critical case must pass. The floors sit a few points under the first
-# held-out run (2026-11-21); a change that wins on the everyday seed but loses here is fitted to the everyday
-# answers.
-HELD_OUT_FLOOR = {"scored": 0.92, "suite": 0.94, "web": 0.90}   # placeholder until calibrated (W10)
+# rate must reach its floor, and every critical case must pass. A change that wins on the everyday seed but loses
+# here is fitted to the everyday answers.
+# Calibrated 2026-11-21 from three held-out runs (tests/run.py --groups held-out --calibrate 3, scorer 2026-11-21.4):
+# scored 97.9/95.1/97.2% (mean 96.7, sd 1.5), suite 97.7/96.5/97.0% (mean 97.1, sd 0.6), web 95.0/96.5/94.3%
+# (mean 95.3, sd 1.1); each floor is the mean less the larger of 2 points and two standard deviations.
+HELD_OUT_FLOOR = {"scored": 0.93, "suite": 0.95, "web": 0.93}
 HELD_OUT_FROM = 1000   # tests/mocks/fake_web.py: seeds from here on are held out
 
 # Cases that must pass every run on the variant. Scored-set names, and suite cases by tag (the suite's

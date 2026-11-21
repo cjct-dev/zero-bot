@@ -783,6 +783,9 @@ key, real audio), say so plainly rather than implying it was.
 - When several agents share this PC: compile through `.local-notes/tools/buildlock` (four
   compiles at a time, memory is short), build a checkout only with `.local-notes/tools/repobuild`
   (one build per checkout), and give test servers ephemeral ports.
+- Never edit the test scripts while a live run is going: a result's `case_hash` fingerprints its checks from their
+  source on disk, so an edit part-way through crashed the scored set's held-out run at its last case and lost
+  three repeats (40 minutes). Run what changed afterwards, or in another checkout.
 - A multi-agent workflow resumed after an interruption reuses finished steps only when it makes
   the same calls in the same order. To continue with a changed plan, save the finished results to
   a file and start a new run from there.
