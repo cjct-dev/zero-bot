@@ -344,197 +344,222 @@ int rank_of(const std::string &kind) {
     return n;
 }
 
-// Turns everything heard into one entry per address.
-std::vector<Device> merge(const Seen &seen) {
+// Turns everything heard into one entry per address: each source in a pass of its own, in the order
+// devices() takes them, each with its own rules for what decides a device's kind, name and id.
+struct Merge {
+    const Seen &seen;
     std::map<std::string, Device> by_ip;
     std::map<std::string, std::pair<std::string, std::string>> friendly;   // address -> (name, model) from AirPlay
-    auto take = [&](const std::string &ip, const std::string &kind, const char *method) -> Device & {
-        Device &d = by_ip[ip];
-        d.ip = ip;
-        if (d.kind.empty() || rank_of(kind) < rank_of(d.kind)) d.kind = kind;
-        if (std::find(d.found_by.begin(), d.found_by.end(), method) == d.found_by.end()) d.found_by.push_back(method);
-        return d;
-    };
 
-    for (const auto &inst : seen.instances) {
-        const std::string &type = inst.first, &name = inst.second;
-        std::string kind = "other";
-        for (const auto &s : kServices)
-            if (type == s.type) kind = s.kind;
-        std::string host, ip;
-        int port = 0;
-        if (const auto it = seen.srv.find(name); it != seen.srv.end()) { host = it->second.first; port = it->second.second; }
-        if (const auto it = seen.a.find(host); it != seen.a.end()) ip = it->second;
-        if (ip.empty())
-            if (const auto it = seen.from.find(name); it != seen.from.end()) ip = it->second;
-        if (ip.empty()) continue;
-        std::map<std::string, std::string> txt;
-        if (const auto it = seen.txt.find(name); it != seen.txt.end()) txt = it->second;
-        // The instance name is "Name._type._tcp.local": the part before the service type is the label.
-        const size_t cut0 = util::lower(name).find("." + type);
-        if (type == kHttpService && !shelly_label(cut0 == std::string::npos ? name : name.substr(0, cut0))) continue;
-        // A web server is taken for a Shelly only when nothing more specific came from its address
-        // (instances arrive sorted by type, so _esphomelib, _hap, _googlecast... come first): an
-        // ESPHome device that kept a Shelly's host name stays ESPHome.
-        if (type == kHttpService)
-            if (const auto it = by_ip.find(ip); it != by_ip.end() && !it->second.kind.empty() && it->second.kind != "shelly") continue;
-        if (kind == "airplay") {
-            // Not a kind of its own here: it only lends its readable name and model to the device.
-            friendly[ip] = {clean(cut0 == std::string::npos ? name : name.substr(0, cut0)), clean(txt.count("model") ? txt["model"] : "")};
-            continue;
-        }
-        // A speaker also announces the groups it belongs to; the speaker itself is the device.
-        const bool group = kind == "cast" && txt.count("md") && txt["md"] == "Google Cast Group";
-        const bool lead = by_ip[ip].kind.empty() || rank_of(kind) < rank_of(by_ip[ip].kind) ||
-                          (by_ip[ip].model == "Google Cast Group" && !group);
-        Device &d = take(ip, kind, "mdns");
-        if (kind == "shelly" && d.kind == "shelly") {
-            // Gen2 and later announce both services; either may carry these (gen: the generation).
-            for (const char *key : {"gen", "app", "ver"})
-                if (txt.count(key) && !d.info.count(key)) d.info[key] = txt[key];
-            if (d.model.empty() && txt.count("app")) d.model = clean(txt["app"]);
-        }
-        if (!lead && !d.name.empty()) continue;   // a less specific service of a device already described
-        d.host = host;
-        d.port = port;
-        std::string label = cut0 == std::string::npos ? name : name.substr(0, cut0);
-        if (kind == "cast" && txt.count("fn")) label = txt["fn"];
-        d.name = clean(label);
-        if (txt.count("md")) d.model = clean(txt["md"]);
-        for (const char *key : {"id", "sf", "ci", "bridgeid", "modelid", "ve"})
-            if (txt.count(key)) d.info[key] = txt[key];
-        if (kind == "homekit") {
-            // ff: pair with the authentication chip's method when bit 0 is set; c#: goes up when
-            // the accessory's database changes; pv: the protocol version; md: the model, by which
-            // the HomeKit driver recognises a device that has a driver of its own (a Hue Bridge
-            // whose own announcement was not heard).
-            for (const char *key : {"ff", "c#", "pv", "md"})
-                if (txt.count(key)) d.info[key] = txt[key];
-        }
-        if (kind == "fire_tv") {
-            // The SRV port is Amazon's own discovery service, not the remote-control API the driver
-            // uses (it knows that port), so it is not kept as the device's port. "c" is the TV's
-            // wake-up address on newer Fire OS, "n" the name its owner gave it.
-            d.port = 0;
-            for (const char *key : {"c", "n"})
-                if (txt.count(key)) d.info[key] = txt[key];
-        }
-        if (txt.count("bridgeid")) d.id = "hue:" + util::lower(txt["bridgeid"]);
-        else if (kind == "shelly" && shelly_label(label)) {
-            d.id = "shelly:" + util::lower(label);   // one id whichever service is heard
-            // What the driver claims by: a record saved before it existed has neither "id" nor "gen".
-            if (!d.info.count("id")) d.info["id"] = util::lower(label);
-        } else if (txt.count("id")) d.id = kind + ":" + util::lower(txt["id"]);
-    }
+    explicit Merge(const Seen &heard) : seen(heard) {}
+    std::vector<Device> devices();
 
-    for (const auto &t : seen.tapo) {
-        const json &r = t.second;
-        const std::string device_type = clean(util::jget(r, "device_type", std::string()));
-        if (util::lower(device_type).compare(0, 4, "iot.") == 0) {
-            // A Kasa device that moved to the newer login (KLAP) with a firmware update. Its
-            // commands are still the older protocol's, which the Tapo driver does not send: it
-            // is the Kasa driver's, which tells the user it cannot use that login. It ranks below
-            // HomeKit, so one that also announces HomeKit is offered as HomeKit, which can switch it.
-            Device &d = take(t.first, "tplink", "tapo");
-            if (d.kind != "tplink") continue;
-            d.model = clean(util::jget(r, "device_model", std::string()));
-            d.name = "Kasa " + d.model;
-            d.mac = normal_mac(util::jget(r, "mac", std::string()));
-            if (!d.mac.empty()) d.id = "tplink:" + d.mac;   // the same id as its 9999 answer gave
-            d.port = 0;
-            d.info["device_type"] = device_type;
-            if (r.contains("mgt_encrypt_schm") && r["mgt_encrypt_schm"].is_object())
-                d.info["scheme"] = clean(util::jget(r["mgt_encrypt_schm"], "encrypt_type", std::string()));
-            continue;
-        }
-        Device &d = take(t.first, "tapo", "tapo");
-        d.model = clean(util::jget(r, "device_model", std::string()));
-        d.name = "Tapo " + d.model;
-        d.id = "tapo:" + util::lower(util::jget(r, "device_id", std::string()));
-        d.mac = lower_mac(util::jget(r, "mac", std::string()));
-        d.info["device_type"] = clean(util::jget(r, "device_type", std::string()));
-        d.info["owner"] = clean(util::jget(r, "owner", std::string()), 64);
-        if (r.contains("mgt_encrypt_schm") && r["mgt_encrypt_schm"].is_object()) {
-            const json &enc = r["mgt_encrypt_schm"];
-            d.info["scheme"] = clean(util::jget(enc, "encrypt_type", std::string()));
-            d.port = util::jget(enc, "http_port", 80);
-        }
-        if (r.contains("tpap") && r["tpap"].is_object()) d.info["tpap"] = r["tpap"].dump();
-    }
+private:
+    Device &take(const std::string &ip, const std::string &kind, const char *method);
+    void mdns_instance(const std::string &type, const std::string &name);
+    void tapo_answer(const std::string &ip, const json &r);
+    void wiz_answer(const std::string &ip, const json &result);
+    void kasa_answer(const std::string &ip, const json &s);
+    void ssdp_answer(const std::string &ip, const std::map<std::string, std::string> &h);
+    void dial_answer(const std::string &ip, const std::map<std::string, std::string> &h);
+    std::vector<Device> listed();
+};
 
-    for (const auto &w : seen.wiz) {
-        // Only the MAC is in the answer. The device's UDP port is the usual one, whatever another
-        // protocol announced from the same address (a HomeKit or Matter port is not it).
-        const std::string mac = wiz_mac(w.second);
-        Device &d = take(w.first, "wiz", "wiz");
-        if (d.kind != "wiz") continue;   // a Tapo device that also answered keeps its own id and port
-        d.id = "wiz:" + mac;
-        d.port = 0;
-        d.mac = normal_mac(mac);
-        if (d.name.empty()) d.name = "WiZ " + mac.substr(8);
-        const std::string module = clean(util::jget(w.second, "moduleName", std::string()));
-        if (!module.empty()) d.model = module;
-    }
-
+std::vector<Device> Merge::devices() {
+    for (const auto &inst : seen.instances) mdns_instance(inst.first, inst.second);
+    for (const auto &t : seen.tapo) tapo_answer(t.first, t.second);
+    for (const auto &w : seen.wiz) wiz_answer(w.first, w.second);
     // Answers to the older Kasa query come last: a device that gives one speaks the open protocol,
     // which needs no pairing, so it is a Kasa device whatever else it announced (some also offer
     // HomeKit) and whatever its 20002 answer said. Kinds the Kasa driver does not switch keep the
     // usual ranking.
-    for (const auto &k : seen.kasa) {
-        const json &s = k.second;
-        std::string device_type = clean(util::jget(s, "type", std::string()));
-        if (device_type.empty()) device_type = clean(util::jget(s, "mic_type", std::string()));
-        Device &d = take(k.first, "tplink", "kasa");
-        if (kasa_switched(device_type)) d.kind = "tplink";
-        if (d.kind != "tplink") continue;
-        d.model = clean(util::jget(s, "model", std::string()));
-        const std::string alias = clean(util::jget(s, "alias", std::string()));
-        d.name = alias.empty() ? "Kasa " + d.model : alias;
-        std::string mac = normal_mac(util::jget(s, "mac", std::string()));
-        if (mac.empty()) mac = normal_mac(util::jget(s, "mic_mac", std::string()));   // bulbs
-        if (!mac.empty()) { d.mac = mac; d.id = "tplink:" + mac; }
-        else if (d.id.compare(0, 7, "tplink:") != 0) d.id.clear();   // not another kind's id: made below from the address
-        d.port = kKasaPort;
+    for (const auto &k : seen.kasa) kasa_answer(k.first, k.second);
+    for (const auto &s : seen.ssdp) ssdp_answer(s.first, s.second);
+    for (const auto &s : seen.dial) dial_answer(s.first, s.second);
+    return listed();
+}
+
+Device &Merge::take(const std::string &ip, const std::string &kind, const char *method) {
+    Device &d = by_ip[ip];
+    d.ip = ip;
+    if (d.kind.empty() || rank_of(kind) < rank_of(d.kind)) d.kind = kind;
+    if (std::find(d.found_by.begin(), d.found_by.end(), method) == d.found_by.end()) d.found_by.push_back(method);
+    return d;
+}
+
+void Merge::mdns_instance(const std::string &type, const std::string &name) {
+    std::string kind = "other";
+    for (const auto &s : kServices)
+        if (type == s.type) kind = s.kind;
+    std::string host, ip;
+    int port = 0;
+    if (const auto it = seen.srv.find(name); it != seen.srv.end()) { host = it->second.first; port = it->second.second; }
+    if (const auto it = seen.a.find(host); it != seen.a.end()) ip = it->second;
+    if (ip.empty())
+        if (const auto it = seen.from.find(name); it != seen.from.end()) ip = it->second;
+    if (ip.empty()) return;
+    std::map<std::string, std::string> txt;
+    if (const auto it = seen.txt.find(name); it != seen.txt.end()) txt = it->second;
+    // The instance name is "Name._type._tcp.local": the part before the service type is the label.
+    const size_t cut0 = util::lower(name).find("." + type);
+    if (type == kHttpService && !shelly_label(cut0 == std::string::npos ? name : name.substr(0, cut0))) return;
+    // A web server is taken for a Shelly only when nothing more specific came from its address
+    // (instances arrive sorted by type, so _esphomelib, _hap, _googlecast... come first): an
+    // ESPHome device that kept a Shelly's host name stays ESPHome.
+    if (type == kHttpService)
+        if (const auto it = by_ip.find(ip); it != by_ip.end() && !it->second.kind.empty() && it->second.kind != "shelly") return;
+    if (kind == "airplay") {
+        // Not a kind of its own here: it only lends its readable name and model to the device.
+        friendly[ip] = {clean(cut0 == std::string::npos ? name : name.substr(0, cut0)), clean(txt.count("model") ? txt["model"] : "")};
+        return;
+    }
+    // A speaker also announces the groups it belongs to; the speaker itself is the device.
+    const bool group = kind == "cast" && txt.count("md") && txt["md"] == "Google Cast Group";
+    const bool lead = by_ip[ip].kind.empty() || rank_of(kind) < rank_of(by_ip[ip].kind) ||
+                      (by_ip[ip].model == "Google Cast Group" && !group);
+    Device &d = take(ip, kind, "mdns");
+    if (kind == "shelly" && d.kind == "shelly") {
+        // Gen2 and later announce both services; either may carry these (gen: the generation).
+        for (const char *key : {"gen", "app", "ver"})
+            if (txt.count(key) && !d.info.count(key)) d.info[key] = txt[key];
+        if (d.model.empty() && txt.count("app")) d.model = clean(txt["app"]);
+    }
+    if (!lead && !d.name.empty()) return;   // a less specific service of a device already described
+    d.host = host;
+    d.port = port;
+    std::string label = cut0 == std::string::npos ? name : name.substr(0, cut0);
+    if (kind == "cast" && txt.count("fn")) label = txt["fn"];
+    d.name = clean(label);
+    if (txt.count("md")) d.model = clean(txt["md"]);
+    for (const char *key : {"id", "sf", "ci", "bridgeid", "modelid", "ve"})
+        if (txt.count(key)) d.info[key] = txt[key];
+    if (kind == "homekit") {
+        // ff: pair with the authentication chip's method when bit 0 is set; c#: goes up when
+        // the accessory's database changes; pv: the protocol version; md: the model, by which
+        // the HomeKit driver recognises a device that has a driver of its own (a Hue Bridge
+        // whose own announcement was not heard).
+        for (const char *key : {"ff", "c#", "pv", "md"})
+            if (txt.count(key)) d.info[key] = txt[key];
+    }
+    if (kind == "fire_tv") {
+        // The SRV port is Amazon's own discovery service, not the remote-control API the driver
+        // uses (it knows that port), so it is not kept as the device's port. "c" is the TV's
+        // wake-up address on newer Fire OS, "n" the name its owner gave it.
+        d.port = 0;
+        for (const char *key : {"c", "n"})
+            if (txt.count(key)) d.info[key] = txt[key];
+    }
+    if (txt.count("bridgeid")) d.id = "hue:" + util::lower(txt["bridgeid"]);
+    else if (kind == "shelly" && shelly_label(label)) {
+        d.id = "shelly:" + util::lower(label);   // one id whichever service is heard
+        // What the driver claims by: a record saved before it existed has neither "id" nor "gen".
+        if (!d.info.count("id")) d.info["id"] = util::lower(label);
+    } else if (txt.count("id")) d.id = kind + ":" + util::lower(txt["id"]);
+}
+
+void Merge::tapo_answer(const std::string &ip, const json &r) {
+    const std::string device_type = clean(util::jget(r, "device_type", std::string()));
+    if (util::lower(device_type).compare(0, 4, "iot.") == 0) {
+        // A Kasa device that moved to the newer login (KLAP) with a firmware update. Its
+        // commands are still the older protocol's, which the Tapo driver does not send: it
+        // is the Kasa driver's, which tells the user it cannot use that login. It ranks below
+        // HomeKit, so one that also announces HomeKit is offered as HomeKit, which can switch it.
+        Device &d = take(ip, "tplink", "tapo");
+        if (d.kind != "tplink") return;
+        d.model = clean(util::jget(r, "device_model", std::string()));
+        d.name = "Kasa " + d.model;
+        d.mac = normal_mac(util::jget(r, "mac", std::string()));
+        if (!d.mac.empty()) d.id = "tplink:" + d.mac;   // the same id as its 9999 answer gave
+        d.port = 0;
         d.info["device_type"] = device_type;
-        d.info["scheme"] = "XOR";   // it answered the older protocol, so that is what it speaks
+        if (r.contains("mgt_encrypt_schm") && r["mgt_encrypt_schm"].is_object())
+            d.info["scheme"] = clean(util::jget(r["mgt_encrypt_schm"], "encrypt_type", std::string()));
+        return;
     }
-
-    for (const auto &s : seen.ssdp) {
-        const auto &h = s.second;
-        auto get = [&](const char *k) { const auto it = h.find(k); return it == h.end() ? std::string() : it->second; };
-        const std::string server = util::lower(get("server"));
-        std::string kind;
-        if (!get("hue-bridgeid").empty()) kind = "hue_bridge";
-        else if (server.find("sonos") != std::string::npos) kind = "sonos";
-        else if (server.find("roku") != std::string::npos) kind = "roku";
-        else if (server.find("wemo") != std::string::npos || server.find("belkin") != std::string::npos) kind = "wemo";
-        if (kind.empty()) {
-            // Routers, printers and the like: only worth noting when something else found the device.
-            if (const auto it = by_ip.find(s.first); it != by_ip.end())
-                if (std::find(it->second.found_by.begin(), it->second.found_by.end(), "ssdp") == it->second.found_by.end())
-                    it->second.found_by.push_back("ssdp");
-            continue;
-        }
-        const auto before = by_ip.find(s.first);
-        const bool had_hue = before != by_ip.end() && before->second.kind == "hue_bridge";
-        Device &d = take(s.first, kind, "ssdp");
-        // A Hue Bridge's port is the one its own _hue._tcp record gives (else the default, 0). The
-        // port of another service heard from it (HomeKit's 8080) is not the bridge's interface.
-        if (kind == "hue_bridge" && !had_hue) d.port = 0;
-        if (d.name.empty()) d.name = kind == "hue_bridge" ? "Hue Bridge" : clean(get("server"));
-        if (!get("hue-bridgeid").empty()) { d.id = "hue:" + util::lower(get("hue-bridgeid")); d.info["bridgeid"] = util::lower(get("hue-bridgeid")); }
+    Device &d = take(ip, "tapo", "tapo");
+    d.model = clean(util::jget(r, "device_model", std::string()));
+    d.name = "Tapo " + d.model;
+    d.id = "tapo:" + util::lower(util::jget(r, "device_id", std::string()));
+    d.mac = lower_mac(util::jget(r, "mac", std::string()));
+    d.info["device_type"] = clean(util::jget(r, "device_type", std::string()));
+    d.info["owner"] = clean(util::jget(r, "owner", std::string()), 64);
+    if (r.contains("mgt_encrypt_schm") && r["mgt_encrypt_schm"].is_object()) {
+        const json &enc = r["mgt_encrypt_schm"];
+        d.info["scheme"] = clean(util::jget(enc, "encrypt_type", std::string()));
+        d.port = util::jget(enc, "http_port", 80);
     }
+    if (r.contains("tpap") && r["tpap"].is_object()) d.info["tpap"] = r["tpap"].dump();
+}
 
-    // Many televisions answer the DIAL search, so it never decides what a device is; it only adds
-    // the wake-up address to a Fire TV that announced itself over mDNS from the same address.
-    for (const auto &s : seen.dial) {
-        const auto it = by_ip.find(s.first);
-        if (it == by_ip.end() || it->second.kind != "fire_tv") continue;
-        Device &d = it->second;
-        if (const auto w = s.second.find("wakeup"); w != s.second.end() && !w->second.empty()) d.info["wakeup"] = w->second;
-        if (std::find(d.found_by.begin(), d.found_by.end(), "ssdp") == d.found_by.end()) d.found_by.push_back("ssdp");
+void Merge::wiz_answer(const std::string &ip, const json &result) {
+    // Only the MAC is in the answer. The device's UDP port is the usual one, whatever another
+    // protocol announced from the same address (a HomeKit or Matter port is not it).
+    const std::string mac = wiz_mac(result);
+    Device &d = take(ip, "wiz", "wiz");
+    if (d.kind != "wiz") return;   // a Tapo device that also answered keeps its own id and port
+    d.id = "wiz:" + mac;
+    d.port = 0;
+    d.mac = normal_mac(mac);
+    if (d.name.empty()) d.name = "WiZ " + mac.substr(8);
+    const std::string module = clean(util::jget(result, "moduleName", std::string()));
+    if (!module.empty()) d.model = module;
+}
+
+void Merge::kasa_answer(const std::string &ip, const json &s) {
+    std::string device_type = clean(util::jget(s, "type", std::string()));
+    if (device_type.empty()) device_type = clean(util::jget(s, "mic_type", std::string()));
+    Device &d = take(ip, "tplink", "kasa");
+    if (kasa_switched(device_type)) d.kind = "tplink";
+    if (d.kind != "tplink") return;
+    d.model = clean(util::jget(s, "model", std::string()));
+    const std::string alias = clean(util::jget(s, "alias", std::string()));
+    d.name = alias.empty() ? "Kasa " + d.model : alias;
+    std::string mac = normal_mac(util::jget(s, "mac", std::string()));
+    if (mac.empty()) mac = normal_mac(util::jget(s, "mic_mac", std::string()));   // bulbs
+    if (!mac.empty()) { d.mac = mac; d.id = "tplink:" + mac; }
+    else if (d.id.compare(0, 7, "tplink:") != 0) d.id.clear();   // not another kind's id: made below from the address
+    d.port = kKasaPort;
+    d.info["device_type"] = device_type;
+    d.info["scheme"] = "XOR";   // it answered the older protocol, so that is what it speaks
+}
+
+void Merge::ssdp_answer(const std::string &ip, const std::map<std::string, std::string> &h) {
+    auto get = [&](const char *k) { const auto it = h.find(k); return it == h.end() ? std::string() : it->second; };
+    const std::string server = util::lower(get("server"));
+    std::string kind;
+    if (!get("hue-bridgeid").empty()) kind = "hue_bridge";
+    else if (server.find("sonos") != std::string::npos) kind = "sonos";
+    else if (server.find("roku") != std::string::npos) kind = "roku";
+    else if (server.find("wemo") != std::string::npos || server.find("belkin") != std::string::npos) kind = "wemo";
+    if (kind.empty()) {
+        // Routers, printers and the like: only worth noting when something else found the device.
+        if (const auto it = by_ip.find(ip); it != by_ip.end())
+            if (std::find(it->second.found_by.begin(), it->second.found_by.end(), "ssdp") == it->second.found_by.end())
+                it->second.found_by.push_back("ssdp");
+        return;
     }
+    const auto before = by_ip.find(ip);
+    const bool had_hue = before != by_ip.end() && before->second.kind == "hue_bridge";
+    Device &d = take(ip, kind, "ssdp");
+    // A Hue Bridge's port is the one its own _hue._tcp record gives (else the default, 0). The
+    // port of another service heard from it (HomeKit's 8080) is not the bridge's interface.
+    if (kind == "hue_bridge" && !had_hue) d.port = 0;
+    if (d.name.empty()) d.name = kind == "hue_bridge" ? "Hue Bridge" : clean(get("server"));
+    if (!get("hue-bridgeid").empty()) { d.id = "hue:" + util::lower(get("hue-bridgeid")); d.info["bridgeid"] = util::lower(get("hue-bridgeid")); }
+}
 
+// Many televisions answer the DIAL search, so it never decides what a device is; it only adds
+// the wake-up address to a Fire TV that announced itself over mDNS from the same address.
+void Merge::dial_answer(const std::string &ip, const std::map<std::string, std::string> &h) {
+    const auto it = by_ip.find(ip);
+    if (it == by_ip.end() || it->second.kind != "fire_tv") return;
+    Device &d = it->second;
+    if (const auto w = h.find("wakeup"); w != h.end() && !w->second.empty()) d.info["wakeup"] = w->second;
+    if (std::find(d.found_by.begin(), d.found_by.end(), "ssdp") == d.found_by.end()) d.found_by.push_back("ssdp");
+}
+
+// What is listed: one entry per address, named and identified, most specific kind first.
+std::vector<Device> Merge::listed() {
     std::vector<Device> out;
     for (auto &entry : by_ip) {
         Device &d = entry.second;
@@ -554,6 +579,11 @@ std::vector<Device> merge(const Seen &seen) {
         return rank_of(a.kind) != rank_of(b.kind) ? rank_of(a.kind) < rank_of(b.kind) : a.name < b.name;
     });
     return out;
+}
+
+std::vector<Device> merge(const Seen &seen) {
+    Merge m(seen);
+    return m.devices();
 }
 
 }  // namespace
