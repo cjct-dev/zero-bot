@@ -60,8 +60,7 @@ std::string system_prompt() {
          "ahead, otherwise next year. Work that out yourself and save it; do not ask or refuse because the date "
          "is far off.\n";
     if (controls::on(controls::Say)) {
-        p += experiment::say_rule("- Some tools take 'say': the short confirmation to speak once the call has worked. ");
-        p += "Fill it in whenever "
+        p += "- Some tools take 'say': the short confirmation to speak once the call has worked. Fill it in whenever "
              "that call is all the request needs, in the user's language, so they hear the result without delay. "
              "When it confirms something dated, it says the day (and the time, if there is one) back, so that a "
              "mishearing is caught at once.\n";

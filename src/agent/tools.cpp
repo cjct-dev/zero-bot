@@ -1544,7 +1544,6 @@ json schema() {
         arr.push_back({{"type", "function"},
                        {"function", {{"name", t.name}, {"description", description}, {"parameters", parameters}}}});
     }
-    experiment::shape_tools(arr);   // the experiments' variants of the text (ZB_EXP_TOOLS); nothing otherwise
     return arr;
 }
 

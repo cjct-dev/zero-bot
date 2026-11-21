@@ -23,7 +23,6 @@ constexpr int kMaxRounds = 8;            // model calls per request, including t
 constexpr size_t kMaxHistory = 40;       // messages kept as context
 constexpr size_t kMaxToolResult = 6000;  // characters of tool output passed back to the model
 constexpr size_t kMaxEarlier = 200;      // DIAGNOSTICS (temporary): trimmed messages kept for a saved conversation
-constexpr int kCheckWaitMs = 1500;       // experiments only (E3): how long a finished draft waits for the parallel check
 
 // Adds an instruction for this one model call. It is attached to the newest user message where
 // possible, because some chat templates reject a system message after the first.
@@ -364,9 +363,6 @@ private:
         const guards::Claim *unbacked = nullptr;   // the claim guard a sentence tripped as it streamed
         std::vector<std::string> unsaid;   // sentences composed while the microphone was open
         SpeechQueue::Chunker chunker;
-        experiment::ParallelCheck pcheck;  // experiments only (E3, ZB_EXP_DECIDE=parallel): see below
-        bool released = false;             // E3: the held draft is being spoken as it streams
-        std::string held_text;             // E3: the draft so far, while the check has not cleared it
     };
 
     // How a round ends: what the turn does next.
@@ -493,25 +489,11 @@ void Agent::Turn::call_model(Round &r, const Budget &budget) {
     // used a tool: "done" with nothing done, or a price or opening time from memory. So a reply
     // that arrives with no tool call is held back and checked before a word of it is spoken.
     const bool fast_decision = r.deciding && !req_.acted && !req_.guarded && r.opt.fast;
-    // Experiments only (E3b, ZB_EXP_DECIDE=required): the decision is forced into a tool call, words
-    // come through the reply tool and stream as they are written; nothing is held for a second look.
-    if (fast_decision && experiment::decide_required()) r.opt.tool_choice = "required";
-    r.hold = fast_decision && controls::on(controls::SecondLook) && (!experiment::decide_required() || experiment::reply_held());
-    // Experiments only (E3, ZB_EXP_DECIDE=parallel): a short check beside this call says whether a
-    // tool is needed at all. A draft it clears is spoken as it streams, without the second look.
-    if (r.hold && experiment::parallel_check()) r.pcheck.start(r.messages, tool_schema_, r.opt.model);
+    r.hold = fast_decision && controls::on(controls::SecondLook);
     if (fast_decision && controls::on(controls::DecideNote)) add_note(r.messages, guards::kDecideNote);
     r.opt.purpose = budget.last() ? "last_round" : r.corrected ? "correction" : r.deciding ? "decide" : "after_tool";
     r.opt.cancel = &a_.round_cancel_;
     r.opt.on_text = [this, &r](const std::string &piece) { stream(r, piece); };
-    // Experiments only (E3c): words written before the reply tool begins are its answer; before a real tool
-    // they are never spoken.
-    if (r.hold && experiment::reply_held())
-        r.opt.on_call = [&](const std::string &name) {
-            if (r.released || name != "reply") return;
-            r.released = true;
-            if (!r.held_text.empty()) r.opt.on_text(r.held_text);
-        };
     r.res = llm::chat(r.messages, budget.last() ? json::array() : tool_schema_, r.opt);
 }
 
@@ -520,18 +502,10 @@ void Agent::Turn::call_model(Round &r, const Budget &budget) {
 // while the microphone is open.
 void Agent::Turn::stream(Round &r, const std::string &piece) {
     if (r.steered || r.unbacked) return;
-    std::string text = piece;
-    if (r.hold && !r.released) {
-        if (!r.pcheck.active() && !experiment::reply_held()) return;   // held whole, checked once complete
-        r.held_text += piece;
-        if (!r.pcheck.said_none()) return;   // E3c: released by on_call when the reply tool begins
-        r.released = true;                // E3: cleared while it is still being written
-        r.pcheck.used("stream");
-        text = r.held_text;
-    }
+    if (r.hold) return;   // held whole, checked once complete
     if (!r.began) { r.began = true; if (a_.ev_.answer_begin) a_.ev_.answer_begin(); }
-    if (a_.ev_.answer_delta) a_.ev_.answer_delta(text);
-    for (auto &sentence : r.chunker.feed(text)) {
+    if (a_.ev_.answer_delta) a_.ev_.answer_delta(piece);
+    for (auto &sentence : r.chunker.feed(piece)) {
         // New input arrived before anything was said: withdraw this draft and let the
         // model reconsider with the extra instruction.
         if (!r.speech_started && a_.has_pending()) { r.steered = true; a_.round_cancel_ = true; return; }
@@ -611,18 +585,7 @@ bool Agent::Turn::on_error(Round &r) {
 // draft, either lets it stand or calls the tool it should have. The user saying more meanwhile
 // withdraws the draft (Again); cancelling ends the request (Finish).
 std::optional<Agent::Turn::Then> Agent::Turn::second_look(Round &r) {
-    // E3: a draft the parallel check clears once the draft is complete stands without the second look.
-    bool cleared = r.released;
-    if (r.pcheck.active()) {
-        if (!r.res.tool_calls.empty()) r.pcheck.used("main_tool");
-        else if (r.hold && !r.released && !r.res.content.empty()) {
-            cleared = r.pcheck.wait_none(kCheckWaitMs);
-            r.pcheck.used(cleared ? "after" : r.pcheck.answered() ? "second_look" : "late");
-        }
-        r.pcheck.stop();
-        rt_.parallel_check(r.pcheck.summary());
-    }
-    if (r.hold && !cleared && r.res.tool_calls.empty() && !r.res.content.empty()) {
+    if (r.hold && r.res.tool_calls.empty() && !r.res.content.empty()) {
         json review = r.messages;
         review.push_back({{"role", "assistant"}, {"content", r.res.content}});
         review.push_back({{"role", "user"}, {"content", guards::kSecondLook}});
@@ -686,7 +649,7 @@ std::optional<Agent::Turn::Then> Agent::Turn::judge_draft(Round &r, const Budget
 // What was held back is spoken now that it stands: a draft kept for the second look, and words
 // composed while the microphone was open.
 void Agent::Turn::release_held(Round &r) {
-    if (r.hold && !r.released && r.res.tool_calls.empty()) {
+    if (r.hold && r.res.tool_calls.empty()) {
         // The draft stands: release it as if it had streamed.
         r.began = true;
         if (a_.ev_.answer_begin) a_.ev_.answer_begin();

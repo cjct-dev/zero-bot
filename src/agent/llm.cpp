@@ -97,7 +97,7 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
                  {"max_tokens", opt.max_tokens}, {"temperature", opt.temperature}};
     if (tools.is_array() && !tools.empty()) {
         body["tools"] = tools;
-        body["tool_choice"] = opt.tool_choice.empty() ? "auto" : opt.tool_choice;
+        body["tool_choice"] = "auto";
     }
     // Reasoning models think privately before answering, which costs a second or more per
     // call. Fast mode asks them not to. Servers that reject the field get one retry without it.
@@ -126,11 +126,6 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
     // clear of a marker.
     std::string held;
     bool thinking = false, answer_over = false;
-    experiment::ReplyCalls replies;   // experiments only (E3b): answers given through the reply tool, as text
-    int reply_calls = 0;
-    // E3b: a service may stream the answer as text and then repeat it in the reply call; it is said once,
-    // from whichever came first.
-    bool plain_said = false, reply_said = false;
     auto emit = [&](const std::string &text) {
         if (text.empty()) return;
         out.content += text;
@@ -192,9 +187,8 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
         const json &delta = choice["delta"];
         if (delta.contains("content") && delta["content"].is_string()) {
             const std::string piece = delta["content"].get<std::string>();
-            if (!piece.empty() && !reply_said) {
+            if (!piece.empty()) {
                 if (tracing && first_text < 0) first_text = since();
-                if (!util::trim(piece).empty()) plain_said = true;
                 filter_text(piece, false);
             }
         }
@@ -209,18 +203,8 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
                 if (tc.contains("function") && tc["function"].is_object()) {
                     const json &fn = tc["function"];
                     const std::string name = util::jget(fn, "name", std::string());
-                    const bool begins = call.name.empty() && !name.empty();
                     if (!name.empty()) call.name = name;
-                    if (begins && opt.on_call) opt.on_call(name);
-                    if (fn.contains("arguments") && fn["arguments"].is_string()) {
-                        call.args += fn["arguments"].get<std::string>();
-                        const std::string said = replies.feed(idx, call.name, fn["arguments"].get<std::string>());
-                        if (!said.empty() && !plain_said) {
-                            if (tracing && first_text < 0) first_text = since();
-                            reply_said = true;
-                            filter_text(said, false);
-                        }
-                    }
+                    if (fn.contains("arguments") && fn["arguments"].is_string()) call.args += fn["arguments"].get<std::string>();
                 }
             }
         }
@@ -252,8 +236,6 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
         out = ChatResult();
         ttfb = first_text = first_call = -1;
         usage = nullptr;
-        replies = experiment::ReplyCalls();
-        plain_said = reply_said = false;
     };
     // Upstream hiccups (5xx, dropped connections, a service that says it is overloaded) are common
     // on mobile links. As long as nothing has been passed on yet, the call is tried again, twice at
@@ -293,11 +275,6 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
         res = http::send_retrying(req, retry);
     }
     if (!pending.empty()) handle_line(pending);
-    {
-        std::string unstreamed;
-        reply_calls = replies.finish(out.tool_calls, unstreamed);
-        if (!unstreamed.empty() && !plain_said) filter_text(unstreamed, false);
-    }
     filter_text("", true);
 
     if (tracing) {
@@ -317,8 +294,7 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
                                 {"body_bytes", static_cast<long>(req.body.size())}, {"t_send", t_send}, {"ttfb_ms", ttfb},
                                 {"first_text_ms", first_text}, {"first_call_ms", first_call}, {"done_ms", since()},
                                 {"attempts", attempts}, {"status", res.status}, {"usage", usage}, {"outcome", outcome},
-                                {"text_chars", static_cast<long>(out.content.size())}, {"reply_calls", reply_calls},
-                                {"reply_after_text", reply_calls > 0 && plain_said}});
+                                {"text_chars", static_cast<long>(out.content.size())}});
     }
 
     if (res.error == "cancelled") { out.cancelled = true; return out; }
