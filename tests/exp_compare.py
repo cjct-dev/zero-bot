@@ -145,8 +145,10 @@ def load_roster(seed=None):
     try:
         compiled = [(c, su.compile_case(c)) for c in suite]
         return {"scorer": ev.SCORER_VERSION, "seed": ev.WEB_SEED,
-                "sets": {"scored": {c["name"]: {"hash": ev.case_hash(c), "tags": [], "web": ev.web_backed(c)} for c in ev.CASES},
-                         "suite": {c["name"]: {"hash": ev.case_hash(k), "tags": c["tags"], "web": ev.web_backed(k)} for c, k in compiled}}}
+                "sets": {"scored": {c["name"]: {"hash": ev.case_hash(c), "tags": [], "web": ev.web_backed(c), "requests": ev.case_turns(c)}
+                                    for c in ev.CASES},
+                         "suite": {c["name"]: {"hash": ev.case_hash(k), "tags": c["tags"], "web": ev.web_backed(k), "requests": ev.case_turns(k)}
+                                   for c, k in compiled}}}
     finally:
         ev.WEB_SEED = saved
 
@@ -702,6 +704,17 @@ def main(argv=None):
     return VERDICT_EXIT[v["verdict"]]
 
 
+def executed(r, x):
+    """A record that shows a run took place (the held-out judge's evidence): its own run_id, the traced app, the
+    requests the roster expects (the held-out question forms), and every one of them answered: a turn that ended."""
+    turns = r.get("turns")
+    asked = [t for t in x.get("requests") or [] if t != "/new"]
+    return (isinstance(r.get("run_id"), str) and len(r["run_id"]) >= 16 and r.get("trace") is True
+            and r.get("requests") == x.get("requests") and isinstance(turns, list) and len(turns) == len(asked) and asked
+            and all(isinstance(t, dict) and not t.get("unstarted") and not t.get("timed_out") and t.get("total") is not None
+                    and isinstance(t.get("answer"), str) for t in turns))
+
+
 def held_out_verdict(results, load_problems, floors, roster, repeats=1, max_unscorable=MAX_UNSCORABLE, out=None):
     """The held-out run judged on its own, against ROSTER (load_roster at the held-out seed): every case it defines
     with exactly REPEATS valid runs of its current version (its case_hash at that seed, the current scorer, the
@@ -726,13 +739,17 @@ def held_out_verdict(results, load_problems, floors, roster, repeats=1, max_unsc
     for n, (s_, x) in defined.items():
         rs = runs.get(n, [])
         ok = [r for r in rs if not record_problems(r) and set_of(r) == s_ and r.get("case_hash") == x["hash"]
-              and r.get("scorer") == roster["scorer"] and r.get("web_seed") == roster["seed"]]
+              and r.get("scorer") == roster["scorer"] and r.get("web_seed") == roster["seed"] and executed(r, x)]
+        ids = [r.get("run_id") for r in ok]
+        if len(set(ids)) != len(ids):   # three copies of one run are one run
+            ok = [r for k, r in enumerate(ok) if r.get("run_id") not in ids[:k]]
         if len(ok) != len(rs): stale.append(n)
         if len(rs) != repeats: wrong_count.append(n)
         good[n] = ok
+    wrong_count += [n for n, ok in good.items() if len(ok) != len(runs.get(n, [])) and n not in wrong_count and n not in stale]
     if stale:
-        v["reasons"].append("%d cases have records that are not valid runs of the current case at seed %s: %s"
-                            % (len(stale), roster["seed"], short(stale)))
+        v["reasons"].append("%d cases have records that are not valid runs of the current case at seed %s (case, scorer, seed, "
+                            "run id, trace, requests, answered turns): %s" % (len(stale), roster["seed"], short(stale)))
         incomplete = True
     if wrong_count:
         v["reasons"].append("%d cases do not have exactly %d runs: %s" % (len(wrong_count), repeats, short(wrong_count)))
@@ -1067,10 +1084,10 @@ def self_test():
 
     # The held-out run, judged on its own against the roster at the held-out seed (W3).
     def h_roster():
-        sets = {"scored": {("s%02d" % k): {"hash": "h-s%02d" % k, "tags": [], "web": k < 5} for k in range(20)},
-                "suite": {("t-%03d" % k): {"hash": "h-t-%03d" % k, "tags": ["confirm"] if k == 0 else ["timer"], "web": False}
+        sets = {"scored": {("s%02d" % k): {"hash": "h-s%02d" % k, "tags": [], "web": k < 5, "requests": ["x"]} for k in range(20)},
+                "suite": {("t-%03d" % k): {"hash": "h-t-%03d" % k, "tags": ["confirm"] if k == 0 else ["timer"], "web": False, "requests": ["x"]}
                           for k in range(20)}}
-        sets["scored"]["home_after_web_no"] = {"hash": "h-home_after_web_no", "tags": [], "web": True}
+        sets["scored"]["home_after_web_no"] = {"hash": "h-home_after_web_no", "tags": [], "web": True, "requests": ["x"]}
         return {"scorer": "s1", "seed": HELD_OUT_FROM + 1, "sets": sets}
 
     def held(roster, fail=(), seed=HELD_OUT_FROM + 1, drop=(), extra=(), repeats=1, stale=()):
@@ -1082,10 +1099,12 @@ def self_test():
                     r = rec(name, ok=name not in fail, suite=s_ == "suite", tags=cases[name]["tags"] if s_ == "suite" else None,
                             h="stale" if name in stale else None)
                     r["web_seed"] = seed
+                    r["run_id"] = "%032x" % random.getrandbits(128)
                     out.append(r)
         for name in extra:
             r = rec(name)
             r["web_seed"] = seed
+            r["run_id"] = "%032x" % random.getrandbits(128)
             out.append(r)
         return out
     quiet, ro, fl = io.StringIO(), h_roster(), {"scored": 0.8, "suite": 0.8, "web": 0.8}
@@ -1113,6 +1132,23 @@ def self_test():
     check("held-out: a stale record is not counted", v["verdict"] == "incomplete" and "not valid runs" in str(v["reasons"]), v)
     v = held_out_verdict(held(ro, repeats=2), [], fl, ro, out=quiet)
     check("held-out: twice the runs asked for is incomplete", v["verdict"] == "incomplete", v)
+    # Round 2, item 3: a record must show a run took place, and repeats must be distinct runs.
+    def tamper(f):
+        rs = held(ro)
+        for r in rs:
+            if r["case"] == "home_after_web_no": f(r)
+        return held_out_verdict(rs, [], fl, ro, out=quiet)
+    for what, f in (("no turns", lambda r: r.update(turns=[])), ("an unanswered turn", lambda r: r["turns"][0].update(total=None)),
+                    ("other requests", lambda r: r.update(requests=["y"])), ("untraced", lambda r: r.update(trace=False)),
+                    ("no run id", lambda r: r.pop("run_id"))):
+        v = tamper(f)
+        check("held-out (r2): a critical pass with %s is no evidence: incomplete" % what, v["verdict"] == "incomplete" and
+              "home_after_web_no" in str(v["reasons"]), v["reasons"])
+    rs = held(ro, repeats=3)
+    copies = [r for r in rs if r["case"] == "s04"]
+    for r in copies: r["run_id"] = copies[0]["run_id"]
+    v = held_out_verdict(rs, [], fl, ro, repeats=3, out=quiet)
+    check("held-out (r2): three copies of one run are not three runs", v["verdict"] == "incomplete" and "s04" in str(v["reasons"]), v["reasons"])
     v = held_out_verdict(held(ro, repeats=3, fail=("s08",)), [], fl, ro, repeats=3, out=quiet)
     cal = calibration(v)
     check("held-out: three repeats, per-run rates and a floor under their mean", v["verdict"] == "passes" and len(v["per_repeat"]["scored"]) == 3

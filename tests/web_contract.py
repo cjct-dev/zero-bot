@@ -14,6 +14,7 @@ request to anything else is refused before it is made). Standard library only.
 usage: tests/web_contract.py [--self-test]       (--self-test: the comparison itself, offline)
 """
 import json
+import re
 import os
 import subprocess
 import sys
@@ -30,7 +31,8 @@ FORECAST = ("https://api.open-meteo.com/v1/forecast?latitude=51.5085&longitude=-
             "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m"
             "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset")
 # (what, the request as the app makes it (src/agent/tools.cpp), the fields the app reads with what each must be:
-# "number", "text", "object"; "?" may be null; "[T]" a list, never empty, of T ("[number?]": nulls allowed in it))
+# "number", "text", "object"; "?" may be null; "*" may be absent (the app reads it when it is there); "[T]" a list,
+# never empty, of T ("[number?]": nulls allowed in it))
 REQUESTS = [
     ("place", "https://geocoding-api.open-meteo.com/v1/search?language=en&count=10&name=London",
      {"results": "[object]", "results.0.name": "text", "results.0.country": "text", "results.0.country_code": "text",
@@ -46,19 +48,22 @@ REQUESTS = [
                                                         "time_last_update_utc": "text"}),
     ("no such currency", "https://open.er-api.com/v6/latest/XQZ", {"result": "text"}),
     ("stock by name", "https://query1.finance.yahoo.com/v1/finance/search?quotesCount=3&newsCount=0&q=rolls%20royce",
-     {"quotes": "[object]", "quotes.0.symbol": "text", "quotes.0.longname": "text?", "quotes.0.shortname": "text"}),
+     {"quotes": "[object]", "quotes.0.symbol": "text", "quotes.0.longname": "text*", "quotes.0.shortname": "text*"}),
     ("stock price", "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d",
      {"chart.result": "[object]", "chart.result.0.meta.regularMarketPrice": "number", "chart.result.0.meta.chartPreviousClose": "number",
-      "chart.result.0.meta.currency": "text", "chart.result.0.meta.symbol": "text", "chart.result.0.meta.longName": "text?",
-      "chart.result.0.meta.fullExchangeName": "text", "chart.result.0.meta.regularMarketDayHigh": "number?",
-      "chart.result.0.meta.regularMarketDayLow": "number?", "chart.result.0.meta.fiftyTwoWeekHigh": "number?",
-      "chart.result.0.meta.fiftyTwoWeekLow": "number?", "chart.result.0.meta.regularMarketTime": "number"}),
+      "chart.result.0.meta.currency": "text", "chart.result.0.meta.symbol": "text", "chart.result.0.meta.longName": "text*",
+      "chart.result.0.meta.shortName": "text*", "chart.result.0.meta.fullExchangeName": "text*", "chart.result.0.meta.exchangeName": "text*",
+      "chart.result.0.meta.regularMarketDayHigh": "number*", "chart.result.0.meta.regularMarketDayLow": "number*",
+      "chart.result.0.meta.fiftyTwoWeekHigh": "number*", "chart.result.0.meta.fiftyTwoWeekLow": "number*",
+      "chart.result.0.meta.regularMarketTime": "number", "chart.result.0.meta.previousClose": "number*",
+      "chart.result.0.meta.regularMarketChangePercent": "number*"}),
     ("no such symbol", "https://query1.finance.yahoo.com/v8/finance/chart/ZZQXQ.NOPE?range=5d&interval=1d", {"chart.error": "object"}),
 ]
 
 
 def meets(value, spec):
     """Whether VALUE is what SPEC says (see REQUESTS): its type, null only with "?", a list never empty."""
+    spec = spec.rstrip("*")
     if spec.startswith("["):
         inner = spec[1:-1]
         return isinstance(value, list) and len(value) > 0 and all(meets(x, inner) for x in value)
@@ -165,7 +170,8 @@ def main():
                     for side, doc in (("stand-in", s_doc), ("real service", r_doc)):
                         try: value = get(doc, field)
                         except KeyError:
-                            problems.append("%s: the %s does not have it (the app reads it)" % (field, side))
+                            if not spec.endswith("*"):
+                                problems.append("%s: the %s does not have it (the app reads it)" % (field, side))
                             continue
                         if not meets(value, spec):
                             problems.append("%s: the %s has %s, the app reads it as %s" % (field, side, json.dumps(value)[:40], spec))
@@ -200,6 +206,13 @@ def self_test():
     check("null where none may be", not meets(None, "[number]") and not meets([1, None], "[number]") and not meets(None, "number"))
     check("null where the app takes it", meets([1, None], "[number?]") and meets(None, "text?"))
     check("a type that disagrees", not meets("12", "number"))
+    # Round 2, W12: every stock field the app reads is in the contract (src/agent/tools.cpp t_stock reads them by name).
+    app = open(os.path.join(HERE, "..", "src", "agent", "tools.cpp"), encoding="utf-8").read()
+    body = app[app.index("std::string t_stock("):app.index("// ---------------------------------------------------------------- time")]
+    read = set(re.findall(r'jget\(m, "(\w+)"', body)) | set(re.findall(r'm\.contains\("(\w+)"\)', body))
+    stock = next(r for w, _, r in REQUESTS if w == "stock price")
+    missing = sorted(f for f in read if "chart.result.0.meta." + f not in stock)
+    check("the contract covers every stock field the app reads: %s" % (", ".join(missing) or "all"), not missing)
     for url in ("https://api.tavily.com/search", "https://example.com/x", "https://geocoding-api.open-meteo.com.evil.example/v1/search"):
         try:
             fetch(url)
@@ -232,7 +245,8 @@ def self_test():
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
-        status, doc, where = http_get(netguard.no_redirect_opener(), "http://127.0.0.1:%d/start" % srv.server_address[1])
+        # local_opener: straight to 127.0.0.1 whatever proxy the environment names, and no redirect followed
+        status, doc, where = http_get(netguard.local_opener(), "http://127.0.0.1:%d/start" % srv.server_address[1])
         check("a redirect is reported with where it points, and not followed", status == 302 and where and where.endswith("/landed")
               and hits == ["/start"])
     finally:
@@ -254,7 +268,7 @@ def self_test():
             for field, spec in reads.items():
                 try: value = get(doc, field)
                 except KeyError:
-                    check("the stand-in's %s has %s" % (what, field), False)
+                    check("the stand-in's %s has %s" % (what, field), spec.endswith("*"))
                     continue
                 check("the stand-in's %s %s is %s" % (what, field, spec), meets(value, spec))
     finally:

@@ -158,10 +158,13 @@ def facts(rule_id, seed, day=None):
     return {name: fill(rng(seed, "slot", rule_id, name).choice(pool(rule, name, seed)), day=day) for name in sorted(rule.get("slots", {}))}
 
 
-def candidates(rule_id, slot, day=None):
-    """Every value a slot can take, everyday and held out (filled): what an answer may not give instead of the served one."""
+def candidates(rule_id, slot, day=None, seed=1):
+    """The values a slot can take with this seed's kind (filled): the everyday ones for an everyday seed (an everyday
+    run never reads the held-out set), the held-out ones and the everyday ones for a held-out seed. What an answer may
+    not give instead of the served one."""
     rule = ALL_RULES[rule_id]
-    return [fill(v, day=day) for v in rule["slots"][slot] + rule.get("held_out", {}).get(slot, [])]
+    values = rule.get("held_out", {}).get(slot, []) + rule["slots"][slot] if held_out(seed) else rule["slots"][slot]
+    return [fill(v, day=day) for v in values]
 
 
 def pool_problems():

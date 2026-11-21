@@ -22,6 +22,10 @@ import time
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import netguard   # noqa: E402
+netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
+
 CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "unit", "firetv_cli")
 MOCK = os.path.join(HERE, "mocks", "firetv", "mock_firetv.py")
 MAC = "00:00:5e:00:53:01"
@@ -45,7 +49,7 @@ def check(name, ok, detail=""):
 class Mock:
     def __init__(self, *args):
         self.proc = subprocess.Popen([sys.executable, MOCK, "--max-seconds", "900", *args], stdin=subprocess.PIPE,
-                                     stdout=subprocess.PIPE, text=True)
+                                     stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
         mocks.append(self)
         line = self.proc.stdout.readline().split()
         if line[:2] != ["MOCK", "listening"]:

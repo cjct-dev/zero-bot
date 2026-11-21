@@ -254,11 +254,12 @@ def k_currency(s):
             except (TypeError, ValueError): return [ev.UNSCORABLE + "the conversion's result is not readable"]
             rate, amount = float(got.get("rate", 0)), got.get("amount")
             if s.get("amount") is None:
-                if ev.says_about(t["answer"], rate, max(0.005, rate * 0.01)) or (rate and ev.says_about(t["answer"], 1 / rate, max(0.005, 0.01 / rate))):
+                if ev.says_money(t["answer"], rate, max(0.005, rate * 0.01), str(got.get("to", "")).upper()) or \
+                        (rate and ev.says_money(t["answer"], 1 / rate, max(0.005, 0.01 / rate), str(got.get("from", "")).upper())):
                     return []
                 return ["the answer should give the rate the conversion returned, %.4g" % rate]
             want = float(amount) * rate
-            if ev.says_money(t["answer"], want, ev.money_tol(want)): return []
+            if ev.says_money(t["answer"], want, ev.money_tol(want), str(got.get("to", "")).upper()): return []
             return ["the answer should give the converted amount, %.2f %s" % (want, got.get("to", ""))]
         return ["convert_currency should convert %s %s to %s, got %s" % (s.get("amount"), s.get("from") or "?", s.get("to") or "?",
                                                                          ev.calls(t, "convert_currency"))]
@@ -273,7 +274,7 @@ def k_converted(s):
             if code not in got: problems.append("no convert_currency call to " + code)
             else:
                 want = s["amount"] * got[code]["rate"]
-                if not ev.says_money(t["answer"], want, ev.money_tol(want)): problems.append("answer should give %.2f %s" % (want, code))
+                if not ev.says_money(t["answer"], want, ev.money_tol(want), code): problems.append("answer should give %.2f %s" % (want, code))
         return problems
     return check
 
@@ -283,7 +284,7 @@ def k_converted_share(s):
         res = [r for r in ev.results(t, "convert_currency") if isinstance(r, dict) and "rate" in r]
         if not res: return ["no usable convert_currency result"]
         want = s["amount"] * s["factor"] * res[0]["rate"]
-        return [] if ev.says_money(t["answer"], want, ev.money_tol(want)) else ["answer should give %.2f" % want]
+        return [] if ev.says_money(t["answer"], want, ev.money_tol(want), str(res[0].get("to", "")).upper()) else ["answer should give %.2f" % want]
     return check
 
 

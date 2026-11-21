@@ -20,6 +20,10 @@ import tempfile
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import netguard   # noqa: E402
+netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
+
 APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
 EMAIL, PASSWORD = "user@example.com", "hunter2"
 SHA1 = hashlib.sha1(PASSWORD.encode()).hexdigest()
@@ -43,7 +47,7 @@ class Mock:
         self.proc = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "mock_tapo.py"), "--port", "0", "--mode", mode,
                                       "--model", model, "--email", EMAIL, "--password", PASSWORD, "--mac", mac,
                                       "--nickname", nickname, "--stdin-lifeline"],
-                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
         line = self.proc.stdout.readline().split()
         if line[:2] != ["MOCK", "listening"]:
             raise RuntimeError("the mock did not start: %r" % line)

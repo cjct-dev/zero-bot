@@ -2,9 +2,12 @@
 environment, a trap that every request leaving 127.x must go through and that refuses it, and the probe that a
 binary sends every tool's web read to the stand-in.
 
-- child_env(base, keep, allow_hosts): no credentials (KEYS) but those KEEP names, no inherited proxy or no-proxy
-  setting, and every proxy variable pointing at the trap, with only 127.0.0.1, localhost and ALLOW_HOSTS (the AI
-  service of a live run) exempt. A request for anywhere else reaches the trap, which records it and refuses it.
+- child_env(base, keep, allow_origin): no credentials (KEYS) but those KEEP names, no inherited proxy or no-proxy
+  setting, and every proxy variable pointing at the trap, with only 127.0.0.1, localhost and ALLOW_ORIGIN's host (the
+  AI service of a live run) exempt. Inside the app (experiment builds) ZB_EXP_NET narrows that to exactly 127.x and
+  that origin (scheme, host and port), with no redirect followed, and keeps it from identifying the real network;
+  ZB_TEST_NETWORK puts it on the stand-in network. A request for anywhere else is refused before it leaves, or
+  reaches the trap, which records it and refuses it.
 - mock_env(): what a mock (the stand-in web, a scripted model, a simulated device) starts with: a PATH and
   nothing else of the caller's, so no key reaches it.
 - local_opener(): urllib without proxies and without following redirects, for a test's own requests to 127.x.
@@ -29,7 +32,7 @@ KEYS = ("ZB_SEARCH_KEY", "ZB_API_KEY", "ZB_API_BASE")
 PROXY_VARS = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy", "ftp_proxy", "FTP_PROXY")
 NO_PROXY_VARS = ("no_proxy", "NO_PROXY")
 LOCAL_HOSTS = ("127.0.0.1", "localhost")
-REQUIRED_CAPS = ("records", "web", "web_all", "no_hardware")
+REQUIRED_CAPS = ("records", "web", "web_all", "no_hardware", "net")
 
 
 class Trap:
@@ -83,9 +86,23 @@ def trap():
         return _trap
 
 
-def child_env(base=None, keep=(), allow_hosts=(), **extra):
+def origin_of(url):
+    """scheme://host:port of URL (the port written out), or "" when it has none."""
+    try:
+        u = urllib.parse.urlsplit(url or "")
+        if u.scheme not in ("http", "https") or not u.hostname or "@" in u.netloc: return ""
+        return "%s://%s:%d" % (u.scheme, u.hostname.lower(), u.port or (443 if u.scheme == "https" else 80))
+    except ValueError:
+        return ""
+
+
+def child_env(base=None, keep=(), allow_origin="", **extra):
     """BASE (default os.environ) without credentials but KEEP, without inherited proxy settings, with every proxy
-    variable at the trap and only 127.0.0.1, localhost and ALLOW_HOSTS exempt; then EXTRA (None removes)."""
+    variable at the trap and only 127.0.0.1, localhost and ALLOW_ORIGIN's host exempt; the app's own pin (ZB_EXP_NET:
+    loopback, or loopback and exactly ALLOW_ORIGIN) and the stand-in network (ZB_TEST_NETWORK); then EXTRA (None
+    removes)."""
+    origin = origin_of(allow_origin) if allow_origin else ""
+    allow_hosts = (host_of(origin),) if origin else ()
     env = dict(os.environ if base is None else base)
     for k in KEYS:
         if k not in keep:
@@ -98,12 +115,25 @@ def child_env(base=None, keep=(), allow_hosts=(), **extra):
     exempt = ",".join(LOCAL_HOSTS + tuple(h for h in allow_hosts if h))
     for k in NO_PROXY_VARS:
         env[k] = exempt
+    env["ZB_EXP_NET"] = origin or "loopback"   # inside the app: nothing but 127.x (and the AI origin) goes out
+    env["ZB_TEST_NETWORK"] = "1"               # the stand-in network: the real one is never identified
     for k, v in extra.items():
         if v is None:
             env.pop(k, None)
         else:
             env[k] = v
     return env
+
+
+def sanitize():
+    """This process's own environment made what child_env gives, so that every child it starts, with os.environ or a
+    copy of it, inherits no key and no proxy of the caller's, is pinned (ZB_EXP_NET) and is on the stand-in network.
+    For the standalone end-to-end scripts, which start the app and mocks in many places."""
+    clean = child_env()
+    for k in list(os.environ):
+        if k not in clean:
+            del os.environ[k]
+    os.environ.update(clean)
 
 
 def mock_env(**extra):
@@ -201,9 +231,11 @@ def self_test():
     check("child_env: no key, no AI service", not any(k in env for k in KEYS), env)
     check("child_env: every proxy variable at the trap", all(env[k] == trap().url for k in PROXY_VARS), env)
     check("child_env: only loopback exempt", env["NO_PROXY"] == env["no_proxy"] == "127.0.0.1,localhost", env)
-    env = child_env(base, keep=("ZB_API_KEY", "ZB_API_BASE"), allow_hosts=("ai.example",))
+    check("child_env: the app pinned to loopback, on the stand-in network", env["ZB_EXP_NET"] == "loopback" and env["ZB_TEST_NETWORK"] == "1")
+    env = child_env(base, keep=("ZB_API_KEY", "ZB_API_BASE"), allow_origin="https://ai.example/v1")
     check("child_env: kept keys and one exempt host", env.get("ZB_API_KEY") == "k" and "ZB_SEARCH_KEY" not in env and
           env["NO_PROXY"] == "127.0.0.1,localhost,ai.example", env)
+    check("child_env: the app pinned to exactly the AI origin", env["ZB_EXP_NET"] == "https://ai.example:443", env)
     old = {k: os.environ.get(k) for k in ("ZB_SEARCH_KEY", "ZB_API_KEY")}
     os.environ.update(ZB_SEARCH_KEY="s", ZB_API_KEY="k")
     try:
@@ -217,12 +249,14 @@ def self_test():
     here = os.path.dirname(os.path.abspath(__file__))
     folder = tempfile.mkdtemp(prefix="zb-netguard-")
     try:
-        for name, caps_ in (("old", '["records", "web", "no_hardware"]'), ("none", '[]'), ("good", '["records", "web", "web_all", "no_hardware"]')):
+        for name, caps_ in (("old", '["records", "web", "no_hardware"]'), ("none", '[]'),
+                            ("good", '["records", "web", "web_all", "no_hardware", "net"]'), ("nonet", '["records", "web", "web_all", "no_hardware"]')):
             app = os.path.join(folder, name)
             with open(app, "w") as f:
                 f.write(FAKE_APP % caps_)
             os.chmod(app, 0o755)
-        check("probe: a build without web_all lacks it", missing_caps(os.path.join(folder, "old")) == ["web_all"])
+        check("probe: a build without web_all lacks it", missing_caps(os.path.join(folder, "old")) == ["web_all", "net"])
+        check("probe: a build without the network pin (round 2) lacks it", missing_caps(os.path.join(folder, "nonet")) == ["net"])
         check("probe: a build with all of them lacks nothing", missing_caps(os.path.join(folder, "good")) == [])
         for script in ("tools_cli.py", "agent_loop_test.py", "home_chat_e2e.py", "selfheal_chat_e2e.py"):
             log = os.path.join(folder, "calls.log")   # the fake app's own (the probe gives it no environment of ours)
@@ -236,6 +270,27 @@ def self_test():
                   (p.returncode, (p.stdout + p.stderr)[-200:], calls))
     finally:
         shutil.rmtree(folder, ignore_errors=True)
+    # Every script that starts the app or a mock builds their environments here (round 2, W4): the standalone
+    # device tests sanitize their own environment first, and every mock they start gets mock_env.
+    import re
+    for script in ("tapo_e2e.py", "kasa_e2e.py", "wiz_e2e.py", "shelly_e2e.py", "hue_e2e.py", "homekit_e2e.py", "firetv_e2e.py",
+                   "home_chat_e2e.py", "selfheal_chat_e2e.py", "agent_loop_test.py", "tools_cli.py", "web_contract.py"):
+        with open(os.path.join(here, script), encoding="utf-8") as f:
+            text = f.read()
+        popens = [m.start() for m in re.finditer(r"subprocess\.Popen\(", text)]
+        bare = []
+        for i in popens:
+            depth, k = 0, text.index("(", i)
+            while True:
+                depth += {"(": 1, ")": -1}.get(text[k], 0)
+                k += 1
+                if depth == 0: break
+            call = text[i:k]
+            if ("mock" in call.lower() or "fake_" in call) and "netguard.mock_env()" not in call:
+                bare.append(call[:80])
+        check("%s starts every mock with mock_env" % script, not bare, bare)
+        if script.endswith("_e2e.py") and script not in ("home_chat_e2e.py", "selfheal_chat_e2e.py"):
+            check("%s sanitizes its own environment first" % script, "netguard.sanitize()" in text)
     # local_opener reaches 127.x whatever proxy the environment names; the trap sees nothing.
     class Quiet(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):

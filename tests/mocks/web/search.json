@@ -285,7 +285,8 @@
    ],
    "answer_held_out": [
     "Full time last night: Arsenal {score}."
-   ]
+   ],
+   "team": "Arsenal"
   },
   {
    "id": "yankees-result",
@@ -332,7 +333,8 @@
    ],
    "answer_held_out": [
     "Final score last night: the Yankees {score}."
-   ]
+   ],
+   "team": "the Yankees|Yankees|New York"
   },
   {
    "id": "uk-strikes",

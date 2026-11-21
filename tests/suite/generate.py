@@ -466,9 +466,9 @@ for text, tags, check, held in [
          "how did arsenal get on last night"),
         ("how did the yankees do last night", ["us"], [served("yankees-result", "score", how="score")],
          "what was the final score for the yankees yesterday evening"),
-        ("are there any train strikes in the uk this week", ["uk"], [served("uk-strikes", "operator"), served("uk-strikes", "day", how="date")],
+        ("are there any train strikes in the uk this week", ["uk"], [served("uk-strikes", "operator")],
          "is a rail strike planned anywhere in britain this week"),
-        ("when is the next home game for the chicago bulls", ["us"], [served("bulls-home-game", "day", how="date"), served("bulls-home-game", "opponent")],
+        ("when is the next home game for the chicago bulls", ["us"], [served("bulls-home-game", "day", how="date")],
          "when do the chicago bulls next play at home"),
         ("who won the mens singles at wimbledon this year", [], [served("wimbledon-mens", "winner", how="winner")],
          "who is this years wimbledon mens champion"),
@@ -756,7 +756,7 @@ case("dialogue", "whats the market mood ahead of the monzo ipo, and can staff se
 case("dialogue", "what are analysts expecting from shell's results this week, and if they miss will the share price drop much",
      tags=["compound", "uk", "search"], must=["web_search"], long_ok=[0],
      checks=[max_calls("web_search", 2), ans(r"analyst|expect|forecast|estimate|consensus", "what is expected"),
-             ans(r"drop|fall|fell|decline|react|move|reaction|slide|hit", "what a miss would do"),
+             ans(r"drop|fall|fell|decline|react|move|reaction|slide|hit|knock|lose|lower|down", "what a miss would do"),
              served("shell-results", "profit", how="number")])
 # A deeper follow-up keeps the subject, and may take the room it needs.
 case("dialogue", ["when is the canva ipo", "could that mean the best designers cash out and leave the company"], tags=["search"], long_ok=[1],

@@ -167,9 +167,9 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
             e.pop(v, None)
         # No inherited key or proxy; every proxy at the trap; the stand-in network always, home or not, so the real
         # one is never identified (no packet to the router).
-        e = netguard.child_env(e, keep=("ZB_API_BASE", "ZB_API_KEY"), ZB_TEST_NETWORK="1")
         for v in [k for k in e if k.startswith("ZB_EXP_")]:   # experiments' switches: only as a scenario sets them
             e.pop(v)
+        e = netguard.child_env(e, keep=("ZB_API_BASE", "ZB_API_KEY"))   # and ZB_EXP_NET, the network pin, always
         if trace:
             e["ZB_EXP_TRACE"] = state + "/trace.jsonl"
         if home:

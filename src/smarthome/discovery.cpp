@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "agent/experiment.h"
 #include "core/util.h"
 #include "platform/proc.h"
 #include "platform/display.h"
@@ -668,6 +669,8 @@ Link link_kind(const std::string &iface, std::string &why_not, const std::string
 
 Network current_network() {
     Network net;
+    // A test run (ZB_EXP_NET, experiment builds only) never looks at the real network: no router asked, no packet.
+    if (const std::string why = experiment::no_lan(); !why.empty()) { net.why_not = why; return net; }
     const Route route = default_route();
     net.iface = route.iface;
     net.gateway = route.gateway;

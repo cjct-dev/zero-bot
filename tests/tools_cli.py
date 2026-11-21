@@ -329,6 +329,7 @@ def run_all(root):
     no_real_web(root)
     web_wraps()
     test_network_everywhere(root)
+    network_pin(root)
 
 
 class Trap:
@@ -565,16 +566,96 @@ def web_wraps():
     check("tools.cpp sends HTTP only in fetch_json", sends == 1, sends)
 
 
+def isolated(cmd, env, timeout=60):
+    """CMD in a network namespace of its own (unshare -rn: only a loopback that is down), where nothing can leave
+    this computer whatever the app does; None when this system cannot make one."""
+    if subprocess.run(["unshare", "-rn", "true"], capture_output=True).returncode != 0:
+        return None
+    return subprocess.run(["unshare", "-rn"] + cmd, env=env, capture_output=True, text=True, timeout=timeout)
+
+
 def test_network_everywhere(root):
-    """ZB_TEST_NETWORK, which every test run sets so that the real network is never identified (no packet to the
-    router), changes nothing a request without a saved home is given: the same prompt and the same tools."""
+    """No test sends a packet to the real router (item 13, round 2 blocker 1): every app run here keeps
+    ZB_TEST_NETWORK, and without a saved home the stand-in network offers no smart home. In experiment builds the
+    network pin (ZB_EXP_NET) also keeps network identification off; that is checked where nothing can leave, in a
+    network namespace of its own, with the stand-in switch taken away so that the guard alone stands."""
     g = State(root, "test-network")
-    outs = []
-    for flag in ("1", None):
-        e = g.env(ZB_TEST_NETWORK=flag, ZB_SEARCH_KEY="stand-in")
-        outs.append([subprocess.run([APP, what], env=e, capture_output=True, text=True, timeout=60).stdout for what in ("--prompt", "--schema")])
-    check("without a home, the test network changes neither the prompt nor the tools", outs[0] == outs[1] and outs[0][1].strip(),
-          [len(x) for o in outs for x in o])
+    e = g.env(ZB_SEARCH_KEY="stand-in")
+    check("every app run here is on the stand-in network and pinned", e.get("ZB_TEST_NETWORK") == "1" and e.get("ZB_EXP_NET") == "loopback", e)
+    prompt = subprocess.run([APP, "--prompt"], env=e, capture_output=True, text=True, timeout=60).stdout
+    schema = subprocess.run([APP, "--schema"], env=e, capture_output=True, text=True, timeout=60).stdout
+    try:
+        names = [t["function"]["name"] for t in json.loads(schema)]
+    except (ValueError, KeyError, TypeError):
+        names = []
+    check("without a home, the stand-in network offers no smart home", names and "smart_home" not in names and
+          "smart home" not in prompt.lower() and "smart_home" not in prompt, names)
+    bare = dict(e)
+    bare.pop("ZB_TEST_NETWORK")
+    r = isolated([APP, "--discover"], bare)
+    if r is None:
+        print("(no network namespace here: the identification guard was not tried)")
+    else:
+        out = r.stdout + r.stderr
+        check("ZB_EXP_NET: the real network is never identified, nothing scanned", "not looked at in a test run" in out and
+              "scan failed" in out, out[:300])
+
+
+def network_pin(root):
+    """Round 2 blocker 2: in a test run (ZB_EXP_NET) the app sends HTTP only to 127.x and the AI service's exact
+    origin, and follows no redirect: a tool read for a real host is refused before it leaves (the trap sees nothing),
+    a model that answers with a redirect is not followed, and another port or host of the AI service is refused."""
+    import http.server
+    import threading
+    g = State(root, "network-pin")
+    trap = netguard.trap()
+    n0 = trap.count()
+    out = g.run("convert_currency", {"amount": 1, "from": "EUR", "to": "GBP"}, ZB_SEARCH_KEY="stand-in")
+    check("a tool's read for a real host is refused inside the app", "refused: a test run sends nothing but to 127.x" in out, out[:200])
+    check("... before it leaves: the trap saw nothing", trap.since(n0) == [], trap.since(n0))
+    seen = {"a": [], "b": []}
+
+    def server(name, redirect_to=None):
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def answer(self):
+                seen[name].append(self.path)
+                n = int(self.headers.get("Content-Length") or 0)
+                if n: self.rfile.read(n)
+                if redirect_to:
+                    self.send_response(302)
+                    self.send_header("Location", redirect_to + self.path)
+                else:
+                    self.send_response(500)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            do_GET = do_POST = answer
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        return srv
+    b = server("b")
+    a = server("a", "http://127.0.0.1:%d" % b.server_address[1])
+    try:
+        e = g.env(ZB_API_BASE="http://127.0.0.1:%d/v1" % a.server_address[1], ZB_API_KEY="test")
+        r = subprocess.run([APP, "--ask", "hello"], env=e, capture_output=True, text=True, timeout=120)
+        check("a model that answers with a redirect is asked, and the redirect is not followed", seen["a"] and not seen["b"],
+              (seen, (r.stdout + r.stderr)[-200:]))
+    finally:
+        a.shutdown()
+        b.shutdown()
+    # Another port or another host of the AI service: refused inside the app. In a namespace of its own, so that an
+    # app without the pin could not reach anything either.
+    for base, why in (("https://ai.invalid:8443/v1", "another port"), ("https://other.ai.invalid/v1", "a host under it")):
+        e = netguard.child_env(g.env(), keep=("ZB_API_BASE", "ZB_API_KEY"), allow_origin="https://ai.invalid/v1",
+                               ZB_API_BASE=base, ZB_API_KEY="test")
+        r = isolated([APP, "--ask", "hello"], e, timeout=120)
+        if r is None:
+            print("(no network namespace here: the origin pin was not tried)")
+            break
+        check("the AI exemption is the exact origin: %s is refused" % why, "refused: a test run sends nothing but to 127.x and the AI service"
+              in r.stdout + r.stderr, (r.stdout + r.stderr)[-300:])
 
 
 if __name__ == "__main__":

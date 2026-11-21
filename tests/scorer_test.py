@@ -101,7 +101,7 @@ def records(c, *turns, end=True):
     counts; one response with all of them when left out); {"new": True} is "/new". A turn without "answer"
     never ended."""
     asked = [t for t in c["turns"] if t != "/new"]
-    out, n, on = [{"ev": "start", "caps": ["records", "web", "web_all", "no_hardware"]}], 0, set()
+    out, n, on = [{"ev": "start", "caps": ["records", "web", "web_all", "no_hardware", "net"]}], 0, set()
     home = c.get("home") if isinstance(c.get("home"), dict) else None
     for t in turns:
         if "answer" not in t and not t.get("new") and n < len(asked): end = False   # a turn that never ended: no end of the run
@@ -959,8 +959,13 @@ def served_checks():
     passes("weather served: the served figures, rounded, pass", lisbon, {"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain, 11 to 17 degrees."})
     trips("weather served (W8): today's high given for tomorrow fails", lisbon,
           [{"calls": [forecast], "answer": "Tomorrow in Lisbon: sunny and 24 degrees."}], "did not serve for the day asked about")
+    passes("weather served (r2): another day the answer names itself may be given", lisbon,
+           {"calls": [forecast], "answer": "Tomorrow: light rain, 11 to 17 degrees. Today was sunnier, up to 24 degrees."})
     trips("weather served (W8): the rain chance read as a temperature fails", lisbon,
           [{"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain and 60 degrees."}], "did not serve")
+    passes("weather served (r2): a converted Fahrenheit figure (62°F for 16.8°C) passes", lisbon,
+           {"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain, up to 62°F."})
+    trips("weather served (r2): 17°F for a served 16.8°C fails", lisbon, [{"calls": [forecast], "answer": "Tomorrow: up to 17°F."}], "did not serve")
     trips("weather served (W8): each end of a range counts ('99 to 17')", lisbon,
           [{"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain, 99 to 17 degrees."}], "99")
     passes("weather served: a decimal comma is one number", case("spanish_weather"),
@@ -979,12 +984,60 @@ def served_checks():
            {"calls": [("weather", {"location": "Lisbon"}, "ERROR: the service answered with an error (HTTP 503)")],
             "answer": "I couldn't get the forecast right now; the weather service isn't responding."})
 
+    # Round 2, item 4: facts the model could see, cleared on /new, and a fixture fault that stays unscorable in a later turn.
+    empty = ("web_search", {"query": "wimbledon mens singles winner"}, json.dumps({"results": []}))
+    trips("served (r2): an empty result credits nothing: a lucky winner fails", wimbledon,
+          [{"calls": [empty], "answer": "%s won it." % winner}], "did not show")
+    passes("served (r2): an empty result, and an honest 'it gave no winner', passes", wimbledon,
+           {"calls": [empty], "answer": "The search didn't say who won, sorry."})
+    two = dict(bare("who won the mens singles at wimbledon this year", "/new", "who won it"),
+               checks=[ev.chk_served("wimbledon-mens", "winner", "winner")], must=[])
+    trips("served (r2): what was searched before /new is no evidence after it", two,
+          [{"calls": [call], "answer": "%s won." % winner}, {"new": True}, {"answer": "%s won." % winner}], "no search")
+    fake_web.FIXTURES["default"] = {"search": [shadow] + fake_web.RULES}
+    fake_web.ALL_RULES["shadow"] = shadow
+    try:
+        later = dict(bare("who won the mens singles at wimbledon this year", "thanks"),
+                     checks=[ev.on_turn(0, ev.chk_served("wimbledon-mens", "winner", "winner"))])
+        got = verdict(later, {"calls": [searched("wimbledon mens singles winner")], "answer": "%s won it." % winner}, {"answer": "You're welcome."})
+    finally:
+        fake_web.FIXTURES["default"] = saved_default
+        del fake_web.ALL_RULES["shadow"]
+    check("served (r2): a fixture fault in an earlier turn's check is unscorable, not a model failure", got[0] == "unscorable" and
+          got[1][0].startswith(ev.UNSCORABLE + "turn 1"), got)
+    # Round 2, item 5: roles and negation within the clause.
+    passes("served winner (r2): 'X defeated Y' is a win", wimbledon,
+           {"calls": [searched("wimbledon mens winner")], "answer": "%s defeated %s in the final." % (winner, loser)})
+    starling_ex = fact("starling-ipo", "exchange")
+    other_ex = "the New York Stock Exchange" if "London" in starling_ex else "the London Stock Exchange"
+    passes("served (r2): another candidate set aside ('X, not Y') passes", starling, first,
+           {"answer": "It plans to list on %s, not %s." % (starling_ex, other_ex)}, last)
+    if verb == "won":
+        passes("served score (r2): 'Arsenal defeated ...' is a win", arsenal,
+               {"calls": [call], "answer": "Arsenal defeated %s %s-%s." % (fact("arsenal-result", "opponent"), x, y)})
+    # W6 (r2): a world_time whose city lookup failed is no read that was made.
+    check("calls (r2): a failed world_time city lookup does not count",
+          ev.calls(one_turn(calls=[("world_time", {"place": "Florbington"}, "ERROR: could not find a place called 'Florbington'")]), "world_time") == [])
+    # W9 (r2): everyday scoring never reads the held-out candidates.
+    check("candidates (r2): an everyday seed reads only the everyday values",
+          not set(fake_web.ALL_RULES["wimbledon-mens"]["held_out"]["winner"]) & set(fake_web.candidates("wimbledon-mens", "winner", None, 1)))
+
     # W8: a conversion's answer gives what it returned.
     cur = suite_case(["how much is 20 euros in pounds"])
     conv = ("convert_currency", {"amount": 20, "from": "EUR", "to": "GBP"},
             json.dumps({"amount": 20, "from": "EUR", "to": "GBP", "rate": 0.8561, "result": "17.12 GBP", "rate_date": "Sat, 21 Nov 2026"}))
     passes("currency (W8): the converted amount passes", cur, {"calls": [conv], "answer": "20 euros is about 17.12 pounds."})
     passes("currency: rounded as speech rounds it passes", cur, {"calls": [conv], "answer": "That's about 17 pounds."})
+    passes("currency (r2): an amount in words ('forty-two dollars thirty-three cents') passes", suite_case(["how much is 40 euros in pounds", "and in dollars"]),
+           {"calls": [("convert_currency", {"amount": 40, "from": "EUR", "to": "GBP"},
+                       json.dumps({"amount": 40, "from": "EUR", "to": "GBP", "rate": 0.85, "result": "34.00 GBP"}))], "answer": "About 34 pounds."},
+           {"calls": [("convert_currency", {"amount": 40, "from": "EUR", "to": "USD"},
+                       json.dumps({"amount": 40, "from": "EUR", "to": "USD", "rate": 1.05837, "result": "42.33 USD"}))],
+            "answer": "Forty euros is about forty-two dollars thirty-three cents at today's rate."})
+    trips("currency (r2): an amount in words in the wrong currency fails", cur,
+          [{"calls": [conv], "answer": "That's about seventeen euros twelve cents."}], "the converted amount")
+    trips("currency (r2): the amount given in the wrong currency fails", cur, [{"calls": [conv], "answer": "That's about 17.12 euros."}],
+          "the converted amount")
     trips("currency (W8): 'I don't know' after a working conversion fails", cur, [{"calls": [conv], "answer": "I don't know, sorry."}],
           "the converted amount")
     share = suite_case(["how much is 85 euros in pounds and split that between three people"])
@@ -997,6 +1050,10 @@ def served_checks():
     check("currency: a thousands comma stays one number", ev.says_money("That is 1,250 pounds.", 1250.0, 1) and
           not ev.says_money("That is 1,250 pounds.", 1.25, 0.01))
     passes("currency: '23 pounds 72 pence' is 23.72", share, {"calls": [conv85], "answer": "85 euros is 71.16 pounds, so 23 pounds 72 pence each."})
+    passes("currency (r2): a share with no currency word, in an answer that names pounds, passes", share,
+           {"calls": [conv85], "answer": "85 euros is about 71.16 pounds. Split three ways, that's around 23.72 each."})
+    trips("currency (r2): a share given in euros fails", share,
+          [{"calls": [conv85], "answer": "85 euros is 71.16 pounds, so 23.72 euros each."}], "answer should give")
     rate_case = suite_case(["whats the exchange rate between the euro and the dollar"])
     conv1 = ("convert_currency", {"amount": 1, "from": "EUR", "to": "USD"}, json.dumps({"amount": 1, "from": "EUR", "to": "USD", "rate": 1.0843}))
     passes("currency: the rate asked for passes", rate_case, {"calls": [conv1], "answer": "One euro is 1.08 dollars."})
@@ -1092,6 +1149,30 @@ def web_seeds():
         fake_web.TODAY = saved_today
     check("date (W11): another day, the same forecast values, its own dates", a["daily"]["temperature_2m_max"] == b["daily"]["temperature_2m_max"]
           and a["current"]["temperature_2m"] == b["current"]["temperature_2m"] and a["daily"]["time"][0] != b["daily"]["time"][0])
+    # Round 2, item 6: the few cases whose answers move with the date pair only with a run on a day like it.
+    sat = suite_case(["is it going to be sunny in new york on saturday"]) if any(
+        c["turns"] == ["is it going to be sunny in new york on saturday"] for c in json.load(open(os.path.join(HERE, "suite", "cases.json")))) else None
+    plain = case("weather")
+    saved_date = ev.WEB_DATE
+    try:
+        hashes = {}
+        for d in ("2026-11-19", "2026-11-20", "2026-11-26"):   # a Thursday, a Friday, the next Thursday
+            ev.WEB_DATE = d
+            hashes[d] = (ev.case_hash(sat) if sat else None, ev.case_hash(plain), ev.case_hash(case("search")))
+        launch = suite_case(["when is the next apple product launch event", "what time is that in uk time"])
+        ev.WEB_DATE = "2026-03-02"
+        before_dst = ev.date_workload(launch)
+        ev.WEB_DATE = "2026-03-20"
+        after_dst = ev.date_workload(launch)
+    finally:
+        ev.WEB_DATE = saved_date
+    if sat:
+        check("date (r2): a Saturday forecast asked on Thursday and on Friday are different workloads",
+              hashes["2026-11-19"][0] != hashes["2026-11-20"][0] and hashes["2026-11-19"][0] == hashes["2026-11-26"][0])
+    check("date (r2): a case whose answers do not move with the date pairs across days",
+          hashes["2026-11-19"][1:] == hashes["2026-11-20"][1:] == hashes["2026-11-26"][1:])
+    check("date (r2): the launch's London time across a daylight-saving change is part of the workload",
+          before_dst != after_dst, (before_dst, after_dst))
     check("date (W12): a one-day partial forecast has no IndexError",
           len(fake_web.forecast({"forecast_mode": "partial"}, urllib.parse.parse_qs("latitude=1&longitude=1&forecast_days=1"))["daily"]["time"]) == 1)
     folder = tempfile.mkdtemp(prefix="zb-camera-")
@@ -1214,7 +1295,7 @@ env = {k: os.environ.get(k) for k in ("ZB_EXP_NO_HARDWARE", "ZB_FAKE_CAMERA", "Z
                                        "ALL_PROXY", "all_proxy", "ftp_proxy", "FTP_PROXY")}
 def rec(**r): f.write(json.dumps(dict(r, v=2, mono=0, wall=0)) + "\n")
 with open(path, "w") as f:
-    rec(ev="start", caps=os.environ.get("FAKE_CAPS", "records,web,web_all,no_hardware").split(","))
+    rec(ev="start", caps=os.environ.get("FAKE_CAPS", "records,web,web_all,no_hardware,net").split(","))
     n = 0
     for t in turns:
         if t == "/new":
@@ -1276,7 +1357,7 @@ def records_stream_strict():
              '{"v": 2, "ev": "turn_end", "turn": 1, "total": 1.0, "first": 0.5, "answer": "You are welcome.", "tool_calls": 0, "responses": [], "mono": 0, "wall": 0}\n')
     unscorable("an early end with no turns, then the turn (no start, no state, no end)", early, "the run does not begin with its start")
     unscorable("no start", "".join(lines[1:]), "the run does not begin with its start")
-    unscorable("a start that does not say what the build can do", good.replace(', "caps": ["records", "web", "web_all", "no_hardware"]', ""), "capabilities")
+    unscorable("a start that does not say what the build can do", good.replace(', "caps": ["records", "web", "web_all", "no_hardware", "net"]', ""), "capabilities")
     unscorable("a record after the end", good + lines[1], "after the end of the run")
     unscorable("a second start", "".join(lines[:1] + lines), "a second start")
     unscorable("a turn with no state", "".join(l for l in lines if '"state"' not in l), "ended without its saved state")
@@ -1538,7 +1619,7 @@ def guards_applied_last():
         check("trace: untraced when nothing asks for it", got["trace"] is False and ev.result_record(bare("hello"), got, "pass", [], True)["trace"] is False)
         check("probe (N5): a build that writes records and keeps the guards is fit", ev.probe_binary(app) == [], ev.probe_binary(app))
         older = os.path.join(folder, "older_app")
-        with open(older, "w") as f: f.write(FAKE_APP.replace('"records,web,web_all,no_hardware"', '"records,web"'))
+        with open(older, "w") as f: f.write(FAKE_APP.replace('"records,web,web_all,no_hardware,net"', '"records,web"'))
         os.chmod(older, 0o755)
         problems = ev.probe_binary(older)
         check("probe (N5): a build without the hardware guard is refused", any("no_hardware" in p for p in problems), problems)

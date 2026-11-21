@@ -37,6 +37,11 @@
 //                          sent as BASE/HOST/PATH?Q. BASE must be http://127.x...; anything else stops
 //                          the run. For the test sets: canned results, and search without a key. A
 //                          request to the stand-in is `local` (http.h): no proxy, no redirect followed
+//   ZB_EXP_NET=V           the test run's network: HTTP goes only to 127.x and localhost ("loopback") or to those
+//                          and exactly one origin ("https://host[:port]", the AI service), never following a
+//                          redirect; anything else is refused before it is sent. The real network is never
+//                          identified either (no look at the router, no packet to it). Any other value stops
+//                          the run. Set by every test runner (tests/netguard.py)
 //   ZB_EXP_NO_HARDWARE=1   the camera (unless ZB_FAKE_CAMERA names a picture) and the infrared
 //                          transmitter refuse with an error instead of being used: the live test sets'
 //                          runners set it, so a test run never sends a real photo to the service or
@@ -67,6 +72,7 @@ struct Switches {
     std::string check_model;                // ZB_EXP_CHECK_MODEL ("" = the main model)
     std::string web;                        // ZB_EXP_WEB ("" = the real services)
     bool no_hardware = false;               // ZB_EXP_NO_HARDWARE
+    std::string net;                        // ZB_EXP_NET: "loopback" or the one origin allowed besides ("" = unrestricted)
 };
 
 #if ZB_EXPERIMENTS
@@ -83,6 +89,9 @@ std::string web(const std::string &url);        // ZB_EXP_WEB: the stand-in's ad
 bool stand_in(const std::string &url);          // url goes to the ZB_EXP_WEB stand-in (sent as `local`)
 std::string no_camera();                        // ZB_EXP_NO_HARDWARE: the camera's refusal, or ""
 std::string no_infrared();                      // ZB_EXP_NO_HARDWARE: the transmitter's refusal, or ""
+std::string net_refusal(const std::string &url);  // ZB_EXP_NET: why a request to url may not be sent, or ""
+inline bool net_pinned() { return !get().net.empty(); }   // ZB_EXP_NET: no redirect is followed
+std::string no_lan();                           // ZB_EXP_NET: why the real network is not identified, or ""
 
 // E2: the tool list as it is about to be sent (tools::schema), in the variant ZB_EXP_TOOLS asks for.
 // Only "description" texts change. E3b (ZB_EXP_DECIDE=required) adds the reply tool at the end.
@@ -165,6 +174,9 @@ inline std::string web(std::string url) { return url; }
 inline bool stand_in(const std::string &) { return false; }
 inline std::string no_camera() { return std::string(); }
 inline std::string no_infrared() { return std::string(); }
+inline std::string net_refusal(const std::string &) { return std::string(); }
+inline bool net_pinned() { return false; }
+inline std::string no_lan() { return std::string(); }
 inline void shape_tools(json &) {}
 inline std::string say_rule(const std::string &standard) { return standard; }
 inline bool parallel_check() { return false; }

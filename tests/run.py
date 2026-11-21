@@ -210,7 +210,7 @@ SCRUB = ("ZB_UNIT_BUILD_ONLY", "ZB_UNIT_SKIP_SCRIPTS", "ZB_UPDATE_SHOTS", "ZB_UP
          "ZB_FAST_MODE", "ZB_EVAL_TRACE")   # ZB_EVAL_TRACE: the live runs are traced by --trace, which records it
 # What a release refuses: it runs every case of both sets as they are defined.
 RELEASE_REFUSES = ("tags", "sample", "skip_tags", "only", "scored_only", "fast", "exp")
-RUNNER_EXP = ("ZB_EXP_TRACE", "ZB_EXP_WEB", "ZB_EXP_NO_HARDWARE")   # set by the live sets' runners per case
+RUNNER_EXP = ("ZB_EXP_TRACE", "ZB_EXP_WEB", "ZB_EXP_NO_HARDWARE", "ZB_EXP_NET")   # set by the live sets' runners per case
 
 PROFILES = {
     "quick": ("every offline group but the slow ones; leaves out firetv (about 5 min) and the live sets",
@@ -609,8 +609,8 @@ def probe_cli(path):
         return "%s is missing" % os.path.relpath(path, ROOT)
     tmp = tempfile.mkdtemp(prefix="zb-probe-")
     try:
-        base = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tmp, "TZ": "UTC", "ZB_DRY_RUN": "1", "ZB_NO_AUDIO": "1",
-                "XDG_CONFIG_HOME": tmp + "/config", "XDG_DATA_HOME": tmp + "/data", "XDG_CACHE_HOME": tmp + "/cache"}
+        base = netguard.child_env(netguard.mock_env(), HOME=tmp, TZ="UTC", ZB_DRY_RUN="1", ZB_NO_AUDIO="1", XDG_CONFIG_HOME=tmp + "/config",
+                                  XDG_DATA_HOME=tmp + "/data", XDG_CACHE_HOME=tmp + "/cache")   # the stand-in network, pinned
 
         def run(args, stdin="", **extra):
             return subprocess.run([path] + args, env=dict(base, **extra), input=stdin, capture_output=True, text=True,
@@ -631,6 +631,9 @@ def probe_cli(path):
         lines = [json.loads(l) for l in open(records, encoding="utf-8")] if os.path.exists(records) else []
         if not lines or lines[0].get("ev") != "start" or lines[-1].get("ev") != "end":
             return "it writes no evaluator's records (ZB_EVAL_RECORDS)"
+        lacking = [c for c in netguard.REQUIRED_CAPS if c not in (lines[0].get("caps") or [])]
+        if lacking:
+            return "it does not keep test runs off the real web and network (it lacks %s)" % ", ".join(lacking)
         return ""
     except (OSError, ValueError, subprocess.TimeoutExpired) as e:
         return "it could not be probed (%s)" % e.__class__.__name__
@@ -960,7 +963,7 @@ def group_env(tmp, extra, group=None):
             env.pop(k, None)
     else:
         env = netguard.child_env(env, keep=("ZB_API_BASE", "ZB_API_KEY") if live else (),
-                                 allow_hosts=(netguard.host_of(env.get("ZB_API_BASE")),) if live else ())
+                                 allow_origin=env.get("ZB_API_BASE", "") if live else "")
     for k in ("CONFIG", "DATA", "CACHE"):
         d = os.path.join(tmp, k.lower())
         os.makedirs(d, exist_ok=True)
@@ -1178,7 +1181,8 @@ def parse(argv):
     ap.add_argument("--repeat", type=int, default=1, help="live sets: run each case this many times")
     ap.add_argument("--fast", default=None, help="live sets: force fast mode on (1) or off (0)")
     ap.add_argument("--calibrate", type=int, default=0, metavar="N",
-                    help="with --groups held-out only: run the held-out set N times and suggest its floors (HELD_OUT_FLOOR)")
+                    help="with --groups held-out only: run the held-out set N (3 or more) times to set its floors (HELD_OUT_FLOOR); "
+                         "never to tune on: read only the per-group rates it prints")
     ap.add_argument("--self-test", action="store_true", help="check this runner and exit")
     o = ap.parse_args(argv)
     if o.baseline:
@@ -1190,6 +1194,8 @@ def parse(argv):
     if o.calibrate and ([g.strip() for g in o.groups.split(",") if g.strip()] != ["held-out"] or o.profile or
                         any(getattr(o, k) for k in RELEASE_REFUSES)):
         ap.error("--calibrate N goes with --groups held-out alone, and no filter or variant")
+    if o.calibrate and o.calibrate < 3:
+        ap.error("--calibrate needs at least 3 runs: it sets the held-out floors from their spread, and is not for tuning")
     if release_mode(o):
         given = ["--" + k.replace("_", "-") for k in RELEASE_REFUSES if getattr(o, k)]
         if given:
@@ -1354,7 +1360,8 @@ def self_test():
     check("--calibrate 3: the held-out set three times, judged with three repeats and a calibration",
           chosen == ["held-out"] and all(c[c.index("--repeat") + 1] == "3" for c in cmds[:2]) and
           cmds[2][cmds[2].index("--repeats") + 1] == "3" and "--calibrate" in cmds[2], cmds)
-    for argv in (["--groups", "live-suite", "--calibrate", "3"], ["--groups", "held-out", "--calibrate", "3", "--tags", "timer"]):
+    for argv in (["--groups", "live-suite", "--calibrate", "3"], ["--groups", "held-out", "--calibrate", "3", "--tags", "timer"],
+                 ["--groups", "held-out", "--calibrate", "1"], ["--groups", "held-out", "--calibrate", "2"]):
         try:
             with contextlib.redirect_stderr(io.StringIO()):
                 parse(argv)

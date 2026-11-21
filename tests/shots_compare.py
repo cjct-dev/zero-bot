@@ -117,9 +117,10 @@ def render(out):
         os.chmod(p, 0o755)
     env = dict(os.environ, PATH=bin_dir + os.pathsep + os.environ.get("PATH", ""), TZ="Europe/London", LANG="C.UTF-8",
                LC_ALL="C.UTF-8", HOME=tmp, ZB_NO_AUDIO="1", ZB_FIXED_TIME=str(FIXED_TIME))
-    for v in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "ZB_API_BASE", "ZB_API_KEY", "ZB_SEARCH_KEY", "ZB_TEST_NETWORK",
+    for v in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "ZB_API_BASE", "ZB_API_KEY", "ZB_SEARCH_KEY",
               "ZB_DATE_ORDER", "ZB_FAST_MODE", "LD_PRELOAD"):
         env.pop(v, None)
+    env["ZB_TEST_NETWORK"] = "1"   # the stand-in network from the start: the real one is never identified
     shim = os.path.join(tmp, "fixclock.so")
     cc = shutil.which(os.environ.get("CC", "cc")) or shutil.which("gcc")
     if cc and subprocess.run([cc, "-shared", "-fPIC", "-O2", "-o", shim, os.path.join(HERE, "shots", "fixclock.c"), "-ldl"]).returncode == 0:
