@@ -56,7 +56,7 @@ obj_of() { echo "$OUT/$(echo "$1" | tr '/' '_' | sed 's/\.cpp$/.o/')"; }
 
 # Objects are rebuilt only when their source or a header in src/ is newer.
 newest_header=$(find src -name '*.h' -newer "$OUT/.stamp" 2>/dev/null | head -n 1 || true)
-for src in $APP $TIMERS $RADIO $TOOLS $DIAG $UPGRADE tests/unit/activity_test.cpp tests/unit/core_test.cpp tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp tests/unit/mic_route_test.cpp tests/unit/music_test.cpp \
+for src in $APP $TIMERS $RADIO $TOOLS $DIAG $UPGRADE tests/unit/activity_test.cpp tests/unit/core_test.cpp tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp tests/unit/mic_route_test.cpp tests/unit/music_test.cpp tests/unit/speaker_test.cpp \
            tests/unit/radio_test.cpp tests/unit/tools_test.cpp tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp \
            tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp tests/unit/hue_test.cpp tests/unit/hue_cli.cpp \
            tests/unit/kasa_test.cpp tests/unit/kasa_cli.cpp tests/unit/wiz_test.cpp tests/unit/wiz_cli.cpp \
@@ -78,6 +78,8 @@ $WRAP $CXX -o "$OUT/http_test" "$OUT/tests_unit_http_test.o" $objs -lcurl -lcryp
 $WRAP $CXX -o "$OUT/timers_test" "$OUT/tests_unit_timers_test.o" $timer_objs -ldl -lpthread
 $WRAP $CXX -o "$OUT/mic_route_test" "$OUT/tests_unit_mic_route_test.o" $timer_objs -ldl -lpthread
 $WRAP $CXX -o "$OUT/music_test" "$OUT/tests_unit_music_test.o" $timer_objs -ldl -lpthread
+# write() wrapped, so the test can hold the speaker's writer between taking the pipe and writing to it.
+$WRAP $CXX -o "$OUT/speaker_test" "$OUT/tests_unit_speaker_test.o" $timer_objs -ldl -lpthread -Wl,--wrap=write
 radio_objs="$(obj_of src/platform/audio.cpp) $(obj_of src/platform/codec.cpp)"
 for src in $RADIO; do radio_objs="$radio_objs $(obj_of "$src")"; done
 $WRAP $CXX -o "$OUT/radio_test" "$OUT/tests_unit_radio_test.o" $radio_objs $objs -lcurl -lcrypto -ldl -lpthread
@@ -166,6 +168,8 @@ echo "=== the built-in microphone with a plug in the jack"
 "$OUT/mic_route_test" || failed=1
 echo "=== music: MP3 decoded in the app and played by pacat"
 "$OUT/music_test" || failed=1
+echo "=== the speaker written on one thread, stopped on another"
+TMPDIR="$state" "$OUT/speaker_test" || failed=1
 for f in calendar memory reminders; do
     if ! cmp -s "$home/.local/share/zero-bot/$f.json" "$state/$f.expected"; then
         echo "FAIL the tests changed $f.json in the home folder they were run from"
