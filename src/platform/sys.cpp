@@ -8,14 +8,21 @@
 #include <unistd.h>
 
 #include "platform/display.h"
+#include "platform/sys.h"
 
-namespace display {
+namespace sys {
 
 unsigned long now_ms() {
     using namespace std::chrono;
     static const auto t0 = steady_clock::now();
     return static_cast<unsigned long>(duration_cast<milliseconds>(steady_clock::now() - t0).count());
 }
+
+}  // namespace sys
+
+namespace display {
+
+unsigned long now_ms() { return sys::now_ms(); }   // the same count; callers move to sys::now_ms
 
 void set_brightness(int percent) {
 #if !ZB_DESKTOP
