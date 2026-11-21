@@ -26,7 +26,8 @@ A release (--profile release, or --groups release: the same thing) runs every ca
 are defined: --tags, --sample, --skip-tags, --only, --scored-only, --fast and --exp are refused, and
 --no-search is the one declared exception (the gate is told what it left out). It builds first unless
 --no-build, and then a build older than any of its inputs (src, third_party, cmake, CMakeLists.txt,
-CMakePresets.json) stops it. It starts only with a baseline measured against the roster of cases defined
+CMakePresets.json) stops it. It also builds the device binary (cp0), which no group runs, and fails when that
+binary's version is not the one in CMakeLists.txt or it holds a cli-only string or a path of the build machine. It starts only with a baseline measured against the roster of cases defined
 in this tree (tests/exp_compare.py load_roster): valid records of both sets, a scorable, traced run of the
 current version of at least 90% of each set's cases and of every critical case, by the current scorer. The
 live sets run only on a cli build that is an experiments build whose hardware guard holds and which writes
@@ -574,7 +575,7 @@ def tool_path():
 
 
 def need_path(need):
-    if need in ("cli", "sim"):
+    if need in ("cli", "sim", "cp0"):
         return "build/%s/zero_bot" % need
     if need.startswith("unit:"):
         return "build/unit/" + need[5:]
@@ -591,9 +592,9 @@ UNIT_SOURCES = ("src/smarthome/", "src/net/", "src/core/util.", "src/platform/pr
 def stale_note(need):
     """Why a built program may be older than its sources, or ''. By modification times: a build relinks
     whenever a source it uses changed. (ninja -n cannot tell: the build's globs always look out of date.)"""
-    if need in ("cli", "sim"):
+    if need in ("cli", "sim", "cp0"):
         made = os.path.join(ROOT, need_path(need))
-        tops, wanted = BUILD_INPUTS, (lambda rel: need == "sim" or not rel.startswith(SIM_ONLY))
+        tops, wanted = BUILD_INPUTS, (lambda rel: need != "cli" or not rel.startswith(SIM_ONLY))
     elif need.startswith("unit:"):
         made = os.path.join(ROOT, "build", "unit", ".stamp")
         tops = ("src", os.path.join("tests", "unit"))
@@ -613,6 +614,54 @@ def stale_note(need):
                 if wanted(rel) and os.path.getmtime(os.path.join(d, f)) > t:
                     return "%s is older than %s" % (os.path.dirname(need_path(need)), rel)
     return ""
+
+
+# The device binary a release packages (cp0): no group runs it, so a release builds it and reads it. Strings
+# only the cli build has (its experiments and the evaluator's records and lines), and a build machine's path
+# (a worktree's build reaches LVGL outside the prefix map: AGENTS.md section 8).
+DEVICE_FORBIDDEN = ("ZB_EXP_", "ZB_EVAL_RECORDS", "tool_done", "[call]", "[state]", "/home/")
+
+
+def project_version():
+    """The version in CMakeLists.txt's project(... VERSION x.y.z ...), or ''."""
+    try:
+        with open(os.path.join(ROOT, "CMakeLists.txt"), encoding="utf-8") as f:
+            m = re.search(r"project\s*\([^)]*?\bVERSION\s+(\d+(?:\.\d+)+)", f.read())
+    except OSError:
+        return ""
+    return m.group(1) if m else ""
+
+
+def device_problems(path, version):
+    """What is wrong with the device binary at PATH, as `strings` would read it: missing, its --version
+    ("zero_bot X") not VERSION, a cli-only string, a build machine's path. The text found is never quoted."""
+    rel = os.path.relpath(path, ROOT)
+    try:
+        with open(path, "rb") as f:
+            found = [s.decode("ascii") for s in re.findall(rb"[\x20-\x7e]{4,}", f.read())]
+    except OSError:
+        return ["%s is missing" % rel]
+    out = []
+    versions = sorted({v for s in found for v in re.findall(r"\bzero_bot (\d+(?:\.\d+)+)", s)})
+    if not version or version not in versions:
+        out.append("%s is version %s, CMakeLists.txt says %s" % (rel, "/".join(versions) or "unknown", version or "nothing"))
+    for word in DEVICE_FORBIDDEN:
+        if any(word in s for s in found):
+            out.append("%s holds %s" % (rel, "a path of the build machine (/home/)" if word == "/home/" else
+                                         "the cli-only string %s" % word))
+    return out
+
+
+def device_check(broken):
+    """A release's row for the device build: (status, line)."""
+    if "cp0" in broken:
+        return "fail", "not checked: the device build failed"
+    problems = device_problems(os.path.join(ROOT, need_path("cp0")), project_version())
+    if not problems and stale_note("cp0"):
+        problems = ["stale build: %s" % stale_note("cp0")]
+    if problems:
+        return "fail", "; ".join(problems)
+    return "pass", "%s is %s, with no cli-only strings or build paths" % (need_path("cp0"), project_version())
 
 
 def release_mode(o):
@@ -810,12 +859,17 @@ def presets_needed(chosen):
     return [p for p in ("cli", "sim", "unit") if p in needs]
 
 
+def build_presets(chosen, o):
+    """What --build builds first: what the groups need and, in a release, the device build (cp0)."""
+    return presets_needed(chosen) + (["cp0"] if release_mode(o) else [])
+
+
 def print_plan(chosen, why, notes, advice, o, out=None):
     out = out or sys.stdout
     for line in notes:
         print(line, file=out)
     if o.build:
-        builds = presets_needed(chosen)
+        builds = build_presets(chosen, o)
         print("build first: %s" % (", ".join(builds) or "nothing"), file=out)
     total = sum(group_secs(n, o) for n in chosen)
     print("would run %s, about %s:" % (plural(len(chosen), "group"), duration(total)), file=out)
@@ -843,7 +897,7 @@ def release_problems(o):
     """Why a release would stop before running anything: its baseline (readable, valid, both sets, and the
     cases as defined now, measured against the roster of cases in this tree: at least 90% of each set and
     every critical case, scored by the current scorer and traced), a cli build that cannot run live cases,
-    and, with --no-build, builds older than any of their inputs."""
+    and, with --no-build, builds older than any of their inputs or a device build that fails its check."""
     if not release_mode(o):
         return []
     out = []
@@ -879,11 +933,14 @@ def release_problems(o):
             if sys.path and sys.path[0] == HERE:
                 sys.path.pop(0)
     if o.no_build:
-        for need in ("cli", "sim"):
+        for need in ("cli", "sim", "cp0"):
             if not os.path.exists(os.path.join(ROOT, need_path(need))):
                 out.append("%s is missing (a release builds it without --no-build)" % need_path(need))
             elif stale_note(need):
                 out.append("a release needs fresh builds: %s (leave out --no-build to rebuild)" % stale_note(need))
+            elif need == "cp0":
+                out += ["the device build: " + p for p in device_problems(os.path.join(ROOT, need_path(need)),
+                                                                          project_version())]
     if (o.no_build or not o.build) and os.path.exists(os.path.join(ROOT, need_path("cli"))) and cli_problem(o):
         out.append("build/cli/zero_bot cannot run live cases: " + cli_problem(o))
     return out
@@ -971,7 +1028,7 @@ def group_env(tmp, extra):
 
 
 def build(preset, run, o):
-    """Build one preset (cli, sim) or the unit test programs; (ok, line)."""
+    """Build one preset (cli, sim, cp0) or the unit test programs; (ok, line)."""
     wrap = shlex.split(os.environ.get("ZB_BUILD_WRAPPER", ""))
     env = dict(os.environ, PATH=tool_path())
     t0 = time.time()
@@ -1059,11 +1116,15 @@ def execute(chosen, why, notes, advice, o):
     t_all = time.time()
     try:
         if o.build:
-            for preset in presets_needed(chosen):
+            for preset in build_presets(chosen, o):
                 ok, line = build(preset, run, o)
                 print(line, flush=True)
                 if not ok:
                     broken.add(preset)
+        if release_mode(o):   # the binary the package is made from: a problem fails the release
+            status, line = device_check(broken)
+            rows.append(("device", status, line, 0))
+            print("%-4s  %-12s %5d s  %s" % (status.upper(), "device", 0, line), flush=True)
         for n in chosen:
             g = BY_NAME[n]
             needs = {x.split(":")[0] for x in g["needs"]}
@@ -1507,6 +1568,72 @@ def self_test():
             check("and nothing newer, nothing stale", stale_note("cli") == "")
         finally:
             ROOT = saved_root
+
+        # ZB-084: a release also builds the device binary (cp0) and reads it: its version, cli-only strings, build paths.
+        o = parse(["--profile", "release"])
+        check("a release builds cp0 too", build_presets(choose(o)[0], o)[-1:] == ["cp0"], build_presets(choose(o)[0], o))
+        o = parse(["--profile", "offline", "--build"])
+        check("only a release builds cp0", "cp0" not in build_presets(choose(o)[0], o))
+        check("the version in CMakeLists.txt", re.fullmatch(r"\d+\.\d+\.\d+", project_version()), project_version())
+        saved_root, ROOT = ROOT, os.path.join(tmp, "device-tree")
+        saved_run = RUN_COMMAND
+        try:
+            os.makedirs(os.path.join(ROOT, "build", "cp0"))
+            cmakelists, binary = os.path.join(ROOT, "CMakeLists.txt"), os.path.join(ROOT, "build", "cp0", "zero_bot")
+            with open(cmakelists, "w") as f:
+                f.write("cmake_minimum_required(VERSION 3.20)\nproject(zero_bot VERSION 9.8.7 LANGUAGES C CXX)\n")
+            os.utime(cmakelists, (100, 100))
+
+            def stand_in(*words):   # a binary as `strings` reads it: printable runs between other bytes
+                with open(binary, "wb") as f:
+                    f.write(b"\x7fELF\x02\x01" + b"".join(b"\0" + w.encode() + b"\0\x01\x02" for w in words))
+                os.utime(binary, (200, 200))
+            stand_in("zero_bot [options]", "zero_bot 9.8.7", "usage")
+            check("cp0: the right version and nothing else", device_problems(binary, project_version()) == [] and
+                  device_check(set())[0] == "pass", (device_problems(binary, project_version()), device_check(set())))
+            for words, want in ((("zero_bot 9.8.6",), "is version 9.8.6, CMakeLists.txt says 9.8.7"),
+                                (("zero_bot 9.8.70",), "is version 9.8.70,"), (("hello world",), "is version unknown"),
+                                (("zero_bot 9.8.7", "/home/someone/lvgl/src/core.c"), "a path of the build machine")):
+                stand_in(*words)
+                p = device_problems(binary, project_version())
+                check("cp0: %s" % want, len(p) == 1 and want in p[0] and "someone" not in p[0] and device_check(set())[0] == "fail", p)
+            for word in DEVICE_FORBIDDEN[:-1]:
+                stand_in("zero_bot 9.8.7", "set %s here" % word)
+                p = device_problems(binary, project_version())
+                check("cp0 holds the cli-only %s" % word, p == ["build/cp0/zero_bot holds the cli-only string %s" % word], p)
+            check("cp0: a failed build", device_check({"cp0"}) == ("fail", "not checked: the device build failed"))
+            stand_in("zero_bot 9.8.7")
+            os.utime(cmakelists, (300, 300))
+            check("cp0: a stale build fails", device_check(set())[0] == "fail" and "older than CMakeLists.txt" in device_check(set())[1],
+                  device_check(set()))
+            nb = ["--profile", "release", "--baseline", good, "--no-build"]
+            check("--no-build: a stale cp0 stops a release", any("build/cp0 is older than" in x for x in release_problems(parse(nb))),
+                  release_problems(parse(nb)))
+            os.utime(cmakelists, (100, 100))
+            stand_in("zero_bot 9.8.6", "ZB_EVAL_RECORDS")
+            p = release_problems(parse(nb))
+            check("--no-build: a cp0 of another version or with cli strings stops a release",
+                  "the device build: build/cp0/zero_bot is version 9.8.6, CMakeLists.txt says 9.8.7" in p and
+                  "the device build: build/cp0/zero_bot holds the cli-only string ZB_EVAL_RECORDS" in p, p)
+            os.remove(binary)
+            p = release_problems(parse(nb))
+            check("--no-build: a missing cp0 stops a release", "build/cp0/zero_bot is missing (a release builds it without --no-build)" in p, p)
+            # The run itself: cp0 is built (commands recorded, nothing started) and checked; a bad binary fails the release.
+            calls = []
+
+            def build_bad(cmd, log, *args):
+                calls.append(cmd)
+                if cmd[-3:] == ["--preset", "cp0", "-j2"]:
+                    stand_in("zero_bot 9.8.6")
+                return 0
+            RUN_COMMAND = build_bad
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                rc = main(["--profile", "release", "--baseline", good])
+            check("a release builds cp0", any(c[-3:] == ["--preset", "cp0", "-j2"] for c in calls), calls)
+            check("a cp0 of another version fails the release", rc == 1 and
+                  re.search(r"^FAIL  device .*is version 9\.8\.6", out.getvalue(), re.M), out.getvalue()[-600:])
+        finally:
+            ROOT, RUN_COMMAND = saved_root, saved_run
 
         # N8: the report's entry point, on a saved result with traced turns.
         call = {"ev": "call", "purpose": "main", "role": "main", "ttfb_ms": 800, "done_ms": 1200, "body_bytes": 9000, "attempts": 1,

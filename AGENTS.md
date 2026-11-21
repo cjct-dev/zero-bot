@@ -205,7 +205,10 @@ groups need first. Which to use:
   `--fast` and `--exp`; `--no-search` is the declared exception. Live cases run only on a cli build
   that is an experiments build, whose hardware guard holds and which writes the records. It does not
   start without a baseline that covers the roster (below): record one with
-  `tests/run.py --groups live-scored,live-suite` (its `eval.json` and `suite.json`).
+  `tests/run.py --groups live-scored,live-suite` (its `eval.json` and `suite.json`). It also builds
+  the device binary (cp0; with `--no-build` a stale one stops it) and fails when its version is not
+  CMakeLists.txt's or it holds a cli-only string (`ZB_EXP_`, `ZB_EVAL_RECORDS`, `tool_done`, `[call]`,
+  `[state]`) or a build machine's path (`/home/`).
 
 `ZB_EVAL_WRAPPER` prefixes every live run (a lock, or a script that sets the service's variables);
 live runs always use `--jobs 1`. `--no-search` leaves out what needs the real web search (cases on
