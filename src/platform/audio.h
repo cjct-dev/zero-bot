@@ -67,7 +67,9 @@ private:
 };
 
 std::string wav_from_pcm(const std::vector<int16_t> &pcm, int rate);
-// The samples and rate of a 16-bit WAV (its "data" chunk, wherever it is). False when it is not one.
+// Where a WAV's samples begin (just after the header of its "data" chunk, wherever that is), or npos.
+size_t wav_samples_at(const std::string &wav);
+// The samples and rate of a 16-bit WAV. False when it is not one.
 bool pcm_from_wav(const std::string &wav, std::vector<int16_t> &pcm, int &rate);
 void set_volume(int percent);                  // system output volume, 0..100
 // The same without waiting: the mixer command runs on a thread of its own, and when several
