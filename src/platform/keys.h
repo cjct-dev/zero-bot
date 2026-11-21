@@ -12,7 +12,6 @@ struct KeyEvent {
     Key key = Key::None;
     std::string text;   // UTF-8 for Key::Char
     int state = 1;      // 0 = released, 1 = pressed, 2 = auto-repeat
-    bool ctrl = false;
 };
 
 // A modifier (shift, ctrl, fn, caps lock) pressed and let go with no other key in between is a tap
@@ -36,6 +35,5 @@ private:
 namespace input {
 void start();                 // begin reading the hardware keyboard (device) or SDL (simulator)
 bool poll(KeyEvent &out);     // non-blocking; call from the UI thread
-void inject(const KeyEvent &ev);
 void set_dump(bool on);       // log raw key codes to stderr (for mapping work)
 }  // namespace input

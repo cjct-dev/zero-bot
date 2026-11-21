@@ -86,11 +86,10 @@ int open_keyboard() {
 }
 
 struct Decoder {
-    bool shift = false, ctrl = false, fn = false, caps = false;
+    bool shift = false, fn = false, caps = false;
 
     // Returns true and fills `ev` when the code maps to something the app understands.
     bool decode(int code, KeyEvent &ev) const {
-        ev.ctrl = ctrl;
         switch (code) {
             case KEY_ENTER: case KEY_KPENTER: ev.key = Key::Enter; return true;
             case KEY_BACKSPACE: ev.key = fn ? Key::Delete : Key::Backspace; return true;
@@ -182,7 +181,7 @@ void reader_thread() {
         bool modifier = true;
         switch (ie.code) {
             case KEY_LEFTSHIFT: case KEY_RIGHTSHIFT: dec.shift = down; break;
-            case KEY_LEFTCTRL: case KEY_RIGHTCTRL: dec.ctrl = down; break;
+            case KEY_LEFTCTRL: case KEY_RIGHTCTRL: break;   // a modifier, with no layer of its own
             case KEY_FN: dec.fn = down; break;
             case KEY_CAPSLOCK: if (ie.value == 1) dec.caps = !dec.caps; break;
             default: modifier = false; break;
@@ -219,7 +218,6 @@ int sdl_watch(void *, SDL_Event *e) {
     if (e->type != SDL_KEYDOWN && e->type != SDL_KEYUP) return 0;
     KeyEvent ev;
     ev.state = e->type == SDL_KEYUP ? 0 : (e->key.repeat ? 2 : 1);
-    ev.ctrl = (e->key.keysym.mod & KMOD_CTRL) != 0;
     switch (e->key.keysym.sym) {
         case SDLK_RETURN: case SDLK_KP_ENTER: ev.key = Key::Enter; break;
         case SDLK_BACKSPACE: ev.key = Key::Backspace; break;
@@ -270,7 +268,6 @@ bool poll(KeyEvent &out) {
     return true;
 }
 
-void inject(const KeyEvent &ev) { push(ev); }
 void set_dump(bool on) { g_dump = on; }
 
 }  // namespace input
