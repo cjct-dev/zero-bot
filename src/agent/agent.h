@@ -72,6 +72,7 @@ public:
 private:
     Agent() = default;
     struct Input { std::string text; std::vector<int16_t> pcm; bool audio = false; };
+    class Turn;   // one call of run_turn (agent.cpp)
     void worker();
     void run_turn();
     int absorb_inputs(bool first);
