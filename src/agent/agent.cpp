@@ -355,6 +355,7 @@ private:
     };
 
     Then one_round(const Budget &budget);
+    void stream(Round &r, const std::string &piece);
     void messages_for(Round &r, const Budget &budget);
     void new_request();
     int steer_in();
@@ -475,40 +476,7 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     if (fast_decision) add_note(r.messages, guards::kDecideNote);
     r.opt.purpose = budget.last() ? "last_round" : r.corrected ? "correction" : r.deciding ? "decide" : "after_tool";
     r.opt.cancel = &a_.round_cancel_;
-    r.opt.on_text = [&](const std::string &piece) {
-        if (r.steered || r.unbacked) return;
-        std::string text = piece;
-        if (r.hold && !r.released) {
-            if (!r.pcheck.active() && !experiment::reply_held()) return;   // held whole, checked once complete
-            r.held_text += piece;
-            if (!r.pcheck.said_none()) return;   // E3c: released by on_call when the reply tool begins
-            r.released = true;                // E3: cleared while it is still being written
-            r.pcheck.used("stream");
-            text = r.held_text;
-        }
-        if (!r.began) { r.began = true; if (a_.ev_.answer_begin) a_.ev_.answer_begin(); }
-        if (a_.ev_.answer_delta) a_.ev_.answer_delta(text);
-        for (auto &sentence : r.chunker.feed(text)) {
-            // New input arrived before anything was said: withdraw this draft and let the
-            // model reconsider with the extra instruction.
-            if (!r.speech_started && a_.has_pending()) { r.steered = true; a_.round_cancel_ = true; return; }
-            // Checked before the first words are spoken: once said, a claim cannot be taken back.
-            // "Done" is false when no tool has run, and when every one that ran failed or is
-            // waiting for the user's yes.
-            if (!r.speech_started)
-                for (const guards::Claim &c : guards::kClaims)
-                    if (c.as_it_streams && req_.claim_open(c) && c.test(sentence)) {
-                        r.unbacked = &c;
-                        a_.round_cancel_ = true;
-                        return;
-                    }
-            // The user has started talking: keep the words back until they have finished.
-            if (a_.listening_ || !r.unsaid.empty()) { r.unsaid.push_back(sentence); continue; }
-            r.speech_started = true;
-            a_.set_state(AgentState::Speaking);
-            to_speech(sentence);
-        }
-    };
+    r.opt.on_text = [this, &r](const std::string &piece) { stream(r, piece); };
     // Experiments only (E3c): words written before the reply tool begins are its answer; before a real tool
     // they are never spoken.
     if (r.hold && experiment::reply_held())
@@ -712,6 +680,44 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     if (r.res.content.empty() && a_.ev_.error) a_.ev_.error("The model returned an empty answer.");
     // Something typed while the answer was being spoken becomes the next request.
     return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+}
+
+// The reply as it streams in: shown, and spoken sentence by sentence, unless it is held back (fast
+// mode's second look), withdrawn (the user said more, or it claims what no tool did) or kept back
+// while the microphone is open.
+void Agent::Turn::stream(Round &r, const std::string &piece) {
+    if (r.steered || r.unbacked) return;
+    std::string text = piece;
+    if (r.hold && !r.released) {
+        if (!r.pcheck.active() && !experiment::reply_held()) return;   // held whole, checked once complete
+        r.held_text += piece;
+        if (!r.pcheck.said_none()) return;   // E3c: released by on_call when the reply tool begins
+        r.released = true;                // E3: cleared while it is still being written
+        r.pcheck.used("stream");
+        text = r.held_text;
+    }
+    if (!r.began) { r.began = true; if (a_.ev_.answer_begin) a_.ev_.answer_begin(); }
+    if (a_.ev_.answer_delta) a_.ev_.answer_delta(text);
+    for (auto &sentence : r.chunker.feed(text)) {
+        // New input arrived before anything was said: withdraw this draft and let the
+        // model reconsider with the extra instruction.
+        if (!r.speech_started && a_.has_pending()) { r.steered = true; a_.round_cancel_ = true; return; }
+        // Checked before the first words are spoken: once said, a claim cannot be taken back.
+        // "Done" is false when no tool has run, and when every one that ran failed or is
+        // waiting for the user's yes.
+        if (!r.speech_started)
+            for (const guards::Claim &c : guards::kClaims)
+                if (c.as_it_streams && req_.claim_open(c) && c.test(sentence)) {
+                    r.unbacked = &c;
+                    a_.round_cancel_ = true;
+                    return;
+                }
+        // The user has started talking: keep the words back until they have finished.
+        if (a_.listening_ || !r.unsaid.empty()) { r.unsaid.push_back(sentence); continue; }
+        r.speech_started = true;
+        a_.set_state(AgentState::Speaking);
+        to_speech(sentence);
+    }
 }
 
 // What the model is sent this round: the system prompt, the conversation, and the notes for this
