@@ -1,6 +1,8 @@
 // Device-free tests of the core that every thread shares (ZB-037, from the external review):
 // files saved by two threads at once, the settings read and changed on several threads, and the
-// calendar's all-day alerts on the days the clocks change.
+// calendar's all-day alerts on the days the clocks change. Also the small shared helpers (ZB-035): the
+// failure shape, the battery, the Wi-Fi list, the default route, the monotonic count and the start of
+// a day, on known inputs.
 //
 // Built and run by tests/run_unit.sh with a state folder; everything it writes goes there (main()
 // points HOME and the XDG folders at it).
@@ -9,6 +11,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <dirent.h>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <thread>
@@ -16,10 +19,14 @@
 #include <vector>
 #include <unistd.h>
 
+#include "core/result.h"
 #include "core/settings.h"
 #include "core/store.h"
 #include "core/upgrade.h"
 #include "core/util.h"
+#include "platform/net_status.h"
+#include "platform/power.h"
+#include "platform/sys.h"
 
 namespace {
 
@@ -250,6 +257,130 @@ void test_power_on_leftover(const std::string &root) {
     CHECK(!upgrade::remove_power_on_dropin(home) && exists(ours));   // an empty one too
 }
 
+// ---------------------------------------------------------------- the shared helpers
+void write_text(const std::string &path, const std::string &text) { std::ofstream(path) << text; }
+
+void test_result() {
+    g_test = "the failure shape";
+    CHECK_EQ(result::fail("give the length"), "ERROR: give the length");
+    CHECK_EQ(result::fail(""), "ERROR: ");
+    for (const char *yes : {"ERROR: no", "ERROR:no", "ERROR", "ERRORS", "{\"error\""}) CHECK(result::failed(yes));
+    for (const char *no : {"", "error: x", "ERR", " ERROR: x", "{\"ok\":1}", "{ \"error\": 1}"}) CHECK(!result::failed(no));
+    // As tools::failed has decided all along: its JSON test compares 9 characters with the 8 of
+    // {"error", so a JSON object holding "error" is not counted. Harmless in the app, where
+    // tools::run's one_shape() has made every such object with a text error into "ERROR: ..." first;
+    // {"error": 5} and {"error": ""} pass as successes. Kept as it is until ZB-090 decides.
+    CHECK(!result::failed("{\"error\": \"x\"}"));
+    CHECK(!result::failed("{\"error\":5}"));
+    CHECK_EQ(result::words("ERROR: no such timer"), "no such timer");
+    CHECK_EQ(result::words("ERROR:  two"), " two");
+    CHECK_EQ(result::words("ERROR:no"), "ERROR:no");          // only the exact prefix goes
+    CHECK_EQ(result::words("fine"), "fine");
+}
+
+void test_battery(const std::string &root) {
+    g_test = "the battery";
+    struct Gauge { const char *name, *capacity, *status; int percent; bool charging; };
+    const Gauge gauges[] = {{"charging", "85\n", "Charging\n", 85, true},    {"discharging", "40\n", "Discharging\n", 40, false},
+                            {"full", "100\n", "Full\n", 100, false},         {"garbage", "abc\n", "Charging\n", -1, true},
+                            {"empty", "", "", -1, false},                    {"no-status", "12\n", nullptr, 12, false},
+                            {"none", nullptr, nullptr, -1, false},           {"lower-case", "50", "charging", 50, false}};
+    for (const Gauge &g : gauges) {
+        const std::string dir = root + "/gauge-" + g.name;
+        util::make_dirs(dir);
+        if (g.capacity) write_text(dir + "/capacity", g.capacity);
+        if (g.status) write_text(dir + "/status", g.status);
+        const power::Battery b = power::battery(dir);
+        CHECK_EQ(b.percent, g.percent);
+        CHECK(b.charging == g.charging);
+    }
+}
+
+void test_wifi_list() {
+    g_test = "the Wi-Fi list";
+    net_status::WiFi w = net_status::parse_wifi("no:Neighbours:40\nyes:Home net:72\nno:Cafe:30\n");
+    CHECK(w.connected && w.has_signal);
+    CHECK_EQ(w.entry, "Home net:72");
+    CHECK_EQ(w.ssid, "Home net");
+    CHECK_EQ(w.signal, "72");
+    w = net_status::parse_wifi("yes:A:1\nyes:B:2\n");                // the last active row counts
+    CHECK_EQ(w.ssid, "B");
+    w = net_status::parse_wifi("yes:Only name\n");
+    CHECK(w.connected && !w.has_signal);
+    CHECK_EQ(w.ssid, "Only name");
+    CHECK_EQ(w.signal, "");
+    w = net_status::parse_wifi("yes:Home\\:net:72\n");              // nmcli escapes a ':' in the name; the entry keeps it
+    CHECK_EQ(w.entry, "Home\\:net:72");
+    for (const char *none : {"", "no:X:1\n", "yes\n", "YES:X:1\n"}) CHECK(!net_status::parse_wifi(none).connected);
+}
+
+void test_default_route(const std::string &root) {
+    g_test = "the default route";
+    const std::string H = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n";
+    struct Table { const char *name; std::string text; const char *link, *gw_iface, *gateway; };
+    const Table tables[] = {
+        {"wifi", H + "wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n"
+                     "wlan0\t0001A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\t0\t0\t0\n", "wlan0", "wlan0", "192.168.1.1"},
+        {"phone", H + "bnep0\t00000000\t012CA8C0\t0003\t0\t0\t750\t00000000\t0\t0\t0\n", "bnep0", "bnep0", "192.168.44.1"},
+        {"two", H + "eth0\t00000000\t0100000A\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"
+                    "wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n", "eth0", "eth0", "10.0.0.1"},
+        // A VPN with no gateway first: the app is online through it (tether), but there is no router
+        // behind it to identify the network by (discovery).
+        {"vpn", H + "wg0\t00000000\t00000000\t0001\t0\t0\t50\t00000000\t0\t0\t0\n"
+                    "wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n", "wg0", "wlan0", "192.168.1.1"},
+        {"ppp", H + "ppp0\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n", "ppp0", "", ""},
+        {"none", H + "wlan0\t0001A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\t0\t0\t0\n", "", "", ""},
+        {"header", H, "", "", ""},
+        {"empty", "", "", "", ""},
+    };
+    for (const Table &t : tables) {
+        const std::string path = root + "/route-" + t.name;
+        write_text(path, t.text);
+        const net_status::Route link = net_status::default_route(false, path), gw = net_status::default_route(true, path);
+        CHECK_EQ(link.iface, t.link);
+        CHECK_EQ(link.gateway, "");
+        CHECK_EQ(gw.iface, t.gw_iface);
+        CHECK_EQ(gw.gateway, t.gateway);
+    }
+    CHECK_EQ(net_status::default_route(false, root + "/no-such-table").iface, "");
+    CHECK_EQ(net_status::default_route(true, root + "/no-such-table").gateway, "");
+}
+
+void test_now_ms() {
+    g_test = "the monotonic count";
+    const unsigned long a = sys::now_ms();
+    usleep(20 * 1000);
+    const unsigned long b = sys::now_ms();
+    CHECK(b >= a + 15 && b < a + 2000);
+}
+
+void test_start_of_day() {
+    g_test = "the start of a day";
+    struct Zone { const char *tz; std::vector<std::string> days; };
+    const Zone zones[] = {{"Europe/London", {"2026-03-29", "2026-10-25", "2026-06-01"}},
+                          {"America/New_York", {"2026-03-08", "2026-11-01"}},
+                          {"Australia/Sydney", {"2026-04-05", "2026-10-04"}},
+                          {"America/Santiago", {"2026-04-05", "2026-09-06"}}};   // its clocks change at midnight
+    int times = 0;
+    for (const Zone &z : zones) {
+        util::apply_timezone(z.tz);
+        for (const std::string &d : z.days)
+            for (int minutes : {0, 59, 90, 150, 181, 720, 1439}) {
+                time_t t = 0;
+                char text[32];
+                snprintf(text, sizeof(text), "%s %02d:%02d", d.c_str(), minutes / 60, minutes % 60);
+                if (!util::parse_local(text, t)) continue;
+                const time_t s = util::start_of_day(t);
+                CHECK(s <= t && t - s < 25 * 3600);
+                CHECK_EQ(util::format_time(s, "%Y-%m-%d"), util::format_time(t, "%Y-%m-%d"));
+                CHECK(util::format_time(s - 1, "%Y-%m-%d") != util::format_time(s, "%Y-%m-%d"));   // the first second of the day
+                ++times;
+            }
+    }
+    CHECK(times >= 60);
+    util::apply_timezone("");
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -267,6 +398,14 @@ int main(int argc, char **argv) {
     test_settings_threads(root);
     test_all_day_alerts(root);
     test_power_on_leftover(root);
+    const std::string helpers = root + "/helpers";
+    util::make_dirs(helpers);
+    test_result();
+    test_battery(helpers);
+    test_wifi_list();
+    test_default_route(helpers);
+    test_now_ms();
+    test_start_of_day();
     printf("core: %d checks, %d failed\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
