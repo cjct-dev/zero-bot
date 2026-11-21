@@ -34,24 +34,22 @@
 #define LV_FREETYPE_CACHE_FT_GLYPH_CNT 512
 #define LV_FONT_MONTSERRAT_10 1
 #define LV_FONT_MONTSERRAT_12 1
-#define LV_FONT_MONTSERRAT_14 1
+#define LV_FONT_MONTSERRAT_14 0             /* LVGL's default is 1: unused (theme.cpp falls back on 10, 12 and 16) */
 #define LV_FONT_MONTSERRAT_16 1
 #define LV_FONT_DEFAULT &lv_font_montserrat_12
 #define LV_USE_FONT_PLACEHOLDER 1
 #define LV_TXT_ENC LV_TXT_ENC_UTF8
 
-/* Images */
+/* Images: PNG only (a photo reaches the screen as a PNG thumbnail: App::wire_agent) */
 #define LV_USE_LIBPNG 1
-#define LV_USE_TJPGD 1
 #define LV_USE_FS_STDIO 1
 #define LV_FS_STDIO_LETTER 'A'
 #define LV_FS_STDIO_PATH ""
-#define LV_IMAGE_CACHE_DEF_SIZE 4
 
 #define LV_USE_THEME_DEFAULT 1
 #define LV_THEME_DEFAULT_DARK 1
 #define LV_USE_FLEX 1
-#define LV_USE_GRID 1
+#define LV_USE_GRID 0                       /* LVGL's default is 1: no screen lays out in a grid */
 
 #if ZB_DESKTOP
 #define LV_USE_SDL 1
