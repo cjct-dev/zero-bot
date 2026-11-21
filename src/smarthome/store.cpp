@@ -9,10 +9,10 @@
 // Files written before things existed held "switches" per device and the Tapo account at the
 // top level; they are rewritten in the new form the first time they are loaded.
 #include <algorithm>
-#include <chrono>
 #include <cstdlib>
 #include <set>
 
+#include "platform/sys.h"
 #include "smarthome/internal.h"
 
 namespace home {
@@ -339,11 +339,11 @@ const Thing *Saved::thing(const std::string &thing_id) const {
 }
 
 // ---------------------------------------------------------------- the network
+// The app's one monotonic count (only differences and "not yet" zeros are used, so where it starts
+// does not matter), or the test's clock.
 unsigned long now_ms() {
     if (g_test_clock) return g_test_clock();
-    using namespace std::chrono;
-    static const auto t0 = steady_clock::now();
-    return static_cast<unsigned long>(duration_cast<milliseconds>(steady_clock::now() - t0).count());
+    return sys::now_ms();
 }
 
 bool test_network() {

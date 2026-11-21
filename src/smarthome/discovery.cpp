@@ -16,7 +16,7 @@
 #include "agent/experiment.h"
 #include "core/util.h"
 #include "platform/proc.h"
-#include "platform/display.h"
+#include "platform/sys.h"
 #include "smarthome/drivers/support.h"
 
 namespace discovery {
@@ -752,10 +752,10 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
 
     Seen seen;
     std::set<std::string> told;
-    const unsigned long start = display::now_ms();
+    const unsigned long start = sys::now_ms();
     std::vector<unsigned char> buf(kMaxPacket);
     for (;;) {
-        const int elapsed = static_cast<int>(display::now_ms() - start);
+        const int elapsed = static_cast<int>(sys::now_ms() - start);
         if (elapsed >= opt.listen_ms || (opt.cancel && *opt.cancel)) break;
         for (auto &s : steps)
             if (!s.done && elapsed >= s.at_ms) { s.run(); s.done = true; }
