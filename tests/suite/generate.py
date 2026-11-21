@@ -47,7 +47,7 @@ MON, TUE, WED, THU, FRI, SAT, SUN = range(7)
 
 
 # ------------------------------------------------------------------ building blocks
-def case(cat, turns, tags=(), must=(), must_not=(), checks=(), env=None, home=None, steer=None, long_ok=(), tried=()):
+def case(cat, turns, tags=(), must=(), must_not=(), checks=(), env=None, home=None, steer=None, long_ok=(), tried=(), held_out=None):
     COUNT[cat] = COUNT.get(cat, 0) + 1
     turns = [turns] if isinstance(turns, str) else list(turns)
     tags = [cat] + [t for t in tags if t != cat]
@@ -59,6 +59,8 @@ def case(cat, turns, tags=(), must=(), must_not=(), checks=(), env=None, home=No
     # A forecast's figures are what the stand-in served: any temperature the answer gives must be one of them.
     if any("weather" in m.split("|") for m in must): CASES[-1]["checks"].append({"kind": "weather_served"})
     if long_ok: CASES[-1]["long_ok"] = list(long_ok)
+    # The held-out question forms: asked instead of turns on a held-out seed (tests/agent_eval.py case_turns).
+    if held_out: CASES[-1]["held_out_turns"] = [held_out] if isinstance(held_out, str) else list(held_out)
     if tried: CASES[-1]["tried"] = list(tried)
 
 
@@ -443,22 +445,36 @@ for text, subs in [("ive just landed in new york switch the clock over", ["new y
 # run whose search matched no rule, so a fixture that stops matching shows.
 def served(rule, *slots, how="name", any_of=False):
     return {"kind": "served", "rule": rule, "slots": list(slots), "as": how, "any": any_of}
-for text, tags, check in [
-        ("what time does the louvre open on sundays", [], served("louvre-hours", "open", how="time")),
-        ("is the british museum open on mondays", ["uk"], served("british-museum", "status", how="open_closed")),
-        ("who won the champions league final this year", [], served("champions-league", "winner")),
-        ("whats in the news today", [], served("news-today", "story1", "story2", "story3", any_of=True)),
-        ("how much is a ticket to the top of the eiffel tower", [], served("eiffel-ticket", "top", how="number")),
-        ("who won the last formula one race", [], served("f1-last-race", "winner")),
-        ("what films are on at the cinema in leicester square tonight", ["uk"], served("cinema-films", "film1", "film2", "film3", any_of=True)),
-        ("who is the current prime minister of japan", [], served("japan-pm", "pm")),
-        ("what was the score in the arsenal game last night", ["uk"], served("arsenal-result", "score", how="score")),
-        ("how did the yankees do last night", ["us"], served("yankees-result", "score", how="score")),
-        ("are there any train strikes in the uk this week", ["uk"], served("uk-strikes", "operator")),
-        ("when is the next home game for the chicago bulls", ["us"], served("bulls-home-game", "opponent")),
-        ("who won the mens singles at wimbledon this year", [], served("wimbledon-mens", "winner")),
-        ("what are the opening hours of the sagrada familia", [], served("sagrada-hours", "open", how="time"))]:
-    case("search", text, tags=tags + ["search"], must=["web_search"], checks=[check])
+for text, tags, check, held in [
+        ("what time does the louvre open on sundays", [], [served("louvre-hours", "open", how="time")],
+         "on a sunday when do the doors of the louvre open"),
+        ("is the british museum open on mondays", ["uk"], [served("british-museum", "status", how="open_closed")],
+         "can i visit the british museum on a monday"),
+        ("who won the champions league final this year", [], [served("champions-league", "winner", how="winner")],
+         "which club lifted the champions league trophy this season"),
+        ("whats in the news today", [], [served("news-today", "story1", "story2", "story3", any_of=True)],
+         "give me the main headlines this morning"),
+        ("how much is a ticket to the top of the eiffel tower", [], [served("eiffel-ticket", "top", how="number")],
+         "what does it cost to go up to the summit of the eiffel tower"),
+        ("who won the last formula one race", [], [served("f1-last-race", "winner")],
+         "who took the chequered flag at the most recent grand prix"),
+        ("what films are on at the cinema in leicester square tonight", ["uk"], [served("cinema-films", "film1", "film2", "film3", any_of=True)],
+         "whats showing at the leicester square cinemas this evening"),
+        ("who is the current prime minister of japan", [], [served("japan-pm", "pm")],
+         "who leads the japanese government at the moment"),
+        ("what was the score in the arsenal game last night", ["uk"], [served("arsenal-result", "score", how="score")],
+         "how did arsenal get on last night"),
+        ("how did the yankees do last night", ["us"], [served("yankees-result", "score", how="score")],
+         "what was the final score for the yankees yesterday evening"),
+        ("are there any train strikes in the uk this week", ["uk"], [served("uk-strikes", "operator"), served("uk-strikes", "day", how="date")],
+         "is a rail strike planned anywhere in britain this week"),
+        ("when is the next home game for the chicago bulls", ["us"], [served("bulls-home-game", "day", how="date"), served("bulls-home-game", "opponent")],
+         "when do the chicago bulls next play at home"),
+        ("who won the mens singles at wimbledon this year", [], [served("wimbledon-mens", "winner", how="winner")],
+         "who is this years wimbledon mens champion"),
+        ("what are the opening hours of the sagrada familia", [], [served("sagrada-hours", "open", how="time")],
+         "when can i get into the sagrada familia, what hours is it open")]:
+    case("search", text, tags=tags + ["search"], must=["web_search"], checks=check, held_out=held)
 case("search", "what time does the louvre open on sundays", tags=["search", "nokey"], env={"ZB_SEARCH_KEY": None},
      checks=[ans(r"search|can'?t (check|look|confirm)|cannot|not set up|unable|not sure|may have changed|might have changed|check (the|their)|"
                  r"double.check|verify|usually|typically|normally|generally|i believe|from memory|as far as i know",

@@ -10,13 +10,16 @@ web service, and none spends the owner's search allowance.
 It binds 127.0.0.1 on a port the system picks, prints "WEB listening PORT", and exits when its standard
 input closes. Standard library only.
 
-usage: fake_web.py [--seed N] [--log FILE] [FIXTURES.json]
+usage: fake_web.py [--seed N] [--date YYYY-MM-DD] [--log FILE] [FIXTURES.json]
 
 --seed N   which variant of each answer is served (default 1). Every value, wording, number of results and
            unrelated result is drawn from the seed and what was asked (the place, the currency, the search
            rule), never from the order of requests, so a case sees the same answers on every run with that
            seed. Seeds from HELD_OUT_FROM on are held out: they draw the held-out values and wordings, which
            the everyday seed never shows (tests/run.py's release profile runs one; nothing is tuned on it).
+--date D   the run's date, frozen: every date written (forecast days, "yesterday", events, rates) counts from it.
+           No value depends on the date (forecasts are made for a fixed season, by days from today), so runs on other
+           days see the same answers with their dates moved.
 --log FILE one JSON line per request: {"host", "path", "fixture", "status", "key"} ("key" says only whether
            a search carried the stand-in's key, never what it carried).
 
@@ -52,7 +55,8 @@ import unicodedata
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "web-3"          # change it with anything that changes what is served
+VERSION = "web-4"          # change it with anything that changes what is served
+CLIMATE_DAY = 325          # the season every forecast is made for (late November), whatever the date: values never move with the day
 HELD_OUT_FROM = 1000       # seeds from here on draw the held-out variants
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 SEARCH_KEY = "stand-in"    # the only search key the stand-in takes
@@ -89,8 +93,11 @@ def rng(seed, *parts):
     return random.Random(int.from_bytes(h[:8], "big"))
 
 
+TODAY = None   # the run's date, frozen (--date): every date the stand-in writes counts from it
+
+
 def today():
-    return datetime.date.today()
+    return TODAY or datetime.date.today()
 
 
 # ---------------------------------------------------------------- events and dates in the text
@@ -108,18 +115,19 @@ def event_time(name, day=None):
     return datetime.datetime.combine(d, datetime.time(int(e["time"][:2]), int(e["time"][3:])), ZoneInfo(e["zone"]))
 
 
-def fill(text, values=None):
-    """A template's placeholders filled: slots, dates relative to today, years, events."""
+def fill(text, values=None, day=None):
+    """A template's placeholders filled: slots, dates relative to DAY (default today()), years, events."""
     values = values or {}
+    day = day or today()
 
     def one(m):
         kind, arg = m.group(1), m.group(2)
         if arg is None:
-            if kind == "year": return str(today().year)
+            if kind == "year": return str(day.year)
             return shown(values[kind]) if kind in values else m.group(0)
-        if kind == "year": return str(today().year + int(arg))
-        if kind == "day": return (today() + datetime.timedelta(days=int(arg))).strftime("%A %-d %B")
-        when = event_time(arg)
+        if kind == "year": return str(day.year + int(arg))
+        if kind == "day": return (day + datetime.timedelta(days=int(arg))).strftime("%A %-d %B")
+        when = event_time(arg, day)
         if kind == "date": return when.strftime("%A %-d %B %Y")
         if kind == "time":
             return when.strftime("%-I:%M %p").lower().replace("am", "a.m.").replace("pm", "p.m.") + " " + EVENTS[arg]["zone_name"]
@@ -135,13 +143,37 @@ def shown(value):
 
 
 # ---------------------------------------------------------------- search
-def facts(rule_id, seed):
-    """The slot values the rule serves with this seed, {NAME: "shown|other|ways"}, each filled ({day:+N})."""
+def pool(rule, slot, seed):
+    """The values a slot draws from with this seed: the held-out ones for a held-out seed, never the everyday ones."""
+    values = rule.get("held_out", {}).get(slot) if held_out(seed) else rule["slots"][slot]
+    if not values:
+        raise KeyError("search rule %s, slot %s: no %s values" % (rule["id"], slot, "held-out" if held_out(seed) else "everyday"))
+    return values
+
+
+def facts(rule_id, seed, day=None):
+    """The slot values the rule serves with this seed, {NAME: "shown|other|ways"}, each filled ({day:+N}) from DAY
+    (the run's date; default today())."""
     rule = ALL_RULES[rule_id]
-    out = {}
-    for name in sorted(rule.get("slots", {})):
-        pool = (rule.get("held_out", {}).get(name) if held_out(seed) else None) or rule["slots"][name]
-        out[name] = fill(rng(seed, "slot", rule_id, name).choice(pool))
+    return {name: fill(rng(seed, "slot", rule_id, name).choice(pool(rule, name, seed)), day=day) for name in sorted(rule.get("slots", {}))}
+
+
+def candidates(rule_id, slot, day=None):
+    """Every value a slot can take, everyday and held out (filled): what an answer may not give instead of the served one."""
+    rule = ALL_RULES[rule_id]
+    return [fill(v, day=day) for v in rule["slots"][slot] + rule.get("held_out", {}).get(slot, [])]
+
+
+def pool_problems():
+    """What keeps the held-out set apart: every slot has held-out values that no everyday value equals, and every
+    rule has held-out wordings."""
+    out = []
+    for r in ALL_RULES.values():
+        for k, vals in r.get("slots", {}).items():
+            held = r.get("held_out", {}).get(k) or []
+            if not held: out.append("%s: slot %s has no held-out values" % (r["id"], k))
+            elif set(held) & set(vals): out.append("%s: slot %s shares values with the held-out set" % (r["id"], k))
+        if not r.get("answer_held_out"): out.append("%s: no held-out wording (answer_held_out)" % r["id"])
     return out
 
 
@@ -176,7 +208,9 @@ def search(fx, query, seed=1):
         return base
     values = facts(rule["id"], seed)
     rnd = rng(seed, "search", rule["id"])
-    answers = (rule.get("answer_held_out") if held_out(seed) else None) or rule.get("answer") or [""]
+    answers = rule.get("answer_held_out") if held_out(seed) else rule.get("answer")
+    if not answers:
+        raise KeyError("search rule %s: no %s wording" % (rule["id"], "held-out" if held_out(seed) else "everyday"))
     base["answer"] = "" if rnd.random() < rule.get("no_answer", 0.15) else fill(rnd.choice(answers), values)
     pool = rule["results"]
     others = rnd.sample(pool[1:], rnd.randint(min(len(pool) - 1, rule.get("min_results", 1) - 1), len(pool) - 1))
@@ -232,11 +266,11 @@ def made_up_days(seed, lat, lon, start, n):
     """A plausible forecast for a place and season, drawn from the seed: the same place and day give the same
     weather in every case of a run."""
     days, out = [], []
-    doy = start.timetuple().tm_yday
+    doy = CLIMATE_DAY   # a fixed season: the values do not move with the date (paired runs on other days see the same)
     season = math.cos(2 * math.pi * (doy - 200) / 365.0) * (1 if lat >= 0 else -1)
     mean = 29 - 0.35 * abs(lat) + 0.14 * abs(lat) * season   # roughly a year's mean and swing by latitude
     for i in range(n):
-        r = rng(seed, "wx", round(lat, 1), round(lon, 1), (start + datetime.timedelta(days=i)).isoformat())
+        r = rng(seed, "wx", round(lat, 1), round(lon, 1), i)   # by days from today, not by the date
         mid = mean + r.uniform(-4, 4)
         spread = r.uniform(2.5, 6.5)
         codes, rain = r.choices(SKIES, weights=[22, 35, 6, 18, 14, 2, 3])[0]
@@ -249,7 +283,7 @@ def made_up_days(seed, lat, lon, start, n):
 
 def made_up_now(seed, lat, lon, day):
     first = made_up_days(seed, lat, lon, day, 1)[0]
-    r = rng(seed, "now", round(lat, 1), round(lon, 1), day.isoformat())
+    r = rng(seed, "now", round(lat, 1), round(lon, 1))
     temp = round(r.uniform(first["min"], first["max"]), 1)
     wind = round(r.uniform(3, 32), 1)
     return {"code": first["code"], "temp": temp, "feels": round(temp - wind / 12.0 - r.uniform(0, 1.5), 1), "wind": wind,
@@ -261,8 +295,9 @@ def forecast(fx, q, seed=1):
     days = max(1, min(16, int((q.get("forecast_days") or ["3"])[0])))
     lat, lon = float((q.get("latitude") or ["0"])[0]), float((q.get("longitude") or ["0"])[0])
     zone = zone_at(lat, lon)
-    now = datetime.datetime.now(ZoneInfo(zone))
-    start = now.date()
+    real = datetime.datetime.now(ZoneInfo(zone))
+    start = today()   # the run's date: the forecast starts on the user's today, frozen for the run
+    now = datetime.datetime.combine(start, real.time().replace(microsecond=0), real.tzinfo)
     plan = fx.get("forecast")
     if plan:
         week, cur = plan.get("days", WEEK), plan.get("now", NOW)
@@ -274,7 +309,7 @@ def forecast(fx, q, seed=1):
     deg = (lambda c: None if c is None else round(c * 9 / 5 + 32, 1)) if f else (lambda c: c)
     speed = (lambda k: round(k / 1.609344, 1)) if mph else (lambda k: k)
     t_unit, w_unit = ("°F" if f else "°C"), ("mp/h" if mph else "km/h")
-    r = rng(seed, "sun", round(lat, 1), start.isoformat())
+    r = rng(seed, "sun", round(lat, 1))
     rise, set_ = 7 * 60 + 21 + r.randint(-40, 40), 16 * 60 + 5 + r.randint(-60, 90)
     dates = [(start + datetime.timedelta(days=i)).isoformat() for i in range(days)]
     out = {"latitude": round(lat, 4), "longitude": round(lon, 4), "generationtime_ms": 0.08,
@@ -299,7 +334,8 @@ def forecast(fx, q, seed=1):
         del out["current"], out["current_units"]
         for k in ("temperature_2m_max", "temperature_2m_min", "precipitation_probability_max", "weather_code"):
             out["daily"][k] = [v if i < 2 else None for i, v in enumerate(out["daily"][k])]
-        out["daily"]["temperature_2m_max"][1] = None
+        if len(out["daily"]["temperature_2m_max"]) > 1:   # a one-day request has no tomorrow to blank
+            out["daily"]["temperature_2m_max"][1] = None
     return out
 
 
@@ -360,7 +396,8 @@ def chart(symbol, seed=1):
     prev = closes[0]
     lo, hi = sorted((price * (1 - r.uniform(0.002, 0.02)), price * (1 + r.uniform(0.002, 0.02))))
     day0 = datetime.datetime.combine(today(), datetime.time(0, 0), datetime.timezone.utc)
-    when = int(datetime.datetime.now(datetime.timezone.utc).timestamp()) - r.randint(60, 3 * 3600)
+    real = datetime.datetime.now(datetime.timezone.utc)
+    when = int(datetime.datetime.combine(today(), real.time(), datetime.timezone.utc).timestamp()) - r.randint(60, 3 * 3600)
     stamps = [int((day0 - datetime.timedelta(days=4 - k)).timestamp()) + 14 * 3600 + 30 * 60 for k in range(5)]
     meta = {"currency": i["currency"], "symbol": i["symbol"], "exchangeName": i["exchange"], "fullExchangeName": i["fullExchangeName"],
             "instrumentType": i["quoteType"], "firstTradeDate": 345479400, "regularMarketTime": when, "hasPrePostMarketData": True,
@@ -473,6 +510,9 @@ def main(argv):
         opt = args.pop(0)
         if opt == "--seed": Handler.seed = int(args.pop(0))
         elif opt == "--log": Handler.log = args.pop(0)
+        elif opt == "--date":
+            global TODAY
+            TODAY = datetime.date.fromisoformat(args.pop(0))
         else: sys.exit("unknown option " + opt)
     if args:
         with open(args[0], encoding="utf-8") as f: FIXTURES.update(json.load(f))

@@ -9579,7 +9579,10 @@
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "held_out_turns": [
+   "on a sunday when do the doors of the louvre open"
+  ]
  },
  {
   "name": "search-002",
@@ -9607,7 +9610,10 @@
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "held_out_turns": [
+   "can i visit the british museum on a monday"
+  ]
  },
  {
   "name": "search-003",
@@ -9628,13 +9634,16 @@
     "slots": [
      "winner"
     ],
-    "as": "name",
+    "as": "winner",
     "any": false
    }
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "held_out_turns": [
+   "which club lifted the champions league trophy this season"
+  ]
  },
  {
   "name": "search-004",
@@ -9663,7 +9672,10 @@
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "held_out_turns": [
+   "give me the main headlines this morning"
+  ]
  },
  {
   "name": "search-005",
@@ -9690,7 +9702,10 @@
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "held_out_turns": [
+   "what does it cost to go up to the summit of the eiffel tower"
+  ]
  },
  {
   "name": "search-006",
@@ -9717,7 +9732,10 @@
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "held_out_turns": [
+   "who took the chequered flag at the most recent grand prix"
+  ]
  },
  {
   "name": "search-007",
@@ -9747,7 +9765,10 @@
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "held_out_turns": [
+   "whats showing at the leicester square cinemas this evening"
+  ]
  },
  {
   "name": "search-008",
@@ -9774,7 +9795,10 @@
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "held_out_turns": [
+   "who leads the japanese government at the moment"
+  ]
  },
  {
   "name": "search-009",
@@ -9802,7 +9826,10 @@
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "held_out_turns": [
+   "how did arsenal get on last night"
+  ]
  },
  {
   "name": "search-010",
@@ -9830,7 +9857,10 @@
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "held_out_turns": [
+   "what was the final score for the yankees yesterday evening"
+  ]
  },
  {
   "name": "search-011",
@@ -9854,11 +9884,23 @@
     ],
     "as": "name",
     "any": false
+   },
+   {
+    "kind": "served",
+    "rule": "uk-strikes",
+    "slots": [
+     "day"
+    ],
+    "as": "date",
+    "any": false
    }
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "held_out_turns": [
+   "is a rail strike planned anywhere in britain this week"
+  ]
  },
  {
   "name": "search-012",
@@ -9878,6 +9920,15 @@
     "kind": "served",
     "rule": "bulls-home-game",
     "slots": [
+     "day"
+    ],
+    "as": "date",
+    "any": false
+   },
+   {
+    "kind": "served",
+    "rule": "bulls-home-game",
+    "slots": [
      "opponent"
     ],
     "as": "name",
@@ -9886,7 +9937,10 @@
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "held_out_turns": [
+   "when do the chicago bulls next play at home"
+  ]
  },
  {
   "name": "search-013",
@@ -9907,13 +9961,16 @@
     "slots": [
      "winner"
     ],
-    "as": "name",
+    "as": "winner",
     "any": false
    }
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "held_out_turns": [
+   "who is this years wimbledon mens champion"
+  ]
  },
  {
   "name": "search-014",
@@ -9940,7 +9997,10 @@
   ],
   "env": {},
   "home": null,
-  "steer": null
+  "steer": null,
+  "held_out_turns": [
+   "when can i get into the sagrada familia, what hours is it open"
+  ]
  },
  {
   "name": "search-015",

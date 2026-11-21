@@ -29,28 +29,42 @@ HOSTS = ("geocoding-api.open-meteo.com", "api.open-meteo.com", "open.er-api.com"
 FORECAST = ("https://api.open-meteo.com/v1/forecast?latitude=51.5085&longitude=-0.1257&timezone=auto&forecast_days=3"
             "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m"
             "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset")
-# (what, the request as the app makes it (src/agent/tools.cpp), the fields the app reads)
+# (what, the request as the app makes it (src/agent/tools.cpp), the fields the app reads with what each must be:
+# "number", "text", "object"; "?" may be null; "[T]" a list, never empty, of T ("[number?]": nulls allowed in it))
 REQUESTS = [
     ("place", "https://geocoding-api.open-meteo.com/v1/search?language=en&count=10&name=London",
-     ["results.0.name", "results.0.country", "results.0.country_code", "results.0.admin1", "results.0.timezone",
-      "results.0.latitude", "results.0.longitude"]),
-    ("no such place", "https://geocoding-api.open-meteo.com/v1/search?language=en&count=1&name=Florbington", []),
+     {"results": "[object]", "results.0.name": "text", "results.0.country": "text", "results.0.country_code": "text",
+      "results.0.admin1": "text", "results.0.timezone": "text", "results.0.latitude": "number", "results.0.longitude": "number"}),
+    ("no such place", "https://geocoding-api.open-meteo.com/v1/search?language=en&count=1&name=Florbington", {}),
     ("forecast", FORECAST,
-     ["current.temperature_2m", "current.apparent_temperature", "current.weather_code", "current.wind_speed_10m",
-      "current.relative_humidity_2m", "daily.time", "daily.weather_code", "daily.temperature_2m_max", "daily.temperature_2m_min",
-      "daily.precipitation_probability_max", "daily.sunrise", "daily.sunset"]),
-    ("forecast in fahrenheit", FORECAST + "&temperature_unit=fahrenheit&wind_speed_unit=mph", ["daily.temperature_2m_max"]),
-    ("rates", "https://open.er-api.com/v6/latest/EUR", ["result", "rates.GBP", "time_last_update_utc"]),
-    ("no such currency", "https://open.er-api.com/v6/latest/XQZ", ["result"]),
+     {"current.temperature_2m": "number", "current.apparent_temperature": "number", "current.weather_code": "number",
+      "current.wind_speed_10m": "number", "current.relative_humidity_2m": "number", "daily.time": "[text]",
+      "daily.weather_code": "[number]", "daily.temperature_2m_max": "[number]", "daily.temperature_2m_min": "[number]",
+      "daily.precipitation_probability_max": "[number?]", "daily.sunrise": "[text]", "daily.sunset": "[text]"}),
+    ("forecast in fahrenheit", FORECAST + "&temperature_unit=fahrenheit&wind_speed_unit=mph", {"daily.temperature_2m_max": "[number]"}),
+    ("rates", "https://open.er-api.com/v6/latest/EUR", {"result": "text", "rates": "object", "rates.GBP": "number",
+                                                        "time_last_update_utc": "text"}),
+    ("no such currency", "https://open.er-api.com/v6/latest/XQZ", {"result": "text"}),
     ("stock by name", "https://query1.finance.yahoo.com/v1/finance/search?quotesCount=3&newsCount=0&q=rolls%20royce",
-     ["quotes.0.symbol", "quotes.0.longname", "quotes.0.shortname"]),
+     {"quotes": "[object]", "quotes.0.symbol": "text", "quotes.0.longname": "text?", "quotes.0.shortname": "text"}),
     ("stock price", "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d",
-     ["chart.result.0.meta.regularMarketPrice", "chart.result.0.meta.chartPreviousClose", "chart.result.0.meta.currency",
-      "chart.result.0.meta.symbol", "chart.result.0.meta.longName", "chart.result.0.meta.fullExchangeName",
-      "chart.result.0.meta.regularMarketDayHigh", "chart.result.0.meta.regularMarketDayLow", "chart.result.0.meta.fiftyTwoWeekHigh",
-      "chart.result.0.meta.fiftyTwoWeekLow", "chart.result.0.meta.regularMarketTime"]),
-    ("no such symbol", "https://query1.finance.yahoo.com/v8/finance/chart/ZZQXQ.NOPE?range=5d&interval=1d", ["chart.error"]),
+     {"chart.result": "[object]", "chart.result.0.meta.regularMarketPrice": "number", "chart.result.0.meta.chartPreviousClose": "number",
+      "chart.result.0.meta.currency": "text", "chart.result.0.meta.symbol": "text", "chart.result.0.meta.longName": "text?",
+      "chart.result.0.meta.fullExchangeName": "text", "chart.result.0.meta.regularMarketDayHigh": "number?",
+      "chart.result.0.meta.regularMarketDayLow": "number?", "chart.result.0.meta.fiftyTwoWeekHigh": "number?",
+      "chart.result.0.meta.fiftyTwoWeekLow": "number?", "chart.result.0.meta.regularMarketTime": "number"}),
+    ("no such symbol", "https://query1.finance.yahoo.com/v8/finance/chart/ZZQXQ.NOPE?range=5d&interval=1d", {"chart.error": "object"}),
 ]
+
+
+def meets(value, spec):
+    """Whether VALUE is what SPEC says (see REQUESTS): its type, null only with "?", a list never empty."""
+    if spec.startswith("["):
+        inner = spec[1:-1]
+        return isinstance(value, list) and len(value) > 0 and all(meets(x, inner) for x in value)
+    if value is None:
+        return spec.endswith("?")
+    return kind(value) == spec.rstrip("?")
 
 
 def kind(x):
@@ -147,10 +161,14 @@ def main():
                 problems.append("not JSON: the stand-in %s, the real service %s" % (s_doc is not None, r_doc is not None))
             else:
                 problems += differences(s_doc, r_doc)
-                for field in reads:
+                for field, spec in reads.items():
                     for side, doc in (("stand-in", s_doc), ("real service", r_doc)):
-                        try: get(doc, field)
-                        except KeyError: problems.append("%s: the %s does not have it (the app reads it)" % (field, side))
+                        try: value = get(doc, field)
+                        except KeyError:
+                            problems.append("%s: the %s does not have it (the app reads it)" % (field, side))
+                            continue
+                        if not meets(value, spec):
+                            problems.append("%s: the %s has %s, the app reads it as %s" % (field, side, json.dumps(value)[:40], spec))
             bad += bool(problems)
             print("%-4s %-22s %s" % ("ok" if not problems else "DIFF", what, "" if not problems else "; ".join(problems[:6])))
     finally:
@@ -176,6 +194,12 @@ def self_test():
     check("null fits anything", differences({"f": 3, "a": None}, real) == [])
     check("lists by their first item", differences({"b": {"c": [{"q": 1}]}}, real) == ["b.c.0.q: the real service has no such key"])
     check("a field read", get(real, "b.c.0.e") == 2)
+    # W12: what a consumed field must be, null and empty lists included.
+    check("a list of numbers", meets([1, 2.5], "[number]"))
+    check("an empty list is not a list the app can read", not meets([], "[number]"))
+    check("null where none may be", not meets(None, "[number]") and not meets([1, None], "[number]") and not meets(None, "number"))
+    check("null where the app takes it", meets([1, None], "[number?]") and meets(None, "text?"))
+    check("a type that disagrees", not meets("12", "number"))
     for url in ("https://api.tavily.com/search", "https://example.com/x", "https://geocoding-api.open-meteo.com.evil.example/v1/search"):
         try:
             fetch(url)
@@ -227,9 +251,12 @@ def self_test():
         for what, url, reads in REQUESTS:
             status, doc = stand_in_fetch(base, url)
             check("the stand-in answers %s" % what, doc is not None)
-            for field in reads:
-                try: get(doc, field)
-                except KeyError: check("the stand-in's %s has %s" % (what, field), False)
+            for field, spec in reads.items():
+                try: value = get(doc, field)
+                except KeyError:
+                    check("the stand-in's %s has %s" % (what, field), False)
+                    continue
+                check("the stand-in's %s %s is %s" % (what, field, spec), meets(value, spec))
     finally:
         proc.stdin.close()
         proc.wait(timeout=10)

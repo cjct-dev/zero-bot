@@ -242,12 +242,24 @@ def k_local_time(s): return ev.chk_local_time
 
 
 def k_currency(s):
+    """A conversion asked for: the call (amount, from, to), and the answer gives what it returned: the converted
+    amount, rounded as speech rounds it, or for "what's the rate" the rate (either way round)."""
     def check(t):
-        for c in ev.calls(t, "convert_currency"):
+        for c, r in ev._made(t, "convert_currency"):
+            if not ev.worked(r): continue
             if s.get("amount") is not None and not ev._same(c.get("amount"), s["amount"]): continue
             if s.get("from") and str(c.get("from", "")).upper() != s["from"]: continue
             if s.get("to") and str(c.get("to", "")).upper() != s["to"]: continue
-            return []
+            try: got = json.loads(r)
+            except (TypeError, ValueError): return [ev.UNSCORABLE + "the conversion's result is not readable"]
+            rate, amount = float(got.get("rate", 0)), got.get("amount")
+            if s.get("amount") is None:
+                if ev.says_about(t["answer"], rate, max(0.005, rate * 0.01)) or (rate and ev.says_about(t["answer"], 1 / rate, max(0.005, 0.01 / rate))):
+                    return []
+                return ["the answer should give the rate the conversion returned, %.4g" % rate]
+            want = float(amount) * rate
+            if ev.says_money(t["answer"], want, ev.money_tol(want)): return []
+            return ["the answer should give the converted amount, %.2f %s" % (want, got.get("to", ""))]
         return ["convert_currency should convert %s %s to %s, got %s" % (s.get("amount"), s.get("from") or "?", s.get("to") or "?",
                                                                          ev.calls(t, "convert_currency"))]
     return check
@@ -261,7 +273,7 @@ def k_converted(s):
             if code not in got: problems.append("no convert_currency call to " + code)
             else:
                 want = s["amount"] * got[code]["rate"]
-                if not ev.says_about(t["answer"], want, max(0.06, want * 0.006)): problems.append("answer should give %.2f %s" % (want, code))
+                if not ev.says_money(t["answer"], want, ev.money_tol(want)): problems.append("answer should give %.2f %s" % (want, code))
         return problems
     return check
 
@@ -271,7 +283,7 @@ def k_converted_share(s):
         res = [r for r in ev.results(t, "convert_currency") if isinstance(r, dict) and "rate" in r]
         if not res: return ["no usable convert_currency result"]
         want = s["amount"] * s["factor"] * res[0]["rate"]
-        return [] if ev.says_about(t["answer"], want, 0.06) else ["answer should give %.2f" % want]
+        return [] if ev.says_money(t["answer"], want, ev.money_tol(want)) else ["answer should give %.2f" % want]
     return check
 
 
@@ -370,7 +382,7 @@ def k_event_time(s):
     import fake_web
     from zoneinfo import ZoneInfo
     def check(t):
-        when = fake_web.event_time(s["event"]).astimezone(ZoneInfo(s.get("zone", "Europe/London")))
+        when = fake_web.event_time(s["event"], ev.web_day(t)).astimezone(ZoneInfo(s.get("zone", "Europe/London")))
         return [] if ev.says_time(t["answer"], when, 0, affirmed=True) else \
             ["answer should give the event's time in %s, %s" % (s.get("zone", "Europe/London"), when.strftime("%H:%M (%-I:%M %p) on %-d %B"))]
     return check
@@ -549,7 +561,7 @@ def validate(cases):
                 if rule is None: err("%s: no stand-in search rule %r" % (where, s.get("rule")))
                 elif any(x not in rule.get("slots", {}) for x in s.get("slots") or []) or not s.get("slots"):
                     err("%s: rule %s has slots %s, not %s" % (where, s["rule"], sorted(rule.get("slots", {})), s.get("slots")))
-                if s.get("as", "name") not in ("name", "time", "number", "score", "open_closed"): err("%s: no way to read %r" % (where, s.get("as")))
+                if s.get("as", "name") not in ("name", "winner", "time", "number", "date", "score", "open_closed"): err("%s: no way to read %r" % (where, s.get("as")))
             if s["kind"] == "event_time" and s.get("event") not in fake_web.EVENTS: err("%s: no stand-in event %r" % (where, s.get("event")))
             if s["kind"] == "unannounced_time" and c["env"].get("ZB_EXP_WEB") != "@web/events": err("%s: unannounced_time needs the stand-in's events (@web/events)" % where)
             if s["kind"] == "language" and s.get("lang") not in LANGUAGE: err("%s: no language %r" % (where, s.get("lang")))
