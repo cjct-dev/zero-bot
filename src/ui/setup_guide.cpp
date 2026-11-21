@@ -133,7 +133,7 @@ struct Setup {
                 m.toast("Contacting the service…");
                 models::fetch([self, &m](const models::List &list, const std::string &err) {
                     if (!err.empty()) { m.problem("That did not work", err); return; }
-                    change([&list](Settings &st) { models::choose_for_setup(st, list); });
+                    change([&list](Settings &st) { models::choose(st, list); });
                     m.toast("Connected: " + std::to_string(list.size()) + " models available");
                     self->step_models();
                 });

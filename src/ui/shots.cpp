@@ -598,18 +598,29 @@ void App::shots_setup(Shots &shots) {
     auto snap = [&shots](const char *name) { shots.snap(name); };
     bool &failed = shots.failed;
     {
-        // The two rules for choosing models from the service's list (ui/models.h) stay two: the app's
-        // own choice takes only a model labelled for chat, the setup guide's also one with no label,
-        // and neither replaces a model already chosen. Checked, not pictured.
-        const models::List offered = {{"plain", ""}, {"chatty", "chat"}, {"ears", "audio_transcription"}, {"voice", "audio_speech"}};
-        Settings first, guide, kept;
+        // Only chat models are chosen without the user (ZB-088; ui/models.h): from a service that labels
+        // its models, the one labelled "chat", even with an unlabelled one listed first; from one that
+        // labels none, nothing (while settings list every model, for the user to choose); from one with no
+        // chat model, no language model. A model already chosen stays. Checked, not pictured.
+        const models::List labelled = {{"embed", ""}, {"chatty", "chat"}, {"ears", "audio_transcription"}, {"voice", "audio_speech"}};
+        const models::List unlabelled = {{"one", ""}, {"two", ""}};
+        const models::List no_chat = {{"embed", ""}, {"ears", "audio_transcription"}};
+        Settings picked, none, no_llm, kept;
         kept.llm_model = "mine";
-        models::choose_first(first, offered);
-        models::choose_for_setup(guide, offered);
-        models::choose_for_setup(kept, offered);
-        if (first.llm_model != "chatty" || first.stt_model != "ears" || first.tts_model != "voice" || guide.llm_model != "plain" ||
-            guide.stt_model != "ears" || guide.tts_model != "voice" || kept.llm_model != "mine") {
-            fprintf(stderr, "a model was chosen from the service's list by the wrong rule\n");
+        models::choose(picked, labelled);
+        models::choose(none, unlabelled);
+        models::choose(no_llm, no_chat);
+        models::choose(kept, labelled);
+        const bool automatic = picked.llm_model == "chatty" && picked.stt_model == "ears" && picked.tts_model == "voice" &&
+                               none.llm_model.empty() && none.stt_model.empty() && none.tts_model.empty() &&
+                               no_llm.llm_model.empty() && no_llm.stt_model == "ears" && kept.llm_model == "mine";
+        const bool by_hand = models::offered(labelled, "chat") == std::vector<std::string>{"chatty"} &&
+                             models::offered(unlabelled, "chat") == std::vector<std::string>{"one", "two"} &&
+                             models::offered(unlabelled, "audio_speech") == std::vector<std::string>{"one", "two"} &&
+                             models::offered(no_chat, "chat").empty();
+        if (!automatic || !by_hand) {
+            fprintf(stderr, "a model was chosen from the service's list by the wrong rule (automatic %d, settings list %d)\n",
+                    automatic, by_hand);
             failed = true;
         }
     }

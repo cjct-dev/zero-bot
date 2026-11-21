@@ -98,7 +98,7 @@ void App::auto_select_models() {
         selecting_models = false;
         if (!err.empty()) return;   // offline, most likely; periodic() tries again later
         uiq::post([this, list] {
-            const Settings st = Settings::update([&list](Settings &s) { models::choose_first(s, list); });
+            const Settings st = Settings::update([&list](Settings &s) { models::choose(s, list); });
             if ((st.stt_model.empty() || st.tts_model.empty()) && !warned_models) {
                 warned_models = true;
                 chat.add_note("Choose speech models in settings (SPACE) to use voice.", theme::kThink);
