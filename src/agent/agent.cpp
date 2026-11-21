@@ -356,6 +356,7 @@ private:
     };
 
     Then one_round(const Budget &budget);
+    Then run_tools(Round &r);
     void release_held(Round &r);
     std::optional<Then> judge_draft(Round &r, const Budget &budget);
     std::optional<Then> second_look(Round &r);
@@ -474,68 +475,7 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     if (const auto then = judge_draft(r, budget)) return *then;
     release_held(r);
 
-    if (!r.res.tool_calls.empty()) {
-        json calls = json::array();
-        for (auto &c : r.res.tool_calls)
-            calls.push_back({{"id", c.id}, {"type", "function"}, {"function", {{"name", c.name}, {"arguments", c.args}}}});
-        {
-            std::lock_guard<std::mutex> lk(a_.mtx_);
-            a_.history_.push_back({{"role", "assistant"}, {"content", r.res.content}, {"tool_calls", calls}});
-        }
-        if (r.began) {
-            const std::string rest = r.chunker.flush();
-            if (!rest.empty() && !a_.listening_ && r.unsaid.empty()) to_speech(rest);
-            if (a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, false);
-        }
-        std::string confirm;
-        bool all_confirmed = true;
-        for (auto &c : r.res.tool_calls) {
-            const tools::Tool *tool = tools::find(c.name);
-            const std::string label = tool ? tool->label : c.name;
-            a_.set_state(AgentState::Working, label);
-            if (a_.ev_.tool) a_.ev_.tool(label);
-            const auto tool_started = std::chrono::steady_clock::now();
-            const std::string key = call_key(c.name, c.args);
-            const auto earlier = req_.failed_calls.find(key);
-            std::string result;
-            if (a_.cancel_) result = "ERROR: cancelled by the user";
-            else if (earlier != req_.failed_calls.end())
-                result = "ERROR: this exact call already failed in this request, so it was not made again. It said: " +
-                         earlier->second + ". Change what that asks you to change, or tell the user it did not work";
-            else result = tools::run(c.name, c.args, req_.tool_ctx);
-            const long tool_ms = static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - tool_started).count());
-            activity::tool(c.name, c.args, result, tool_ms);   // DIAGNOSTICS (temporary): the activity log
-            rt_.tool(c.name, tool_ms, result);
-#if ZB_EXPERIMENTS
-            if (a_.ev_.tool_done) a_.ev_.tool_done(c.id, c.name, c.args, result);
-#endif
-            if (result.size() > kMaxToolResult) result = util::truncate_utf8(result, kMaxToolResult, " …[truncated]");
-            if (tools::failed(result)) {
-                ++req_.failures;
-                // Refused only for what its "say" claimed, nothing done: it may come again
-                // with another say, or after the step it lacked.
-                if (!req_.tool_ctx.say_refused) req_.failed_calls.emplace(key, error_words(result));
-            } else if (result.compare(0, 7, "CONFIRM") != 0) {
-                req_.any_ok = true;
-            }
-            const std::string say = a_.cancel_ ? "" : tools::confirmation(c.name, c.args, result);
-            if (say.empty()) all_confirmed = false;
-            else if (confirm.find(say) == std::string::npos) confirm += (confirm.empty() ? "" : " ") + say;
-            if (!say.empty() && req_.done_said.find(say) == std::string::npos) req_.done_said += say + " ";
-            std::lock_guard<std::mutex> lk(a_.mtx_);
-            a_.history_.push_back({{"role", "tool"}, {"tool_call_id", c.id}, {"content", result}});
-        }
-        req_.acted = true;
-        wait_while_listening();
-        // Anything said meanwhile steers the next step, so the model has to look again.
-        if (steer_in() > 0 || a_.cancel_ || !all_confirmed) return Then::Next;
-
-        // Every call succeeded and came with its own confirmation: speak that now rather than
-        // spending another model call on it.
-        deliver(confirm);
-        return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
-    }
+    if (!r.res.tool_calls.empty()) return run_tools(r);
 
     // Final answer for this request.
     const std::string rest = r.chunker.flush();
@@ -549,6 +489,72 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     if (r.began && a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, false);
     if (r.res.content.empty() && a_.ev_.error) a_.ev_.error("The model returned an empty answer.");
     // Something typed while the answer was being spoken becomes the next request.
+    return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+}
+
+// The round's tool calls, run in order and their results put in the conversation. A call that failed
+// in this request is not made again unchanged. When every call worked and came with its own
+// confirmation ("say"), that is spoken without another model call; otherwise the model is called again.
+Agent::Turn::Then Agent::Turn::run_tools(Round &r) {
+    json calls = json::array();
+    for (auto &c : r.res.tool_calls)
+        calls.push_back({{"id", c.id}, {"type", "function"}, {"function", {{"name", c.name}, {"arguments", c.args}}}});
+    {
+        std::lock_guard<std::mutex> lk(a_.mtx_);
+        a_.history_.push_back({{"role", "assistant"}, {"content", r.res.content}, {"tool_calls", calls}});
+    }
+    if (r.began) {
+        const std::string rest = r.chunker.flush();
+        if (!rest.empty() && !a_.listening_ && r.unsaid.empty()) to_speech(rest);
+        if (a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, false);
+    }
+    std::string confirm;
+    bool all_confirmed = true;
+    for (auto &c : r.res.tool_calls) {
+        const tools::Tool *tool = tools::find(c.name);
+        const std::string label = tool ? tool->label : c.name;
+        a_.set_state(AgentState::Working, label);
+        if (a_.ev_.tool) a_.ev_.tool(label);
+        const auto tool_started = std::chrono::steady_clock::now();
+        const std::string key = call_key(c.name, c.args);
+        const auto earlier = req_.failed_calls.find(key);
+        std::string result;
+        if (a_.cancel_) result = "ERROR: cancelled by the user";
+        else if (earlier != req_.failed_calls.end())
+            result = "ERROR: this exact call already failed in this request, so it was not made again. It said: " +
+                     earlier->second + ". Change what that asks you to change, or tell the user it did not work";
+        else result = tools::run(c.name, c.args, req_.tool_ctx);
+        const long tool_ms = static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - tool_started).count());
+        activity::tool(c.name, c.args, result, tool_ms);   // DIAGNOSTICS (temporary): the activity log
+        rt_.tool(c.name, tool_ms, result);
+#if ZB_EXPERIMENTS
+        if (a_.ev_.tool_done) a_.ev_.tool_done(c.id, c.name, c.args, result);
+#endif
+        if (result.size() > kMaxToolResult) result = util::truncate_utf8(result, kMaxToolResult, " …[truncated]");
+        if (tools::failed(result)) {
+            ++req_.failures;
+            // Refused only for what its "say" claimed, nothing done: it may come again
+            // with another say, or after the step it lacked.
+            if (!req_.tool_ctx.say_refused) req_.failed_calls.emplace(key, error_words(result));
+        } else if (result.compare(0, 7, "CONFIRM") != 0) {
+            req_.any_ok = true;
+        }
+        const std::string say = a_.cancel_ ? "" : tools::confirmation(c.name, c.args, result);
+        if (say.empty()) all_confirmed = false;
+        else if (confirm.find(say) == std::string::npos) confirm += (confirm.empty() ? "" : " ") + say;
+        if (!say.empty() && req_.done_said.find(say) == std::string::npos) req_.done_said += say + " ";
+        std::lock_guard<std::mutex> lk(a_.mtx_);
+        a_.history_.push_back({{"role", "tool"}, {"tool_call_id", c.id}, {"content", result}});
+    }
+    req_.acted = true;
+    wait_while_listening();
+    // Anything said meanwhile steers the next step, so the model has to look again.
+    if (steer_in() > 0 || a_.cancel_ || !all_confirmed) return Then::Next;
+
+    // Every call succeeded and came with its own confirmation: speak that now rather than
+    // spending another model call on it.
+    deliver(confirm);
     return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
 }
 
