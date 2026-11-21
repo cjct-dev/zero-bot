@@ -356,6 +356,7 @@ private:
     };
 
     Then one_round(const Budget &budget);
+    bool on_error(Round &r);
     std::optional<Then> cut_short(Round &r);
     bool withdraw_if_steered(Round &r);
     void call_model(Round &r, const Budget &budget);
@@ -463,20 +464,7 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     call_model(r, budget);
     if (withdraw_if_steered(r)) return Then::Again;   // a withdrawn draft does not count against the budget
     if (const auto then = cut_short(r)) return *then;
-    if (!r.res.error.empty()) {
-        if (r.began && a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, true);
-        if (a_.ev_.error) a_.ev_.error(r.res.error);
-        // Tools have run, so something may have changed, or failed, that the user has not been
-        // told about. Say what is known rather than leave them with silence.
-        if (req_.acted) {
-            const char *lost = "I lost the connection to the AI service before I could finish, so please ask again.";
-            deliver(r.speech_started ? lost
-                    : req_.done_said + (req_.failures ? "Something I tried did not work, and I lost the connection to the AI "
-                                              "service before I could say what. Please ask again."
-                                            : lost));
-        }
-        return Then::Finish;
-    }
+    if (on_error(r)) return Then::Finish;
 
     // E3: a draft the parallel check clears once the draft is complete stands without the second look.
     bool cleared = r.released;
@@ -632,6 +620,24 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     if (r.res.content.empty() && a_.ev_.error) a_.ev_.error("The model returned an empty answer.");
     // Something typed while the answer was being spoken becomes the next request.
     return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+}
+
+// The service failed: the error is shown, and once tools have run, what is known is said. True when
+// the call failed.
+bool Agent::Turn::on_error(Round &r) {
+    if (r.res.error.empty()) return false;
+    if (r.began && a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, true);
+    if (a_.ev_.error) a_.ev_.error(r.res.error);
+    // Tools have run, so something may have changed, or failed, that the user has not been
+    // told about. Say what is known rather than leave them with silence.
+    if (req_.acted) {
+        const char *lost = "I lost the connection to the AI service before I could finish, so please ask again.";
+        deliver(r.speech_started ? lost
+                : req_.done_said + (req_.failures ? "Something I tried did not work, and I lost the connection to the AI "
+                                                    "service before I could say what. Please ask again."
+                                                  : lost));
+    }
+    return true;
 }
 
 // The user cancelled the request (Finish), or talked over its answer (Leave); nothing otherwise.
