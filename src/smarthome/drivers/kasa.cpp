@@ -134,12 +134,6 @@ int left_ms(Clock::time_point until) {
     return d <= 0 ? 0 : static_cast<int>(std::min<long long>(d, 60000));
 }
 
-struct Fd {
-    int fd = -1;
-    ~Fd() {
-        if (fd >= 0) close(fd);
-    }
-};
 
 // Waits for `events` on `fd` until the deadline. False when the time ran out.
 bool wait_for(int fd, short events, Clock::time_point until) {
@@ -175,8 +169,7 @@ Outcome exchange(const std::string &ip, int port, const json &request, json &rep
     to.sin_family = AF_INET;
     if (port <= 0 || port > 65535 || inet_pton(AF_INET, ip.c_str(), &to.sin_addr) != 1) return Outcome::BadAddress;
     to.sin_port = htons(static_cast<uint16_t>(port));
-    Fd s;
-    s.fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    const support::Socket s(socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
     if (s.fd < 0) return Outcome::NoAnswer;
     if (connect(s.fd, reinterpret_cast<sockaddr *>(&to), sizeof(to)) != 0) {
         if (errno == ECONNREFUSED) return Outcome::Refused;
@@ -223,8 +216,7 @@ bool probe_says_new_login(const std::string &ip, Clock::time_point until, std::s
     to.sin_family = AF_INET;
     to.sin_port = htons(static_cast<uint16_t>(detail::probe_port()));
     if (inet_pton(AF_INET, ip.c_str(), &to.sin_addr) != 1 || left_ms(stop) == 0) return false;
-    Fd s;
-    s.fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    const support::Socket s(socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
     if (s.fd < 0 || connect(s.fd, reinterpret_cast<sockaddr *>(&to), sizeof(to)) != 0) return false;
     if (send(s.fd, kProbe, sizeof(kProbe), MSG_NOSIGNAL) != static_cast<ssize_t>(sizeof(kProbe))) return false;
     std::string buf(9000, '\0');

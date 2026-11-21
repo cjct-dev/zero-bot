@@ -882,7 +882,8 @@ int send_magic(const Target &t, const std::string &mac) {
     const int port = detail::wake_port();
     int sent = 0;
     for (const detail::WakeSend &w : detail::wake_destinations(interfaces, ntohl(tv.s_addr))) {
-        const int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+        const support::Socket sock(socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0));
+        const int fd = sock.fd;
         if (fd < 0) continue;
         const int one = 1;
         setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &one, sizeof one);
@@ -890,10 +891,7 @@ int send_magic(const Target &t, const std::string &mac) {
             sockaddr_in local{};
             local.sin_family = AF_INET;
             local.sin_addr.s_addr = htonl(w.from);
-            if (bind(fd, reinterpret_cast<sockaddr *>(&local), sizeof local) != 0) {
-                close(fd);
-                continue;
-            }
+            if (bind(fd, reinterpret_cast<sockaddr *>(&local), sizeof local) != 0) continue;
         }
         sockaddr_in to{};
         to.sin_family = AF_INET;
@@ -902,7 +900,6 @@ int send_magic(const Target &t, const std::string &mac) {
         if (sendto(fd, packet.data(), packet.size(), 0, reinterpret_cast<sockaddr *>(&to), sizeof to) ==
             static_cast<ssize_t>(packet.size()))
             sent++;
-        close(fd);
     }
     return sent;
 }

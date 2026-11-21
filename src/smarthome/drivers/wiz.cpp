@@ -136,13 +136,11 @@ Got udp_exchange(const std::string &ip, int port, const std::string &method, con
     hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;   // an address, never a name to look up
     if (port <= 0 || port > 65535 || getaddrinfo(ip.c_str(), std::to_string(port).c_str(), &hints, &res) != 0 || !res)
         return Got::Nothing;
-    const int fd = socket(res->ai_family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    const support::Socket sock(socket(res->ai_family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
+    const int fd = sock.fd;
     const bool connected = fd >= 0 && connect(fd, res->ai_addr, res->ai_addrlen) == 0;
     freeaddrinfo(res);
-    if (!connected) {
-        if (fd >= 0) close(fd);
-        return Got::Nothing;
-    }
+    if (!connected) return Got::Nothing;
 
     long long next_send = now_ms();
     int interval = kFirstResendMs, sends = 0;
@@ -178,7 +176,6 @@ Got udp_exchange(const std::string &ip, int port, const std::string &method, con
             break;
         }
     }
-    close(fd);
     return got;
 }
 
