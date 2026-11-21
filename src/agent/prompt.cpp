@@ -2,6 +2,7 @@
 
 #include <ctime>
 
+#include "agent/controls.h"
 #include "agent/experiment.h"
 #include "core/music_lib.h"
 #include "core/radio.h"
@@ -58,12 +59,14 @@ std::string system_prompt() {
          "- A date given without a year means the next time that date comes round: this year if it is still "
          "ahead, otherwise next year. Work that out yourself and save it; do not ask or refuse because the date "
          "is far off.\n";
-    p += experiment::say_rule("- Some tools take 'say': the short confirmation to speak once the call has worked. ");
-    p += "Fill it in whenever "
-         "that call is all the request needs, in the user's language, so they hear the result without delay. "
-         "When it confirms something dated, it says the day (and the time, if there is one) back, so that a "
-         "mishearing is caught at once.\n"
-         "- Anything counted down from now is a timer ('set a timer', 'in 5 minutes', 'for an hour', 'the eggs "
+    if (controls::on(controls::Say)) {
+        p += experiment::say_rule("- Some tools take 'say': the short confirmation to speak once the call has worked. ");
+        p += "Fill it in whenever "
+             "that call is all the request needs, in the user's language, so they hear the result without delay. "
+             "When it confirms something dated, it says the day (and the time, if there is one) back, so that a "
+             "mishearing is caught at once.\n";
+    }
+    p += "- Anything counted down from now is a timer ('set a timer', 'in 5 minutes', 'for an hour', 'the eggs "
          "need six minutes'): use timer, with a short label from the user's words ('Study', 'Eggs'). Several can "
          "run at once; how long one has left comes from timer list. reminder_set is for a message or an alarm at a "
          "clock time or on a date ('remind me at 6 on Friday to call the bank', 'set an alarm for 7').\n"
