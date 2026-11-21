@@ -212,12 +212,14 @@ groups need first. Which to use:
   `[state]`) or a build machine's path (`/home/`). Last it runs the **held-out run** (group `held-out`, release
   only): both sets once on the held-out seed, judged on its own, not against the baseline
   (`exp_compare.py --held-out`, against the roster at the held-out seed: every case defined, run exactly as
-  often as asked, by the current case and scorer; each set's pass rate, and that of the cases that rest on a
-  web service (`web`), at least its floor, `HELD_OUT_FLOOR`; every critical case of the roster passing), reported
+  often as asked, by the current case and scorer, each record showing its run took place (its own `run_id`, so
+  copies are not repeats, the traced app, the held-out requests, every turn answered); each set's pass rate, and
+  that of the cases that rest on a web service (`web`), at least its floor, `HELD_OUT_FLOOR`; every critical case of
+  the roster passing), reported
   beside the gate. The held-out run is refused anywhere else (`--groups held-out` outside the release, the
   scorers' `--held-out` without the `ZB_HELD_OUT_RUN` the release sets). **Recalibrating the floors** (after a
   change to the sets or the stand-in that moves the pass rates): `tests/run.py --groups held-out --calibrate 3`
-  runs the held-out set three times and prints each group's mean, spread and a floor (the mean less the larger of
+  (3 or more; never for tuning: read only the per-group rates it prints) runs the held-out set three times and prints each group's mean, spread and a floor (the mean less the larger of
   2 points and two standard deviations); put those in `HELD_OUT_FLOOR` and say so in the commit. A change that wins on the everyday seed but loses on the held-out
   one is fitted to the everyday answers; never tune on the held-out results. **Before a release**, also run
   `tests/run.py --groups web-contract` (or `tests/web_contract.py`): a handful of direct requests, no model, to
@@ -233,9 +235,14 @@ when a case or the binary could still reach a real web service (`agent_eval.py` 
 `probe_binary`'s `web_all`). **The network boundary** (`tests/netguard.py`): every test process that runs the
 app gets `child_env` (no key it does not need, the inherited proxy settings dropped, every proxy variable at a
 local trap that records and refuses, only 127.0.0.1, localhost and a live run's AI service exempt); mocks get
-`mock_env` (a PATH and nothing else); a live case whose app sends anything to the trap is unscorable; every entry
-point that runs the cli refuses a build without the experiments (`require_experiments`); a case may set only
-`CASE_ENV`; every case runs with `ZB_TEST_NETWORK=1`, so the real router is never sent a packet. `tools_cli.py`
+`mock_env` (a PATH and nothing else; the standalone device tests call `netguard.sanitize()` first); a live case
+whose app sends anything to the trap is unscorable; every entry point that runs the cli refuses a build without the
+experiments and the network pin (`require_experiments`, caps `web_all` and `net`); a case may set only `CASE_ENV`;
+every app run has `ZB_TEST_NETWORK=1`. **Inside the app** (experiment builds, `ZB_EXP_NET`, which `child_env` always
+sets): HTTP goes only to 127.x and localhost, and in a live run to exactly the AI service's scheme, host and port,
+with no redirect followed (`http::send`); network identification never looks at the real network, so no test sends
+a packet to the router (`discovery::current_network`). The proxy exemption for the AI host is only a fallback: the
+pin is checked on every request, so another port, a subdomain or a redirect is refused before it leaves. `tools_cli.py`
 (`no_real_web`, `web_wraps`) proves it: a case run by the runner itself against a scripted model that calls every
 web tool makes no request outside 127.x, and every `fetch_json` address goes through `experiment::web()`.
 `--no-search` is accepted and changes nothing. Groups never inherit switches that change what they test (`ZB_UPDATE_SHOTS`,
@@ -398,9 +405,12 @@ What exists:
   or one for another subject fails, one about the subject that the stand-in matched to another rule is a fixture
   fault (unscorable). It scores meaning, not mention: the winner not as the side that lost, a score with its
   result the right way round, a date for "when", and no other value the slot can take said beside the served
-  one. `chk_weather_served` (added to every case that must call the weather) fails any temperature, both ends of
-  a range, that the forecast did not serve for the day asked about (a rain chance is no temperature); the
-  currency checks require the answer to give the converted amount (rounded as speech rounds it) or the rate.
+  one (unless set aside in its own clause: "London, not New York"). Only what the model saw counts (`annotate_served`
+  keeps a fact when the response shows it: an empty result credits nothing, and "the search did not say" is right
+  then), and evidence ends at "/new". `chk_weather_served` (added to every case that must call the weather) fails
+  any temperature, both ends of a range, that the forecast did not serve for the day asked about (a rain chance is
+  no temperature; °F is converted); the currency checks require the answer to give the converted amount (rounded as
+  speech rounds it) or the rate, in the right currency (its name, code or sign by the number).
   A web read that failed never counts as a `must` call (an expected failure uses `tried`).
   Search answers live in `tests/mocks/web/search.json` (a rule per question: `match`, `slots` with
   `held_out` values, answer and result wordings); add a rule with any case that searches something new.
@@ -412,7 +422,10 @@ What exists:
   question forms (`held_out_turns`); the runners take one only with `--held-out` in the release's held-out run
   (`HELD_OUT_SEED`). The stand-in's clock is frozen per run (`--date`, recorded as `web_date` in each turn and
   result) and no served value depends on the date (forecasts for a fixed season, by days from today), so runs on
-  other days see the same answers with their dates moved and stay paired; the date is therefore not hashed. The
+  other days see the same answers with their dates moved and stay paired; the date is therefore not hashed, except
+  for the few cases whose answers do move with it (`date_workload`: a weather request for a weekday or the weekend,
+  by how many days ahead it is; the events fixture, by the launch's time in London across daylight saving), which
+  pair only with a run on a day like it. The
   camera picture hashed is the one the cases get (`ZB_EVAL_CAMERA` or the fixture). The fixtures are versioned
   (`fake_web.VERSION`, and every file of `tests/mocks/web/` is hashed into `case_hash`). **The scorer's own test**: `tests/scorer_test.py`
   (offline, no service) feeds deliberately wrong transcripts that must fail and right ones that must

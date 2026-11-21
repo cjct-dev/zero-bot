@@ -1135,6 +1135,30 @@ def web_seeds():
         fake_web.TODAY = saved_today
     check("date (W11): another day, the same forecast values, its own dates", a["daily"]["temperature_2m_max"] == b["daily"]["temperature_2m_max"]
           and a["current"]["temperature_2m"] == b["current"]["temperature_2m"] and a["daily"]["time"][0] != b["daily"]["time"][0])
+    # Round 2, item 6: the few cases whose answers move with the date pair only with a run on a day like it.
+    sat = suite_case(["is it going to be sunny in new york on saturday"]) if any(
+        c["turns"] == ["is it going to be sunny in new york on saturday"] for c in json.load(open(os.path.join(HERE, "suite", "cases.json")))) else None
+    plain = case("weather")
+    saved_date = ev.WEB_DATE
+    try:
+        hashes = {}
+        for d in ("2026-11-19", "2026-11-20", "2026-11-26"):   # a Thursday, a Friday, the next Thursday
+            ev.WEB_DATE = d
+            hashes[d] = (ev.case_hash(sat) if sat else None, ev.case_hash(plain), ev.case_hash(case("search")))
+        launch = suite_case(["when is the next apple product launch event", "what time is that in uk time"])
+        ev.WEB_DATE = "2026-03-02"
+        before_dst = ev.date_workload(launch)
+        ev.WEB_DATE = "2026-03-20"
+        after_dst = ev.date_workload(launch)
+    finally:
+        ev.WEB_DATE = saved_date
+    if sat:
+        check("date (r2): a Saturday forecast asked on Thursday and on Friday are different workloads",
+              hashes["2026-11-19"][0] != hashes["2026-11-20"][0] and hashes["2026-11-19"][0] == hashes["2026-11-26"][0])
+    check("date (r2): a case whose answers do not move with the date pairs across days",
+          hashes["2026-11-19"][1:] == hashes["2026-11-20"][1:] == hashes["2026-11-26"][1:])
+    check("date (r2): the launch's London time across a daylight-saving change is part of the workload",
+          before_dst != after_dst, (before_dst, after_dst))
     check("date (W12): a one-day partial forecast has no IndexError",
           len(fake_web.forecast({"forecast_mode": "partial"}, urllib.parse.parse_qs("latitude=1&longitude=1&forecast_days=1"))["daily"]["time"]) == 1)
     folder = tempfile.mkdtemp(prefix="zb-camera-")

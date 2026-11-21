@@ -1181,7 +1181,8 @@ def parse(argv):
     ap.add_argument("--repeat", type=int, default=1, help="live sets: run each case this many times")
     ap.add_argument("--fast", default=None, help="live sets: force fast mode on (1) or off (0)")
     ap.add_argument("--calibrate", type=int, default=0, metavar="N",
-                    help="with --groups held-out only: run the held-out set N times and suggest its floors (HELD_OUT_FLOOR)")
+                    help="with --groups held-out only: run the held-out set N (3 or more) times to set its floors (HELD_OUT_FLOOR); "
+                         "never to tune on: read only the per-group rates it prints")
     ap.add_argument("--self-test", action="store_true", help="check this runner and exit")
     o = ap.parse_args(argv)
     if o.baseline:
@@ -1193,6 +1194,8 @@ def parse(argv):
     if o.calibrate and ([g.strip() for g in o.groups.split(",") if g.strip()] != ["held-out"] or o.profile or
                         any(getattr(o, k) for k in RELEASE_REFUSES)):
         ap.error("--calibrate N goes with --groups held-out alone, and no filter or variant")
+    if o.calibrate and o.calibrate < 3:
+        ap.error("--calibrate needs at least 3 runs: it sets the held-out floors from their spread, and is not for tuning")
     if release_mode(o):
         given = ["--" + k.replace("_", "-") for k in RELEASE_REFUSES if getattr(o, k)]
         if given:
@@ -1357,7 +1360,8 @@ def self_test():
     check("--calibrate 3: the held-out set three times, judged with three repeats and a calibration",
           chosen == ["held-out"] and all(c[c.index("--repeat") + 1] == "3" for c in cmds[:2]) and
           cmds[2][cmds[2].index("--repeats") + 1] == "3" and "--calibrate" in cmds[2], cmds)
-    for argv in (["--groups", "live-suite", "--calibrate", "3"], ["--groups", "held-out", "--calibrate", "3", "--tags", "timer"]):
+    for argv in (["--groups", "live-suite", "--calibrate", "3"], ["--groups", "held-out", "--calibrate", "3", "--tags", "timer"],
+                 ["--groups", "held-out", "--calibrate", "1"], ["--groups", "held-out", "--calibrate", "2"]):
         try:
             with contextlib.redirect_stderr(io.StringIO()):
                 parse(argv)

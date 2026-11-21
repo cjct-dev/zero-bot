@@ -2153,7 +2153,9 @@ def run_case(binary, base_env, c):
         req = next((e for e in mine if e.get("ev") == "request"), None)
         if req and req.get("first_sentence_ms", -1) >= 0: t["first_sentence"] = req["first_sentence_ms"] / 1000.0
         if trace: t["trace"] = mine
-    return {"turns": turns, "process": process, "evidence": evidence, "unscorable": reasons, "trace": bool(trace)}
+    import uuid
+    # run_id: this execution's own name, so that repeats are known to be distinct runs (the held-out judge checks).
+    return {"turns": turns, "process": process, "evidence": evidence, "unscorable": reasons, "trace": bool(trace), "run_id": uuid.uuid4().hex}
 
 def place_device_log(turns, log):
     """Sets a simulated device's log ([(wall-clock time, what)]) beside the turns by the records' wall times:
@@ -2206,6 +2208,7 @@ def run_from_saved(r, c=None):
         why.append("the saved run asked %r, not this case's %r" % (r.get("requests"), case_turns(c)))
     return {"turns": r.get("turns"), "process": r.get("process"), "evidence": r.get("evidence", "stdout"), "unscorable": why,
             "trace": r.get("trace"),
+            "run_id": r.get("run_id"),
             "provenance": {k: r.get(k) for k in ("requests", "case_hash", "fixtures", "trace", "web_seed", "web_date")}}
 
 def trace_summary(results):
@@ -2372,12 +2375,34 @@ def fixtures_of(c):
     here = os.path.dirname(os.path.abspath(__file__))
     out = {"music": _sha1(json.dumps(MUSIC_LIBRARY)), "camera": _sha1(open(camera_path(), "rb").read()), "web": web_version(),
            "web_seed": WEB_SEED}
+    workload = date_workload(c)
+    if workload: out["date_workload"] = workload
     home = c.get("home")
     if callable(home):
         try: src = inspect.getsource(home)
         except (OSError, TypeError): src = ""
         if "mock_firetv" in src: out["firetv"] = _sha1(open(os.path.join(here, "mocks", "firetv", "mock_firetv.py"), "rb").read())
     return out
+
+def date_workload(c):
+    """What the answers of a case depend on in the calendar of the run's date (WEB_DATE; today before a run), for the
+    few cases whose stand-in answers move with it: a weather request for a weekday or the weekend (how many days
+    ahead that day is: the forecast is drawn by days from today) and the published event of the "events" fixture
+    (its time in London, which daylight saving moves). None for every other case, whose answers are the same on any
+    day, so that a baseline and a variant from different days still pair; these pair only on a day like it."""
+    day = datetime.date.fromisoformat(WEB_DATE) if WEB_DATE else today().date()
+    out = {}
+    asked = " ".join(x for x in case_turns(c) if x != "/new").lower()
+    tools = {t for m in list(c.get("must", [])) + list(c.get("tried", [])) for t in m.split("|")}
+    if "weather" in tools:
+        named = [wd for wd, name in enumerate(WEEKDAYS) if re.search(r"\b%s\b" % name, asked)]
+        if re.search(r"\bweekend\b", asked): named += [5, 6]
+        if named: out["weekday_days_ahead"] = sorted({(wd - day.weekday()) % 7 for wd in named})
+    if web_fixture(c) == "events":
+        from zoneinfo import ZoneInfo
+        when = _fake_web().event_time("product_launch", day).astimezone(ZoneInfo("Europe/London"))
+        out["event_in_london"] = when.strftime("%H:%M")
+    return out or None
 
 def web_version():
     """The stand-in web every case runs against: its code and every data file beside it (tests/mocks/web/)."""
@@ -2418,7 +2443,7 @@ def result_record(c, run, outcome, problems, traced=None, which="scored", **extr
     return dict({"case": c["name"], "set": which, "case_hash": prov["case_hash"] if prov else case_hash(c),
                  "fixtures": prov["fixtures"] if prov else fixture_version(c), "scorer": SCORER_VERSION,
                  "web_seed": prov.get("web_seed") if prov else WEB_SEED,
-                 "web_date": prov.get("web_date") if prov else WEB_DATE,
+                 "web_date": prov.get("web_date") if prov else WEB_DATE, "run_id": run.get("run_id"),
                  "trace": None if trace is None else bool(trace), "outcome": outcome, "unscorable": outcome == "unscorable",
                  "requests": prov["requests"] if prov else case_turns(c), "problems": problems, "turns": run["turns"],
                  "process": run.get("process"), "evidence": run.get("evidence"), "unscorable_why": run.get("unscorable") or []}, **extra)
