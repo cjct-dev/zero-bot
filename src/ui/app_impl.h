@@ -1,5 +1,6 @@
-// The app controller's state and parts, for the files that make it up. Nothing else
-// includes it: the rest of the program sees only ui/app.h.
+// The app controller's state and parts, shared by the files that make it up: app.cpp (wiring, the
+// agent's events, recording, the first-run guide, run_app) and app_keys.cpp (what each key does).
+// Nothing else includes it: the rest of the program sees only ui/app.h.
 #pragma once
 #include <atomic>
 #include <ctime>
@@ -85,7 +86,7 @@ struct App {
     void when_online(std::function<void()> send);
     void run_setup();
 
-    // ------------------------------------------------------------ keys
+    // ------------------------------------------------------------ keys (app_keys.cpp)
     void open_menu();
     void save_conversation();
     bool settings_may_open();
