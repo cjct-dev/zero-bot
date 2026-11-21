@@ -634,76 +634,62 @@ json state_of(const home::Thing &thing, const json &status) {
     return s;
 }
 
-bool plan(const home::Thing &thing, const home::Change &c, Call &out, std::string &err) {
-    out = Call();
-    const int gen = ref_int(thing, "gen", 1, 9, 0);
-    const std::string comp = ref_text(thing, "comp");
-    const int id = ref_int(thing, "id", 0, kMaxComponentId, -1);
-    if (gen == 0 || comp.empty() || id < 0) {
-        err = std::string("Zero Bot does not know this Shelly channel properly. ") + kReadAgain;
+namespace {
+// The parts of plan(), one per kind of channel. `other`: the change asks for something no switch,
+// blind or light takes; `n`: the channel's id as text, for a Gen1 path.
+bool plan_switch(const home::Change &c, bool other, int gen, int id, const std::string &n, Call &out, std::string &err) {
+    if (!c.on || c.brightness || c.kelvin || c.hs || c.position || c.transport || other) {
+        err = "This switch can only be turned on and off.";
         return false;
     }
-    const std::string n = std::to_string(id);
-    const bool other = c.target_c || c.mode || c.fan || c.volume || c.volume_step || c.mute || c.source || c.key;
-    const bool stop = c.transport && *c.transport == "stop";
+    if (gen >= 2) {
+        out.method = "Switch.Set";
+        out.params = {{"id", id}, {"on", *c.on}};
+    } else {
+        out.path = "/relay/" + n + "?turn=" + (*c.on ? "on" : "off");
+    }
+    return true;
+}
 
-    if (comp == "temperature" || comp == "humidity" || comp == "pm1" || comp == "sensor") {
-        err = "This is a sensor; it can only be read.";
+bool plan_cover(const home::Thing &thing, const home::Change &c, bool other, bool stop, int gen, int id, const std::string &n,
+                Call &out, std::string &err) {
+    if (c.brightness || c.kelvin || c.hs || (c.transport && !stop) || other) {
+        err = "This blind can only be opened, closed, stopped or moved to a position.";
         return false;
     }
-    if ((gen >= 2 && comp == "switch") || (gen == 1 && comp == "relay")) {
-        if (!c.on || c.brightness || c.kelvin || c.hs || c.position || c.transport || other) {
-            err = "This switch can only be turned on and off.";
-            return false;
-        }
-        if (gen >= 2) {
-            out.method = "Switch.Set";
-            out.params = {{"id", id}, {"on", *c.on}};
-        } else {
-            out.path = "/relay/" + n + "?turn=" + (*c.on ? "on" : "off");
-        }
-        return true;
-    }
-    if ((gen >= 2 && comp == "cover") || (gen == 1 && comp == "roller")) {
-        if (c.brightness || c.kelvin || c.hs || (c.transport && !stop) || other) {
-            err = "This blind can only be opened, closed, stopped or moved to a position.";
-            return false;
-        }
-        if (stop && (c.position || c.on)) {
-            err = "A blind cannot be stopped and moved in one go.";
-            return false;
-        }
-        int target = -1;
-        if (c.position) target = std::max(0, std::min(100, *c.position));
-        else if (c.on) target = *c.on ? 100 : 0;
-        if (!stop && target < 0) {
-            err = "Nothing was asked of the blind.";
-            return false;
-        }
-        if (!stop && target > 0 && target < 100 && !ref_flag(thing, "calibrated")) {
-            err = "This blind has not been calibrated in the Shelly app, so it can only be opened, closed or stopped.";
-            return false;
-        }
-        if (gen >= 2) {
-            out.params = {{"id", id}};
-            if (stop) out.method = "Cover.Stop";
-            else if (target == 100) out.method = "Cover.Open";
-            else if (target == 0) out.method = "Cover.Close";
-            else { out.method = "Cover.GoToPosition"; out.params["pos"] = target; }
-        } else {
-            out.path = "/roller/" + n + "?go=";
-            if (stop) out.path += "stop";
-            else if (target == 100) out.path += "open";
-            else if (target == 0) out.path += "close";
-            else out.path += "to_pos&roller_pos=" + std::to_string(target);
-        }
-        return true;
-    }
-    const bool light = gen >= 2 ? (comp == "light" || comp == "rgb" || comp == "rgbw" || comp == "cct") : comp == "light";
-    if (!light) {
-        err = "Zero Bot cannot change this part of the Shelly.";
+    if (stop && (c.position || c.on)) {
+        err = "A blind cannot be stopped and moved in one go.";
         return false;
     }
+    int target = -1;
+    if (c.position) target = std::max(0, std::min(100, *c.position));
+    else if (c.on) target = *c.on ? 100 : 0;
+    if (!stop && target < 0) {
+        err = "Nothing was asked of the blind.";
+        return false;
+    }
+    if (!stop && target > 0 && target < 100 && !ref_flag(thing, "calibrated")) {
+        err = "This blind has not been calibrated in the Shelly app, so it can only be opened, closed or stopped.";
+        return false;
+    }
+    if (gen >= 2) {
+        out.params = {{"id", id}};
+        if (stop) out.method = "Cover.Stop";
+        else if (target == 100) out.method = "Cover.Open";
+        else if (target == 0) out.method = "Cover.Close";
+        else { out.method = "Cover.GoToPosition"; out.params["pos"] = target; }
+    } else {
+        out.path = "/roller/" + n + "?go=";
+        if (stop) out.path += "stop";
+        else if (target == 100) out.path += "open";
+        else if (target == 0) out.path += "close";
+        else out.path += "to_pos&roller_pos=" + std::to_string(target);
+    }
+    return true;
+}
+
+bool plan_light(const home::Thing &thing, const home::Change &c, bool other, int gen, const std::string &comp, int id,
+                const std::string &n, Call &out, std::string &err) {
     if (c.position || c.transport || other) {
         err = "This light can only be switched, dimmed" + std::string(thing.caps & home::kColor ? " or coloured." : ".");
         return false;
@@ -747,6 +733,35 @@ bool plan(const home::Thing &thing, const home::Change &c, Call &out, std::strin
         if (kelvin) out.path += "&temp=" + std::to_string(*kelvin);
     }
     return true;
+}
+}  // namespace
+
+bool plan(const home::Thing &thing, const home::Change &c, Call &out, std::string &err) {
+    out = Call();
+    const int gen = ref_int(thing, "gen", 1, 9, 0);
+    const std::string comp = ref_text(thing, "comp");
+    const int id = ref_int(thing, "id", 0, kMaxComponentId, -1);
+    if (gen == 0 || comp.empty() || id < 0) {
+        err = std::string("Zero Bot does not know this Shelly channel properly. ") + kReadAgain;
+        return false;
+    }
+    const std::string n = std::to_string(id);
+    const bool other = c.target_c || c.mode || c.fan || c.volume || c.volume_step || c.mute || c.source || c.key;
+    const bool stop = c.transport && *c.transport == "stop";
+
+    if (comp == "temperature" || comp == "humidity" || comp == "pm1" || comp == "sensor") {
+        err = "This is a sensor; it can only be read.";
+        return false;
+    }
+    if ((gen >= 2 && comp == "switch") || (gen == 1 && comp == "relay")) return plan_switch(c, other, gen, id, n, out, err);
+    if ((gen >= 2 && comp == "cover") || (gen == 1 && comp == "roller"))
+        return plan_cover(thing, c, other, stop, gen, id, n, out, err);
+    const bool light = gen >= 2 ? (comp == "light" || comp == "rgb" || comp == "rgbw" || comp == "cct") : comp == "light";
+    if (!light) {
+        err = "Zero Bot cannot change this part of the Shelly.";
+        return false;
+    }
+    return plan_light(thing, c, other, gen, comp, id, n, out, err);
 }
 
 bool allowed(const Call &call) {
