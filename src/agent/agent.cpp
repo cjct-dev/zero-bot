@@ -355,6 +355,7 @@ private:
     };
 
     Then one_round(const Budget &budget);
+    void call_model(Round &r, const Budget &budget);
     void stream(Round &r, const std::string &piece);
     void messages_for(Round &r, const Budget &budget);
     void new_request();
@@ -456,36 +457,7 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     a_.round_cancel_ = false;
 
     messages_for(r, budget);
-    r.opt.model = Settings::get().eff_llm_model();
-    r.opt.fast = Settings::get().fast_mode;
-    {
-        std::lock_guard<std::mutex> lk(a_.mtx_);
-        r.deciding = a_.history_.empty() || util::jget(a_.history_.back(), "role", std::string()) != "tool";
-    }
-    // In fast mode the model's commonest mistake is to answer in words when it should have
-    // used a tool: "done" with nothing done, or a price or opening time from memory. So a reply
-    // that arrives with no tool call is held back and checked before a word of it is spoken.
-    const bool fast_decision = r.deciding && !req_.acted && !req_.guarded && r.opt.fast;
-    // Experiments only (E3b, ZB_EXP_DECIDE=required): the decision is forced into a tool call, words
-    // come through the reply tool and stream as they are written; nothing is held for a second look.
-    if (fast_decision && experiment::decide_required()) r.opt.tool_choice = "required";
-    r.hold = fast_decision && (!experiment::decide_required() || experiment::reply_held());
-    // Experiments only (E3, ZB_EXP_DECIDE=parallel): a short check beside this call says whether a
-    // tool is needed at all. A draft it clears is spoken as it streams, without the second look.
-    if (r.hold && experiment::parallel_check()) r.pcheck.start(r.messages, tool_schema_, r.opt.model);
-    if (fast_decision) add_note(r.messages, guards::kDecideNote);
-    r.opt.purpose = budget.last() ? "last_round" : r.corrected ? "correction" : r.deciding ? "decide" : "after_tool";
-    r.opt.cancel = &a_.round_cancel_;
-    r.opt.on_text = [this, &r](const std::string &piece) { stream(r, piece); };
-    // Experiments only (E3c): words written before the reply tool begins are its answer; before a real tool
-    // they are never spoken.
-    if (r.hold && experiment::reply_held())
-        r.opt.on_call = [&](const std::string &name) {
-            if (r.released || name != "reply") return;
-            r.released = true;
-            if (!r.held_text.empty()) r.opt.on_text(r.held_text);
-        };
-    r.res = llm::chat(r.messages, budget.last() ? json::array() : tool_schema_, r.opt);
+    call_model(r, budget);
     // The user was talking when this step was decided. Nothing has been said or done yet, so
     // what they add is taken into account first: a correction should land before the action.
     const bool talked_over = !r.speech_started && a_.listening_;
@@ -680,6 +652,41 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     if (r.res.content.empty() && a_.ev_.error) a_.ev_.error("The model returned an empty answer.");
     // Something typed while the answer was being spoken becomes the next request.
     return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+}
+
+// The round's model call, streamed through stream(). Decides first whether a reply without a tool
+// call is to be held back for the second look (hold), and adds fast mode's note asking for a tool.
+void Agent::Turn::call_model(Round &r, const Budget &budget) {
+    r.opt.model = Settings::get().eff_llm_model();
+    r.opt.fast = Settings::get().fast_mode;
+    {
+        std::lock_guard<std::mutex> lk(a_.mtx_);
+        r.deciding = a_.history_.empty() || util::jget(a_.history_.back(), "role", std::string()) != "tool";
+    }
+    // In fast mode the model's commonest mistake is to answer in words when it should have
+    // used a tool: "done" with nothing done, or a price or opening time from memory. So a reply
+    // that arrives with no tool call is held back and checked before a word of it is spoken.
+    const bool fast_decision = r.deciding && !req_.acted && !req_.guarded && r.opt.fast;
+    // Experiments only (E3b, ZB_EXP_DECIDE=required): the decision is forced into a tool call, words
+    // come through the reply tool and stream as they are written; nothing is held for a second look.
+    if (fast_decision && experiment::decide_required()) r.opt.tool_choice = "required";
+    r.hold = fast_decision && (!experiment::decide_required() || experiment::reply_held());
+    // Experiments only (E3, ZB_EXP_DECIDE=parallel): a short check beside this call says whether a
+    // tool is needed at all. A draft it clears is spoken as it streams, without the second look.
+    if (r.hold && experiment::parallel_check()) r.pcheck.start(r.messages, tool_schema_, r.opt.model);
+    if (fast_decision) add_note(r.messages, guards::kDecideNote);
+    r.opt.purpose = budget.last() ? "last_round" : r.corrected ? "correction" : r.deciding ? "decide" : "after_tool";
+    r.opt.cancel = &a_.round_cancel_;
+    r.opt.on_text = [this, &r](const std::string &piece) { stream(r, piece); };
+    // Experiments only (E3c): words written before the reply tool begins are its answer; before a real tool
+    // they are never spoken.
+    if (r.hold && experiment::reply_held())
+        r.opt.on_call = [&](const std::string &name) {
+            if (r.released || name != "reply") return;
+            r.released = true;
+            if (!r.held_text.empty()) r.opt.on_text(r.held_text);
+        };
+    r.res = llm::chat(r.messages, budget.last() ? json::array() : tool_schema_, r.opt);
 }
 
 // The reply as it streams in: shown, and spoken sentence by sentence, unless it is held back (fast
