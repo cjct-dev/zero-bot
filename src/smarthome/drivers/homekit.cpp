@@ -1262,6 +1262,83 @@ void merge_state(home::Thing &t, const std::map<std::string, json> &vals, bool a
     if (any_failed) st["reachable"] = false;
     else if (!vals.empty()) st.erase("reachable");
 }
+
+// things_from_database() step by step.
+
+// How many listings each aid has, among the first kMaxAccessories.
+std::map<int64_t, int> listings_of(const json &accessories) {
+    std::map<int64_t, int> listings;
+    size_t seen = 0;
+    for (const json &acc : accessories) {
+        if (++seen > kMaxAccessories) break;
+        int64_t aid = 0;
+        if (id_of(acc, "aid", aid)) listings[aid]++;
+    }
+    return listings;
+}
+
+// An accessory's own name and its information fingerprints, from its information service ("3E").
+// False when one of its services is malformed or denied: then the accessory gives no thing at all.
+bool accessory_info(const json &services, std::string &acc_name, json &ais) {
+    bool skip = false, seen_info = false;
+    for (const json &s : services) {
+        const std::string type = short_type(string_of(s, "type"));
+        if (!well_formed_service_type(s) || denied(type)) skip = true;
+        if (type != "3E" || seen_info) continue;
+        seen_info = true;
+        if (const json *chars = array_of(s, "characteristics"))
+            for (const json &c : *chars) {
+                const std::string ct = short_type(string_of(c, "type"));
+                if (ct == "23") acc_name = string_of(c, "value");
+                // Model, serial number and firmware revision: what each write checks again
+                // (see write_check), so that ids reused by another accessory are noticed.
+                int64_t iid = 0;
+                const json *v = member(c, "value");
+                if ((ct == "21" || ct == "30" || ct == "52") && !ais.contains(ct) && id_of(c, "iid", iid) && v &&
+                    v->is_string())
+                    ais[ct] = json::array({iid, info_hash(v->get<std::string>())});
+            }
+    }
+    return !skip;
+}
+
+struct Candidate {
+    const ServiceRule *rule;
+    int64_t iid;
+    std::string own_name;
+    json ch;
+    std::map<std::string, json> vals;
+};
+
+// The services this driver can do something with, each with the characteristics it understands.
+std::vector<Candidate> candidates_of(const json &services) {
+    std::vector<Candidate> found;
+    for (const json &s : services) {
+        const ServiceRule *rule = service_rule(short_type(string_of(s, "type")));
+        const json *hidden = member(s, "hidden");
+        const json *chars = array_of(s, "characteristics");
+        int64_t iid = 0;
+        if (!rule || (hidden && hidden->is_boolean() && hidden->get<bool>()) || !chars || !id_of(s, "iid", iid))
+            continue;
+        Candidate c{rule, iid, std::string(), json::object(), {}};
+        std::string name, configured;
+        for (const json &chj : *chars) {
+            const std::string type = short_type(string_of(chj, "type"));
+            if (type == "23") name = string_of(chj, "value");
+            if (type == "E3") configured = string_of(chj, "value");
+            const char *key = char_key(rule->kind, type);
+            json spec, value;
+            if (!key || c.ch.contains(key) || !parse_characteristic(chj, spec, value)) continue;
+            spec["t"] = type;
+            c.ch[key] = spec;
+            if (!value.is_null()) c.vals[key] = value;
+        }
+        if (!caps_of(rule->kind, c.ch)) continue;   // nothing it could do or report
+        c.own_name = clean_name(configured).empty() ? name : configured;
+        found.push_back(std::move(c));
+    }
+    return found;
+}
 }  // namespace
 
 bool things_from_database(const json &db, std::vector<home::Thing> &out) {
@@ -1270,75 +1347,19 @@ bool things_from_database(const json &db, std::vector<home::Thing> &out) {
     if (!accessories) return false;
     // An aid listed more than once is skipped in every listing: the deny rule must see all of an
     // accessory's services at once (a garage door in one listing, its light in another).
-    std::map<int64_t, int> listings;
+    std::map<int64_t, int> listings = listings_of(*accessories);
     size_t seen = 0;
-    for (const json &acc : *accessories) {
-        if (++seen > kMaxAccessories) break;
-        int64_t aid = 0;
-        if (id_of(acc, "aid", aid)) listings[aid]++;
-    }
-    seen = 0;
     for (const json &acc : *accessories) {
         if (++seen > kMaxAccessories || out.size() >= kMaxThings) break;
         int64_t aid = 0;
         const json *services = array_of(acc, "services");
         if (!id_of(acc, "aid", aid) || !services || listings[aid] > 1) continue;
 
-        bool skip = false, seen_info = false;
         std::string acc_name;
         json ais = json::object();
-        for (const json &s : *services) {
-            const std::string type = short_type(string_of(s, "type"));
-            if (!well_formed_service_type(s) || denied(type)) skip = true;
-            if (type != "3E" || seen_info) continue;
-            seen_info = true;
-            if (const json *chars = array_of(s, "characteristics"))
-                for (const json &c : *chars) {
-                    const std::string ct = short_type(string_of(c, "type"));
-                    if (ct == "23") acc_name = string_of(c, "value");
-                    // Model, serial number and firmware revision: what each write checks again
-                    // (see write_check), so that ids reused by another accessory are noticed.
-                    int64_t iid = 0;
-                    const json *v = member(c, "value");
-                    if ((ct == "21" || ct == "30" || ct == "52") && !ais.contains(ct) && id_of(c, "iid", iid) && v &&
-                        v->is_string())
-                        ais[ct] = json::array({iid, info_hash(v->get<std::string>())});
-                }
-        }
-        if (skip) continue;
+        if (!accessory_info(*services, acc_name, ais)) continue;
 
-        struct Candidate {
-            const ServiceRule *rule;
-            int64_t iid;
-            std::string own_name;
-            json ch;
-            std::map<std::string, json> vals;
-        };
-        std::vector<Candidate> found;
-        for (const json &s : *services) {
-            const ServiceRule *rule = service_rule(short_type(string_of(s, "type")));
-            const json *hidden = member(s, "hidden");
-            const json *chars = array_of(s, "characteristics");
-            int64_t iid = 0;
-            if (!rule || (hidden && hidden->is_boolean() && hidden->get<bool>()) || !chars || !id_of(s, "iid", iid))
-                continue;
-            Candidate c{rule, iid, std::string(), json::object(), {}};
-            std::string name, configured;
-            for (const json &chj : *chars) {
-                const std::string type = short_type(string_of(chj, "type"));
-                if (type == "23") name = string_of(chj, "value");
-                if (type == "E3") configured = string_of(chj, "value");
-                const char *key = char_key(rule->kind, type);
-                json spec, value;
-                if (!key || c.ch.contains(key) || !parse_characteristic(chj, spec, value)) continue;
-                spec["t"] = type;
-                c.ch[key] = spec;
-                if (!value.is_null()) c.vals[key] = value;
-            }
-            if (!caps_of(rule->kind, c.ch)) continue;   // nothing it could do or report
-            c.own_name = clean_name(configured).empty() ? name : configured;
-            found.push_back(std::move(c));
-        }
+        std::vector<Candidate> found = candidates_of(*services);
 
         // Names: an accessory with one thing is called by the accessory's name (what the user
         // named it in the maker's app). With several, each takes its service's own name, prefixed
@@ -1462,6 +1483,218 @@ json format_value(const json &spec, double v) {
 }
 }  // namespace
 
+namespace {
+// writes_for() part by part: the writes by ref key, where explicit fields win over implied ones ("on"
+// implied by a brightness). Each part is false, with `err` set, when the thing cannot take it.
+struct WritePlan {
+    const home::Change &c;
+    const json *ch;
+    Kind kind;
+    const std::string &name, &cannot;
+    const char *power;   // what switches this kind on and off
+    std::string &err;
+    std::map<std::string, json> explicit_w, implied_w;
+
+    const json *writable(const char *key) const {
+        const json *s = member(*ch, key);
+        return s && can(*ch, key, "w") ? s : nullptr;
+    }
+    const json *need(const char *key) {
+        const json *s = writable(key);
+        if (!s) err = cannot;
+        return s;
+    }
+    void imply_on() {
+        if (c.on) return;
+        if (const json *s = writable(power)) implied_w[power] = format_value(*s, 1);
+    }
+
+    bool on_off() {
+        if (c.on) {
+            if (kind == Kind::kThermostat) {
+                if (!c.mode) {
+                    const json *s = need("mode");
+                    if (!s) return false;
+                    const int64_t want = *c.on ? 1 : 0;
+                    if (!allowed_values(*s, {0, 1, 2, 3}).count(want)) {
+                        err = cannot;
+                        return false;
+                    }
+                    explicit_w["mode"] = format_value(*s, static_cast<double>(want));
+                }
+            } else if (kind == Kind::kCover) {
+                err = cannot;
+                return false;
+            } else {
+                const json *s = need(power);
+                if (!s) return false;
+                explicit_w[power] = format_value(*s, *c.on ? 1 : 0);
+            }
+        }
+        return true;
+    }
+    bool brightness() {
+        if (c.brightness) {
+            if (kind != Kind::kLight) {
+                err = cannot;
+                return false;
+            }
+            if (*c.brightness <= 0) {
+                const json *s = need("on");
+                if (!s) return false;
+                if (!c.on) explicit_w["on"] = format_value(*s, 0);
+            } else {
+                const json *s = need("bri");
+                if (!s) return false;
+                explicit_w["bri"] = format_value(*s, std::min(100, *c.brightness));
+                imply_on();
+            }
+        }
+        return true;
+    }
+    bool kelvin() {
+        if (c.kelvin) {
+            const json *s = kind == Kind::kLight ? need("ct") : nullptr;
+            if (!s || *c.kelvin <= 0) {
+                err = cannot;
+                return false;
+            }
+            json spec = *s;   // HAP's default range when the bulb gives none: 140..500 mireds
+            if (!member(spec, "min")) spec["min"] = 140.0;
+            if (!member(spec, "max")) spec["max"] = 500.0;
+            explicit_w["ct"] = format_value(spec, 1e6 / *c.kelvin);
+            imply_on();
+        }
+        return true;
+    }
+    bool colour() {
+        if (c.hs) {
+            const json *h = kind == Kind::kLight ? need("hue") : nullptr;
+            const json *s = h ? need("sat") : nullptr;
+            if (!h || !s) {
+                err = cannot;
+                return false;
+            }
+            explicit_w["hue"] = format_value(*h, std::min(360, std::max(0, c.hs->first)));
+            explicit_w["sat"] = format_value(*s, std::min(100, std::max(0, c.hs->second)));
+            imply_on();
+        }
+        return true;
+    }
+    bool target() {
+        if (c.target_c) {
+            const char *key = kind == Kind::kThermostat ? "target" : kind == Kind::kHeater ? "heat" : nullptr;
+            const json *s = key ? need(key) : nullptr;
+            if (!s || !std::isfinite(*c.target_c)) {
+                err = cannot;
+                return false;
+            }
+            const double want = std::min(kMaxTargetC, std::max(kMinTargetC, *c.target_c));
+            json v = format_value(*s, want);
+            double got;
+            if (!number_of(v, got) || got < kMinTargetC - 0.5 || got > kMaxTargetC + 0.5) {
+                err = "That temperature is outside what " + name + " accepts.";
+                return false;
+            }
+            explicit_w[key] = v;
+        }
+        return true;
+    }
+    bool mode() {
+        if (c.mode) {
+            const std::string m = lower(*c.mode);
+            if (m != "off" && m != "heat" && m != "auto") {
+                err = "That is not a heating mode.";
+                return false;
+            }
+            if (kind == Kind::kThermostat) {
+                const json *s = need("mode");
+                if (!s) return false;
+                const int64_t want = m == "off" ? 0 : m == "heat" ? 1 : 3;
+                if (!allowed_values(*s, {0, 1, 2, 3}).count(want)) {
+                    err = name + " has no " + m + " mode.";
+                    return false;
+                }
+                explicit_w["mode"] = format_value(*s, static_cast<double>(want));
+            } else if (kind == Kind::kHeater) {
+                const json *a = need("active");
+                if (!a) return false;
+                explicit_w["active"] = format_value(*a, m == "off" ? 0 : 1);
+                if (m != "off") {
+                    const json *s = writable("mode");
+                    const int64_t want = m == "heat" ? 1 : 0;
+                    if (!s || !allowed_values(*s, {0, 1, 2}).count(want)) {
+                        err = name + " has no " + m + " mode.";
+                        return false;
+                    }
+                    explicit_w["mode"] = format_value(*s, static_cast<double>(want));
+                }
+            } else {
+                err = cannot;
+                return false;
+            }
+        }
+        return true;
+    }
+    bool position() {
+        if (c.position) {
+            const json *s = kind == Kind::kCover ? need("target") : nullptr;
+            if (!s) {
+                err = cannot;
+                return false;
+            }
+            explicit_w["target"] = format_value(*s, std::min(100, std::max(0, *c.position)));
+        }
+        return true;
+    }
+    bool fan() {
+        if (c.fan) {
+            if (kind != Kind::kFan && kind != Kind::kFan2) {
+                err = cannot;
+                return false;
+            }
+            if (*c.fan <= 0) {
+                const json *s = need(power);
+                if (!s) return false;
+                if (!c.on) explicit_w[power] = format_value(*s, 0);
+            } else {
+                const json *s = need("speed");
+                if (!s) return false;
+                const double lo = spec_num(*s, "min", 0), hi = spec_num(*s, "max", 100);
+                explicit_w["speed"] = format_value(*s, lo + std::min(100, *c.fan) * (hi - lo) / 100.0);
+                imply_on();
+            }
+        }
+        return true;
+    }
+
+    // The writes in the order they are sent.
+    bool ordered(int64_t aid, std::vector<Write> &out) {
+        for (const auto &w : implied_w) explicit_w.insert(w);   // insert keeps an explicit value
+        if (explicit_w.empty()) {
+            err = kErrNothing;
+            return false;
+        }
+        // Power first, then the mode, then the rest: some accessories apply the items in order.
+        std::vector<std::string> order;
+        for (const char *first : {"on", "active", "mode"})
+            if (explicit_w.count(first)) order.push_back(first);
+        for (const auto &w : explicit_w)
+            if (std::find(order.begin(), order.end(), w.first) == order.end()) order.push_back(w.first);
+        for (const std::string &key : order) {
+            int64_t iid = 0;
+            const json *spec = member(*ch, key.c_str());
+            if (!spec || !id_of(*spec, "i", iid)) {
+                err = cannot;
+                return false;
+            }
+            out.push_back(Write{aid, iid, explicit_w[key]});
+        }
+        return true;
+    }
+};
+}  // namespace
+
 bool writes_for(const home::Thing &t, const home::Change &c, std::vector<Write> &out, std::string &err) {
     out.clear();
     const std::string name = clean_name(t.name).empty() ? std::string("That device") : clean_name(t.name);
@@ -1485,177 +1718,11 @@ bool writes_for(const home::Thing &t, const home::Change &c, std::vector<Write> 
     }
 
     // Writes by ref key; explicit fields win over implied ones ("on" implied by a brightness).
-    std::map<std::string, json> explicit_w, implied_w;
-    auto writable = [&](const char *key) -> const json * {
-        const json *s = member(*ch, key);
-        return s && can(*ch, key, "w") ? s : nullptr;
-    };
-    auto need = [&](const char *key) -> const json * {
-        const json *s = writable(key);
-        if (!s) err = cannot;
-        return s;
-    };
-    const char *power = kind == Kind::kFan2 || kind == Kind::kHeater ? "active" : "on";
-
-    if (c.on) {
-        if (kind == Kind::kThermostat) {
-            if (!c.mode) {
-                const json *s = need("mode");
-                if (!s) return false;
-                const int64_t want = *c.on ? 1 : 0;
-                if (!allowed_values(*s, {0, 1, 2, 3}).count(want)) {
-                    err = cannot;
-                    return false;
-                }
-                explicit_w["mode"] = format_value(*s, static_cast<double>(want));
-            }
-        } else if (kind == Kind::kCover) {
-            err = cannot;
-            return false;
-        } else {
-            const json *s = need(power);
-            if (!s) return false;
-            explicit_w[power] = format_value(*s, *c.on ? 1 : 0);
-        }
-    }
-    auto imply_on = [&]() {
-        if (c.on) return;
-        if (const json *s = writable(power)) implied_w[power] = format_value(*s, 1);
-    };
-    if (c.brightness) {
-        if (kind != Kind::kLight) {
-            err = cannot;
-            return false;
-        }
-        if (*c.brightness <= 0) {
-            const json *s = need("on");
-            if (!s) return false;
-            if (!c.on) explicit_w["on"] = format_value(*s, 0);
-        } else {
-            const json *s = need("bri");
-            if (!s) return false;
-            explicit_w["bri"] = format_value(*s, std::min(100, *c.brightness));
-            imply_on();
-        }
-    }
-    if (c.kelvin) {
-        const json *s = kind == Kind::kLight ? need("ct") : nullptr;
-        if (!s || *c.kelvin <= 0) {
-            err = cannot;
-            return false;
-        }
-        json spec = *s;   // HAP's default range when the bulb gives none: 140..500 mireds
-        if (!member(spec, "min")) spec["min"] = 140.0;
-        if (!member(spec, "max")) spec["max"] = 500.0;
-        explicit_w["ct"] = format_value(spec, 1e6 / *c.kelvin);
-        imply_on();
-    }
-    if (c.hs) {
-        const json *h = kind == Kind::kLight ? need("hue") : nullptr;
-        const json *s = h ? need("sat") : nullptr;
-        if (!h || !s) {
-            err = cannot;
-            return false;
-        }
-        explicit_w["hue"] = format_value(*h, std::min(360, std::max(0, c.hs->first)));
-        explicit_w["sat"] = format_value(*s, std::min(100, std::max(0, c.hs->second)));
-        imply_on();
-    }
-    if (c.target_c) {
-        const char *key = kind == Kind::kThermostat ? "target" : kind == Kind::kHeater ? "heat" : nullptr;
-        const json *s = key ? need(key) : nullptr;
-        if (!s || !std::isfinite(*c.target_c)) {
-            err = cannot;
-            return false;
-        }
-        const double want = std::min(kMaxTargetC, std::max(kMinTargetC, *c.target_c));
-        json v = format_value(*s, want);
-        double got;
-        if (!number_of(v, got) || got < kMinTargetC - 0.5 || got > kMaxTargetC + 0.5) {
-            err = "That temperature is outside what " + name + " accepts.";
-            return false;
-        }
-        explicit_w[key] = v;
-    }
-    if (c.mode) {
-        const std::string m = lower(*c.mode);
-        if (m != "off" && m != "heat" && m != "auto") {
-            err = "That is not a heating mode.";
-            return false;
-        }
-        if (kind == Kind::kThermostat) {
-            const json *s = need("mode");
-            if (!s) return false;
-            const int64_t want = m == "off" ? 0 : m == "heat" ? 1 : 3;
-            if (!allowed_values(*s, {0, 1, 2, 3}).count(want)) {
-                err = name + " has no " + m + " mode.";
-                return false;
-            }
-            explicit_w["mode"] = format_value(*s, static_cast<double>(want));
-        } else if (kind == Kind::kHeater) {
-            const json *a = need("active");
-            if (!a) return false;
-            explicit_w["active"] = format_value(*a, m == "off" ? 0 : 1);
-            if (m != "off") {
-                const json *s = writable("mode");
-                const int64_t want = m == "heat" ? 1 : 0;
-                if (!s || !allowed_values(*s, {0, 1, 2}).count(want)) {
-                    err = name + " has no " + m + " mode.";
-                    return false;
-                }
-                explicit_w["mode"] = format_value(*s, static_cast<double>(want));
-            }
-        } else {
-            err = cannot;
-            return false;
-        }
-    }
-    if (c.position) {
-        const json *s = kind == Kind::kCover ? need("target") : nullptr;
-        if (!s) {
-            err = cannot;
-            return false;
-        }
-        explicit_w["target"] = format_value(*s, std::min(100, std::max(0, *c.position)));
-    }
-    if (c.fan) {
-        if (kind != Kind::kFan && kind != Kind::kFan2) {
-            err = cannot;
-            return false;
-        }
-        if (*c.fan <= 0) {
-            const json *s = need(power);
-            if (!s) return false;
-            if (!c.on) explicit_w[power] = format_value(*s, 0);
-        } else {
-            const json *s = need("speed");
-            if (!s) return false;
-            const double lo = spec_num(*s, "min", 0), hi = spec_num(*s, "max", 100);
-            explicit_w["speed"] = format_value(*s, lo + std::min(100, *c.fan) * (hi - lo) / 100.0);
-            imply_on();
-        }
-    }
-    for (const auto &w : implied_w) explicit_w.insert(w);   // insert keeps an explicit value
-    if (explicit_w.empty()) {
-        err = kErrNothing;
+    WritePlan w{c, ch, kind, name, cannot, kind == Kind::kFan2 || kind == Kind::kHeater ? "active" : "on", err, {}, {}};
+    if (!w.on_off() || !w.brightness() || !w.kelvin() || !w.colour() || !w.target() || !w.mode() || !w.position() ||
+        !w.fan())
         return false;
-    }
-    // Power first, then the mode, then the rest: some accessories apply the items in order.
-    std::vector<std::string> order;
-    for (const char *first : {"on", "active", "mode"})
-        if (explicit_w.count(first)) order.push_back(first);
-    for (const auto &w : explicit_w)
-        if (std::find(order.begin(), order.end(), w.first) == order.end()) order.push_back(w.first);
-    for (const std::string &key : order) {
-        int64_t iid = 0;
-        const json *spec = member(*ch, key.c_str());
-        if (!spec || !id_of(*spec, "i", iid)) {
-            err = cannot;
-            return false;
-        }
-        out.push_back(Write{aid, iid, explicit_w[key]});
-    }
-    return true;
+    return w.ordered(aid, out);
 }
 }  // namespace detail
 
@@ -2276,6 +2343,192 @@ struct Planned {
 
 enum class Check { kOk, kStale, kThingFailed, kError };
 
+namespace {
+// write_check() stage by stage (see below). What is compared: each id about to be written, with the
+// type it was listed with and whether it can be read, and each accessory's model, serial number and
+// firmware fingerprints; `full` when the whole database is to be read again.
+struct WriteCheck {
+    struct Want {
+        std::string type;
+        size_t thing;
+        bool readable;
+    };
+    struct Info {
+        std::string key, hash;
+        size_t thing;
+    };
+    const home::Device &dev;
+    const std::vector<Planned> &plan;
+    std::string &err;
+    std::map<Id, Want> want;
+    std::map<Id, Info> infos;
+    bool full = false;
+
+    // What each thing's writes and its accessory's information were listed as. kOk to go on.
+    Check collect() {
+        for (size_t k = 0; k < plan.size(); k++) {
+            const home::Thing &t = *plan[k].thing;
+            const json *ch = member(t.ref, "c");
+            int64_t aid = 0;
+            if (!ch || !ch->is_object() || !id_of(t.ref, "aid", aid)) {
+                err = display_name(t) + " needs to be refreshed in settings.";
+                return Check::kStale;
+            }
+            for (const Write &w : plan[k].writes) {
+                std::string type;
+                bool readable = false;
+                for (auto it = ch->begin(); it != ch->end(); ++it) {
+                    int64_t iid = 0;
+                    if (!id_of(it.value(), "i", iid) || iid != w.iid) continue;
+                    type = string_of(it.value(), "t");
+                    const json *r = member(it.value(), "r");
+                    readable = r && r->is_boolean() && r->get<bool>();
+                    break;
+                }
+                if (type.empty()) {   // listed before types were kept
+                    err = display_name(t) + " needs to be refreshed in settings.";
+                    return Check::kStale;
+                }
+                want[{w.aid, w.iid}] = Want{type, k, readable};
+            }
+            if (const json *ais = member(t.ref, "ais"))
+                for (const char *key : {"21", "30", "52"}) {
+                    const json *e = member(*ais, key);
+                    int64_t iid = 0;
+                    if (!e || !e->is_array() || e->size() != 2 || !(*e)[1].is_string()) continue;
+                    const json pos = {{"i", (*e)[0]}};
+                    if (!id_of(pos, "i", iid)) continue;
+                    infos[{aid, iid}] = Info{key, (*e)[1].get<std::string>(), k};
+                }
+            const std::string cn = string_of(t.ref, "cn");
+            const auto now_cn = dev.info.find("c#");
+            if (!cn.empty() && now_cn != dev.info.end() && !now_cn->second.empty() && now_cn->second != cn) full = true;
+        }
+
+        return Check::kOk;
+    }
+
+    // 1. The ids read again with their types, and the accessory information. kOk to go on.
+    Check typed_read(Link &link) {
+        std::vector<Id> ids;
+        for (const auto &w : want) ids.push_back(w.first);
+        for (const auto &i : infos)
+            if (!want.count(i.first)) ids.push_back(i.first);
+        CharReply reply;
+        int http_status = 0;
+        if (!get_characteristics(link, ids, true, reply, http_status, err)) return Check::kError;
+        if (http_status == 400) {
+            full = true;   // an accessory that does not take type=1: the database tells instead
+        } else if (http_status) {
+            err = http_error(http_status);
+            return Check::kError;
+        } else {
+            long failed_status = 0;
+            size_t failed_thing = 0;
+            auto cannot_check = [&](size_t thing, long status) {
+                if (!failed_status) failed_status = status, failed_thing = thing;
+            };
+            for (const auto &w : want) {
+                const std::string name = display_name(*plan[w.second.thing].thing);
+                const auto ty = reply.types.find(w.first);
+                const auto f = reply.failed.find(w.first);
+                if (f != reply.failed.end() && gone_status(f->second)) {
+                    err = status_text(f->second, name);
+                    return Check::kStale;
+                }
+                if (ty != reply.types.end()) {
+                    if (ty->second != w.second.type) {
+                        err = changed_text(name);
+                        return Check::kStale;
+                    }
+                    continue;
+                }
+                if (f == reply.failed.end()) full = true;   // answered without a type
+                else if (!w.second.readable && (f->second == -70405 || f->second == 70405)) full = true;   // write-only
+                else cannot_check(w.second.thing, f->second);
+            }
+            for (const auto &i : infos) {
+                const std::string name = display_name(*plan[i.second.thing].thing);
+                const auto ty = reply.types.find(i.first);
+                const auto s = reply.strings.find(i.first);
+                const auto f = reply.failed.find(i.first);
+                if ((ty != reply.types.end() && ty->second != i.second.key) || (f != reply.failed.end() && gone_status(f->second))) {
+                    err = changed_text(name);
+                    return Check::kStale;
+                }
+                if (s != reply.strings.end()) {
+                    if (info_hash(s->second) == i.second.hash) continue;
+                    if (i.second.key == std::string("52")) {
+                        full = true;   // new firmware: the database may have changed with it
+                        continue;
+                    }
+                    err = changed_text(name);   // another accessory now has this place on the bridge
+                    return Check::kStale;
+                }
+                if (f != reply.failed.end()) cannot_check(i.second.thing, f->second);
+                else full = true;
+            }
+            if (failed_status) {
+                err = status_text(failed_status, display_name(*plan[failed_thing].thing));
+                return Check::kThingFailed;
+            }
+        }
+        return Check::kOk;
+    }
+
+    // 2. The whole database read again, and each thing checked against it.
+    Check database(Link &link) {
+        HttpResponse r;
+        if (!link.exchange("GET", "/accessories", "", "", kMaxDatabase, r, err)) return Check::kError;
+        if (r.status != 200) {
+            err = http_error(r.status);
+            return Check::kError;
+        }
+        json db;
+        std::vector<home::Thing> now;
+        if (!parse_database(r.body, db) || !things_from_database(db, now)) {
+            err = kErrGarbled;
+            return Check::kError;
+        }
+        for (const Planned &p : plan) {
+            const home::Thing &t = *p.thing;
+            const std::string name = display_name(t);
+            const auto cur = std::find_if(now.begin(), now.end(), [&](const home::Thing &x) { return x.id == t.id; });
+            if (cur == now.end() || cur->ref.value("k", json()) != t.ref.value("k", json())) {
+                err = changed_text(name);
+                return Check::kStale;
+            }
+            const json *was = member(t.ref, "c"), *is = member(cur->ref, "c");
+            if (!was || !was->is_object() || !is) {
+                err = changed_text(name);
+                return Check::kStale;
+            }
+            for (const Write &w : p.writes)
+                for (auto it = was->begin(); it != was->end(); ++it) {
+                    int64_t iid = 0;
+                    if (!id_of(it.value(), "i", iid) || iid != w.iid) continue;
+                    const json *spec = member(*is, it.key().c_str());
+                    int64_t now_iid = 0;
+                    if (!spec || !id_of(*spec, "i", now_iid) || now_iid != iid ||
+                        string_of(*spec, "t") != string_of(it.value(), "t")) {
+                        err = changed_text(name);
+                        return Check::kStale;
+                    }
+                }
+            const json *was_ais = member(t.ref, "ais"), *is_ais = member(cur->ref, "ais");
+            for (const char *key : {"21", "30"}) {
+                const json *a = was_ais ? member(*was_ais, key) : nullptr, *b = is_ais ? member(*is_ais, key) : nullptr;
+                if (a && a->is_array() && a->size() == 2 && (!b || !b->is_array() || b->size() != 2 || (*a)[1] != (*b)[1])) {
+                    err = changed_text(name);
+                    return Check::kStale;
+                }
+            }
+        }
+        return Check::kOk;
+    }
+};
+}  // namespace
+
 // Before anything is written: is every id still what the thing was made from? An accessory whose
 // database changed (a firmware update, an accessory replaced on a bridge) may reuse ids, and a
 // value written to an id that now means something else could unlock a lock. So, inside the
@@ -2290,169 +2543,12 @@ enum class Check { kOk, kStale, kThingFailed, kError };
 // kThingFailed: one thing could not be checked now (its bridged accessory is off, say); `err`
 // says so about it. kError: the link or a reply failed.
 Check write_check(Link &link, const home::Device &dev, const std::vector<Planned> &plan, std::string &err) {
-    struct Want {
-        std::string type;
-        size_t thing;
-        bool readable;
-    };
-    struct Info {
-        std::string key, hash;
-        size_t thing;
-    };
-    std::map<Id, Want> want;
-    std::map<Id, Info> infos;
-    bool full = false;
-    for (size_t k = 0; k < plan.size(); k++) {
-        const home::Thing &t = *plan[k].thing;
-        const json *ch = member(t.ref, "c");
-        int64_t aid = 0;
-        if (!ch || !ch->is_object() || !id_of(t.ref, "aid", aid)) {
-            err = display_name(t) + " needs to be refreshed in settings.";
-            return Check::kStale;
-        }
-        for (const Write &w : plan[k].writes) {
-            std::string type;
-            bool readable = false;
-            for (auto it = ch->begin(); it != ch->end(); ++it) {
-                int64_t iid = 0;
-                if (!id_of(it.value(), "i", iid) || iid != w.iid) continue;
-                type = string_of(it.value(), "t");
-                const json *r = member(it.value(), "r");
-                readable = r && r->is_boolean() && r->get<bool>();
-                break;
-            }
-            if (type.empty()) {   // listed before types were kept
-                err = display_name(t) + " needs to be refreshed in settings.";
-                return Check::kStale;
-            }
-            want[{w.aid, w.iid}] = Want{type, k, readable};
-        }
-        if (const json *ais = member(t.ref, "ais"))
-            for (const char *key : {"21", "30", "52"}) {
-                const json *e = member(*ais, key);
-                int64_t iid = 0;
-                if (!e || !e->is_array() || e->size() != 2 || !(*e)[1].is_string()) continue;
-                const json pos = {{"i", (*e)[0]}};
-                if (!id_of(pos, "i", iid)) continue;
-                infos[{aid, iid}] = Info{key, (*e)[1].get<std::string>(), k};
-            }
-        const std::string cn = string_of(t.ref, "cn");
-        const auto now_cn = dev.info.find("c#");
-        if (!cn.empty() && now_cn != dev.info.end() && !now_cn->second.empty() && now_cn->second != cn) full = true;
-    }
-
-    std::vector<Id> ids;
-    for (const auto &w : want) ids.push_back(w.first);
-    for (const auto &i : infos)
-        if (!want.count(i.first)) ids.push_back(i.first);
-    CharReply reply;
-    int http_status = 0;
-    if (!get_characteristics(link, ids, true, reply, http_status, err)) return Check::kError;
-    if (http_status == 400) {
-        full = true;   // an accessory that does not take type=1: the database tells instead
-    } else if (http_status) {
-        err = http_error(http_status);
-        return Check::kError;
-    } else {
-        long failed_status = 0;
-        size_t failed_thing = 0;
-        auto cannot_check = [&](size_t thing, long status) {
-            if (!failed_status) failed_status = status, failed_thing = thing;
-        };
-        for (const auto &w : want) {
-            const std::string name = display_name(*plan[w.second.thing].thing);
-            const auto ty = reply.types.find(w.first);
-            const auto f = reply.failed.find(w.first);
-            if (f != reply.failed.end() && gone_status(f->second)) {
-                err = status_text(f->second, name);
-                return Check::kStale;
-            }
-            if (ty != reply.types.end()) {
-                if (ty->second != w.second.type) {
-                    err = changed_text(name);
-                    return Check::kStale;
-                }
-                continue;
-            }
-            if (f == reply.failed.end()) full = true;   // answered without a type
-            else if (!w.second.readable && (f->second == -70405 || f->second == 70405)) full = true;   // write-only
-            else cannot_check(w.second.thing, f->second);
-        }
-        for (const auto &i : infos) {
-            const std::string name = display_name(*plan[i.second.thing].thing);
-            const auto ty = reply.types.find(i.first);
-            const auto s = reply.strings.find(i.first);
-            const auto f = reply.failed.find(i.first);
-            if ((ty != reply.types.end() && ty->second != i.second.key) || (f != reply.failed.end() && gone_status(f->second))) {
-                err = changed_text(name);
-                return Check::kStale;
-            }
-            if (s != reply.strings.end()) {
-                if (info_hash(s->second) == i.second.hash) continue;
-                if (i.second.key == std::string("52")) {
-                    full = true;   // new firmware: the database may have changed with it
-                    continue;
-                }
-                err = changed_text(name);   // another accessory now has this place on the bridge
-                return Check::kStale;
-            }
-            if (f != reply.failed.end()) cannot_check(i.second.thing, f->second);
-            else full = true;
-        }
-        if (failed_status) {
-            err = status_text(failed_status, display_name(*plan[failed_thing].thing));
-            return Check::kThingFailed;
-        }
-    }
-    if (!full) return Check::kOk;
-
-    HttpResponse r;
-    if (!link.exchange("GET", "/accessories", "", "", kMaxDatabase, r, err)) return Check::kError;
-    if (r.status != 200) {
-        err = http_error(r.status);
-        return Check::kError;
-    }
-    json db;
-    std::vector<home::Thing> now;
-    if (!parse_database(r.body, db) || !things_from_database(db, now)) {
-        err = kErrGarbled;
-        return Check::kError;
-    }
-    for (const Planned &p : plan) {
-        const home::Thing &t = *p.thing;
-        const std::string name = display_name(t);
-        const auto cur = std::find_if(now.begin(), now.end(), [&](const home::Thing &x) { return x.id == t.id; });
-        if (cur == now.end() || cur->ref.value("k", json()) != t.ref.value("k", json())) {
-            err = changed_text(name);
-            return Check::kStale;
-        }
-        const json *was = member(t.ref, "c"), *is = member(cur->ref, "c");
-        if (!was || !was->is_object() || !is) {
-            err = changed_text(name);
-            return Check::kStale;
-        }
-        for (const Write &w : p.writes)
-            for (auto it = was->begin(); it != was->end(); ++it) {
-                int64_t iid = 0;
-                if (!id_of(it.value(), "i", iid) || iid != w.iid) continue;
-                const json *spec = member(*is, it.key().c_str());
-                int64_t now_iid = 0;
-                if (!spec || !id_of(*spec, "i", now_iid) || now_iid != iid ||
-                    string_of(*spec, "t") != string_of(it.value(), "t")) {
-                    err = changed_text(name);
-                    return Check::kStale;
-                }
-            }
-        const json *was_ais = member(t.ref, "ais"), *is_ais = member(cur->ref, "ais");
-        for (const char *key : {"21", "30"}) {
-            const json *a = was_ais ? member(*was_ais, key) : nullptr, *b = is_ais ? member(*is_ais, key) : nullptr;
-            if (a && a->is_array() && a->size() == 2 && (!b || !b->is_array() || b->size() != 2 || (*a)[1] != (*b)[1])) {
-                err = changed_text(name);
-                return Check::kStale;
-            }
-        }
-    }
-    return Check::kOk;
+    WriteCheck w{dev, plan, err, {}, {}, false};
+    Check check = w.collect();
+    if (check == Check::kOk) check = w.typed_read(link);
+    if (check != Check::kOk) return check;
+    if (!w.full) return Check::kOk;
+    return w.database(link);
 }
 
 // =============================================================================================
