@@ -22,6 +22,9 @@ import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.dont_write_bytecode = True
+import netguard   # noqa: E402  openers that follow no redirect, and a proxy-free one for 127.x
 HOSTS = ("geocoding-api.open-meteo.com", "api.open-meteo.com", "open.er-api.com", "query1.finance.yahoo.com")
 FORECAST = ("https://api.open-meteo.com/v1/forecast?latitude=51.5085&longitude=-0.1257&timezone=auto&forecast_days=3"
             "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m"
@@ -84,36 +87,44 @@ def get(doc, dotted):
     return doc
 
 
+def http_get(opener, url, headers=None):
+    """(status, JSON or None, where a redirect pointed): one GET through OPENER, which follows no redirect; a 3xx
+    comes back as its status and its Location, never followed."""
+    req = urllib.request.Request(url, headers=dict({"Accept": "application/json", "User-Agent": "zero-bot-contract-check/1"}, **(headers or {})))
+    try:
+        with opener.open(req, timeout=20) as r:
+            return r.status, json.loads(r.read().decode("utf-8")), None
+    except urllib.error.HTTPError as e:
+        where = e.headers.get("Location") if 300 <= e.code < 400 else None
+        try: return e.code, json.loads(e.read().decode("utf-8")), where
+        except ValueError: return e.code, None, where
+
+
 def fetch(url):
-    """(status, JSON) of a GET; only the hosts in HOSTS, never the search."""
+    """(status, JSON) of a GET to a real service: only the hosts in HOSTS, never the search, and no redirect
+    followed (a 3xx is a failure of the contract, reported with where it pointed)."""
     host = urllib.parse.urlsplit(url).hostname
     if host not in HOSTS or "search" in host.split(".")[0] or "tavily" in url:
         raise SystemExit("refused: %s is not a service this check may call" % host)
-    req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "zero-bot-contract-check/1"})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return r.status, json.loads(r.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        try: return e.code, json.loads(e.read().decode("utf-8"))
-        except ValueError: return e.code, None
+    status, doc, where = http_get(netguard.no_redirect_opener(), url)
+    if where is not None:
+        return status, {"_redirect": where}
+    return status, doc
 
 
 def stand_in():
     p = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "fake_web.py")], stdin=subprocess.PIPE,
-                         stdout=subprocess.PIPE, text=True)
+                         stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
     line = p.stdout.readline().split()
     if line[:2] != ["WEB", "listening"]: raise SystemExit("the stand-in web did not start")
     return p, "http://127.0.0.1:%s/default/" % line[2]
 
 
 def stand_in_fetch(base, url):
+    """The stand-in's answer to the request URL would make: straight to 127.0.0.1 (no proxy), no redirect followed."""
     u = urllib.parse.urlsplit(url)
-    try:
-        with urllib.request.urlopen(base + u.hostname + u.path + ("?" + u.query if u.query else ""), timeout=20) as r:
-            return r.status, json.loads(r.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        try: return e.code, json.loads(e.read().decode("utf-8"))
-        except ValueError: return e.code, None
+    status, doc, _ = http_get(netguard.local_opener(), base + u.hostname + u.path + ("?" + u.query if u.query else ""))
+    return status, doc
 
 
 def main():
@@ -127,6 +138,9 @@ def main():
             s_status, s_doc = stand_in_fetch(base, url)
             r_status, r_doc = fetch(url)
             problems = []
+            if isinstance(r_doc, dict) and "_redirect" in r_doc:
+                problems.append("the real service redirected (%d) to %s: not followed" % (r_status, r_doc["_redirect"]))
+                r_doc = None
             if (s_status == 200) != (r_status == 200):
                 problems.append("status: the stand-in %d, the real service %d" % (s_status, r_status))
             if r_doc is None or s_doc is None:
@@ -169,7 +183,45 @@ def self_test():
         except SystemExit:
             check("refused: " + url, True)
     check("no request is for the search", all("search" not in urllib.parse.urlsplit(u).hostname.split(".")[0] for _, u, _ in REQUESTS))
-    # The stand-in answers every request the check makes, with every field the app reads.
+    # A redirect is reported, never followed (W5): a local server that sends a 302 to a second path.
+    import http.server
+    import threading
+    hits = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            hits.append(self.path)
+            if self.path == "/start":
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.1:%d/landed" % self.server.server_address[1])
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                body = b"{}"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        status, doc, where = http_get(netguard.no_redirect_opener(), "http://127.0.0.1:%d/start" % srv.server_address[1])
+        check("a redirect is reported with where it points, and not followed", status == 302 and where and where.endswith("/landed")
+              and hits == ["/start"])
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    # The stand-in answers every request the check makes, with every field the app reads, straight to 127.0.0.1
+    # whatever proxy the environment names (W5): the trap sees none of it.
+    trap = netguard.trap()
+    saved = {k: os.environ.get(k) for k in ("http_proxy", "HTTP_PROXY", "no_proxy", "NO_PROXY")}
+    os.environ.update(http_proxy=trap.url, HTTP_PROXY=trap.url)
+    for k in ("no_proxy", "NO_PROXY"):
+        os.environ.pop(k, None)
+    before = trap.count()
     proc, base = stand_in()
     try:
         for what, url, reads in REQUESTS:
@@ -181,6 +233,10 @@ def self_test():
     finally:
         proc.stdin.close()
         proc.wait(timeout=10)
+        for k, v in saved.items():
+            if v is None: os.environ.pop(k, None)
+            else: os.environ[k] = v
+    check("the stand-in was reached without the environment's proxy", trap.since(before) == [])
     for f in failed: print("FAIL  " + f)
     print("web contract self-test: %d checks, %d failed" % (n, len(failed)))
     return 1 if failed else 0

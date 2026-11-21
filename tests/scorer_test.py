@@ -32,6 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.dont_write_bytecode = True   # importing the runners leaves no __pycache__ in tests/
 import agent_eval as ev   # noqa: E402
+import netguard   # noqa: E402
 import agent_suite as suite   # noqa: E402
 
 VERBOSE = "-v" in sys.argv[1:]
@@ -1089,12 +1090,18 @@ def validation():
 # ------------------------------------------------------------------ the runner, with a stand-in app
 FAKE_APP = r'''#!/usr/bin/env python3
 import json, os, sys
+if os.environ.get("FAKE_LEAK"):   # a tool that forgot experiment::web(): a request for a real host, through the proxy it was given
+    import urllib.request
+    try: urllib.request.urlopen("http://api.forgotten-wrap.invalid/v1/x", timeout=5)
+    except Exception: pass
 turns = [l.rstrip("\n") for l in sys.stdin if l.strip()]
 path = os.environ.get("ZB_EVAL_RECORDS")
 if os.environ.get("FAKE_NO_RECORDS") or not path:
     for t in turns: print("> [user] %s\n[answer 1.0s] Okay." % t)
     sys.exit(0)
-env = {k: os.environ.get(k) for k in ("ZB_EXP_NO_HARDWARE", "ZB_FAKE_CAMERA", "ZB_DRY_RUN", "ZB_EXP_TRACE", "ZB_EVAL_RECORDS", "HOME")}
+env = {k: os.environ.get(k) for k in ("ZB_EXP_NO_HARDWARE", "ZB_FAKE_CAMERA", "ZB_DRY_RUN", "ZB_EXP_TRACE", "ZB_EVAL_RECORDS", "HOME",
+                                       "ZB_TEST_NETWORK", "NO_PROXY", "no_proxy", "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+                                       "ALL_PROXY", "all_proxy", "ftp_proxy", "FTP_PROXY")}
 def rec(**r): f.write(json.dumps(dict(r, v=2, mono=0, wall=0)) + "\n")
 with open(path, "w") as f:
     rec(ev="start", caps=os.environ.get("FAKE_CAPS", "records,web,web_all,no_hardware").split(","))
@@ -1198,10 +1205,14 @@ def provenance_kept():
     check("rescore: a saved run of other requests is unscorable for this case", got[0] == "unscorable" and "the saved run asked" in got[1][0], got)
     check("rescore: ... and keeps its own requests", ev.result_record(a, back, *got)["requests"] == ["set a timer for 15 minutes"])
     # The web guard (ZB-086): every case on the stand-in at 127.x, the dummy key or none, never a real key.
-    ok_env = {"ZB_EXP_WEB": "http://127.0.0.1:4000/default", "ZB_SEARCH_KEY": ev.SEARCH_DUMMY}
+    ok_env = netguard.child_env({"ZB_EXP_WEB": "http://127.0.0.1:4000/default", "ZB_SEARCH_KEY": ev.SEARCH_DUMMY},
+                                keep=("ZB_SEARCH_KEY",), ZB_TEST_NETWORK="1")
     check("web guard: the stand-in and the dummy key pass", ev.web_guard(ok_env, {}) == [], ev.web_guard(ok_env, {}))
     for bad, why in (({"ZB_EXP_WEB": ""}, "ZB_EXP_WEB"), ({"ZB_EXP_WEB": "https://api.example.com"}, "ZB_EXP_WEB"),
-                     ({"ZB_EXP_WEB": "http://10.0.0.1:80/x"}, "ZB_EXP_WEB"), ({"ZB_SEARCH_KEY": "tvly-real"}, "dummy key")):
+                     ({"ZB_EXP_WEB": "http://10.0.0.1:80/x"}, "ZB_EXP_WEB"), ({"ZB_SEARCH_KEY": "tvly-real"}, "dummy key"),
+                     # the boundary outside the app (W1) and the test network (13)
+                     ({"https_proxy": "http://proxy.example:3128"}, "trap"), ({"NO_PROXY": "*"}, "exempts more"),
+                     ({"no_proxy": "127.0.0.1,api.example.com"}, "exempts more"), ({"ZB_TEST_NETWORK": "0"}, "ZB_TEST_NETWORK")):
         check("web guard refuses %r" % bad, any(why in p for p in ev.web_guard(dict(ok_env, **bad), {})), ev.web_guard(dict(ok_env, **bad), {}))
     no_key = dict(ok_env)
     del no_key["ZB_SEARCH_KEY"]
@@ -1215,7 +1226,8 @@ def provenance_kept():
     finally:
         ev.REAL_KEYS[:] = saved_keys
     check("every scored case is on the stand-in web, with the dummy key unless it asks for none",
-          all(ev.web_guard(ev.case_web_env({}, c), c.get("env") or {}) == [] for c in ev.CASES))
+          all(ev.web_guard(netguard.child_env(ev.case_web_env({}, c), keep=("ZB_SEARCH_KEY",), ZB_TEST_NETWORK="1"), c.get("env") or {}) == []
+              for c in ev.CASES))
     web_case = case("review_rain_59")
     check("fixtures: every case runs on the stand-in web and hashes it", "web" in ev.fixtures_of(web_case) and
           ev.fixtures_of(web_case)["web"] == ev.fixtures_of(a)["web"], ev.fixtures_of(web_case))
@@ -1373,14 +1385,33 @@ def guards_applied_last():
         app = os.path.join(folder, "fake_app")
         with open(app, "w") as f: f.write(FAKE_APP)
         os.chmod(app, os.stat(app).st_mode | stat.S_IEXEC)
-        sneaky = bare("hello", env={"ZB_EXP_NO_HARDWARE": "0", "ZB_FAKE_CAMERA": "/dev/video0", "ZB_DRY_RUN": None, "ZB_EVAL_RECORDS": "/tmp/x",
-                                    "HOME": "/root"})
-        got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1", HOME=folder), sneaky)
+        # A case may set only CASE_ENV (W2): the guards, the AI service, its key and model, proxies, the search key's value,
+        # ZB_EXP_*, HOME and XDG are the runner's. Such a case is refused before the app starts.
+        for sneaky_env in ({"ZB_EXP_NO_HARDWARE": "0"}, {"ZB_FAKE_CAMERA": "/dev/video0"}, {"ZB_EVAL_RECORDS": "/tmp/x"}, {"HOME": "/root"},
+                           {"ZB_API_BASE": "https://elsewhere.example/v1"}, {"ZB_API_KEY": "x"}, {"ZB_EVAL_LLM_MODEL": "other"},
+                           {"https_proxy": "http://evil.example:8080"}, {"ZB_SEARCH_KEY": "real"}, {"ZB_EXP_TOOLS": "lean"},
+                           {"XDG_CONFIG_HOME": "/tmp"}):
+            sneaky = bare("hello", env=sneaky_env)
+            try:
+                ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1", HOME=folder), sneaky)
+                refused = False
+            except RuntimeError as e:
+                refused = "refused" in str(e)
+            check("case env (W2): %s is refused" % sorted(sneaky_env), refused and ev.validate([sneaky]) != [])
+        got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1", HOME=folder, NO_PROXY="*", no_proxy="*", ZB_API_BASE="https://ai.example/v1"),
+                          bare("hello"))
         env = json.loads(got["turns"][0]["answer"]) if got["turns"] and got["turns"][0]["answer"].startswith("{") else {}
-        check("guards (N5): the case cannot lift the hardware guard, change the camera, drop dry run or move the records",
+        check("guards (N5): the hardware guard, the camera, dry run and the records are the runner's",
               env.get("ZB_EXP_NO_HARDWARE") == "1" and env.get("ZB_FAKE_CAMERA") == ev.CAMERA_FIXTURE and env.get("ZB_DRY_RUN") == "1"
               and env.get("ZB_EVAL_RECORDS", "").endswith("/records.jsonl") and env.get("HOME") == folder and not got["unscorable"],
               (env, got["unscorable"]))
+        check("boundary (W1): every proxy variable at the runner's trap, only loopback and the AI service exempt",
+              all(env.get(k) == netguard.trap().url for k in netguard.PROXY_VARS) and
+              env.get("NO_PROXY") == env.get("no_proxy") == "127.0.0.1,localhost,ai.example", env)
+        check("test network (13): a case without a home runs on the stand-in network", env.get("ZB_TEST_NETWORK") == "1", env)
+        got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1", HOME=folder, FAKE_LEAK="1"), bare("hello"))
+        check("boundary (W1): a request for a real host reaches the trap, is refused, and makes the run unscorable",
+              any("tried to leave 127.x" in x and "forgotten-wrap.invalid" in x for x in got["unscorable"]), got["unscorable"])
         tv = dict(bare("turn the tv up"), env={"ZB_DRY_RUN": None}, home=ev.TV_SILENT_HOME)
         got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1"), tv)
         env = json.loads(got["turns"][0]["answer"]) if got["turns"] and got["turns"][0]["answer"].startswith("{") else {}

@@ -13487,8 +13487,7 @@
    }
   ],
   "env": {
-   "ZB_EXP_WEB": "@web/default",
-   "ZB_SEARCH_KEY": "stand-in"
+   "ZB_EXP_WEB": "@web/default"
   },
   "home": "eval",
   "steer": null
@@ -13528,8 +13527,7 @@
    }
   ],
   "env": {
-   "ZB_EXP_WEB": "@web/default",
-   "ZB_SEARCH_KEY": "stand-in"
+   "ZB_EXP_WEB": "@web/default"
   },
   "home": "eval",
   "steer": null,
@@ -16201,8 +16199,7 @@
    }
   ],
   "env": {
-   "ZB_EXP_WEB": "@web/events",
-   "ZB_SEARCH_KEY": "stand-in"
+   "ZB_EXP_WEB": "@web/events"
   },
   "home": null,
   "steer": null
@@ -16242,8 +16239,7 @@
    }
   ],
   "env": {
-   "ZB_EXP_WEB": "@web/events",
-   "ZB_SEARCH_KEY": "stand-in"
+   "ZB_EXP_WEB": "@web/events"
   },
   "home": null,
   "steer": null

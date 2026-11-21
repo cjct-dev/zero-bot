@@ -36,6 +36,8 @@ before a field existed) is never a pass. Every result carries case_hash, scorer 
 trace, so that a comparison knows which results it may set side by side.
 """
 import argparse, concurrent.futures, datetime, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import netguard   # noqa: E402  the network boundary of every child process (tests/netguard.py)
 
 # ---------------------------------------------------------------- helpers for checks
 ONES = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen " \
@@ -709,7 +711,7 @@ _ports, _ports_lock = {}, threading.Lock()
 # last, with the fixture a case names ("@web/NAME" in its env; "default" otherwise) and a dummy search key
 # (SEARCH_DUMMY; the stand-in takes no other). One stand-in serves the whole run.
 def web(fixture="default"):
-    return {"ZB_EXP_WEB": "@web/" + fixture, "ZB_SEARCH_KEY": SEARCH_DUMMY}
+    return {"ZB_EXP_WEB": "@web/" + fixture}
 
 SEARCH_DUMMY = "stand-in"
 WEB = web()
@@ -733,6 +735,7 @@ def set_web_seed(seed, held_out=False):
     if _web: sys.exit("the seed is set before the stand-in web starts")
     WEB_SEED = seed
 _web = {}
+WEB_LOG = None   # a file for the stand-in's request log (tests/tools_cli.py no_real_web)
 # Keys for web services that a run must never pass on (read before isolated_env removes them): web_guard
 # refuses a case whose environment holds one anywhere.
 WEB_KEYS = ("ZB_SEARCH_KEY",)
@@ -752,7 +755,9 @@ def preflight(env, cases, validate_errors):
     runner's own validation of the cases), or the environment every case starts from holds a real key."""
     problems = list(validate_errors)
     for c in cases:
-        problems += ["%s: %s" % (c["name"], p) for p in web_guard(case_web_env(env, c), c.get("env") or {})]
+        e = netguard.child_env(case_web_env(env, c), keep=("ZB_API_BASE", "ZB_API_KEY", "ZB_SEARCH_KEY"),
+                               allow_hosts=(netguard.host_of(env.get("ZB_API_BASE")),), ZB_TEST_NETWORK="1")
+        problems += ["%s: %s" % (c["name"], p) for p in web_guard(e, c.get("env") or {})]
     return problems
 
 def web_fixture(c):
@@ -773,13 +778,23 @@ def web_guard(env, case_env=None):
             problems.append("%s is missing (only a case that asks for no key goes without)" % k)
     for name, value in env.items():
         if any(key in str(value) for key in REAL_KEYS): problems.append("%s holds a real web-service key" % name)
+    trap = netguard.trap().url
+    if any(env.get(k) != trap for k in netguard.PROXY_VARS):
+        problems.append("the proxy variables do not all point at the runner's trap")
+    allowed = set(netguard.LOCAL_HOSTS) | {netguard.host_of(env.get("ZB_API_BASE"))}
+    for k in netguard.NO_PROXY_VARS:
+        if not set(x for x in (env.get(k) or "").split(",") if x) <= allowed:
+            problems.append("%s exempts more than 127.0.0.1, localhost and the AI service" % k)
+    if env.get("ZB_TEST_NETWORK") != "1": problems.append("ZB_TEST_NETWORK is not set: the real network would be identified")
     return problems
 
 def web_base():
     with _ports_lock:
         if "base" not in _web:
-            p = subprocess.Popen([sys.executable, "-I", os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks", "fake_web.py"),
-                                  "--seed", str(WEB_SEED)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            cmd = [sys.executable, "-I", os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks", "fake_web.py"),
+                   "--seed", str(WEB_SEED)] + (["--log", WEB_LOG] if WEB_LOG else [])
+            # A mock's own environment: nothing of the runner's, so no key of any kind reaches it.
+            p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
             line = p.stdout.readline().split()
             if line[:2] != ["WEB", "listening"]: raise RuntimeError("the stand-in web did not start: %r" % line)
             _web.update(proc=p, base="http://127.0.0.1:%s" % line[2])
@@ -1758,6 +1773,21 @@ def turns_from_records(text, c, process):
 # nothing a test asks for ever reaches a real camera (ZB_EXP_NO_HARDWARE stops the rest).
 CAMERA_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks", "camera", "sign.jpg")
 
+# What a case's env may set, and to what (validate() and run_case refuse anything else): everything else is the
+# runner's (the AI service, its key and model names, the search key, proxies, ZB_EXP_*, HOME and the XDG folders).
+CASE_ENV = {"ZB_EXP_WEB": "a stand-in fixture, \"@web/NAME\"", "ZB_SEARCH_KEY": "null only (the case runs without the dummy key)",
+            "ZB_DRY_RUN": "null only, for a home with a simulated device to reach", "ZB_DATE_ORDER": "\"dmy\" or \"mdy\""}
+
+def case_env_problems(c):
+    """What is wrong with the variables case c sets (CASE_ENV)."""
+    out = []
+    for k, v in (c.get("env") or {}).items():
+        if k not in CASE_ENV: out.append("env %s is the runner's to set; a case may set only %s" % (k, ", ".join(sorted(CASE_ENV))))
+        elif k == "ZB_EXP_WEB" and not (isinstance(v, str) and v.startswith("@web/") and v[5:]): out.append("env ZB_EXP_WEB must be \"@web/NAME\"")
+        elif k in ("ZB_SEARCH_KEY", "ZB_DRY_RUN") and v is not None: out.append("env %s may only be null" % k)
+        elif k == "ZB_DATE_ORDER" and v not in ("dmy", "mdy"): out.append("env ZB_DATE_ORDER must be dmy or mdy")
+    return out
+
 # What a case's env may not set: the runner's guards, applied after it (see run_case).
 GUARDED = ("ZB_EXP_NO_HARDWARE", "ZB_FAKE_CAMERA", "ZB_EVAL_RECORDS", "ZB_EXP_TRACE", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
            "XDG_CACHE_HOME", "HOME", "ZB_TEST_NETWORK", "PATH")
@@ -1794,19 +1824,26 @@ def run_case(binary, base_env, c):
         home = c["home"]() if callable(c["home"]) else c["home"]   # a home with a port made when it runs
         if isinstance(home, tuple): home, device_log = home      # and a simulated device whose log is kept
         json.dump(home, open(state + "/data/zero-bot/smarthome.json", "w"))
+    refused = case_env_problems(c)
+    if refused:
+        shutil.rmtree(state, ignore_errors=True)
+        raise RuntimeError("%s: refused: %s" % (c["name"], "; ".join(refused)))
     for k, v in c["env"].items():
-        if k in GUARDED or k in ("ZB_EXP_WEB",) + WEB_KEYS: continue   # validate() reports it; the web is set below
-        if v is None: env.pop(k, None)
-        else: env[k] = v
+        if k in ("ZB_EXP_WEB",) + WEB_KEYS: continue   # the web is set below
+        if k == "ZB_DATE_ORDER": env[k] = v
+        elif v is None and k != "ZB_DRY_RUN": env.pop(k, None)
     # The guards, last. No hardware beyond what the case simulates: camera and infrared refuse (experiment
     # builds), and the camera's photo is a fixture (ZB_EVAL_CAMERA, a runner's choice, may name another).
     env.update(XDG_CONFIG_HOME=state + "/config", XDG_DATA_HOME=state + "/data", XDG_CACHE_HOME=state + "/cache",
                ZB_EXP_NO_HARDWARE="1", ZB_FAKE_CAMERA=base_env.get("ZB_FAKE_CAMERA") or CAMERA_FIXTURE, ZB_EVAL_RECORDS=records)
-    if home is not None: env["ZB_TEST_NETWORK"] = "1"
-    else: env.pop("ZB_TEST_NETWORK", None)
+    # Every case on the stand-in network, home or not: the real one is never identified (no packet to the router).
+    env["ZB_TEST_NETWORK"] = "1"
     # The web, last: every case on the stand-in (the fixture it names), with the dummy search key unless it
     # asks for none; a real key never. A case whose environment could reach a real web service is refused.
     env = case_web_env(env, c)
+    # The network boundary outside the app: every proxy variable at the runner's trap, which refuses whatever
+    # reaches it, and only 127.0.0.1, localhost and the AI service's host exempt.
+    env = netguard.child_env(env, keep=("ZB_API_BASE", "ZB_API_KEY", "ZB_SEARCH_KEY"), allow_hosts=(netguard.host_of(env.get("ZB_API_BASE")),))
     refused = web_guard(env, c["env"])
     if refused:
         shutil.rmtree(state, ignore_errors=True)
@@ -1831,6 +1868,7 @@ def run_case(binary, base_env, c):
     if trace: env["ZB_EXP_TRACE"] = trace
     else: env.pop("ZB_EXP_TRACE", None)
     cmd = [binary, "--chat"] + (["--steer", c["steer"]] if c["steer"] else [])
+    leaked_from = netguard.trap().count()
     t0 = time.time()
     try:
         p = subprocess.run(cmd, input="\n".join(c["turns"]) + "\n", env=env, capture_output=True, text=True,
@@ -1853,6 +1891,10 @@ def run_case(binary, base_env, c):
         turns, evidence = turns_from_output(out, c, failed, elapsed), "stdout"
         reasons = ["no records file (ZB_EVAL_RECORDS): a cli build of this version writes one"] if process["exit"] == 0 else []
     shutil.rmtree(state, ignore_errors=True)
+    leaks = netguard.trap().since(leaked_from)
+    if leaks:   # a request for a host outside 127.x: refused by the trap, and the run's evidence is not to be trusted
+        reasons = list(reasons) + ["a request tried to leave 127.x and was refused (a web read not sent to the stand-in?): %s"
+                                   % "; ".join(leaks[:3])]
     if device_log and turns: place_device_log(turns, device_log())
     for i, t in enumerate(turns):   # request n of the run is the n-th turn ("/new" starts none)
         t["web_seed"] = WEB_SEED   # what the stand-in served: the checks that read it work it out from this
@@ -2133,6 +2175,7 @@ def probe_binary(binary):
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": folder, "XDG_CONFIG_HOME": folder + "/config",
                "XDG_DATA_HOME": folder + "/data", "XDG_CACHE_HOME": folder + "/cache", "ZB_EVAL_RECORDS": path,
                "ZB_DRY_RUN": "1", "ZB_NO_AUDIO": "1", "ZB_EXP_NO_HARDWARE": "1"}
+        env = netguard.child_env(env, ZB_TEST_NETWORK="1")
         try: p = subprocess.run([binary, "--chat"], input="", env=env, capture_output=True, text=True, timeout=30)
         except (OSError, subprocess.TimeoutExpired) as e: return ["%s did not run: %s" % (binary, e)]
         if p.returncode != 0: return ["%s --chat ended with status %d" % (binary, p.returncode)]
@@ -2178,6 +2221,7 @@ def validate(cases):
             turn = getattr(check, "turn", None)
             if turn is not None and turn != "all" and not (isinstance(turn, int) and -n <= turn < n):
                 err("a check of turn %r; the case has %d" % (turn, n))
+        for problem in case_env_problems(c): err(problem)
         for k, v in (c.get("env") or {}).items():
             if k in GUARDED: err("env %s is the runner's to set (a guard); the case may not" % k)
             if k == "ZB_DRY_RUN" and v is None and not (callable(c.get("home")) or device_home(c.get("home"))):

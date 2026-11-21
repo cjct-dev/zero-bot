@@ -563,7 +563,7 @@ for no in ["no", "leave it off please", "actually no leave it", "no thanks"]:
          checks=[on_turn(0, simple("home_asked", name="heater")), every_turn(simple("home_not_switched", name="Fan heater"))])
 # The search comes from the stand-in web (tests/mocks/fake_web.py), as every case's does.
 # The first turn searches, and the change waits for the user's word: asked about, never made.
-WEB = {"ZB_EXP_WEB": "@web/default", "ZB_SEARCH_KEY": "stand-in"}
+WEB = {"ZB_EXP_WEB": "@web/default"}
 case("home", ["look up when the sun sets today, then turn on the bedroom lamp", "no, leave it"], tags=["confirm", "search"], home=H,
      env=WEB, checks=[on_turn(0, arg_has("web_search", "query", "sun")), on_turn(0, simple("asks", name="lamp")),
                       every_turn(simple("home_not_switched", name="Bedroom lamp"))])
@@ -716,7 +716,7 @@ for text, tags in [("what time uk time is the stripe o.p.o.", ["asr"]),
 # converted, or "not announced" where it found none. The searches come from the stand-in web's "events"
 # fixture (tests/mocks/fake_web.py): the launch's time is published (event_time works out the UK time it
 # must be), the listing's is not (no time of day may be given for it, except as what usually happens).
-EVENTS_WEB = {"ZB_EXP_WEB": "@web/events", "ZB_SEARCH_KEY": "stand-in"}
+EVENTS_WEB = {"ZB_EXP_WEB": "@web/events"}
 case("dialogue", ["when is discord's ipo", "and what time would trading start uk time"], tags=["uk", "search"], env=EVENTS_WEB,
      checks=[on_turn(0, arg_has("web_search", "query", "discord")),
              # The exchange's usual hours may be given as such: 9:30 to 16:00 in New York, 14:30 to 21:00 in the UK

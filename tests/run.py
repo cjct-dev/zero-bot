@@ -74,6 +74,8 @@ import time
 sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+import netguard   # noqa: E402  the network boundary of every child (tests/netguard.py)
 PY = sys.executable or "python3"
 FAMILIES = ("tapo", "hue", "firetv", "homekit", "kasa", "wiz", "shelly")
 MAX_LIVE_SECONDS = 6 * 3600
@@ -137,7 +139,7 @@ def _sim_build_cmd(o, run):
 
 GROUPS = [
     dict(name="runner", secs=4, needs=[], cmds=[py("tests/run.py", "--self-test"), py("tests/exp_compare.py", "--self-test"),
-                                              py("tests/web_contract.py", "--self-test")],
+                                              py("tests/web_contract.py", "--self-test"), py("tests/netguard.py", "--self-test")],
          about="this runner (the path map, the profiles, --plan, the summaries) and the gate's verdicts"),
     dict(name="unit", secs=60, needs=[], uses=["cli"], timeout=2400,
          cmds=[["sh", "tests/run_unit.sh"]], env={"ZB_UNIT_SKIP_SCRIPTS": "1"},
@@ -191,7 +193,7 @@ GROUPS = [
          about="the release's held-out run: both sets once on the stand-in web's held-out seed and variants, which no "
                "day-to-day run uses, judged on its own (tests/exp_compare.py --held-out: a pass-rate floor per set, every "
                "critical case passing); reported beside the gate. Only in the release profile: never tune on it"),
-    dict(name="web-contract", secs=15, needs=[], ondemand=True, cmds=[py("tests/web_contract.py")],
+    dict(name="web-contract", secs=15, needs=[], ondemand=True, internet=True, cmds=[py("tests/web_contract.py")],
          about="the stand-in web's shapes against the real weather, place, rate and price services (a handful of direct "
                "requests, never the search; needs the internet): on demand, before a release, in no profile"),
 ]
@@ -231,6 +233,7 @@ PATH_RULES = [
     (r"^(.*/)?__pycache__/|.*\.pyc$", [], "Python's bytecode cache"),
     (r"^(scripts/|packaging/|extras/|\.github/)", [], "packaging and deployment: no offline test covers it"),
     (r"^tests/run\.py$", ["runner"], "this runner"),
+    (r"^tests/netguard\.py$", ["runner", "tools", "loop", "scorer"], "the network boundary of every test process"),
     (r"^tests/(exp_compare|exp_report|web_contract)\.py$", ["runner"], "the gate and the reports (their self-test is in runner)"),
     (r"^tests/scorer_test\.py$", ["scorer"], "the scorer's own test"),
     (r"^tests/agent_eval\.py$", ["scorer", "cases", "loop"],
@@ -934,10 +937,20 @@ def stop(p):
 RUN_COMMAND = start   # the self-test puts a recorder here
 
 
-def group_env(tmp, extra):
+def group_env(tmp, extra, group=None):
     """The environment a group runs in: fresh state folders, and none of the inherited switches that would
-    change what it tests (SCRUB, ZB_EXP_*); EXTRA is what the runner sets itself."""
+    change what it tests (SCRUB, ZB_EXP_*); EXTRA is what the runner sets itself. No group gets the search key; only
+    the live groups get the AI service's address and key; every group but the one that must reach the internet
+    (web-contract) has its proxies at the trap, only 127.0.0.1 and localhost exempt (tests/netguard.py)."""
+    group = group or {}
     env = {k: v for k, v in os.environ.items() if k not in SCRUB and not k.startswith("ZB_EXP_")}
+    live = group.get("live") or group.get("heldout")
+    if group.get("internet"):
+        for k in netguard.KEYS:
+            env.pop(k, None)
+    else:
+        env = netguard.child_env(env, keep=("ZB_API_BASE", "ZB_API_KEY") if live else (),
+                                 allow_hosts=(netguard.host_of(env.get("ZB_API_BASE")),) if live else ())
     for k in ("CONFIG", "DATA", "CACHE"):
         d = os.path.join(tmp, k.lower())
         os.makedirs(d, exist_ok=True)
@@ -991,7 +1004,7 @@ def run_group(group, o, run, gate_follows, warnings):
     t0 = time.time()
     rc_all = 0
     try:
-        env = group_env(tmp, dict(group.get("env") or {}, **(exp_env(o) if group.get("live") else {})))
+        env = group_env(tmp, dict(group.get("env") or {}, **(exp_env(o) if group.get("live") else {})), group)
         with open(logpath, "w") as log:
             log.write("# %s: %s\n" % (name, group["about"]))
             cmds = commands_of(group, o, run)
@@ -1375,6 +1388,24 @@ def self_test():
               sorted(k for k in keys if k in env))
         check("the runner's own switch is", env.get("ZB_UNIT_SKIP_SCRIPTS") == "1")
         check("fresh state folders", env["XDG_DATA_HOME"].startswith(tmp))
+        # W4: no group gets the search key; only live groups get the AI service; proxies at the trap.
+        before = {k: os.environ.get(k) for k in ("ZB_SEARCH_KEY", "ZB_API_KEY", "ZB_API_BASE", "NO_PROXY", "https_proxy")}
+        os.environ.update(ZB_SEARCH_KEY="sentinel-search", ZB_API_KEY="sentinel-api", ZB_API_BASE="https://ai.example/v1",
+                          NO_PROXY="*", https_proxy="http://corp.example:3128")
+        offline, live = group_env(tmp, {}, BY_NAME["unit"]), group_env(tmp, {}, BY_NAME["live-suite"])
+        contract = group_env(tmp, {}, BY_NAME["web-contract"])
+        check("an offline group gets no key, no AI service, and its proxies at the trap",
+              not any(k in offline for k in netguard.KEYS) and offline["https_proxy"] == netguard.trap().url and
+              offline["NO_PROXY"] == "127.0.0.1,localhost", {k: offline.get(k) for k in netguard.KEYS + ("NO_PROXY",)})
+        check("a live group gets the AI service but not the search key, and only its host exempt",
+              "ZB_SEARCH_KEY" not in live and live.get("ZB_API_KEY") == "sentinel-api" and live["NO_PROXY"] == "127.0.0.1,localhost,ai.example",
+              {k: live.get(k) for k in netguard.KEYS + ("NO_PROXY",)})
+        check("the contract group gets no key", not any(k in contract for k in netguard.KEYS))
+        for k, v in before.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         for k, v in saved_env.items():
