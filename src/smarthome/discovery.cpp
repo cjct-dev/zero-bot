@@ -17,6 +17,7 @@
 #include "core/util.h"
 #include "platform/proc.h"
 #include "platform/display.h"
+#include "smarthome/drivers/support.h"
 
 namespace discovery {
 
@@ -95,15 +96,9 @@ std::string lower_mac(std::string mac) {
 
 // "aa:bb:cc:dd:ee:ff" from six hex pairs written with ':', '-' or nothing between them; "" otherwise.
 std::string normal_mac(const std::string &raw) {
-    std::string hex;
-    for (const char c : raw) {
-        if (c == ':' || c == '-') continue;
-        if (!isxdigit(static_cast<unsigned char>(c)) || hex.size() >= 12) return "";
-        hex += static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    }
-    if (hex.size() != 12) return "";
+    const std::string hex = support::mac_digits(raw);
     std::string out;
-    for (size_t i = 0; i < 12; i += 2) out += (i ? ":" : "") + hex.substr(i, 2);
+    for (size_t i = 0; i < hex.size(); i += 2) out += (i ? ":" : "") + hex.substr(i, 2);
     return out;
 }
 
@@ -121,23 +116,6 @@ std::string kasa_unscramble(const unsigned char *buf, size_t len) {
     unsigned char key = 171;
     for (size_t i = 0; i < len; ++i) { out[i] = static_cast<char>(buf[i] ^ key); key = buf[i]; }
     return out;
-}
-
-// Whether a JSON text nests arrays and objects more than `max` deep (strings skipped): checked
-// before parsing a datagram, so that a hostile one cannot make copying it recurse without end.
-bool json_too_deep(const std::string &t, int max = 32) {
-    int depth = 0;
-    bool in_string = false, escaped = false;
-    for (const char c : t) {
-        if (in_string) {
-            if (escaped) escaped = false;
-            else if (c == '\\') escaped = true;
-            else if (c == '"') in_string = false;
-        } else if (c == '"') in_string = true;
-        else if (c == '[' || c == '{') { if (++depth > max) return true; }
-        else if (c == ']' || c == '}') --depth;
-    }
-    return false;
 }
 
 // The two families of older Kasa device the Kasa driver switches (plugs, strips, switches and
@@ -280,7 +258,8 @@ void parse_kasa(const unsigned char *buf, size_t len, const std::string &src, Se
     if (len == 0 || len > kMaxPacket) return;
     if (seen.kasa.size() >= kMaxKasaAnswers && !seen.kasa.count(src)) return;
     const std::string text = kasa_unscramble(buf, len);
-    if (json_too_deep(text)) return;
+    // Nesting checked before parsing, so that a hostile datagram cannot make copying it recurse without end.
+    if (support::json_too_deep(text, 32)) return;
     const json j = json::parse(text, nullptr, false);
     if (!j.is_object() || !j.contains("system") || !j["system"].is_object()) return;
     const json &sys = j["system"];
@@ -491,8 +470,7 @@ std::vector<Device> merge(const Seen &seen) {
         if (d.kind != "wiz") continue;   // a Tapo device that also answered keeps its own id and port
         d.id = "wiz:" + mac;
         d.port = 0;
-        d.mac = lower_mac(mac.substr(0, 2) + ":" + mac.substr(2, 2) + ":" + mac.substr(4, 2) + ":" + mac.substr(6, 2) + ":" +
-                          mac.substr(8, 2) + ":" + mac.substr(10, 2));
+        d.mac = normal_mac(mac);
         if (d.name.empty()) d.name = "WiZ " + mac.substr(8);
         const std::string module = clean(util::jget(w.second, "moduleName", std::string()));
         if (!module.empty()) d.model = module;
