@@ -122,8 +122,8 @@ const char *fault_name(Fault f) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Building blocks (and the small helpers a shared net/text library would hold later: UTF-8
-// cleaning, the nesting check, the magic packet, the key pin). Listed in STATUS.md.
+// Building blocks. UTF-8 repair, the nesting check, hex digits and the key pin come from
+// drivers/support.h (ZB-038); what is particular to this driver stays here.
 // ---------------------------------------------------------------------------------------------
 namespace detail {
 

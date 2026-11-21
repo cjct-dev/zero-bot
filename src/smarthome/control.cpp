@@ -14,6 +14,7 @@
 #include <system_error>
 #include <thread>
 
+#include "core/result.h"
 #include "smarthome/color.h"
 #include "smarthome/internal.h"
 
@@ -41,7 +42,7 @@ constexpr double kMinC = 5, kMaxC = 30;     // heating targets are clamped to th
 const char *const kActions[] = {"on",   "off",      "set",  "status", "scene",  "play",
                                 "pause", "stop", "next", "previous", "mute", "unmute", "press"};
 
-std::string fail(const std::string &why) { return "ERROR: " + why; }
+using result::fail;   // "ERROR: " and the words, the shape every tool's failure has
 
 std::string dump(const json &j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); }
 

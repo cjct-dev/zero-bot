@@ -170,8 +170,8 @@ const char *const kErrInternal = "Something went wrong talking to the accessory.
 const char *const kErrNothing = "Nothing to change.";
 
 // ---------------------------------------------------------------------------------------------
-// Helpers section: small private versions of what a shared crypto.h / net::Stream would offer.
-// Listed in STATUS.md so they can be unified later.
+// Helpers this driver alone needs. Hex, digests, HMAC and UTF-8 decoding come from
+// drivers/support.h (ZB-038).
 // ---------------------------------------------------------------------------------------------
 const unsigned char *u8(const Bytes &b) { return reinterpret_cast<const unsigned char *>(b.data()); }
 unsigned char *u8(Bytes &b) { return reinterpret_cast<unsigned char *>(&b[0]); }
