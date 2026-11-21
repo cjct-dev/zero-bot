@@ -990,6 +990,12 @@ def served_checks():
     share = suite_case(["how much is 85 euros in pounds and split that between three people"])
     conv85 = ("convert_currency", {"amount": 85, "from": "EUR", "to": "GBP"},
               json.dumps({"amount": 85, "from": "EUR", "to": "GBP", "rate": 0.8372, "result": "71.16 GBP"}))
+    passes("currency: a decimal comma ('42,20 Pfund') is an amount", suite_case(["wie viel sind 50 euro in pfund"]),
+           {"calls": [("convert_currency", {"amount": 50, "from": "EUR", "to": "GBP"},
+                       json.dumps({"amount": 50, "from": "EUR", "to": "GBP", "rate": 0.844663, "result": "42.23 GBP"}))],
+            "answer": "50 Euro sind aktuell rund 42,20 Pfund."})
+    check("currency: a thousands comma stays one number", ev.says_money("That is 1,250 pounds.", 1250.0, 1) and
+          not ev.says_money("That is 1,250 pounds.", 1.25, 0.01))
     passes("currency: '23 pounds 72 pence' is 23.72", share, {"calls": [conv85], "answer": "85 euros is 71.16 pounds, so 23 pounds 72 pence each."})
     rate_case = suite_case(["whats the exchange rate between the euro and the dollar"])
     conv1 = ("convert_currency", {"amount": 1, "from": "EUR", "to": "USD"}, json.dumps({"amount": 1, "from": "EUR", "to": "USD", "rate": 1.0843}))

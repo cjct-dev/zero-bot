@@ -1253,6 +1253,7 @@ def says_money(text, value, tol):
     """The answer gives an amount near VALUE: as a number, as "23 pounds 72 pence", or (10 and over) rounded to the
     whole unit, as speech rounds it ("about 17 pounds" for 17.12)."""
     if abs(value) >= 10 and says_int(text, int(round(value))): return True
+    text = re.sub(r"(\d),(\d{1,2})\b(?![.,]?\d)", r"\1.\2", text)   # "42,20 Pfund" is 42.20 (a decimal comma)
     text = re.sub(r"\b(\d+) (?:pounds?|dollars?|euros?|quid|bucks)(?:,? and)? (?:(\d{1,2}) ?(?:pence|p|cents?)|(\d{2}))\b(?![.,]\d)",
                   lambda m: "%s.%02d" % (m.group(1), int(m.group(2) or m.group(3))), text, flags=re.I)
     return says_about(text, value, tol)
@@ -1738,7 +1739,7 @@ CASES = [
 # The scorer's version, in every result (with the case's hash and whether it was traced), so that a
 # comparison of two runs knows when their verdicts are comparable. Raise it when what a check accepts
 # changes.
-SCORER_VERSION = "2026-11-21.3"   # ZB-086: checks read what the stand-in web served (.3: evidence, meaning, the day asked)
+SCORER_VERSION = "2026-11-21.4"   # ZB-086: checks read what the stand-in web served (.3: evidence, meaning, the day asked; .4: decimal comma in amounts)
 
 TOOL_RE = re.compile(r"^\s+-> (\w+) (.*)$")
 RESULT_RE = re.compile(r"^\s+<- (.*)$")
