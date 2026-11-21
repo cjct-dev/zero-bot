@@ -278,7 +278,7 @@ PATH_RULES = [
 # each change is in) for the tools they touch; "all" means a sample of every suite category.
 MODEL_FACING = [
     (r"^src/agent/prompt\.cpp$", "all"),
-    (r"^src/agent/(agent|llm)\.cpp$", "all"),
+    (r"^src/agent/(agent|llm|guards|controls)\.cpp$", "all"),
     (r"^src/agent/tools\.cpp$", "scan"),
     (r"^src/smarthome/(tool|control)\.cpp$", ["home", "tv"]),   # the schema; the sentences results carry
     (r"^src/core/timers\.cpp$", ["timer", "countdown"]),
@@ -1299,6 +1299,8 @@ def self_test():
     # Model-facing changes: advice, never a live run by itself.
     tags, hit, scored = model_facing_tags(["src/agent/prompt.cpp", "README.md"])
     check("prompt.cpp asks for a sample of everything", tags == "all" and hit == ["src/agent/prompt.cpp"], (tags, hit))
+    tags, hit, _ = model_facing_tags(["src/agent/guards.cpp", "src/agent/controls.cpp"])
+    check("the loop's guards and controls ask for a sample of everything", tags == "all" and len(hit) == 2, (tags, hit))
     tags, _, _ = model_facing_tags(["src/agent/tools.cpp"], lambda p: "@@ static std::string t_timer(...)\n+  remind")
     check("tools.cpp: the tools its changed lines touch", tags == ["reminder", "timer"], tags)
     tags, _, scored = model_facing_tags(["src/core/radio.cpp"])

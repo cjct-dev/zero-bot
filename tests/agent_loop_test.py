@@ -1074,6 +1074,190 @@ def trace_cache_bust_and_tts_probe():
           events(r, "start")[0]["tts_probe"], events(r, "start"))
 
 
+# ------------------------------------------------------------------ the small-model controls (ZB_EXP_OFF)
+# Each name switches exactly its part off (src/agent/controls.h); "all" switches every one; an unknown name
+# stops the run; with nothing set the app is as it always was (the requests above, and the gate's dump).
+LISBON_TEXT = "Lisbon is the capital of Portugal."
+OK_SCRIPT = {"rules": [{"when": {"said": SECOND_LOOK}, "reply": {"text": "OK"}}], "default": {"text": LISBON_TEXT}}
+CLAIM = "Done, I've added it to your calendar."
+NOT_SAVED = "I don't have Dad's birthday in your calendar."
+SAY_RULE = "- Some tools take 'say'"
+
+
+def off(names):
+    return {"ZB_EXP_OFF": names}
+
+
+def cli_of(args, env):
+    """(exit status, stdout, stderr) of a quick command-line mode, in the boundary's environment."""
+    e = netguard.child_env(ZB_TEST_NETWORK="1")
+    for k in [k for k in e if k.startswith("ZB_EXP_") and k != "ZB_EXP_NET"]:
+        e.pop(k)
+    e.update(env)
+    p = subprocess.run([APP] + args, env=e, capture_output=True, text=True, timeout=30)
+    return p.returncode, p.stdout, p.stderr
+
+
+def prompt_of(env):
+    return cli_of(["--prompt"], env)
+
+
+@scenario
+def control_second_look_off():
+    n = "second_look off"
+    r = run(OK_SCRIPT, ask="what is the capital of portugal", fast=True, env=off("second_look"))
+    check(n + ": one call, no second look; the draft is the answer", len(r.requests) == 1 and r.answer == LISBON_TEXT and
+          SECOND_LOOK not in json.dumps(r.bodies()), r)
+    check(n + ": the decide note still rides on the request", r.requests and DECIDE_NOTE in text_of(r.messages(1)[-1]), r)
+    on = run(OK_SCRIPT, ask="what is the capital of portugal", fast=True)
+    check("second_look on (unset): draft and check", len(on.requests) == 2 and on.answer == LISBON_TEXT, on)
+
+
+@scenario
+def control_decide_note_off():
+    n = "decide_note off"
+    r = run(OK_SCRIPT, ask="what is the capital of portugal", fast=True, env=off("decide_note"))
+    check(n + ": no note on the request; the second look still runs", len(r.requests) == 2 and
+          DECIDE_NOTE not in json.dumps(r.bodies()) and SECOND_LOOK in json.dumps(r.requests[1]["body"]) and r.answer == LISBON_TEXT, r)
+
+
+@scenario
+def control_claim_guards_off():
+    n = "claim_guards off"
+    for text in (CLAIM, NOT_SAVED):
+        script = {"rules": [{"when": {"said": CORRECTION}, "reply": {"text": "Sorry, I can't do that."}}], "default": {"text": text}}
+        r = run(script, ask="hello", env=off("claim_guards"))
+        check(n + ": %r is spoken as it is, one call" % text, len(r.requests) == 1 and r.answer == text and
+              "[draft withdrawn]" not in r.out, r)
+        on = run(script, ask="hello")
+        check("claim_guards on (unset): %r is withdrawn" % text, len(on.requests) == 2 and "[draft withdrawn]" in on.out, on)
+    # "Done" after a call that failed (the guard for tools that all failed).
+    script = {"rules": [{"when": {"last": "system"}, "reply": {"text": "That date does not exist."}},   # the correction note
+                        {"when": {"result": "ERROR"}, "reply": {"text": "Done, all sorted."}}],
+              "default": calls(("date_info", {"date": "2026-02-31"}))}
+    r = run(script, ask="what day is the 31st of february", env=off("claim_guards"))
+    check(n + ": 'done' after a failed call is spoken", r.answer == "Done, all sorted." and "[draft withdrawn]" not in r.out and
+          len(r.requests) == 2, r)
+    on = run(script, ask="what day is the 31st of february")
+    check("claim_guards on (unset): 'done' after a failed call is withdrawn", on.answer == "That date does not exist." and
+          len(on.requests) == 3, on)
+    # Fast mode: the second look says OK, so the claim reaches the guard, which is off.
+    script = {"rules": [{"when": {"said": SECOND_LOOK}, "reply": {"text": "OK"}}], "default": {"text": CLAIM}}
+    r = run(script, ask="add the dentist on friday", fast=True, env=off("claim_guards"))
+    check(n + ": fast mode, held draft let through by the check is spoken", len(r.requests) == 2 and r.answer == CLAIM, r)
+
+
+@scenario
+def control_date_spelling_off():
+    n = "date_spelling off"
+    r = run({"default": {"text": "Which title should it have?"}}, ask="put the dentist in on 3/4 at 10am", env=off("date_spelling"))
+    user = text_of(r.messages(1)[-1]) if r.requests else ""
+    check(n + ": the date reaches the model as typed", user.endswith("] put the dentist in on 3/4 at 10am"), user)
+    on = run({"default": {"text": "Which title should it have?"}}, ask="put the dentist in on 3/4 at 10am")
+    user = text_of(on.messages(1)[-1]) if on.requests else ""
+    check("date_spelling on (unset): spelt out", "3/4 (" in user, user)
+
+
+def _without_say(schema):
+    for t in schema:
+        params = t["function"]["parameters"]
+        params.get("properties", {}).pop("say", None)
+        if "say" in params.get("required", []):
+            params["required"] = [x for x in params["required"] if x != "say"]
+    return schema
+
+
+@scenario
+def control_say_off():
+    n = "say off"
+    _, on, _ = prompt_of({})
+    code, offp, err = prompt_of(off("say"))
+    check(n + ": the prompt's rule about say is gone, the rest is as it was", code == 0 and SAY_RULE in on and SAY_RULE not in offp and
+          "- Anything counted down from now is a timer" in offp, (code, err))
+    i = on.index(SAY_RULE) if SAY_RULE in on else 0
+    j = on.index("- Anything counted down", i) if "- Anything counted down" in on else 0
+    check(n + ": exactly that paragraph differs", on[:i] + on[j:] == offp, "")
+    home = {"ZB_TEST_NETWORK": "1"}
+    _, son, _ = cli_of(["--schema"], home)
+    code, soff, err = cli_of(["--schema"], dict(home, ZB_EXP_OFF="say"))
+    on_tools, off_tools = json.loads(son or "[]"), json.loads(soff or "[]")
+    has_say = [t["function"]["name"] for t in on_tools if "say" in t["function"]["parameters"].get("properties", {})]
+    check(n + ": no tool offers say; nothing else of the schema changes", code == 0 and "timer" in has_say and
+          not any("say" in t["function"]["parameters"].get("properties", {}) for t in off_tools) and
+          _without_say(on_tools) == off_tools, (code, err, has_say))
+    # A call that comes with a say anyway: its sentence is not spoken in place of the model's answer.
+    script = {"rules": [{"when": {"result": "{"}, "reply": {"text": "Timer running."}}], "default": calls(TIMER_12)}
+    r = run(script, ask="set a timer for 12 minutes", env=off("say"))
+    check(n + ": a say confirmation is not used; the model answers after the tool", len(r.requests) == 2 and r.answer == "Timer running.", r)
+    on = run(script, ask="set a timer for 12 minutes")
+    check("say on (unset): the confirmation is spoken, one call", len(on.requests) == 1 and on.answer == "Your timer is set for 12 minutes.", on)
+
+
+@scenario
+def control_weekday_check_off():
+    n = "weekday_check off"
+    slip = ("reminder_set", {"text": "Bins out", "at": "2030-12-02 19:00", "say": "I'll remind you on Tuesday evening."})
+    script = {"rules": [{"when": {"result": "ERROR"}, "reply": {"text": "Which day did you mean?"}}], "default": calls(slip)}
+    r = run(script, ask="remind me tuesday evening to put the bins out", env=off("weekday_check"))
+    res = r.turns[-1]["results"] if r.turns else []
+    check(n + ": a say naming a weekday the date is not is saved and spoken", len(res) == 1 and '"set":true' in res[0] and
+          r.answer == "I'll remind you on Tuesday evening.", r)
+    on = run(script, ask="remind me tuesday evening to put the bins out")
+    res = on.turns[-1]["results"] if on.turns else []
+    check("weekday_check on (unset): refused, nothing saved", len(res) == 1 and "is a Monday, but say calls it Tuesday" in res[0], on)
+
+
+@scenario
+def control_cancel_claims_off():
+    n = "cancel_claims off"
+    bank9 = ("reminder_set", {"text": "Call the bank", "at": "2030-12-03 09:00", "say": "I'll remind you at 9."})
+    cancel = ("reminder_cancel", {"id": 1, "say": "Done, I'll remind you to call the bank at 10 instead."})
+    script = {"rules": [{"when": {"said": "make it 10", "result": "ERROR"}, "reply": {"text": "What time?"}},
+                        {"when": {"said": "make it 10"}, "reply": calls(cancel)},
+                        {"when": {"said": "remind me"}, "reply": calls(bank9)}]}
+    r = run(script, said=["remind me at 9 to call the bank", "actually make it 10"], env=off("cancel_claims"))
+    res = r.turns[-1]["results"] if r.turns else []
+    check(n + ": a cancel whose say claims a new time is made, and its say spoken", res == ["cancelled"] and "instead" in r.answer, r)
+    on = run(script, said=["remind me at 9 to call the bank", "actually make it 10"])
+    res = on.turns[-1]["results"] if on.turns else []
+    check("cancel_claims on (unset): refused", len(res) == 1 and res[0].startswith("ERROR: reminder_cancel only cancels"), on)
+
+
+@scenario
+def control_all_off():
+    n = "all off"
+    r = run({"default": {"text": CLAIM}}, ask="add the dentist on 3/4", fast=True, env=off("all"))
+    body = json.dumps(r.bodies())
+    user = text_of(r.messages(1)[-1]) if r.requests else ""
+    check(n + ": one call, no note, no check, the claim spoken, the date as typed", len(r.requests) == 1 and r.answer == CLAIM and
+          DECIDE_NOTE not in body and SECOND_LOOK not in body and user.endswith("] add the dentist on 3/4"), r)
+    check(n + ": no tool offers say", '"say"' not in json.dumps(r.requests[0]["body"].get("tools", [])) if r.requests else False, "")
+    code, p, err = prompt_of(off("all"))
+    check(n + ": the prompt has no say rule", code == 0 and SAY_RULE not in p, err)
+    code, p2, err = prompt_of(off(" second_look , decide_note,claim_guards,say,weekday_check,cancel_claims,date_spelling "))
+    check(n + ": every name listed (with spaces) is the same as all", code == 0 and p2 == p, err)
+
+
+@scenario
+def control_names():
+    for args in (["--prompt"], ["--version"], ["--tool", "calculator", '{"expression": "1+1"}']):
+        code, out, err = cli_of(args, off("second_looks"))
+        check("an unknown control name stops %s at once, saying which" % args[0], code == 2 and "second_looks" in err and not out,
+              (code, out[:200], err))
+    _, on, _ = prompt_of({})
+    code, p, err = prompt_of(off(""))
+    check("an empty ZB_EXP_OFF switches nothing off", code == 0 and p == on, err)
+    code, p, err = prompt_of(off("weekday_check,cancel_claims"))
+    check("weekday_check and cancel_claims leave the prompt alone (their part is in the tools)", code == 0 and p == on, err)
+    r = run({"default": {"text": "Hello."}}, ask="hi", trace=True, env=off("date_spelling, say"))
+    start = events(r, "start")
+    check("the trace's start line names the controls switched off, in their order", start and start[0].get("off") == "say,date_spelling",
+          start)
+    r = run({"default": {"text": "Hello."}}, ask="hi", trace=True)
+    start = events(r, "start")
+    check("and none when nothing is switched off", start and start[0].get("off") == "", start)
+
+
 def main():
     netguard.require_experiments(APP)   # a build without the experiments sends a search to the real service
     wanted = [w for w in ONLY.split(",") if w]
