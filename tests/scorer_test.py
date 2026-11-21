@@ -924,6 +924,13 @@ def served_checks():
     passes("weather served: the served figures, rounded, pass", lisbon, {"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain, 11 to 17 degrees."})
     trips("weather served: a made-up temperature fails", lisbon, [{"calls": [forecast], "answer": "Tomorrow in Lisbon: sunny and 24 degrees."}],
           "a temperature no forecast served")
+    passes("weather served: a decimal comma is one number", case("spanish_weather"),
+           {"calls": [("weather", {"location": "Madrid"}, json.dumps({"place": "Madrid, Spain", "now": "Overcast, 11.5C (feels like 9.4C)",
+                                                                  "forecast": ["2026-11-21: Overcast, 8.5 to 20.8C, rain chance 34%"]}))],
+            "answer": "En Madrid está nublado, con 11,5 grados y entre 8,5 y 20,8 grados hoy."})
+    passes("missing rate: 'couldn't fetch', with a rough guide, passes", case("currency_missing_rate"),
+           {"calls": [("convert_currency", {"amount": 50, "from": "EUR", "to": "GBP"}, "ERROR: no exchange rate available for EUR to GBP")],
+            "answer": "I'm sorry, I couldn't fetch a live exchange rate just now. As a rough guide it's around 43 pounds."})
     trips("weather served: the date is no temperature", lisbon, [{"calls": [forecast], "answer": "It will be 22°C on the 22nd."}],
           "a temperature no forecast served")
     trips("weather error: a temperature with no forecast at all fails", case("weather_error"),

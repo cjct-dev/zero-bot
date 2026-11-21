@@ -1057,7 +1057,7 @@ def chk_served(rule, slots, how="name", any_of=False):
         return ["the answer should give what the search found: %s %s" % ("one of" if any_of else "", "; ".join(missing))]
     return check
 
-TEMPERATURE = re.compile(r"(-?\d+(?:\.\d+)?)\s*(?:°|degrees?\b|grados\b|graus\b|grad\b|degr[ée]s\b|gradi\b|graden\b)", re.I)
+TEMPERATURE = re.compile(r"(-?\d+(?:[.,]\d+)?)\s*(?:°|degrees?\b|grados\b|graus\b|grad\b|degr[ée]s\b|gradi\b|graden\b)", re.I)
 
 def chk_weather_served(t):
     """Every temperature the answer gives is one a forecast this turn served (within 1 degree, for rounding):
@@ -1067,13 +1067,14 @@ def chk_weather_served(t):
         if worked(r): served += numbers(re.sub(r"\d{4}-\d\d-\d\d", " ", str(r)))   # the figures, not the dates
     made_up = []
     for m in TEMPERATURE.finditer(t["answer"]):
-        v = float(m.group(1))
+        v = float(m.group(1).replace(",", "."))   # "11,5 grados" is 11.5
         if v >= 0 and negative(t["answer"], m.start(1)): v = -v
         if not any(abs(v - x) <= 1.0 for x in served): made_up.append(m.group(0))
     return ["the answer gives a temperature no forecast served: %s" % ", ".join(made_up)] if made_up else []
 
 # Not found, could not look it up, or only from memory.
-NOT_FOUND = r"couldn'?t (find|get|look|check|access|retrieve|load|reach|confirm|see)|could not (find|get|look|check|access|retrieve|load|reach|confirm|see)|" \
+NOT_FOUND = r"couldn'?t (find|get|fetch|look|check|access|retrieve|load|reach|confirm|see|pull)|" \
+            r"could not (find|get|fetch|look|check|access|retrieve|load|reach|confirm|see|pull)|" \
             r"can'?t (find|get|check|access|confirm|see)|cannot (find|get|check|access|confirm)|unable|no (results|information|details|luck|reliable)|" \
             r"didn'?t (find|return|turn up|come up|get)|did not (find|return|get)|nothing (came up|turned up|useful|relevant|about|on)|not (find|sure|available|working)|" \
             r"isn'?t (working|available|responding)|(search|service|lookup|forecast)\b.{0,40}(down|unavailable|error|problem|trouble|fail)|trouble|problem|" \
