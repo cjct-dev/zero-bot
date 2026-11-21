@@ -165,50 +165,22 @@ std::string normalize_bridge_id(const std::string &id) {
 }
 
 // ---------------------------------------------------------------- the bridge's certificate
-namespace {
-struct X509Free {
-    void operator()(X509 *x) const { X509_free(x); }
-};
-std::unique_ptr<X509, X509Free> read_pem(const std::string &pem) {
-    if (pem.empty() || pem.size() > 64 * 1024) return nullptr;
-    BIO *bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
-    if (!bio) return nullptr;
-    X509 *x = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
-    BIO_free(bio);
-    return std::unique_ptr<X509, X509Free>(x);
-}
-std::string sha256(const unsigned char *data, size_t len) {
-    unsigned char md[EVP_MAX_MD_SIZE];
-    unsigned int md_len = 0;
-    if (EVP_Digest(data, len, md, &md_len, EVP_sha256(), nullptr) != 1) return "";
-    return std::string(reinterpret_cast<const char *>(md), md_len);
-}
-std::string base64(const std::string &raw) {
-    std::string out(4 * ((raw.size() + 2) / 3) + 1, '\0');
-    const int n = EVP_EncodeBlock(reinterpret_cast<unsigned char *>(&out[0]), reinterpret_cast<const unsigned char *>(raw.data()),
-                                  static_cast<int>(raw.size()));
-    out.resize(n > 0 ? static_cast<size_t>(n) : 0);
-    return out;
-}
-}  // namespace
-
 std::string pin_from_pem(const std::string &pem) {
-    const auto x = read_pem(pem);
+    const support::Certificate x = support::certificate_from_pem(pem);
     if (!x) return "";
     const X509_PUBKEY *pk = X509_get_X509_PUBKEY(x.get());   // const in OpenSSL 4, not in 3: both fit
     if (!pk) return "";
     unsigned char *der = nullptr;
-    const int len = i2d_X509_PUBKEY(pk, &der);
+    const int len = i2d_X509_PUBKEY(pk, &der);   // the certificate's own encoding, as libcurl pins it
     if (len <= 0 || !der) return "";
-    const std::string digest = sha256(der, static_cast<size_t>(len));
+    const std::string pin = support::sha256_pin(der, static_cast<size_t>(len));
     OPENSSL_free(der);
-    if (digest.size() != 32) return "";
-    return "sha256//" + base64(digest);
+    return pin;
 }
 
 std::vector<std::string> names_from_pem(const std::string &pem) {
     std::vector<std::string> out;
-    const auto x = read_pem(pem);
+    const support::Certificate x = support::certificate_from_pem(pem);
     if (!x) return out;
     const X509_NAME *subject = X509_get_subject_name(x.get());
     for (int pos = -1; subject && out.size() < 8;) {

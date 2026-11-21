@@ -267,27 +267,14 @@ std::string magic_packet(const std::string &mac) {
 }
 
 std::string spki_pin_from_pem(const std::string &pem) {
-    if (pem.empty() || pem.size() > 64 * 1024) return "";
-    BIO *bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
-    if (!bio) return "";
-    X509 *cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
-    BIO_free(bio);
+    const support::Certificate cert = support::certificate_from_pem(pem);
     if (!cert) return "";
     std::string out;
-    const EVP_PKEY *key = X509_get0_pubkey(cert);
+    const EVP_PKEY *key = X509_get0_pubkey(cert.get());
     unsigned char *der = nullptr;
-    const int len = key ? i2d_PUBKEY(key, &der) : -1;
-    if (len > 0 && der) {
-        unsigned char md[EVP_MAX_MD_SIZE];
-        unsigned int md_len = 0;
-        if (EVP_Digest(der, static_cast<size_t>(len), md, &md_len, EVP_sha256(), nullptr) && md_len == 32) {
-            unsigned char b64[64];
-            const int n = EVP_EncodeBlock(b64, md, 32);
-            if (n > 0) out = "sha256//" + std::string(reinterpret_cast<char *>(b64), static_cast<size_t>(n));
-        }
-    }
+    const int len = key ? i2d_PUBKEY(key, &der) : -1;   // the decoded key, encoded again
+    if (len > 0 && der) out = support::sha256_pin(der, static_cast<size_t>(len));
     OPENSSL_free(der);
-    X509_free(cert);
     return out;
 }
 
