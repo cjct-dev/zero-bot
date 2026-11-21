@@ -105,6 +105,13 @@ PROVENANCE = MANIFEST + ("fixtures",)             # compared wherever recorded
 OUTCOMES = ("pass", "fail", "unscorable")
 SETS = ("scored", "suite")
 VERDICT_EXIT = {"passes": 0, "fails": 1, "inconclusive": 3, "incomplete": 4}
+# The held-out run (tests/run.py's release profile: both sets once on the stand-in web's held-out seed and
+# variants, which no day-to-day run uses) is judged on its own, never paired with a baseline: each set's pass
+# rate must reach its floor, and every critical case must pass. The floors sit a few points under the first
+# held-out run (2026-11-21: .local-notes/eval/runs/s5-heldout3-*); a change that wins on the everyday seed
+# but loses here is fitted to the everyday answers.
+HELD_OUT_FLOOR = {"scored": 0.80, "suite": 0.80}
+HELD_OUT_FROM = 1000   # tests/mocks/fake_web.py: seeds from here on are held out
 
 # Cases that must pass every run on the variant. Scored-set names, and suite cases by tag (the suite's
 # names are positions, its tags are not).
@@ -634,6 +641,10 @@ def parse(argv):
     ap.add_argument("--not-run", default="", help="cases the variant left out on purpose (tests/run.py --no-search); "
                                                    "never a critical case in a release")
     ap.add_argument("--verdict", default="", help="write the verdict as JSON to this file")
+    ap.add_argument("--held-out", default="", help="judge a held-out run (results files, comma-separated) on its own: "
+                                                   "pass-rate floors and critical cases; no baseline")
+    ap.add_argument("--floor", default="", help="--held-out floors, e.g. scored=0.8,suite=0.8 (default %s)"
+                                                % ",".join("%s=%.2f" % kv for kv in sorted(HELD_OUT_FLOOR.items())))
     ap.add_argument("--self-test", action="store_true")
     return ap.parse_args(argv)
 
@@ -642,6 +653,14 @@ def main(argv=None):
     a = parse(sys.argv[1:] if argv is None else argv)
     if a.self_test:
         return self_test()
+    if a.held_out:
+        res, problems = load(a.held_out)
+        floors = dict(HELD_OUT_FLOOR, **{k: float(v) for k, v in (x.split("=", 1) for x in a.floor.split(",") if x)})
+        v = held_out_verdict(res, problems, floors, a.max_unscorable)
+        if a.verdict:
+            with open(a.verdict, "w", encoding="utf-8") as f:
+                json.dump(v, f, indent=1)
+        return VERDICT_EXIT[v["verdict"]]
     if not a.base or not a.variant:
         sys.exit("--base and --variant are needed (or --self-test)")
     if a.release and not a.require:
@@ -659,6 +678,61 @@ def main(argv=None):
         with open(a.verdict, "w", encoding="utf-8") as f:
             json.dump(v, f, indent=1)
     return VERDICT_EXIT[v["verdict"]]
+
+
+def held_out_verdict(results, load_problems, floors, max_unscorable=MAX_UNSCORABLE, out=None):
+    """The held-out run judged on its own: per set, the pass rate of the scorable runs against its floor; every
+    critical case passing every run; every run made on a held-out seed. "fails" (a floor missed, a critical case
+    not passing), "incomplete" (a set or a critical case missing, records not valid, too many unscorable runs, a
+    run not on a held-out seed) or "passes"; printed, and returned with the figures."""
+    out = out or sys.stdout
+    v = {"verdict": "passes", "sets": {}, "reasons": list(load_problems), "critical_failed": []}
+    incomplete = bool(load_problems)
+    for s in SETS:
+        runs = [r for r in results if set_of(r) == s]
+        bad = [r for r in runs if record_problems(r)]
+        scorable = [r for r in runs if not record_problems(r) and outcome(r) in ("pass", "fail")]
+        passed = sum(1 for r in scorable if outcome(r) == "pass")
+        rate = passed / len(scorable) if scorable else None
+        seeds = sorted({r.get("web_seed") for r in runs}, key=str)
+        x = {"runs": len(runs), "scorable": len(scorable), "passed": passed, "rate": rate, "floor": floors[s], "seeds": seeds}
+        v["sets"][s] = x
+        if not runs:
+            v["reasons"].append("no %s results" % s)
+            incomplete = True
+            continue
+        if bad:
+            v["reasons"].append("%d %s records are not valid" % (len(bad), s))
+            incomplete = True
+        if (len(runs) - len(scorable)) > max_unscorable * len(runs):
+            v["reasons"].append("%d of %d %s runs are unscorable" % (len(runs) - len(scorable), len(runs), s))
+            incomplete = True
+        if any(not isinstance(z, int) or z < HELD_OUT_FROM for z in seeds):
+            v["reasons"].append("%s runs not on a held-out seed: %s" % (s, seeds))
+            incomplete = True
+        if rate is not None and rate < floors[s]:
+            v["reasons"].append("%s: %.1f%% passed, under the floor of %.0f%%" % (s, 100 * rate, 100 * floors[s]))
+            v["verdict"] = "fails"
+    groups = {}
+    for r in results:
+        groups.setdefault(str(r.get("case")), []).append(r)
+    for name, rs in sorted(groups.items()):
+        tags = next((r.get("tags") or [] for r in rs), [])
+        if critical(name, tags) and any(outcome(r) != "pass" for r in rs):
+            v["critical_failed"].append(name)
+    if v["critical_failed"]:
+        v["reasons"].append("critical cases not passing: %s" % short(v["critical_failed"]))
+        v["verdict"] = "fails"
+    if incomplete and v["verdict"] == "passes":
+        v["verdict"] = "incomplete"
+    for s, x in v["sets"].items():
+        if x["rate"] is not None:
+            print("held-out %-6s %d/%d passed (%.1f%%), floor %.0f%%, seed %s" % (s, x["passed"], x["scorable"], 100 * x["rate"],
+                                                                                 100 * x["floor"], ",".join(map(str, x["seeds"]))), file=out)
+    for reason in v["reasons"]:
+        print("  " + reason, file=out)
+    print("held-out: %s" % v["verdict"], file=out)
+    return v
 
 
 # ---------------------------------------------------------------- the gate's own test
@@ -932,6 +1006,32 @@ def self_test():
               "cannot be read" in " ".join(v["incomplete"]), (rc, v["incomplete"]))
         check("a file that is not results is incomplete", rc2 == 4)
         check("--release passes with both sets", rc3 == 0 and v3["release"] and v3["sets"]["scored"]["compared"] == 40, (rc3, v3))
+
+    # The held-out run, judged on its own: floors, critical cases, held-out seeds only.
+    def held(fail=(), seed=HELD_OUT_FROM + 1, crit_fail=False, sets=SETS):
+        out = []
+        for s in sets:
+            for k in range(20):
+                name = ("s%02d" % k) if s == "scored" else ("t-%03d" % k)
+                r = rec(name, ok=name not in fail, suite=s == "suite")
+                r["web_seed"] = seed
+                out.append(r)
+        if crit_fail:
+            r = rec("home_after_web_no", ok=False)
+            r["web_seed"] = seed
+            out.append(r)
+        return out
+    quiet = io.StringIO()
+    v = held_out_verdict(held(fail=("s01", "s02")), [], {"scored": 0.8, "suite": 0.8}, out=quiet)
+    check("held-out: 90% against a floor of 80% passes", v["verdict"] == "passes" and abs(v["sets"]["scored"]["rate"] - 0.9) < 1e-9, v)
+    v = held_out_verdict(held(fail=["s%02d" % k for k in range(6)]), [], {"scored": 0.8, "suite": 0.8}, out=quiet)
+    check("held-out: 70% against a floor of 80% fails", v["verdict"] == "fails" and "under the floor" in str(v["reasons"]), v)
+    v = held_out_verdict(held(crit_fail=True), [], {"scored": 0.8, "suite": 0.8}, out=quiet)
+    check("held-out: a critical case that failed fails it", v["verdict"] == "fails" and v["critical_failed"] == ["home_after_web_no"], v)
+    v = held_out_verdict(held(seed=1), [], {"scored": 0.8, "suite": 0.8}, out=quiet)
+    check("held-out: results of an everyday seed are no held-out run", v["verdict"] == "incomplete", v)
+    v = held_out_verdict(held(sets=("scored",)), [], {"scored": 0.8, "suite": 0.8}, out=quiet)
+    check("held-out: a set missing is incomplete", v["verdict"] == "incomplete" and "no suite results" in v["reasons"], v)
 
     for f in failed:
         print("FAIL " + f)

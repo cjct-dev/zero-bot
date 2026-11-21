@@ -209,7 +209,15 @@ groups need first. Which to use:
   `tests/run.py --groups live-scored,live-suite` (its `eval.json` and `suite.json`). It also builds
   the device binary (cp0; with `--no-build` a stale one stops it) and fails when its version is not
   CMakeLists.txt's or it holds a cli-only string (`ZB_EXP_`, `ZB_EVAL_RECORDS`, `tool_done`, `[call]`,
-  `[state]`) or a build machine's path (`/home/`).
+  `[state]`) or a build machine's path (`/home/`). Last it runs the **held-out run** (group `held-out`, release
+  only): both sets once on the held-out seed, judged on its own, not against the baseline
+  (`exp_compare.py --held-out`: each set's pass rate at least its floor, `HELD_OUT_FLOOR`, and every critical
+  case passing), reported beside the gate. A change that wins on the everyday seed but loses on the held-out
+  one is fitted to the everyday answers; never tune on the held-out results. **Before a release**, also run
+  `tests/run.py --groups web-contract` (or `tests/web_contract.py`): a handful of direct requests, no model, to
+  the real weather, place-name, exchange-rate and stock-price services, checking that the stand-in's shapes
+  (keys and types, and every field the app reads) still match theirs. It needs the internet, so it is in no
+  profile; it never calls the search.
 
 `ZB_EVAL_WRAPPER` prefixes every live run (a lock, or a script that sets the service's variables);
 live runs always use `--jobs 1`. **No test uses a live web service** (the owner's search allowance is
@@ -367,7 +375,23 @@ What exists:
   and its data in `tests/mocks/web/`, through the `cli` build's `ZB_EXP_WEB`, honoured only for an
   `http://127.x` address and compiled out of the device build); `web(fixture)` in a case's env picks a
   fixture other than `default`: forecasts (`rain59`, `rain60`, `rainmissing`), event times (`events`: one
-  published, one not announced) and the edges (below). **The scorer's own test**: `tests/scorer_test.py`
+  published, one not announced) and the edges (`search_empty`, `search_error`, `search_irrelevant`,
+  `search_conflict`, `search_stale`, `search_long`, `weather_error`, `weather_partial`, `rates_missing`, each
+  with a scored case of its own). **Variety, not volume:** every answer is drawn from a seed (values, wording,
+  number of results, an unrelated result mixed in; forecasts made up for the place and season; rates and
+  prices moved a few per cent), the same for the same seed and request, so checks work the right answer out
+  from what was served, never from a number written into the case: `chk_served(rule, slots, how)` (suite
+  kind `served`) reads the search rule's values for the run's seed (`fake_web.facts`) and fails a search that
+  matched another rule as a fixture fault; `chk_weather_served` (added to every case that must call the
+  weather) fails any temperature no forecast served; the currency and stock checks read the tool's result.
+  Search answers live in `tests/mocks/web/search.json` (a rule per question: `match`, `slots` with
+  `held_out` values, answer and result wordings); add a rule with any case that searches something new.
+  **Seeds:** day-to-day runs use one fixed seed (`EVERYDAY_SEED`, or `ZB_EVAL_SEED`/`--web-seed`), so a
+  variant and its baseline see the same world; the seed is part of every case's `fixtures` and `case_hash`
+  and is recorded in each result (`web_seed`), so results of different seeds are never paired. Seeds from
+  1000 up are held out: they draw values and wordings no everyday run shows, and the runners take one only
+  with `--held-out`, which only the release profile passes (`HELD_OUT_SEED`). The fixtures are versioned
+  (`fake_web.VERSION`, and every file of `tests/mocks/web/` is hashed into `case_hash`). **The scorer's own test**: `tests/scorer_test.py`
   (offline, no service) feeds deliberately wrong transcripts that must fail and right ones that must
   pass, one per check, each asserting its problem text; run it after any change to a check, and add a
   wrong transcript for any new kind of mistake.

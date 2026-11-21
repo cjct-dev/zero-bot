@@ -34,7 +34,11 @@ in this tree (tests/exp_compare.py load_roster): valid records of both sets, a s
 current version of at least 90% of each set's cases and of every critical case, by the current scorer. The
 live sets run only on a cli build that is an experiments build whose hardware guard holds and which writes
 the evaluator's records (probe_cli). The gate then runs with --release. Record a baseline with
-tests/run.py --groups live-scored,live-suite (eval.json and suite.json in its run folder).
+tests/run.py --groups live-scored,live-suite (eval.json and suite.json in its run folder). Last, the release
+runs the held-out group: both sets once on the stand-in web's held-out seed (never used day to day), judged on
+its own by tests/exp_compare.py --held-out (pass-rate floors, critical cases), its verdict in heldout.json
+beside gate.json. The web-contract group (tests/web_contract.py: the stand-in's shapes against the real
+weather, place, rate and price services; never the search) is in no profile: run it by name before a release.
 
 Groups never inherit switches that change what they test (ZB_UPDATE_SHOTS, ZB_UPDATE_SNAPSHOTS,
 ZB_UNIT_BUILD_ONLY, ZB_UNIT_SKIP_SCRIPTS, HUE_E2E_ONLY, ZB_FAST_MODE, ZB_EVAL_TRACE, any ZB_EXP_*); a
@@ -102,6 +106,19 @@ def _gate_cmd(o, run):
     return gate_command(o, run)
 
 
+def _heldout_eval_cmd(o, run):
+    return heldout_command(eval_command(o, run), os.path.join(run, "eval-heldout.json"))
+
+
+def _heldout_suite_cmd(o, run):
+    return heldout_command(suite_command(o, run), os.path.join(run, "suite-heldout.json"))
+
+
+def _heldout_judge_cmd(o, run):
+    files = ",".join(os.path.join(run, n) for n in ("eval-heldout.json", "suite-heldout.json"))
+    return py("tests/exp_compare.py", "--held-out", files, "--verdict", os.path.join(run, "heldout.json"))
+
+
 def _validate(script):
     """SCRIPT --validate (every case compiled offline), when SCRIPT has it; None (nothing to run) when not."""
     def cmd(o, run):
@@ -119,7 +136,8 @@ def _sim_build_cmd(o, run):
 
 
 GROUPS = [
-    dict(name="runner", secs=4, needs=[], cmds=[py("tests/run.py", "--self-test"), py("tests/exp_compare.py", "--self-test")],
+    dict(name="runner", secs=4, needs=[], cmds=[py("tests/run.py", "--self-test"), py("tests/exp_compare.py", "--self-test"),
+                                              py("tests/web_contract.py", "--self-test")],
          about="this runner (the path map, the profiles, --plan, the summaries) and the gate's verdicts"),
     dict(name="unit", secs=60, needs=[], uses=["cli"], timeout=2400,
          cmds=[["sh", "tests/run_unit.sh"]], env={"ZB_UNIT_SKIP_SCRIPTS": "1"},
@@ -168,9 +186,18 @@ GROUPS = [
     dict(name="gate", secs=5, needs=["baseline"], auto=True, cmds=[_gate_cmd],
          about="tests/exp_compare.py's no-regression gate: this run's live results against --baseline "
                "(added when --baseline is given with a live group, and always in the release profile)"),
+    dict(name="held-out", secs=2700, needs=["cli", "live"], heldout=True, judged=True, timeout=MAX_LIVE_SECONDS,
+         cmds=[_heldout_eval_cmd, _heldout_suite_cmd, _heldout_judge_cmd],
+         about="the release's held-out run: both sets once on the stand-in web's held-out seed and variants, which no "
+               "day-to-day run uses, judged on its own (tests/exp_compare.py --held-out: a pass-rate floor per set, every "
+               "critical case passing); reported beside the gate. Only in the release profile: never tune on it"),
+    dict(name="web-contract", secs=15, needs=[], ondemand=True, cmds=[py("tests/web_contract.py")],
+         about="the stand-in web's shapes against the real weather, place, rate and price services (a handful of direct "
+               "requests, never the search; needs the internet): on demand, before a release, in no profile"),
 ]
 BY_NAME = {g["name"]: g for g in GROUPS}
-OFFLINE = [g["name"] for g in GROUPS if not g.get("live") and not g.get("auto") and not g.get("build")]
+OFFLINE = [g["name"] for g in GROUPS if not g.get("live") and not g.get("auto") and not g.get("build") and not g.get("heldout")
+           and not g.get("ondemand")]
 LIVE = [g["name"] for g in GROUPS if g.get("live")]
 LIVE_SET = {"live-scored": "scored", "live-suite": "suite"}            # tests/exp_compare.py's names for them
 LIVE_FILE = {"live-scored": "eval.json", "live-suite": "suite.json"}   # their results in the run folder
@@ -189,7 +216,8 @@ PROFILES = {
                "included; for a change to what the model is told, which live cases to run five times "
                "(suite tags, scored-set names; run only with --live)", None),
     "release": ("every offline group on fresh builds, then the scored set and the suite once, then the gate "
-                "against --baseline (results of both sets, recorded by the current runners)", OFFLINE + LIVE),
+                "against --baseline (results of both sets, recorded by the current runners), then the held-out run, "
+                "judged on its own", OFFLINE + LIVE + ["held-out"]),
 }
 
 # ---------------------------------------------------------------- what a changed file needs
@@ -203,7 +231,7 @@ PATH_RULES = [
     (r"^(.*/)?__pycache__/|.*\.pyc$", [], "Python's bytecode cache"),
     (r"^(scripts/|packaging/|extras/|\.github/)", [], "packaging and deployment: no offline test covers it"),
     (r"^tests/run\.py$", ["runner"], "this runner"),
-    (r"^tests/(exp_compare|exp_report)\.py$", ["runner"], "the gate and the reports (their self-test is in runner)"),
+    (r"^tests/(exp_compare|exp_report|web_contract)\.py$", ["runner"], "the gate and the reports (their self-test is in runner)"),
     (r"^tests/scorer_test\.py$", ["scorer"], "the scorer's own test"),
     (r"^tests/agent_eval\.py$", ["scorer", "cases", "loop"],
      "the scored set and the scoring both live sets use (agent_loop_test.py reads its parser)"),
@@ -384,6 +412,13 @@ def live_prefix():
 def scored_only(o):
     """--only for the scored set: --scored-only when given, else --only (both sets share it)."""
     return o.scored_only or o.only
+
+
+def heldout_command(cmd, out):
+    """A live set's command for the held-out run: the held-out seed, its own results file."""
+    cmd = list(cmd)
+    cmd[cmd.index("--json") + 1] = out
+    return cmd + ["--held-out"]
 
 
 def eval_command(o, run):
@@ -852,7 +887,7 @@ def key_line(text):
     counts = [(int(a) + (int(b) if kind == "passed" else 0), int(b)) for l in lines for a, kind, b in COUNT.findall(l)]
     if len(counts) > 1:
         return "%d checks, %d failed (%d parts)" % (sum(a for a, _ in counts), sum(b for _, b in counts), len(counts))
-    for pattern in (r"^gate: .*", r"^\d+/\d+ passed[^|]*", r".*\d+ checks, \d+ failed.*", r".*\d+ screens, \d+ differ.*",
+    for pattern in (r"^gate: .*", r"^held-out: .*", r"^\d+/\d+ passed[^|]*", r".*\d+ checks, \d+ failed.*", r".*\d+ screens, \d+ differ.*",
                     r".*(up to date|OUT OF DATE).*", r"^no cases selected$", r"^ninja: no work to do\.?$",
                     r"^\[\d+/\d+\] Linking .*"):
         for l in reversed(lines):
@@ -959,9 +994,12 @@ def run_group(group, o, run, gate_follows, warnings):
         env = group_env(tmp, dict(group.get("env") or {}, **(exp_env(o) if group.get("live") else {})))
         with open(logpath, "w") as log:
             log.write("# %s: %s\n" % (name, group["about"]))
-            for cmd in commands_of(group, o, run):
+            cmds = commands_of(group, o, run)
+            for k, cmd in enumerate(cmds):
                 rc = RUN_COMMAND(cmd, log, env, group.get("timeout", 900))
                 log.write("(exit %d)\n" % rc)
+                if group.get("judged") and k < len(cmds) - 1 and rc == 1:
+                    rc = 0   # cases that failed: the last command (the judge) decides
                 rc_all = rc_all or rc
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -1158,6 +1196,11 @@ def main(argv=None):
 
 
 # ---------------------------------------------------------------- the runner's own test
+def LIVE_ORDER(names):
+    """NAMES with the gate, in run order (GROUPS' order: the gate after the live sets, the held-out run last)."""
+    return [g["name"] for g in GROUPS if g["name"] in set(names) | {"gate"}]
+
+
 def self_test():
     global RUN_COMMAND, ROOT, changed_paths, diff_reader, stale_note, need_path
     failures, counted = [], [0]
@@ -1250,12 +1293,24 @@ def self_test():
     check("offline has every offline group", set(PROFILES["offline"][1]) == set(OFFLINE) and "firetv" in OFFLINE)
     check("sim-build only from the path map", all("sim-build" not in g for _, g in PROFILES.values() if g))
     rel = PROFILES["release"][1]
-    check("release: offline, then the live sets", rel[:len(OFFLINE)] == OFFLINE and rel[len(OFFLINE):] == LIVE, rel)
+    check("release: offline, then the live sets, then the held-out run", rel[:len(OFFLINE)] == OFFLINE and
+          rel[len(OFFLINE):] == LIVE + ["held-out"], rel)
+    check("the held-out run and the web contract are in no other profile", all("held-out" not in g and "web-contract" not in g
+                                                                                for n, (_, g) in PROFILES.items() if g and n != "release"))
+    check("the web contract is in no profile at all (it reaches the internet)", all("web-contract" not in g for _, g in PROFILES.values() if g))
     o = parse(["--profile", "release", "--baseline", "b.json"])
     chosen = choose(o)[0]
-    check("release with a baseline ends with the gate", chosen[-1] == "gate" and chosen[-3:-1] == LIVE, chosen)
+    check("release with a baseline: the live sets, the gate, then the held-out run", chosen[-4:] == LIVE + ["gate", "held-out"], chosen)
     chosen = choose(parse(["--profile", "release"]))[0]
-    check("release always has the gate", chosen[-1] == "gate", chosen)
+    check("release always has the gate", chosen[-2:] == ["gate", "held-out"], chosen)
+    # The held-out run: both runners with --held-out into files of their own, then the judge on its own.
+    o = parse(["--profile", "release", "--baseline", "b.json"])
+    choose(o)
+    cmds = commands_of(BY_NAME["held-out"], o, "/r")
+    check("held-out: both sets on the held-out seed, then the judge", len(cmds) == 3 and all("--held-out" in c for c in cmds) and
+          cmds[0][cmds[0].index("--json") + 1] == "/r/eval-heldout.json" and cmds[1][cmds[1].index("--json") + 1] == "/r/suite-heldout.json" and
+          "tests/exp_compare.py" in cmds[2] and "/r/heldout.json" in cmds[2] and "--base" not in cmds[2], cmds)
+    check("held-out: the key line is the judge's", key_line("held-out scored 9/10 passed\nheld-out: passes\n") == "held-out: passes")
     check("no gate for live runs without a baseline", "gate" not in choose(parse(["--groups", "live-suite"]))[0])
     chosen = choose(parse(["--groups", "hue,unit,quick"]))[0]
     check("groups run in table order, once", chosen == [g for g in OFFLINE if g in set(quick)], chosen)
@@ -1388,7 +1443,7 @@ def self_test():
         o = parse(["--groups", "release", "--baseline", good])
         chosen = choose(o)[0]
         gate = gate_command(o, "<run>")
-        check("--groups release: the release's groups, its gate and its build", chosen == PROFILES["release"][1] + ["gate"] and
+        check("--groups release: the release's groups, its gate and its build", chosen == LIVE_ORDER(PROFILES["release"][1]) and
               "--release" in gate and o.build, (chosen, gate))
         check("a release builds unless --no-build", parse(["--profile", "release"]).build and
               not parse(["--profile", "release", "--no-build"]).build)
