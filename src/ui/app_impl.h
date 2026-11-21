@@ -34,6 +34,8 @@ extern std::atomic<bool> g_exit;   // set to leave the main loop (run_app)
 inline constexpr const char *kThumbPrefix = "thumb_";
 void remove_old_thumbnails();
 
+struct Shots;   // --shots: what its groups of screens share (shots.cpp)
+
 struct App {
     ChatView chat;
     Menu menu;
@@ -116,9 +118,22 @@ struct App {
     void periodic();
 
     // ------------------------------------------------------------ screenshots (shots.cpp)
+    // Each group of screens starts where the one before it left the screen and the menu.
     int render_shots(const std::string &dir);
-    template <typename Snap>
-    bool diagnostics_shots(Snap &snap);
+    void shots_chat(Shots &shots);
+    void shots_dark_chat(Shots &shots);
+    void shots_keys(Shots &shots);
+    void shots_volume(Shots &shots);
+    void shots_breathing(Shots &shots);
+    void shots_timers(Shots &shots);
+    void shots_sample_data(Shots &shots);
+    void shots_setup(Shots &shots);
+    void shots_settings(Shots &shots);      // the top page and its sections; the next three on the way
+    void shots_data(Shots &shots);
+    void shots_smart_home(Shots &shots);
+    void shots_radio(Shots &shots);
+    void shots_dark_settings(Shots &shots);
+    bool diagnostics_shots(Shots &shots);   // DIAGNOSTICS (temporary)
 };
 
 }  // namespace ui

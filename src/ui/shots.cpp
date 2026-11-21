@@ -66,45 +66,79 @@ void sample_home() {
     util::save_json(util::data_dir() + "/smarthome.json", root);
 }
 
+// The labels of the rows on the page on top, read by moving the cursor down to its last row.
+std::vector<std::string> page_rows(Menu &menu) {
+    KeyEvent key; key.key = Key::Down; key.state = 1;
+    std::vector<std::string> rows{menu.selected()};
+    for (int i = 0; i < 80; ++i) {
+        menu.key(key);
+        if (menu.selected() == rows.back()) break;
+        rows.push_back(menu.selected());
+    }
+    return rows;
+}
+
+// "Start at power-on" was removed (ZB-085): its row must not come back, on the Device page or in the guide.
+bool without_power_on(Menu &menu, const char *page, std::initializer_list<const char *> expected) {
+    const std::vector<std::string> rows = page_rows(menu);
+    bool ok = std::find(rows.begin(), rows.end(), "Start at power-on") == rows.end();
+    for (const char *row : expected) ok = ok && std::find(rows.begin(), rows.end(), row) != rows.end();
+    if (!ok) fprintf(stderr, "the %s page lists \"Start at power-on\", or its rows could not be read\n", page);
+    return ok;
+}
+
+// The screenshots change settings in memory only.
+void set(const std::function<void(Settings &)> &change) { Settings::update(change, false); }
+
 }  // namespace
 
-// ------------------------------------------------------------ screenshots
-int App::render_shots(const std::string &dir) {
-    util::make_dirs(dir);
+// What the groups of screens share: where the pictures go and how many there are so far, whether
+// a check has failed, and the sample data the pages show.
+struct Shots {
+    App &app;
+    std::string dir;
     int n = 0;
-    auto snap = [&](const char *name) {
-        for (int i = 0; i < 6; ++i) { chat.tick(); menu.tick(); }
+    bool failed = false;
+    // Timers, at fixed times so that the images come out the same on every run.
+    time_t t0 = 1800000000;
+    int food = 0;   // the timer "Food out of the oven" (shots_sample_data), which the Reminders page sees end
+
+    void snap(const char *name) {
+        for (int i = 0; i < 6; ++i) { app.chat.tick(); app.menu.tick(); }
         lv_refr_now(nullptr);
         char path[512];
         snprintf(path, sizeof(path), "%s/%02d-%s.png", dir.c_str(), ++n, name);
         if (!display::save_png(path)) fprintf(stderr, "could not write %s\n", path);
         else printf("%s\n", path);
-    };
-    // The labels of the rows on the page on top, read by moving the cursor down to its last row.
-    auto page_rows = [&] {
-        KeyEvent key; key.key = Key::Down; key.state = 1;
-        std::vector<std::string> rows{menu.selected()};
-        for (int i = 0; i < 80; ++i) {
-            menu.key(key);
-            if (menu.selected() == rows.back()) break;
-            rows.push_back(menu.selected());
-        }
-        return rows;
-    };
-    // "Start at power-on" was removed (ZB-085): its row must not come back, on the Device page or in the guide.
-    auto without_power_on = [&](const char *page, std::initializer_list<const char *> expected) {
-        const std::vector<std::string> rows = page_rows();
-        bool ok = std::find(rows.begin(), rows.end(), "Start at power-on") == rows.end();
-        for (const char *row : expected) ok = ok && std::find(rows.begin(), rows.end(), row) != rows.end();
-        if (!ok) fprintf(stderr, "the %s page lists \"Start at power-on\", or its rows could not be read\n", page);
-        return ok;
-    };
+    }
+};
+
+// ------------------------------------------------------------ screenshots
+int App::render_shots(const std::string &dir) {
+    util::make_dirs(dir);
+    Shots shots{*this, dir};
+    shots_chat(shots);
+    shots_dark_chat(shots);
+    shots_keys(shots);
+    shots_volume(shots);
+    shots_breathing(shots);
+    shots_timers(shots);
+    shots_sample_data(shots);
+    shots_setup(shots);
+    shots_settings(shots);
+    shots_dark_settings(shots);
+    shots.failed = diagnostics_shots(shots) || shots.failed;   // DIAGNOSTICS (temporary)
+    timers::fix_clock(0);
+    return shots.failed ? 1 : 0;
+}
+
+void App::shots_chat(Shots &shots) {
+    auto snap = [&shots](const char *name) { shots.snap(name); };
+    bool &failed = shots.failed;
     // The status bar shows the name it is given from the first call on, an empty one included.
     chat.set_status("", theme::kFaint);
-    bool failed = !chat.status_name().empty();
+    failed = !chat.status_name().empty();
     if (failed) fprintf(stderr, "the status bar kept a name it was not given\n");
-    // The screenshots change settings in memory only.
-    auto set = [](const std::function<void(Settings &)> &change) { Settings::update(change, false); };
     set([](Settings &s) { s.agent_name = "Zero"; });
     chat.set_status("Zero", theme::kFaint);
     chat.set_indicators(true, false, 68, false, "18:42");
@@ -229,6 +263,10 @@ int App::render_shots(const std::string &dir) {
     chat.typing_begin("remind me at 7 to call the hot");
     chat.set_status(Settings::get().agent_name, theme::kFaint);
     snap("typing");
+}
+
+void App::shots_dark_chat(Shots &shots) {
+    bool &failed = shots.failed;
     {
         // Unused for the minutes set under Device, the screen dims, then goes off: drawn black,
         // then nothing more drawn however much changes. A key wakes it to what it shows now and
@@ -314,110 +352,123 @@ int App::render_shots(const std::string &dir) {
         chat.set_now_playing("Dancing Queen · ABBA");          // as it was, for the frames to come
     }
     chat.typing_end();
+}
 
+void App::shots_keys(Shots &shots) {
+    auto snap = [&shots](const char *name) { shots.snap(name); };
+    bool &failed = shots.failed;
     chat.add_alert("Check the oven");
     chat.add_user("こんにちは、元気ですか？", false);
     chat.footer_hints(keyguide::idle_hint(true));
     snap("alert");
+    // The double tap goes through the real key handler, so this also checks the shortcut.
+    KeyEvent del; del.key = Key::Backspace; del.state = 1;
+    handle_key(del);
+    snap("delete-once");                   // one tap alone changes nothing
+    handle_key(del);
+    snap("new-conversation");
+    // A letter key does not start typing (ENTER does); it says how to.
+    KeyEvent letter; letter.key = Key::Char; letter.text = "k"; letter.state = 1;
+    handle_key(letter);
+    update_footer();
+    snap("letter-hint");
+    if (chat.typing()) {
+        fprintf(stderr, "a letter key started typing; only ENTER should\n");
+        failed = true;
+    }
+    level_until = 0;
     {
-        // The double tap goes through the real key handler, so this also checks the shortcut.
-        KeyEvent del; del.key = Key::Backspace; del.state = 1;
-        handle_key(del);
-        snap("delete-once");                   // one tap alone changes nothing
-        handle_key(del);
-        snap("new-conversation");
-        // A letter key does not start typing (ENTER does); it says how to.
-        KeyEvent letter; letter.key = Key::Char; letter.text = "k"; letter.state = 1;
-        handle_key(letter);
-        update_footer();
-        snap("letter-hint");
-        if (chat.typing()) {
-            fprintf(stderr, "a letter key started typing; only ENTER should\n");
+        // SPACE opens settings and closes them again. H shows every key, as a page that
+        // scrolls; ESC (pressed and let go) goes back to the chat.
+        KeyEvent space; space.key = Key::Char; space.text = " "; space.state = 1;
+        handle_key(space);
+        const bool waited = !menu.open();                 // a second SPACE may yet come (DIAGNOSTICS)
+        settle_keys(display::now_ms() + kDoubleTapMs);    // none did: settings open
+        const bool opened = waited && menu.open() && menu.depth() == 1 && menu.title() == "Settings" &&
+                            menu.selected() == "Assistant";
+        handle_key(space);
+        const bool closed = !menu.open();
+        KeyEvent h; h.key = Key::Char; h.text = "h"; h.state = 1;
+        handle_key(h);
+        const bool guide = menu.open() && menu.title() == kKeyGuideTitle && menu.first_shown() == 0;
+        snap("keys");
+        KeyEvent down; down.key = Key::Down; down.state = 1;
+        for (int i = 0; i < 8; ++i) handle_key(down);
+        snap("keys-more");
+        for (int i = 0; i < 30; ++i) handle_key(down);   // stops at the end
+        snap("keys-end");
+        const bool scrolled = menu.first_shown() > 8;
+        handle_key(h);                                   // already showing: nothing more
+        const bool once = menu.depth() == 1;
+        KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
+        handle_key(esc);
+        esc.state = 0;
+        handle_key(esc);
+        const bool back = !menu.open() && !chat.typing();
+        if (!opened || !closed || !guide || !scrolled || !once || !back) {
+            fprintf(stderr, "SPACE or H did not open and close settings or the key guide as they should\n");
             failed = true;
         }
-        level_until = 0;
-        {
-            // SPACE opens settings and closes them again. H shows every key, as a page that
-            // scrolls; ESC (pressed and let go) goes back to the chat.
-            KeyEvent space; space.key = Key::Char; space.text = " "; space.state = 1;
-            handle_key(space);
-            const bool waited = !menu.open();                 // a second SPACE may yet come (DIAGNOSTICS)
-            settle_keys(display::now_ms() + kDoubleTapMs);    // none did: settings open
-            const bool opened = waited && menu.open() && menu.depth() == 1 && menu.title() == "Settings" &&
-                                menu.selected() == "Assistant";
-            handle_key(space);
-            const bool closed = !menu.open();
-            KeyEvent h; h.key = Key::Char; h.text = "h"; h.state = 1;
-            handle_key(h);
-            const bool guide = menu.open() && menu.title() == kKeyGuideTitle && menu.first_shown() == 0;
-            snap("keys");
-            KeyEvent down; down.key = Key::Down; down.state = 1;
-            for (int i = 0; i < 8; ++i) handle_key(down);
-            snap("keys-more");
-            for (int i = 0; i < 30; ++i) handle_key(down);   // stops at the end
-            snap("keys-end");
-            const bool scrolled = menu.first_shown() > 8;
-            handle_key(h);                                   // already showing: nothing more
-            const bool once = menu.depth() == 1;
-            KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
-            handle_key(esc);
-            esc.state = 0;
-            handle_key(esc);
-            const bool back = !menu.open() && !chat.typing();
-            if (!opened || !closed || !guide || !scrolled || !once || !back) {
-                fprintf(stderr, "SPACE or H did not open and close settings or the key guide as they should\n");
+        // Every line of the guide, and the hints on the bottom row, fit their room in the real fonts.
+        auto width = [](const std::string &text, const lv_font_t *font) {
+            lv_point_t size;
+            lv_text_get_size(&size, text.c_str(), font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            return static_cast<int>(size.x);
+        };
+        for (const keyguide::Section &sec : keyguide::sections())
+            for (const keyguide::Row &row : sec.rows)
+                if (width(row.keys, theme::bold()) > Menu::kPairKeyW - 4 || width(row.action, theme::body()) > Menu::pair_text_width()) {
+                    fprintf(stderr, "the key guide's line for %s does not fit the screen (keys %d of %d px, words %d of %d px)\n",
+                            row.keys.c_str(), width(row.keys, theme::bold()), Menu::kPairKeyW - 4,
+                            width(row.action, theme::body()), Menu::pair_text_width());
+                    failed = true;
+                }
+        for (const bool configured : {true, false})
+            if (width(keyguide::idle_hint(configured), theme::small()) > theme::kScreenW - 12) {
+                fprintf(stderr, "the hints on the bottom row do not fit: %s\n", keyguide::idle_hint(configured).c_str());
                 failed = true;
             }
-            // Every line of the guide, and the hints on the bottom row, fit their room in the real fonts.
-            auto width = [](const std::string &text, const lv_font_t *font) {
-                lv_point_t size;
-                lv_text_get_size(&size, text.c_str(), font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-                return static_cast<int>(size.x);
-            };
-            for (const keyguide::Section &sec : keyguide::sections())
-                for (const keyguide::Row &row : sec.rows)
-                    if (width(row.keys, theme::bold()) > Menu::kPairKeyW - 4 || width(row.action, theme::body()) > Menu::pair_text_width()) {
-                        fprintf(stderr, "the key guide's line for %s does not fit the screen (keys %d of %d px, words %d of %d px)\n",
-                                row.keys.c_str(), width(row.keys, theme::bold()), Menu::kPairKeyW - 4,
-                                width(row.action, theme::body()), Menu::pair_text_width());
-                        failed = true;
-                    }
-            for (const bool configured : {true, false})
-                if (width(keyguide::idle_hint(configured), theme::small()) > theme::kScreenW - 12) {
-                    fprintf(stderr, "the hints on the bottom row do not fit: %s\n", keyguide::idle_hint(configured).c_str());
-                    failed = true;
-                }
-            // DIAGNOSTICS (temporary): what SPACE twice says, on the same row.
-            activity::SaveResult nothing, saved, broken;
-            nothing.nothing = true;
-            saved.path = "x";
-            broken.error = "x";
-            for (const activity::SaveResult &r : {nothing, saved, broken})
-                if (width(activity::saved_toast(r), theme::small()) > theme::kScreenW - 12) {
-                    fprintf(stderr, "the words after SPACE twice do not fit the bottom row: %s\n", activity::saved_toast(r).c_str());
-                    failed = true;
-                }
-        }
-        KeyEvent vol; vol.key = Key::VolumeUp; vol.state = 1;
-        handle_key(vol);
-        update_footer();
-        snap("volume");
-        vol.key = Key::Mute;
-        handle_key(vol);
-        update_footer();
-        snap("muted");
-        handle_key(vol);                       // unmute again
-        level_until = 0;
-        for (const auto &shot : {std::make_pair("box", 2500L), std::make_pair("box", 6000L), std::make_pair("sigh", 9000L)}) {
-            breath.start(shot.first, 5);
-            breath.show_at(shot.second);
-            snap(shot.second == 2500L ? "breathing-in" : shot.second == 6000L ? "breathing-hold" : "breathing-out");
-        }
-        breath.stop();
+        // DIAGNOSTICS (temporary): what SPACE twice says, on the same row.
+        activity::SaveResult nothing, saved, broken;
+        nothing.nothing = true;
+        saved.path = "x";
+        broken.error = "x";
+        for (const activity::SaveResult &r : {nothing, saved, broken})
+            if (width(activity::saved_toast(r), theme::small()) > theme::kScreenW - 12) {
+                fprintf(stderr, "the words after SPACE twice do not fit the bottom row: %s\n", activity::saved_toast(r).c_str());
+                failed = true;
+            }
     }
+}
 
-    // Timers, at fixed times so that the images come out the same on every run.
-    const time_t t0 = 1800000000;
+void App::shots_volume(Shots &shots) {
+    auto snap = [&shots](const char *name) { shots.snap(name); };
+    KeyEvent vol; vol.key = Key::VolumeUp; vol.state = 1;
+    handle_key(vol);
+    update_footer();
+    snap("volume");
+    vol.key = Key::Mute;
+    handle_key(vol);
+    update_footer();
+    snap("muted");
+    handle_key(vol);                       // unmute again
+    level_until = 0;
+}
+
+void App::shots_breathing(Shots &shots) {
+    auto snap = [&shots](const char *name) { shots.snap(name); };
+    for (const auto &shot : {std::make_pair("box", 2500L), std::make_pair("box", 6000L), std::make_pair("sigh", 9000L)}) {
+        breath.start(shot.first, 5);
+        breath.show_at(shot.second);
+        snap(shot.second == 2500L ? "breathing-in" : shot.second == 6000L ? "breathing-hold" : "breathing-out");
+    }
+    breath.stop();
+}
+
+void App::shots_timers(Shots &shots) {
+    auto snap = [&shots](const char *name) { shots.snap(name); };
+    bool &failed = shots.failed;
+    const time_t t0 = shots.t0;
     {
         chat.clear();
         chat.add_user("The food needs to come out of the oven in 5 mins", false);
@@ -492,7 +543,11 @@ int App::render_shots(const std::string &dir) {
         }
         muted = false;
     }
+}
 
+// The calendar, memories, reminders, timers and smart home the settings pages show.
+void App::shots_sample_data(Shots &shots) {
+    const time_t t0 = shots.t0;
     Store &store = Store::get();
     CalEvent e;
     auto day_at = [](int days_ahead, const char *clock) {
@@ -511,11 +566,16 @@ int App::render_shots(const std::string &dir) {
     store.add_memory("Allergic to shellfish");
     store.add_memory("Prefers window seats");
     store.add_reminder("Call the hotel", t0 + 5400);   // fixed, like the timers: the Reminders page shows it
-    const int food = store.add_timer("Food out of the oven", 300, t0);
+    shots.food = store.add_timer("Food out of the oven", 300, t0);
     store.add_timer("Study", 3600, t0 + 19);
     timers::fix_clock(t0 + 60);                    // what the Reminders page counts down from
     sample_home();
+    (void)flight; (void)birthday;
+}
 
+void App::shots_setup(Shots &shots) {
+    auto snap = [&shots](const char *name) { shots.snap(name); };
+    bool &failed = shots.failed;
     run_setup();
     snap("setup-welcome");
     {
@@ -559,10 +619,14 @@ int App::render_shots(const std::string &dir) {
         for (int i = 0; i < 6; ++i) menu.key(down);
         menu.key(enter);
         snap("setup-extras");
-        if (!without_power_on("setup guide's extras", {"Speak replies", "Finish"})) failed = true;
+        if (!without_power_on(menu, "setup guide's extras", {"Speak replies", "Finish"})) failed = true;
         menu.close();
     }
+}
 
+void App::shots_settings(Shots &shots) {
+    auto snap = [&shots](const char *name) { shots.snap(name); };
+    bool &failed = shots.failed;
     // Made-up stations for the radio page, one entry of them without its address.
     util::make_dirs(util::config_dir());
     util::write_file_atomic(radio::path(), R"({"stations": [
@@ -582,10 +646,42 @@ int App::render_shots(const std::string &dir) {
     menu.key(down);                                // "Device"
     menu.key(enter);
     snap("settings-device");
-    if (!without_power_on("Device", {"Time zone", "Internet via phone"})) failed = true;
+    if (!without_power_on(menu, "Device", {"Time zone", "Internet via phone"})) failed = true;
     menu.key(esc);
     menu.key(down);                                // "Your data", whose first row is "Calendar"
     menu.key(enter);
+    shots_data(shots);
+    shots_smart_home(shots);
+    shots_radio(shots);
+    menu.key(esc);                                 // the top page, still on "Your data"
+    menu.key(down);                                // "AI service"
+    menu.key(enter);
+    snap("settings-service");
+    menu.key(esc);
+    menu.key(down);                                // "About"
+    menu.key(enter);
+    snap("settings-about");
+    menu.key(esc);
+    menu.key(down);                                // "Keys": from settings, it opens at the keys for settings
+    menu.key(enter);
+    snap("keys-settings");
+    if (menu.title() != kKeyGuideTitle || menu.first_shown() == 0) {
+        fprintf(stderr, "the key guide did not open at the keys for settings\n");
+        failed = true;
+    }
+    menu.close();
+}
+
+// Your data: calendar, reminders and timers, memory. From the section's page, and back to it.
+void App::shots_data(Shots &shots) {
+    auto snap = [&shots](const char *name) { shots.snap(name); };
+    bool &failed = shots.failed;
+    KeyEvent down; down.key = Key::Down; down.state = 1;
+    KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
+    KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
+    Store &store = Store::get();
+    const time_t t0 = shots.t0;
+    const int food = shots.food;
     snap("settings-data");
     if (menu.title() != "Your data" || menu.selected() != "Calendar") {
         fprintf(stderr, "the settings section did not open on its first row\n");
@@ -627,6 +723,14 @@ int App::render_shots(const std::string &dir) {
     menu.key(enter);
     snap("memory");
     menu.key(esc);
+}
+
+// Your data > Smart home, the sample home's pages. From the section's page, and back to it.
+void App::shots_smart_home(Shots &shots) {
+    auto snap = [&shots](const char *name) { shots.snap(name); };
+    KeyEvent down; down.key = Key::Down; down.state = 1;
+    KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
+    KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
     menu.key(down); menu.key(down);                // "Smart home"
     menu.key(enter);
     snap("smart-home");
@@ -653,6 +757,15 @@ int App::render_shots(const std::string &dir) {
     menu.key(enter);
     snap("tapo-account");
     menu.key(esc); menu.key(esc);                  // back to "Your data", on "Smart home"
+}
+
+// Your data > Radio stations. From the section's page, and back to it.
+void App::shots_radio(Shots &shots) {
+    auto snap = [&shots](const char *name) { shots.snap(name); };
+    bool &failed = shots.failed;
+    KeyEvent down; down.key = Key::Down; down.state = 1;
+    KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
+    KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
     menu.key(down); menu.key(down);                // "Radio stations", after "Music library"
     menu.key(enter);
     snap("radio-stations");
@@ -691,24 +804,13 @@ int App::render_shots(const std::string &dir) {
         for (int i = 0; i < 12; ++i) menu.key(down);   // back on "Read the file again", as before
     }
     menu.key(esc);                                 // back to "Your data"
-    menu.key(esc);                                 // the top page, still on "Your data"
-    menu.key(down);                                // "AI service"
-    menu.key(enter);
-    snap("settings-service");
-    menu.key(esc);
-    menu.key(down);                                // "About"
-    menu.key(enter);
-    snap("settings-about");
-    menu.key(esc);
-    menu.key(down);                                // "Keys": from settings, it opens at the keys for settings
-    menu.key(enter);
-    snap("keys-settings");
-    if (menu.title() != kKeyGuideTitle || menu.first_shown() == 0) {
-        fprintf(stderr, "the key guide did not open at the keys for settings\n");
-        failed = true;
-    }
-    (void)flight; (void)birthday;
-    menu.close();
+}
+
+void App::shots_dark_settings(Shots &shots) {
+    bool &failed = shots.failed;
+    KeyEvent down; down.key = Key::Down; down.state = 1;
+    KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
+    Store &store = Store::get();
     {
         // The screen off, after the last frame: a reminder turns it on at once, and so does a
         // timer's alarm over settings, with the banner already in the frame drawn before the
@@ -780,15 +882,12 @@ int App::render_shots(const std::string &dir) {
             failed = true;
         }
     }
-    failed = diagnostics_shots(snap) || failed;   // DIAGNOSTICS (temporary)
-    timers::fix_clock(0);
-    return failed ? 1 : 0;
 }
 
 // DIAGNOSTICS (temporary, ZB-051): the screens of saved conversations, last so that removing them
 // renumbers nothing. Returns true when something did not behave.
-template <typename Snap>
-bool App::diagnostics_shots(Snap &snap) {
+bool App::diagnostics_shots(Shots &shots) {
+    auto snap = [&shots](const char *name) { shots.snap(name); };
     bool failed = false;
     // SPACE twice on the chat screen saves the conversation. Settings never open on the way, nor
     // after it; with nothing said yet there is nothing to save.
