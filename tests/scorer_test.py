@@ -867,7 +867,7 @@ def served_checks():
 
     # name: the winner the search gave
     wimbledon = suite_case(["who won the mens singles at wimbledon this year"])
-    call = searched("wimbledon mens singles winner")
+    call = call0 = searched("wimbledon mens singles winner")
     winner, loser = fact("wimbledon-mens", "winner"), fact("wimbledon-mens", "loser")
     passes("served name: the winner the search gave passes", wimbledon, {"calls": [call], "answer": "%s won it this year." % winner})
     other = next(x for x in ("Jannik Sinner", "Carlos Alcaraz", "Novak Djokovic") if x != winner)
@@ -958,7 +958,17 @@ def served_checks():
                                                                          "%s: Light rain, 11.4 to 16.8C, rain chance 60%%" % (d0 + datetime.timedelta(days=1)).isoformat()]}))
     passes("weather served: the served figures, rounded, pass", lisbon, {"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain, 11 to 17 degrees."})
     trips("weather served (W8): today's high given for tomorrow fails", lisbon,
-          [{"calls": [forecast], "answer": "Tomorrow in Lisbon: sunny and 24 degrees."}], "did not serve for the day asked about")
+          [{"calls": [forecast], "answer": "Tomorrow in Lisbon: sunny and 24 degrees."}], "did not serve for the day")
+    trips("weather served (r3): today's and tomorrow's highs swapped fail", lisbon,
+          [{"calls": [forecast], "answer": "Today will reach 17 degrees and tomorrow 24 degrees."}], "did not serve for the day")
+    passes("weather served (r3): a date written out binds its figures ('Saturday (20 November)')", lisbon,
+           {"calls": [forecast], "answer": "On Saturday (%s), light rain, 11 to 17 degrees." % (d0 + datetime.timedelta(days=1)).strftime("%-d %B")})
+    trips("weather served (r3): a weekday in Dutch binds its figures too", lisbon,
+          [{"calls": [forecast], "answer": "Vandaag 11 tot 17 graden, %s 15 tot 24 graden." % ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag",
+                                                                                      "zaterdag", "zondag"][(d0 + datetime.timedelta(days=1)).weekday()]}],
+          "did not serve for the day")
+    passes("weather served (r3): each figure with its own day passes ('24 today and 17 tomorrow')", lisbon,
+           {"calls": [forecast], "answer": "Up to 24 degrees today and 17 tomorrow, with light rain."})
     passes("weather served (r2): another day the answer names itself may be given", lisbon,
            {"calls": [forecast], "answer": "Tomorrow: light rain, 11 to 17 degrees. Today was sunnier, up to 24 degrees."})
     trips("weather served (W8): the rain chance read as a temperature fails", lisbon,
@@ -1005,6 +1015,23 @@ def served_checks():
         del fake_web.ALL_RULES["shadow"]
     check("served (r2): a fixture fault in an earlier turn's check is unscorable, not a model failure", got[0] == "unscorable" and
           got[1][0].startswith(ev.UNSCORABLE + "turn 1"), got)
+    # Round 3, item 4: as the model saw it, after the loop's cut at MODEL_RESULT_LIMIT bytes.
+    long_body = json.dumps({"results": [{"title": "Notes", "text": "x" * (ev.MODEL_RESULT_LIMIT + 200)},
+                                        {"title": "Wimbledon", "text": "%s won the men's singles." % winner}]})
+    trips("served (r3): a fact past the model's cut credits nothing", wimbledon,
+          [{"calls": [("web_search", {"query": "wimbledon mens singles winner"}, long_body)], "answer": "%s won it." % winner}], "did not show")
+    check("served (r3): the scorer's cut is the loop's (src/agent/agent.cpp kMaxToolResult)",
+          "kMaxToolResult = %d;" % ev.MODEL_RESULT_LIMIT in open(os.path.join(HERE, "..", "src", "agent", "agent.cpp")).read())
+    # Round 3, item 4: the problem's kind is a flag, never read from its text.
+    def says_unscorable(t): return ["unscorable: this is only text"]
+    check("verdict (r3): a problem that merely reads 'unscorable:' is a failure",
+          verdict(dict(bare("hello"), checks=[says_unscorable]), {"answer": "Hello."})[0] == "fail")
+    def raises_unscorable(t): raise ev.Unscorable("no state")
+    check("verdict (r3): an Unscorable raised is unscorable", verdict(dict(bare("hello"), checks=[raises_unscorable]), {"answer": "Hello."})[0] == "unscorable")
+    # Round 3, item 5: a denied expected name does not count.
+    trips("served (r3): 'it wasn't X' does not give X", wimbledon,
+          [{"calls": [call0], "answer": "It wasn't %s who won this year." % winner}], "should give what the search found")
+
     # Round 2, item 5: roles and negation within the clause.
     passes("served winner (r2): 'X defeated Y' is a win", wimbledon,
            {"calls": [searched("wimbledon mens winner")], "answer": "%s defeated %s in the final." % (winner, loser)})
@@ -1036,6 +1063,8 @@ def served_checks():
             "answer": "Forty euros is about forty-two dollars thirty-three cents at today's rate."})
     trips("currency (r2): an amount in words in the wrong currency fails", cur,
           [{"calls": [conv], "answer": "That's about seventeen euros twelve cents."}], "the converted amount")
+    trips("currency (r3): a bare number after another currency's amount is not in pounds", cur,
+          [{"calls": [conv], "answer": "The pound is weak today; 20 euros gets you 17.12."}], "the converted amount")
     trips("currency (r2): the amount given in the wrong currency fails", cur, [{"calls": [conv], "answer": "That's about 17.12 euros."}],
           "the converted amount")
     trips("currency (W8): 'I don't know' after a working conversion fails", cur, [{"calls": [conv], "answer": "I don't know, sorry."}],
@@ -1067,6 +1096,11 @@ def served_checks():
     conflict = case("search_conflict")
     call = searched("louvre opening hours sunday", "search_conflict")
     passes("conflict: both times pass", conflict, {"calls": [call], "answer": "One source says 9 am, another 9:30 am."})
+    cf = fake_web.facts("louvre-conflict", seed)
+    one = ("web_search", {"query": "louvre opening hours sunday"},
+           json.dumps({"results": [{"title": "Louvre opening hours", "text": "The Louvre opens at %s every day except Tuesday." % fake_web.shown(cf["open_a"])}]}))
+    trips("conflict (r3): a second time the model's results never showed is not credited", conflict,
+          [{"calls": [one], "answer": "It opens at %s or %s." % (fake_web.shown(cf["open_a"]), fake_web.shown(cf["open_b"]))}], "both times")
     passes("conflict: 'sources differ, check' passes", conflict, {"calls": [call], "answer": "Sources differ on that, so check the Louvre's site."})
     trips("conflict: one time as fact fails", conflict, [{"calls": [call], "answer": "The Louvre opens at 9:30 am on Sundays."}], "both times")
     stale = case("search_stale")
@@ -1173,6 +1207,23 @@ def web_seeds():
           hashes["2026-11-19"][1:] == hashes["2026-11-20"][1:] == hashes["2026-11-26"][1:])
     check("date (r2): the launch's London time across a daylight-saving change is part of the workload",
           before_dst != after_dst, (before_dst, after_dst))
+    discord = suite_case(["when is discord's ipo", "and what time would trading start uk time"])
+    bulls = suite_case(["when is the next home game for the chicago bulls"])
+    saved_date = ev.WEB_DATE
+    try:
+        ev.WEB_DATE = "2026-03-02"
+        d1, b1 = ev.date_workload(discord), ev.case_hash(bulls)
+        ev.WEB_DATE = "2026-03-20"
+        d2 = ev.date_workload(discord)
+        ev.WEB_DATE = "2026-03-03"
+        b2 = ev.case_hash(bulls)
+        ev.WEB_DATE = "2026-03-09"
+        b3 = ev.case_hash(bulls)
+    finally:
+        ev.WEB_DATE = saved_date
+    check("date (r3): the Discord case does not take the launch's date dependence", d1 is None and d2 is None, (d1, d2))
+    check("date (r3): the Bulls' game date (days from today) enters its hash: another weekday, another workload; a week on, the same",
+          b1 != b2 and b1 == b3)
     check("date (W12): a one-day partial forecast has no IndexError",
           len(fake_web.forecast({"forecast_mode": "partial"}, urllib.parse.parse_qs("latitude=1&longitude=1&forecast_days=1"))["daily"]["time"]) == 1)
     folder = tempfile.mkdtemp(prefix="zb-camera-")
@@ -1281,10 +1332,14 @@ def validation():
 # ------------------------------------------------------------------ the runner, with a stand-in app
 FAKE_APP = r'''#!/usr/bin/env python3
 import json, os, sys
-if os.environ.get("FAKE_LEAK"):   # a tool that forgot experiment::web(): a request for a real host, through the proxy it was given
-    import urllib.request
-    try: urllib.request.urlopen("http://api.forgotten-wrap.invalid/v1/x", timeout=5)
-    except Exception: pass
+if os.environ.get("FAKE_LEAK"):   # a tool that forgot experiment::web(): a request for a real host, sent the way the app's
+    import socket, urllib.parse     # HTTP client sends it, to the proxy it was given (written straight to its socket: no lookup)
+    p = urllib.parse.urlsplit(os.environ["http_proxy"])
+    try:
+        with socket.create_connection((p.hostname, p.port), timeout=5) as s:
+            s.sendall(b"GET http://api.forgotten-wrap.invalid/v1/x HTTP/1.1\r\nHost: api.forgotten-wrap.invalid\r\n\r\n")
+            s.recv(100)
+    except OSError: pass
 turns = [l.rstrip("\n") for l in sys.stdin if l.strip()]
 path = os.environ.get("ZB_EVAL_RECORDS")
 if os.environ.get("FAKE_NO_RECORDS") or not path:

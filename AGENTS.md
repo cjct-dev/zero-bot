@@ -213,7 +213,9 @@ groups need first. Which to use:
   only): both sets once on the held-out seed, judged on its own, not against the baseline
   (`exp_compare.py --held-out`, against the roster at the held-out seed: every case defined, run exactly as
   often as asked, by the current case and scorer, each record showing its run took place (its own `run_id`, so
-  copies are not repeats, the traced app, the held-out requests, every turn answered); each set's pass rate, and
+  copies are not repeats, the traced app, the held-out requests, every turn answered and holding the app's trace of
+  its request; a case whose answers move with the date is expected with the hash of the run's own fixture date, so
+  a run judged after midnight is not stale); each set's pass rate, and
   that of the cases that rest on a web service (`web`), at least its floor, `HELD_OUT_FLOOR`; every critical case of
   the roster passing), reported
   beside the gate. The held-out run is refused anywhere else (`--groups held-out` outside the release, the
@@ -239,7 +241,8 @@ local trap that records and refuses, only 127.0.0.1, localhost and a live run's 
 whose app sends anything to the trap is unscorable; every entry point that runs the cli refuses a build without the
 experiments and the network pin (`require_experiments`, caps `web_all` and `net`); a case may set only `CASE_ENV`;
 every app run has `ZB_TEST_NETWORK=1`. **Inside the app** (experiment builds, `ZB_EXP_NET`, which `child_env` always
-sets): HTTP goes only to 127.x and localhost, and in a live run to exactly the AI service's scheme, host and port,
+sets): HTTP goes only to a numeric loopback address (127.0.0.0/8 or ::1, checked as an address; no name, not even
+localhost), and in a live run to exactly the AI service's scheme, host and port (read by libcurl's own URL parser),
 with no redirect followed (`http::send`); network identification never looks at the real network, so no test sends
 a packet to the router (`discovery::current_network`). The proxy exemption for the AI host is only a fallback: the
 pin is checked on every request, so another port, a subdomain or a redirect is refused before it leaves. `tools_cli.py`
@@ -408,8 +411,8 @@ What exists:
   one (unless set aside in its own clause: "London, not New York"). Only what the model saw counts (`annotate_served`
   keeps a fact when the response shows it: an empty result credits nothing, and "the search did not say" is right
   then), and evidence ends at "/new". `chk_weather_served` (added to every case that must call the weather) fails
-  any temperature, both ends of a range, that the forecast did not serve for the day asked about (a rain chance is
-  no temperature; °F is converted); the currency checks require the answer to give the converted amount (rounded as
+  any temperature, both ends of a range, that the forecast did not serve for the day it is said of (the day named in
+  its clause, else the last one named, else the day asked about; a rain chance is no temperature; °F is converted); the currency checks require the answer to give the converted amount (rounded as
   speech rounds it) or the rate, in the right currency (its name, code or sign by the number).
   A web read that failed never counts as a `must` call (an expected failure uses `tried`).
   Search answers live in `tests/mocks/web/search.json` (a rule per question: `match`, `slots` with
@@ -424,7 +427,8 @@ What exists:
   result) and no served value depends on the date (forecasts for a fixed season, by days from today), so runs on
   other days see the same answers with their dates moved and stay paired; the date is therefore not hashed, except
   for the few cases whose answers do move with it (`date_workload`: a weather request for a weekday or the weekend,
-  by how many days ahead it is; the events fixture, by the launch's time in London across daylight saving), which
+  by how many days ahead it is; the launch case of the events fixture, by its time in London across daylight saving;
+  a search rule that counts days from today, such as the Bulls' next game, by the weekdays they fall on), which
   pair only with a run on a day like it. The
   camera picture hashed is the one the cases get (`ZB_EVAL_CAMERA` or the fixture). The fixtures are versioned
   (`fake_web.VERSION`, and every file of `tests/mocks/web/` is hashed into `case_hash`). **The scorer's own test**: `tests/scorer_test.py`

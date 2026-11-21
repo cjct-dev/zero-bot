@@ -1082,8 +1082,14 @@ def annotate_served(c, turns):
             so_far.append(entry)
         t["served"] = list(so_far)
 
+MODEL_RESULT_LIMIT = 6000   # src/agent/agent.cpp kMaxToolResult: bytes of a tool's result the model is given
+
 def _visible(result):
-    """A tool's result as the model saw it, as text ("\u20ac" and "€" alike)."""
+    """A tool's result as the model saw it: cut where the loop cuts it (MODEL_RESULT_LIMIT bytes), as text ("\u20ac"
+    and "€" alike)."""
+    raw = str(result or "").encode("utf-8")
+    if len(raw) > MODEL_RESULT_LIMIT:
+        return raw[:MODEL_RESULT_LIMIT].decode("utf-8", "ignore")   # cut mid-way: the text up to there, as it was
     try: return json.dumps(json.loads(result), ensure_ascii=False)
     except (TypeError, ValueError): return str(result or "")
 
@@ -1121,7 +1127,8 @@ def said(answer, value, how, facts=None, slot=None):
     not the other; "winner" the name, and not as the side that lost (FACTS' "loser" beating it)."""
     a = answer
     if how in ("name", "winner"):
-        if not re.search(r"(?<!\w)%s(?!\w)" % _names(value), a, re.I): return False
+        # Said, and not denied in its own clause ("it wasn't Sinner" names Sinner only to deny it).
+        if not any(not denied(a, m.start()) for m in re.finditer(r"(?<!\w)%s(?!\w)" % _names(value), a, re.I)): return False
         if how == "winner" and facts and facts.get("loser"):
             w, l = _names(value), _names(facts["loser"])
             reversed_ = (r"(?<!\w)%s(?!\w)\s+(?:\w+\s+){0,2}?(?:beat|beats|defeated|defeats|overcame|won|wins|took|lifted|claimed)\b" % l,
@@ -1232,6 +1239,7 @@ def chk_served(rule, slots, how="name", any_of=False):
         if (hits if any_of else len(hits) == len([x for x in slots if x in facts])): return []
         missing = [fw.fill(fw.shown(facts[x]), facts) for x in slots if x not in hits]
         return ["the answer should give what the search found%s: %s" % (" (one of)" if any_of else "", "; ".join(missing))]
+    check.rule = rule   # the rule it reads (date_workload: a rule that counts days from today)
     return check
 
 TEMPERATURE = re.compile(r"(-?\d+(?:[.,]\d+)?)\s*(?:°|degrees?\b|grados\b|graus\b|grad\b|degr[ée]s\b|gradi\b|graden\b)"
@@ -1268,23 +1276,59 @@ def _asked_days(request, day0):
     if re.search(DAY_WORDS[0], r): return [day0.isoformat()]
     return None
 
+# Weekday names in the languages the suite asks in (English first; Spanish, German, French, Italian, Portuguese, Dutch).
+WEEKDAY_NAMES = [r"monday|lunes|montag|lundi|luned[iì]|segunda|maandag", r"tuesday|martes|dienstag|mardi|marted[iì]|ter[cç]a|dinsdag",
+                 r"wednesday|mi[eé]rcoles|mittwoch|mercredi|mercoled[iì]|quarta|woensdag", r"thursday|jueves|donnerstag|jeudi|gioved[iì]|quinta|donderdag",
+                 r"friday|viernes|freitag|vendredi|venerd[iì]|sexta|vrijdag", r"saturday|s[aá]bado|samstag|samedi|sabato|zaterdag",
+                 r"sunday|domingo|sonntag|dimanche|domenica|zondag"]
+
+def _day_mentions(text, d0):
+    """(start, end, dates, today) for every day an answer names: today or now, tomorrow, a weekday (today's weekday may
+    be today or a week on), the weekend, or a date written out ("27 November", "November 27th")."""
+    out = [(m.start(), m.end(), {d0.isoformat()}, True) for m in re.finditer(DAY_WORDS[0], text, re.I)]
+    out += [(m.start(), m.end(), {(d0 + datetime.timedelta(days=1)).isoformat()}, False) for m in re.finditer(DAY_WORDS[1], text, re.I)]
+    for wd, names in enumerate(WEEKDAY_NAMES):
+        ahead = (wd - d0.weekday()) % 7
+        ds = {(d0 + datetime.timedelta(days=ahead)).isoformat()} | ({(d0 + datetime.timedelta(days=7)).isoformat()} if ahead == 0 else set())
+        out += [(m.start(), m.end(), ds, ahead == 0) for m in re.finditer(r"(?<!\w)(?:%s)(?!\w)" % names, text, re.I)]
+    for m in re.finditer(r"\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+(%s)\b|\b(%s)\s+(\d{1,2})(?:st|nd|rd|th)?\b" % ("|".join(MONTHS), "|".join(MONTHS)), text, re.I):
+        day_n, month = (int(m.group(1)), m.group(2)) if m.group(1) else (int(m.group(4)), m.group(3))
+        for year in (d0.year, d0.year + 1):
+            try: d = datetime.date(year, MONTHS.index(month.lower()) + 1, day_n)
+            except ValueError: break
+            if d >= d0:
+                out.append((m.start(), m.end(), {d.isoformat()}, d == d0))
+                break
+    weekend = {(d0 + datetime.timedelta(days=(wd - d0.weekday()) % 7)) for wd in (5, 6)}
+    out += [(m.start(), m.end(), {d.isoformat() for d in weekend}, d0 in weekend) for m in re.finditer(r"\bweekend\b", text, re.I)]
+    return sorted(out)
+
+def _day_of(text, pos, mentions):
+    """The day mention a temperature at POS belongs to: the nearest in its own clause (before or after it: "18
+    today and 12 tomorrow"), else the last one before it (a later clause goes on about the same day), else None."""
+    start = max([text.rfind(ch, 0, pos) for ch in ".;!?\n,"]) + 1
+    ends = [k for k in (text.find(ch, pos) for ch in ".;!?\n,") if k >= 0]
+    end = min(ends) if ends else len(text)
+    inside = [m for m in mentions if m[0] >= start and m[1] <= end]
+    if inside:
+        return min(inside, key=lambda m: min(abs(m[0] - pos), abs(m[1] - pos)))
+    before = [m for m in mentions if m[1] <= pos]
+    return before[-1] if before else None
+
 def chk_weather_served(t):
-    """Every temperature the answer gives (both ends of a range) is one the forecast served for the day asked about
-    (its low or high; the current reading too for today or no day), within 1 degree for rounding. A rain chance,
-    humidity or wind is no temperature; with no forecast, any temperature is made up."""
+    """Every temperature the answer gives (both ends of a range) is one the forecast served for the day it is said
+    of: the day named in its clause (or the last day named before it), else the day the question asked about, else
+    any day; that day's low or high, and the current reading too for today (or no day at all), within 1 degree for
+    rounding (°F converted). So today's and tomorrow's highs swapped fail, a rain chance is no temperature, and with
+    no forecast any temperature is made up."""
     days, now = _served_weather(t)
-    asked = _asked_days(t.get("request"), web_day(t))
-    if asked is not None:   # and any day the answer itself goes on to name ("Monday looks wetter, 10 degrees")
-        d0, ans = web_day(t), t["answer"]
-        named = [d0.isoformat()] if re.search(DAY_WORDS[0], ans, re.I) else []
-        if re.search(DAY_WORDS[1], ans, re.I): named.append((d0 + datetime.timedelta(days=1)).isoformat())
-        wds = [wd for wd, name in enumerate(WEEKDAYS) if re.search(r"\b%s\b" % name, ans, re.I)]
-        if re.search(r"\bweekend\b", ans, re.I): wds += [5, 6]
-        named += [(d0 + datetime.timedelta(days=(wd - d0.weekday()) % 7)).isoformat() for wd in wds]
-        asked = sorted(set(asked) | set(named))
-    allowed = [x for d, v in days.items() if asked is None or d in asked for x in v]
-    if asked is None or web_day(t).isoformat() in asked: allowed += now
-    a = t["answer"]
+    d0, a = web_day(t), t["answer"]
+    asked = _asked_days(t.get("request"), d0)
+    mentions = _day_mentions(a, d0)
+
+    def allowed_for(dates, today):
+        vals = [x for d, v in days.items() if dates is None or d in dates for x in v]
+        return vals + (now if today else [])
     numbers_ = []
     for m in TEMP_RANGE.finditer(a):
         numbers_ += [(m.group(1), m.start(1), m.group(3)), (m.group(2), m.start(2), m.group(3))]
@@ -1296,10 +1340,13 @@ def chk_weather_served(t):
         if v >= 0 and negative(a, pos): v = -v
         if fahrenheit:   # "62°F" for a served 16.8°C: compared in Celsius, within the same rounding
             v = (v - 32) * 5 / 9
-        if not any(abs(v - x) <= (1.2 if fahrenheit else 1.0) for x in allowed): made_up.append(text + ("°F" if fahrenheit else ""))
+        said_of = _day_of(a, pos, mentions)
+        if said_of: allowed = allowed_for(said_of[2], said_of[3])
+        else: allowed = allowed_for(asked, asked is None or d0.isoformat() in (asked or []))
+        if not any(abs(v - x) <= (1.2 if fahrenheit else 1.0) for x in allowed):
+            made_up.append(text + ("°F" if fahrenheit else "") + (" (%s)" % a[said_of[0]:said_of[1]] if said_of else ""))
     if made_up:
-        return ["the answer gives a temperature the forecast did not serve for %s: %s" % ("the day asked about" if asked else "any day",
-                                                                                          ", ".join(sorted(set(made_up))))]
+        return ["the answer gives a temperature the forecast did not serve for the day it is said of: %s" % ", ".join(made_up)]
     return []
 
 # The words, codes and signs a currency is given by (and the languages the suite asks in).
@@ -1337,10 +1384,16 @@ def says_money(text, value, tol, code=None):
         if re.match(r"\s*(?:%s)(?!\w)" % words_, after, re.I) or re.search(r"(?:£|€|\$|¥)\s*$", before) and \
                 re.search(r"(?:%s)" % words_, before, re.I):
             return True
-        others = "|".join(w for c, w in CURRENCY_WORDS.items() if c != code)
-        labelled = re.match(r"\s*(?:%s)(?!\w)" % others, after, re.I) or re.search(r"(?:£|€|\$|¥)\s*$", before)
-        if not labelled and re.search(r"(?<!\w)(?:%s)(?!\w)" % words_, text, re.I):
-            return True   # no currency by it, in an answer that names the right one: "71.80 pounds ... 23.93 each"
+        every = "|".join(CURRENCY_WORDS.values())
+        if re.match(r"\s*(?:%s)(?!\w)" % every, after, re.I) or re.search(r"(?:£|€|\$|¥)\s*$", before):
+            continue   # labelled, and not with the target's name or sign (that was accepted above)
+        # A bare number: it takes the currency of the last amount given with one before it ("71.80 pounds ... 23.93
+        # each"), never of a currency merely mentioned ("the pound is weak; 20 euros gets you 17.12").
+        last = None
+        for lm in re.finditer(r"(?:(?:£|€|\$|¥)\s*\d[\d,]*\.?\d*)|(?:\d[\d,]*\.?\d*\s*(?:%s)(?!\w))" % every, text[:m.start()], re.I):
+            last = lm.group()
+        if last and re.search(r"(?<!\w)(?:%s)(?![a-z])" % words_, last, re.I):
+            return True
     return False
 
 def money_tol(value):
@@ -1359,8 +1412,11 @@ def chk_conflict(t):
     """Two sources disagree (the stand-in's "conflict" fixture: its two opening times, for the run's seed): the
     answer gives both, or says the sources differ or that it should be checked; one time stated as fact is a guess."""
     a = t["answer"]
-    f = _fake_web().facts("louvre-conflict", t.get("web_seed", WEB_SEED), web_day(t))
-    both = says_time(a, _clock(f["open_a"]), 0) and says_time(a, _clock(f["open_b"]), 0)
+    if t.get("served") is None: annotate_served({"env": {}}, [t])
+    seen = {}
+    for e in t["served"]:
+        if e["rule"] == "louvre-conflict": seen.update(e["facts"])   # only the times the model's results showed
+    both = len(seen) == 2 and all(says_time(a, _clock(seen[k]), 0) for k in ("open_a", "open_b"))
     hedge = re.search(r"differ|conflict|disagree|vary|varies|inconsistent|one source|another source|some sources|other sources|sources (say|give|list)|"
                       r"either|not (entirely |completely )?(sure|certain|clear|consistent)|double.check|check (the|their|its|with)|confirm|verify", a, re.I)
     return [] if both or hedge else ["the answer should give both times the sources gave, or say they disagree"]
@@ -1824,7 +1880,7 @@ CASES = [
 # The scorer's version, in every result (with the case's hash and whether it was traced), so that a
 # comparison of two runs knows when their verdicts are comparable. Raise it when what a check accepts
 # changes.
-SCORER_VERSION = "2026-11-21.7"   # ZB-086: .3 evidence, meaning, the day asked; .4 decimal comma; .5 round 2: visible facts, roles, units, currency bound; .6 unlabelled share, named days; .7 amounts in words
+SCORER_VERSION = "2026-11-21.9"   # ZB-086: .3 evidence, meaning, the day asked; .4 decimal comma; .5 round 2: visible facts, roles, units, currency bound; .6 unlabelled share, named days; .7 amounts in words; .8 round 3: day per clause, the model's cut, denied names, bare amounts, flags; .9 weekdays in six languages, dates written out
 
 TOOL_RE = re.compile(r"^\s+-> (\w+) (.*)$")
 RESULT_RE = re.compile(r"^\s+<- (.*)$")
@@ -2195,6 +2251,13 @@ def place_device_log(turns, log):
     turns[-1]["device_log_between"] = between
 
 UNSCORABLE = "unscorable: "
+
+class UnscorableProblem(str):
+    """A problem that makes a run unscorable rather than failed: the verdict goes by this type, never by the text
+    (which starts with UNSCORABLE only so that a record says so to whoever reads it)."""
+
+def unscorable(text):
+    return UnscorableProblem(text if text.startswith(UNSCORABLE) else UNSCORABLE + text)
 TURN_FIELDS = ("tools", "results", "answer", "total", "first", "error")
 
 def verdict(c, run):
@@ -2211,14 +2274,14 @@ def verdict(c, run):
             missing = [f for f in TURN_FIELDS if not isinstance(t, dict) or f not in t]
             if missing and not (isinstance(t, dict) and t.get("unstarted")):
                 reasons.append("turn %d of the saved result has no %s" % (i + 1, ", ".join(missing)))
-    if reasons: return "unscorable", [UNSCORABLE + r for r in reasons]
+    if reasons: return "unscorable", [unscorable(r) for r in reasons]
     problems = score(c, turns)
     p = run.get("process") or {}
     if p.get("timeout") and not any(t.get("timed_out") or t.get("unstarted") for t in turns):
         problems.append("the run timed out after its last answer: the app did not exit")
     elif p.get("exit") not in (0, None) and not any(t.get("unstarted") or t["total"] is None for t in turns):
         problems.append("the app ended with status %s after its last answer" % p["exit"])
-    definite = [x for x in problems if not x.startswith(UNSCORABLE)]
+    definite = [x for x in problems if not isinstance(x, UnscorableProblem)]
     return ("fail" if definite else "unscorable" if problems else "pass"), problems
 
 def run_from_saved(r, c=None):
@@ -2350,20 +2413,20 @@ def _score(c, turns):
                 for i, t in enumerate(turns):
                     if t.get("unstarted"): continue
                     try: problems += [_at("turn %d: " % (i + 1), p) for p in check(t)]
-                    except Unscorable as e: problems.append(UNSCORABLE + "turn %d: %s" % (i + 1, e))
+                    except Unscorable as e: problems.append(unscorable("turn %d: %s" % (i + 1, e)))
             elif n is not None and not -len(turns) <= n < len(turns):
                 problems.append("a check of turn %d, which did not happen" % (n + 1))
             else:
                 t = last if n is None else turns[n]
                 if t.get("unstarted"): continue   # reported above, once
                 problems += [_at(where, p) for p in check(t)]
-        except Unscorable as e: problems.append(UNSCORABLE + where + str(e))
-        except Exception as e: problems.append(UNSCORABLE + where + "the check could not run: %r" % e)
+        except Unscorable as e: problems.append(unscorable(where + str(e)))
+        except Exception as e: problems.append(unscorable(where + "the check could not run: %r" % e))
     return problems
 
 def _at(where, p):
     """A check's problem labelled with its turn, keeping an unscorable one marked as such (the mark comes first)."""
-    return UNSCORABLE + where + p[len(UNSCORABLE):] if p.startswith(UNSCORABLE) else where + p
+    return unscorable(where + p[len(UNSCORABLE):]) if isinstance(p, UnscorableProblem) else where + p
 
 # ---------------------------------------------------------------- what a result can be compared on
 def _fingerprint(x, seen=None):
@@ -2422,10 +2485,21 @@ def date_workload(c):
         named = [wd for wd, name in enumerate(WEEKDAYS) if re.search(r"\b%s\b" % name, asked)]
         if re.search(r"\bweekend\b", asked): named += [5, 6]
         if named: out["weekday_days_ahead"] = sorted({(wd - day.weekday()) % 7 for wd in named})
-    if web_fixture(c) == "events":
-        from zoneinfo import ZoneInfo
+    raw = c.get("source", c)
+    kinds = {x.get("kind") for x in raw.get("checks", []) if isinstance(x, dict)}
+    if web_fixture(c) == "events" and ("event_time" in kinds or re.search(r"apple|launch|keynote", asked)):
+        from zoneinfo import ZoneInfo   # the launch's time, only for the case about the launch (not the Discord one)
         when = _fake_web().event_time("product_launch", day).astimezone(ZoneInfo("Europe/London"))
         out["event_in_london"] = when.strftime("%H:%M")
+    # A search rule whose answer counts days from today (the Bulls' next game, a strike, last night's score): the
+    # weekdays those days fall on.
+    fw = _fake_web()
+    rules = sorted(r for r in {x.get("rule") for x in raw.get("checks", []) if isinstance(x, dict) and x.get("kind") == "served"} |
+                   {getattr(y, "rule", None) for x in raw.get("checks", []) if callable(x)
+                    for y in [x] + [cell.cell_contents for cell in (getattr(x, "__closure__", None) or ()) if _has_contents(cell)]} if r)
+    for rid in [r for r in rules if r in fw.ALL_RULES]:
+        offsets = sorted({int(n) for n in re.findall(r"\{day:([+-]?\d+)\}", json.dumps(fw.ALL_RULES[rid]))})
+        if offsets: out.setdefault("search_days", {})[rid] = [(day + datetime.timedelta(days=n)).strftime("%a") for n in offsets]
     return out or None
 
 def web_version():

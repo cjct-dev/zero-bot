@@ -513,16 +513,12 @@ def no_real_web(root):
               [w.get("key") for w in seen])
         check("the run used the runner's stand-in, not an inherited ZB_EXP_WEB", all(w["fixture"] == "default" for w in seen))
         # A request that does get past the app's own rules is caught: the trap, at loopback, refuses it, and the
-        # run says so (here sent by hand through the proxy the app was given, to a name that resolves nowhere).
-        import urllib.request
-        env = netguard.child_env()
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": env["http_proxy"]}))
+        # run says so. Sent by hand, written straight to the trap's socket as a proxy is sent one: no NO_PROXY can
+        # send it elsewhere, and no name is looked up (round 3: not even a DNS query leaves).
         n0 = trap.count()
-        try:
-            opener.open("http://forgotten-wrap.invalid/x", timeout=5)
-        except Exception:   # noqa: BLE001  refused by the trap (403)
-            pass
-        check("the trap records and refuses a request for anywhere else", any("forgotten-wrap.invalid" in x for x in trap.since(n0)), trap.since(n0))
+        status = netguard.send_to_trap(netguard.child_env()["http_proxy"], "http://forgotten-wrap.invalid/x")
+        check("the trap records and refuses a request for anywhere else", "403" in status and
+              any("forgotten-wrap.invalid" in x for x in trap.since(n0)), (status, trap.since(n0)))
     finally:
         ev.REAL_KEYS[:] = []
         if ev._web.get("proc"):
@@ -647,7 +643,9 @@ def network_pin(root):
         b.shutdown()
     # Another port or another host of the AI service: refused inside the app. In a namespace of its own, so that an
     # app without the pin could not reach anything either.
-    for base, why in (("https://ai.invalid:8443/v1", "another port"), ("https://other.ai.invalid/v1", "a host under it")):
+    for base, why in (("https://ai.invalid:8443/v1", "another port"), ("https://other.ai.invalid/v1", "a host under it"),
+                      ("https://ai.invalid:0/v1", "port 0 (not the default port)"), ("http://127.0.0.1.1:9/v1", "a name made of digits and dots"),
+                      ("http://localhost:9/v1", "a name, even localhost")):
         e = netguard.child_env(g.env(), keep=("ZB_API_BASE", "ZB_API_KEY"), allow_origin="https://ai.invalid/v1",
                                ZB_API_BASE=base, ZB_API_KEY="test")
         r = isolated([APP, "--ask", "hello"], e, timeout=120)
@@ -656,6 +654,12 @@ def network_pin(root):
             break
         check("the AI exemption is the exact origin: %s is refused" % why, "refused: a test run sends nothing but to 127.x and the AI service"
               in r.stdout + r.stderr, (r.stdout + r.stderr)[-300:])
+    # And loopback itself is an address: 127.0.0.1 and [::1] go out (to a closed port here), nothing else.
+    for base, ok in (("http://127.0.0.1:9/v1", True), ("http://127.255.0.2:9/v1", True), ("http://[::1]:9/v1", True)):
+        e = netguard.child_env(g.env(), keep=("ZB_API_BASE", "ZB_API_KEY"), ZB_API_BASE=base, ZB_API_KEY="test")
+        r = isolated([APP, "--ask", "hello"], e, timeout=120)
+        if r is None: break
+        check("loopback %s is allowed" % base, ("refused: a test run" not in r.stdout + r.stderr) == ok, (r.stdout + r.stderr)[-200:])
 
 
 if __name__ == "__main__":
