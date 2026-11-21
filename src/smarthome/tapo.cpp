@@ -27,6 +27,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "smarthome/drivers/support.h"
+
 namespace tapo {
 
 // ---------------------------------------------------------------------------------------------
@@ -882,18 +884,6 @@ std::string lower(std::string s) {
     return s;
 }
 
-// A MAC as 12 lower-case hex digits, whatever the notation ("AA-BB-..", "aa:bb:..", none); "" for
-// anything else.
-std::string mac_digits(const std::string &raw) {
-    std::string hex;
-    for (const unsigned char c : raw) {
-        if (c == ':' || c == '-') continue;
-        if (!isxdigit(c) || hex.size() >= 12) return "";
-        hex += static_cast<char>(tolower(c));
-    }
-    return hex.size() == 12 ? hex : "";
-}
-
 // Whether the plug in this session is the one saved (Device::mac, as `want`): another plug of the
 // same account given this one's address would accept the same login, and would then be switched
 // in its place. Asked once per session and per saved MAC (Session::mac), before anything else is
@@ -907,7 +897,7 @@ Sent check_plug(const std::string &host, Session &s, const std::string &want, bo
     const Sent sent = send(host, s, R"({"method":"get_device_info","params":null})", resp, keep, err);
     if (sent != Sent::ok) return sent;
     const json &result = get_obj(resp, "result");
-    if (result.is_object() && result.contains("mac") && mac_digits(get_str(result, "mac")) != want) {
+    if (result.is_object() && result.contains("mac") && support::mac_digits(get_str(result, "mac")) != want) {
         keep = false;
         err = "another plug answered at this plug's saved address, so nothing was sent to it";
         return Sent::failed;
@@ -973,7 +963,7 @@ bool exchange(const Device &dev, const Credentials &cred, const json &req, json 
     }
 
     const std::string host = dev.ip;
-    const std::string want_mac = mac_digits(dev.mac);
+    const std::string want_mac = support::mac_digits(dev.mac);
     const auto login = [&]() {
         st->session.reset();
         return tpap ? login_tpap(host, dev, pw_hex, *st, fp, err)

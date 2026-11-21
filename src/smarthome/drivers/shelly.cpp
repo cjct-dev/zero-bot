@@ -94,16 +94,6 @@ bool token_chars(const std::string &s, const char *extra, size_t max) {
     return true;
 }
 
-std::string lower_hex_mac(const std::string &raw) {
-    std::string out;
-    for (const unsigned char c : raw) {
-        if (c == ':' || c == '-') continue;
-        if (!isxdigit(c)) return "";
-        out += static_cast<char>(tolower(c));
-    }
-    return out.size() == 12 ? out : "";
-}
-
 std::string upper(std::string s) {
     for (char &c : s) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
     return s;
@@ -374,7 +364,7 @@ bool parse_identity(const std::string &body, Identity &out) {
         out.auth = boolean(member(j, "auth")).value_or(false);
         out.num_meters = whole(member(j, "num_meters"), 0, 16, -1);
     }
-    out.mac = lower_hex_mac(text(member(j, "mac")));
+    out.mac = support::mac_digits(text(member(j, "mac")));
     if (out.gen == 1 && out.mac.empty()) return false;   // Gen1 is recognised by its MAC
     return true;
 }
@@ -1131,7 +1121,7 @@ public:
             // The status names the device's MAC (Gen1 "mac", Gen2+ "sys.mac"): another device at
             // this address is not read as this one.
             const json *sys = gen >= 2 ? member_obj(status, "sys") : &status;
-            const std::string mac = sys ? lower_hex_mac(text(member(*sys, "mac"))) : "";
+            const std::string mac = sys ? support::mac_digits(text(member(*sys, "mac"))) : "";
             const std::string known = known_device(things, "mac");
             if (!known.empty() && !mac.empty() && mac != known) {
                 err = std::string(kOtherDevice) + " Scan the network again in Settings, Smart home.";

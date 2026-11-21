@@ -776,15 +776,7 @@ bool reply_ok(const json &request, const json &reply, std::string &err) {
     return true;
 }
 
-std::string mac_digits(const std::string &raw) {
-    std::string hex;
-    for (const char c : raw) {
-        if (c == ':' || c == '-') continue;
-        if (!isxdigit(static_cast<unsigned char>(c)) || hex.size() >= 12) return "";
-        hex += static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    }
-    return hex.size() == 12 ? hex : "";
-}
+std::string mac_digits(const std::string &raw) { return support::mac_digits(raw); }
 
 bool same_device(const std::string &saved_mac, const json &sysinfo) {
     const std::string saved = mac_digits(saved_mac);

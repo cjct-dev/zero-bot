@@ -28,6 +28,7 @@
 
 #include <openssl/evp.h>
 
+#include "smarthome/drivers/support.h"
 #include "smarthome/home.h"
 
 namespace wiz {
@@ -199,19 +200,11 @@ Got udp_exchange(const std::string &ip, int port, const std::string &method, con
     return got;
 }
 
-// A MAC as 12 lower-case hex digits ("A8:BB:50:06:03:3D" and "a8bb5006033d" alike); "" for anything else.
-std::string plain_mac(const std::string &text) {
-    std::string out;
-    for (const unsigned char c : text)
-        if (c != ':' && c != '-') out += static_cast<char>(std::tolower(c));
-    return out.size() == 12 && is_hex(out) ? out : std::string();
-}
-
-// The MAC this device was saved under: discovery names a WiZ device "wiz:<its MAC>". "" when the
-// saved record does not say.
+// The MAC this device was saved under, as 12 lower-case hex digits: discovery names a WiZ device
+// "wiz:<its MAC>". "" when the saved record does not say.
 std::string saved_mac(const Device &dev) {
-    const std::string from_id = dev.id.rfind("wiz:", 0) == 0 ? plain_mac(dev.id.substr(4)) : std::string();
-    return from_id.empty() ? plain_mac(dev.mac) : from_id;
+    const std::string from_id = dev.id.rfind("wiz:", 0) == 0 ? support::mac_digits(dev.id.substr(4)) : std::string();
+    return from_id.empty() ? support::mac_digits(dev.mac) : from_id;
 }
 
 // Whether a getSystemConfig or getPilot result came from this device. Addresses are handed out
@@ -221,7 +214,7 @@ std::string saved_mac(const Device &dev) {
 // asked for one thing would be spent on another. A result that names no MAC cannot be told apart.
 bool same_device(const std::string &expected, const json &result) {
     if (expected.empty()) return true;
-    const std::string got = plain_mac(jstr(result, "mac"));
+    const std::string got = support::mac_digits(jstr(result, "mac"));
     return got.empty() ? !(result.is_object() && result.contains("mac")) : got == expected;
 }
 
