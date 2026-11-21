@@ -11,7 +11,6 @@
 
 #include "agent/llm.h"
 #include "core/activity.h"
-#include "core/autostart.h"
 #include "core/music_lib.h"
 #include "core/radio.h"
 #include "core/settings.h"
@@ -961,9 +960,6 @@ struct Setup {
             Menu::add_paragraph(items, "All optional. You can change these later in settings (SPACE).");
             items.push_back(MenuItem::val("Speak replies", [] { return on_off(S().speak_replies); }, nullptr,
                                           [](int) { change([](Settings &s) { s.speak_replies = !s.speak_replies; }); }));
-            if (autostart::supported())
-                items.push_back(MenuItem::val("Start at power-on", [] { return on_off(autostart::enabled()); }, nullptr,
-                                              [](int) { autostart::set(!autostart::enabled()); }));
             items.push_back(self->edit("Web search key", &Settings::search_key,
                                        "A Tavily API key lets the assistant search the web. Leave it out to do without.", true));
             items.push_back(MenuItem::action("Finish", [self] { self->finish(); }));
@@ -1175,12 +1171,6 @@ void open_settings(Menu &menu, const SettingsHooks &hooks) {
                 util::apply_timezone(zone);
             }, "A zone such as Europe/Lisbon or Asia/Tokyo. Leave blank to follow the system. You can also just tell the assistant where you are.");
         }));
-        if (autostart::supported())
-            items.push_back(MenuItem::val("Start at power-on", [] { return on_off(autostart::enabled()); }, nullptr, [&menu](int) {
-                const bool want = !autostart::enabled();
-                if (!autostart::set(want)) menu.toast("Could not change the start-up setting");
-                else menu.toast(want ? "Opens when the device is switched on" : "The launcher opens first again");
-            }));
         items.push_back(MenuItem::val("Internet via phone", [] {
             return std::string(tether::via_phone() ? "Connected" : "ENTER to connect");
         }, [&menu] {

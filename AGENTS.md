@@ -42,7 +42,8 @@ src/agent/          the request loop (agent), service client (llm), system promp
 src/core/           settings, calendar/reminder/timer/memory store, timers (the timer tool, which
                     timer words mean, the alarm's logic), music library, radio (the user's station
                     file, the radio tool, the check of a stream), breathing timing,
-                    start-at-power-on, phone tethering, utilities (dates, files, strings)
+                    phone tethering, what an upgrade leaves behind (upgrade), utilities (dates,
+                    files, strings)
 src/net/            libcurl wrapper with a shared connection/DNS/TLS-session cache
 src/platform/       display, keyboard, audio (recorder, speaker, music), codecs, camera,
                     infrared, subprocess helpers

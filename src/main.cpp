@@ -18,6 +18,7 @@
 #include "core/music_lib.h"
 #include "core/settings.h"
 #include "core/store.h"
+#include "core/upgrade.h"
 #include "net/http.h"
 #include "platform/codec.h"
 #include "smarthome/discovery.h"
@@ -49,7 +50,6 @@ void usage() {
          "  --tts \"text\" OUT.raw  synthesize speech and write raw 16-bit 24 kHz mono PCM\n"
          "  --shots DIR           render the app's screens to PNG files in DIR and exit\n"
          "  --keydump             log raw key codes to stderr while the app runs\n"
-         "  --boot                start-at-power-on mode: runs the app once per boot, then does nothing\n"
          "  --version");
 }
 
@@ -297,7 +297,7 @@ int main(int argc, char **argv) {
     setenv("RES_OPTIONS", "single-request", 0);
     std::string ask, shots, steer, talk_over, follow_ups, tool_name, tool_args = "{}";
     std::string stt_file, tts_text, tts_out, bench_wav, bench_opus;
-    bool chat = false, keydump = false, boot = false, discover = false, home_refresh = false, show_prompt = false, show_schema = false;
+    bool chat = false, keydump = false, discover = false, home_refresh = false, show_prompt = false, show_schema = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--ask" && i + 1 < argc) ask = argv[++i];
@@ -315,7 +315,6 @@ int main(int argc, char **argv) {
         else if (a == "--stt" && i + 1 < argc) stt_file = argv[++i];
         else if (a == "--tts" && i + 2 < argc) { tts_text = argv[++i]; tts_out = argv[++i]; }
         else if (a == "--keydump") keydump = true;
-        else if (a == "--boot") boot = true;
         else if (a == "--version") { puts("zero_bot " ZB_VERSION); return 0; }
         else { usage(); return a == "--help" || a == "-h" ? 0 : 2; }
     }
@@ -326,15 +325,6 @@ int main(int argc, char **argv) {
         setenv("XDG_CONFIG_HOME", (state + "/config").c_str(), 1);
         setenv("XDG_DATA_HOME", (state + "/data").c_str(), 1);
         setenv("XDG_CACHE_HOME", (state + "/cache").c_str(), 1);
-    }
-    if (boot) {
-        // The launcher's service runs this before starting the launcher itself. A marker in the
-        // per-boot runtime directory makes sure the app opens once after power-on and that
-        // later launcher restarts go straight to the launcher.
-        const char *runtime = getenv("XDG_RUNTIME_DIR");
-        const std::string marker = std::string(runtime && *runtime ? runtime : "/tmp") + "/zero-bot.booted";
-        if (access(marker.c_str(), F_OK) == 0) return 0;
-        if (FILE *f = fopen(marker.c_str(), "w")) fclose(f);
     }
     http::global_init();
     Settings::load();
@@ -442,6 +432,7 @@ int main(int argc, char **argv) {
 #else
     // Reading tags from a large library takes a moment; do it off the UI thread.
     std::thread([] { MusicLibrary::get().refresh(Settings::get().eff_music_dir()); }).detach();
+    if (shots.empty()) upgrade::tidy_at_start();
     quit(ui::run_app(shots, keydump));
 #endif
 }
