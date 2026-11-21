@@ -592,26 +592,7 @@ std::string Network::id() const {
 
 std::string Network::label() const { return ssid.empty() ? "Wired network" : ssid; }
 
-Route default_route() {
-    Route r;
-    std::ifstream route("/proc/net/route");
-    std::string line;
-    std::getline(route, line);
-    while (std::getline(route, line)) {
-        std::istringstream cols(line);
-        std::string iface, dest, gw;
-        unsigned flags = 0;
-        cols >> iface >> dest >> gw >> std::hex >> flags;
-        if (dest != "00000000" || !(flags & 0x2)) continue;
-        r.iface = iface;
-        in_addr a;
-        a.s_addr = static_cast<in_addr_t>(strtoul(gw.c_str(), nullptr, 16));   // already in network order
-        char ip[INET_ADDRSTRLEN];
-        if (inet_ntop(AF_INET, &a, ip, sizeof(ip))) r.gateway = ip;
-        break;
-    }
-    return r;
-}
+Route default_route() { return net_status::default_route(true); }
 
 Link link_kind(const std::string &iface, std::string &why_not, const std::string &sys) {
     const std::string dir = sys + "/" + iface;

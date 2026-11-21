@@ -38,18 +38,19 @@ trap 'rm -rf "$state"' EXIT INT TERM
 DRIVERS=$(echo src/smarthome/drivers/*.cpp)
 APP="src/smarthome/store.cpp src/smarthome/targets.cpp src/smarthome/control.cpp src/smarthome/tool.cpp
      src/smarthome/discovery.cpp src/smarthome/tapo.cpp $DRIVERS src/core/util.cpp src/platform/proc.cpp
-     src/platform/sys.cpp src/net/http.cpp"
+     src/platform/sys.cpp src/platform/net_status.cpp src/net/http.cpp"
 # The timers need only these, with util.cpp and proc.cpp from above.
 TIMERS="src/core/timers.cpp src/core/store.cpp src/platform/audio.cpp src/platform/codec.cpp"
-# The radio needs these on top of the smart-home objects (for its name cleaning) and audio.cpp.
-RADIO="src/core/radio.cpp src/core/tether.cpp src/platform/net_status.cpp"
+# The radio needs these on top of the smart-home objects (for its name cleaning; net_status.cpp for the
+# tether) and audio.cpp.
+RADIO="src/core/radio.cpp src/core/tether.cpp"
 # The tools' foundations need only the calculator, with util.cpp and proc.cpp from above.
 TOOLS="src/agent/calc.cpp"
 # DIAGNOSTICS (temporary): the activity log and saved conversations, with util.cpp from above.
 DIAG="src/core/activity.cpp src/core/settings.cpp"
 # What an older version left behind (core_test), with util.cpp and proc.cpp from above.
 UPGRADE="src/core/upgrade.cpp"
-# The shared helpers core_test checks, with net_status.cpp from RADIO and sys.cpp from APP.
+# The shared helpers core_test checks, with net_status.cpp and sys.cpp from APP.
 HELPERS="src/platform/power.cpp"
 # What every thread shares: files saved at once, the settings, the calendar's alerts (store.cpp
 # from TIMERS, util.cpp from above, settings.cpp from DIAG).
