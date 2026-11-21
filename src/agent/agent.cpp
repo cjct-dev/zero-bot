@@ -355,6 +355,7 @@ private:
     };
 
     Then one_round(const Budget &budget);
+    void messages_for(Round &r, const Budget &budget);
     void new_request();
     int steer_in();
     void wait_while_listening();
@@ -453,17 +454,7 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     a_.set_state(AgentState::Thinking);
     a_.round_cancel_ = false;
 
-    r.messages = json::array({{{"role", "system"}, {"content", prompt::system_prompt()}}});
-    {
-        std::lock_guard<std::mutex> lk(a_.mtx_);
-        for (auto &m : a_.history_) r.messages.push_back(m);
-    }
-    if (budget.last()) add_note(r.messages, guards::kLastRound);
-
-    r.corrected = !correction_.empty();
-    if (r.corrected) add_note(r.messages, correction_);
-    correction_.clear();
-
+    messages_for(r, budget);
     r.opt.model = Settings::get().eff_llm_model();
     r.opt.fast = Settings::get().fast_mode;
     {
@@ -721,4 +712,19 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     if (r.res.content.empty() && a_.ev_.error) a_.ev_.error("The model returned an empty answer.");
     // Something typed while the answer was being spoken becomes the next request.
     return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+}
+
+// What the model is sent this round: the system prompt, the conversation, and the notes for this
+// call alone (the last round's, a correction). Built for every call, never kept in the history.
+void Agent::Turn::messages_for(Round &r, const Budget &budget) {
+    r.messages = json::array({{{"role", "system"}, {"content", prompt::system_prompt()}}});
+    {
+        std::lock_guard<std::mutex> lk(a_.mtx_);
+        for (auto &m : a_.history_) r.messages.push_back(m);
+    }
+    if (budget.last()) add_note(r.messages, guards::kLastRound);
+
+    r.corrected = !correction_.empty();
+    if (r.corrected) add_note(r.messages, correction_);
+    correction_.clear();
 }
