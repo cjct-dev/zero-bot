@@ -356,6 +356,7 @@ private:
     };
 
     Then one_round(const Budget &budget);
+    std::optional<Then> second_look(Round &r);
     bool on_error(Round &r);
     std::optional<Then> cut_short(Round &r);
     bool withdraw_if_steered(Round &r);
@@ -466,44 +467,7 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     if (const auto then = cut_short(r)) return *then;
     if (on_error(r)) return Then::Finish;
 
-    // E3: a draft the parallel check clears once the draft is complete stands without the second look.
-    bool cleared = r.released;
-    if (r.pcheck.active()) {
-        if (!r.res.tool_calls.empty()) r.pcheck.used("main_tool");
-        else if (r.hold && !r.released && !r.res.content.empty()) {
-            cleared = r.pcheck.wait_none(kCheckWaitMs);
-            r.pcheck.used(cleared ? "after" : r.pcheck.answered() ? "second_look" : "late");
-        }
-        r.pcheck.stop();
-        rt_.parallel_check(r.pcheck.summary());
-    }
-    if (r.hold && !cleared && r.res.tool_calls.empty() && !r.res.content.empty()) {
-        json review = r.messages;
-        review.push_back({{"role", "assistant"}, {"content", r.res.content}});
-        review.push_back({{"role", "user"}, {"content", guards::kSecondLook}});
-        llm::ChatOptions check;
-        check.model = r.opt.model;
-        check.fast = true;
-        check.cancel = &a_.cancel_;
-        check.purpose = "second_look";
-        llm::ChatResult second = llm::chat(review, tool_schema_, check);
-        if (experiment::tracing()) {
-            std::string outcome = second.error.empty() ? "" : "error";
-            for (const auto &c : second.tool_calls) outcome += (outcome.empty() ? "" : ",") + c.name;
-            rt_.second_look(outcome.empty() ? "ok" : outcome);
-        }
-        wait_while_listening();
-        if (a_.cancel_) return Then::Finish;
-        if (a_.has_pending()) {  // the user added something while the draft was being checked
-            steer_in();
-            return Then::Again;
-        }
-        // A failed check lets the draft through: a network hiccup must not silence the assistant.
-        if (second.error.empty() && !second.tool_calls.empty()) {
-            r.res.tool_calls = std::move(second.tool_calls);
-            r.res.content.clear();
-        }
-    }
+    if (const auto then = second_look(r)) return *then;
 
     // A draft that claims what no tool call backs is withdrawn, and the model told why (guards::kClaims).
     const guards::Claim *claim = r.unbacked;
@@ -620,6 +584,51 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     if (r.res.content.empty() && a_.ev_.error) a_.ev_.error("The model returned an empty answer.");
     // Something typed while the answer was being spoken becomes the next request.
     return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+}
+
+// Fast mode's second look at a draft held back because it called no tool: the model, shown its own
+// draft, either lets it stand or calls the tool it should have. The user saying more meanwhile
+// withdraws the draft (Again); cancelling ends the request (Finish).
+std::optional<Agent::Turn::Then> Agent::Turn::second_look(Round &r) {
+    // E3: a draft the parallel check clears once the draft is complete stands without the second look.
+    bool cleared = r.released;
+    if (r.pcheck.active()) {
+        if (!r.res.tool_calls.empty()) r.pcheck.used("main_tool");
+        else if (r.hold && !r.released && !r.res.content.empty()) {
+            cleared = r.pcheck.wait_none(kCheckWaitMs);
+            r.pcheck.used(cleared ? "after" : r.pcheck.answered() ? "second_look" : "late");
+        }
+        r.pcheck.stop();
+        rt_.parallel_check(r.pcheck.summary());
+    }
+    if (r.hold && !cleared && r.res.tool_calls.empty() && !r.res.content.empty()) {
+        json review = r.messages;
+        review.push_back({{"role", "assistant"}, {"content", r.res.content}});
+        review.push_back({{"role", "user"}, {"content", guards::kSecondLook}});
+        llm::ChatOptions check;
+        check.model = r.opt.model;
+        check.fast = true;
+        check.cancel = &a_.cancel_;
+        check.purpose = "second_look";
+        llm::ChatResult second = llm::chat(review, tool_schema_, check);
+        if (experiment::tracing()) {
+            std::string outcome = second.error.empty() ? "" : "error";
+            for (const auto &c : second.tool_calls) outcome += (outcome.empty() ? "" : ",") + c.name;
+            rt_.second_look(outcome.empty() ? "ok" : outcome);
+        }
+        wait_while_listening();
+        if (a_.cancel_) return Then::Finish;
+        if (a_.has_pending()) {  // the user added something while the draft was being checked
+            steer_in();
+            return Then::Again;
+        }
+        // A failed check lets the draft through: a network hiccup must not silence the assistant.
+        if (second.error.empty() && !second.tool_calls.empty()) {
+            r.res.tool_calls = std::move(second.tool_calls);
+            r.res.content.clear();
+        }
+    }
+    return std::nullopt;
 }
 
 // The service failed: the error is shown, and once tools have run, what is known is said. True when
