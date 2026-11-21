@@ -1315,6 +1315,18 @@ def says_money(text, value, tol, code=None):
     text = re.sub(r"\b(\d+) (pounds?|dollars?|euros?|quid|bucks)(?:,? and)? (?:(\d{1,2}) ?(?:pence|p|cents?)|(\d{2}))\b(?![.,]\d)",
                   lambda m: "%s.%02d %s" % (m.group(1), int(m.group(3) or m.group(4)), m.group(2)), text, flags=re.I)
     words_ = CURRENCY_WORDS.get(code or "", "")
+    # An amount in words, as speech gives it: "forty-two dollars thirty-three cents", "seventeen pounds".
+    whole, cents = int(abs(value)), int(round((abs(value) - int(abs(value))) * 100))
+    if cents == 100: whole, cents = whole + 1, 0
+    unit = r"(?:%s)" % (words_ or r"pounds?|dollars?|euros?|yen|francs?|quid|bucks")
+    for w, c in ((whole, cents), (int(round(abs(value))), None)):
+        if w >= 1000: continue
+        spoken = r"\b%s\s+%s\b" % (words(w), unit)
+        if c is not None and c:
+            spoken += r"(?:,?\s+(?:and\s+)?%s(?:\s+(?:cents?|pence|p|centimes|cent))?)" % words(c)
+        elif c is None and abs(abs(value) - w) > max(tol, 0.5):
+            continue
+        if re.search(spoken, text, re.I) and (c is not None or abs(value) >= 10): return True
     for m in re.finditer(r"\d[\d,]*\.?\d*", text):
         x = m.group().replace(",", "")
         try: v = float(x)
@@ -1812,7 +1824,7 @@ CASES = [
 # The scorer's version, in every result (with the case's hash and whether it was traced), so that a
 # comparison of two runs knows when their verdicts are comparable. Raise it when what a check accepts
 # changes.
-SCORER_VERSION = "2026-11-21.6"   # ZB-086: .3 evidence, meaning, the day asked; .4 decimal comma; .5 round 2: visible facts, roles, units, currency bound; .6 unlabelled share, named days
+SCORER_VERSION = "2026-11-21.7"   # ZB-086: .3 evidence, meaning, the day asked; .4 decimal comma; .5 round 2: visible facts, roles, units, currency bound; .6 unlabelled share, named days; .7 amounts in words
 
 TOOL_RE = re.compile(r"^\s+-> (\w+) (.*)$")
 RESULT_RE = re.compile(r"^\s+<- (.*)$")

@@ -1028,6 +1028,14 @@ def served_checks():
             json.dumps({"amount": 20, "from": "EUR", "to": "GBP", "rate": 0.8561, "result": "17.12 GBP", "rate_date": "Sat, 21 Nov 2026"}))
     passes("currency (W8): the converted amount passes", cur, {"calls": [conv], "answer": "20 euros is about 17.12 pounds."})
     passes("currency: rounded as speech rounds it passes", cur, {"calls": [conv], "answer": "That's about 17 pounds."})
+    passes("currency (r2): an amount in words ('forty-two dollars thirty-three cents') passes", suite_case(["how much is 40 euros in pounds", "and in dollars"]),
+           {"calls": [("convert_currency", {"amount": 40, "from": "EUR", "to": "GBP"},
+                       json.dumps({"amount": 40, "from": "EUR", "to": "GBP", "rate": 0.85, "result": "34.00 GBP"}))], "answer": "About 34 pounds."},
+           {"calls": [("convert_currency", {"amount": 40, "from": "EUR", "to": "USD"},
+                       json.dumps({"amount": 40, "from": "EUR", "to": "USD", "rate": 1.05837, "result": "42.33 USD"}))],
+            "answer": "Forty euros is about forty-two dollars thirty-three cents at today's rate."})
+    trips("currency (r2): an amount in words in the wrong currency fails", cur,
+          [{"calls": [conv], "answer": "That's about seventeen euros twelve cents."}], "the converted amount")
     trips("currency (r2): the amount given in the wrong currency fails", cur, [{"calls": [conv], "answer": "That's about 17.12 euros."}],
           "the converted amount")
     trips("currency (W8): 'I don't know' after a working conversion fails", cur, [{"calls": [conv], "answer": "I don't know, sorry."}],
