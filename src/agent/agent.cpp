@@ -356,6 +356,7 @@ private:
     };
 
     Then one_round(const Budget &budget);
+    Then finish_answer(Round &r);
     Then run_tools(Round &r);
     void release_held(Round &r);
     std::optional<Then> judge_draft(Round &r, const Budget &budget);
@@ -477,7 +478,12 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
 
     if (!r.res.tool_calls.empty()) return run_tools(r);
 
-    // Final answer for this request.
+    return finish_answer(r);
+}
+
+// The model's final answer for this request: the rest of it spoken, kept in the conversation, and
+// reported to the smart-home layer, which may be waiting on a question it puts.
+Agent::Turn::Then Agent::Turn::finish_answer(Round &r) {
     const std::string rest = r.chunker.flush();
     if (!util::trim(rest).empty()) to_speech(rest);
     {
