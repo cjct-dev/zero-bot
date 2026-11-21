@@ -90,6 +90,19 @@ bool without_power_on(Menu &menu, const char *page, std::initializer_list<const 
 // The screenshots change settings in memory only.
 void set(const std::function<void(Settings &)> &change) { Settings::update(change, false); }
 
+// Moves the cursor of the page on top to the row with this label, one Up or Down press at a time as
+// a user would (the screens come out as they did from counted presses), wherever the row is: a row
+// added to a page shifts no later screen. False, with nothing pressed, when the page has no such row.
+bool move_to(Menu &menu, const std::string &label) {
+    const int at = menu.row_of(label);
+    if (at < 0) return false;
+    KeyEvent key;
+    key.key = at < menu.cursor() ? Key::Up : Key::Down;
+    key.state = 1;
+    for (int i = 0; i < 200 && menu.cursor() != at; ++i) menu.key(key);
+    return menu.cursor() == at;
+}
+
 }  // namespace
 
 // What the groups of screens share: where the pictures go and how many there are so far, whether
@@ -110,6 +123,13 @@ struct Shots {
         snprintf(path, sizeof(path), "%s/%02d-%s.png", dir.c_str(), ++n, name);
         if (!display::save_png(path)) fprintf(stderr, "could not write %s\n", path);
         else printf("%s\n", path);
+    }
+
+    // move_to, and a failed run when the page on top has no such row.
+    void menu_to(const std::string &label) {
+        if (move_to(app.menu, label)) return;
+        fprintf(stderr, "the page \"%s\" has no row \"%s\" to move to\n", app.menu.title().c_str(), label.c_str());
+        failed = true;
     }
 };
 
@@ -596,27 +616,26 @@ void App::shots_setup(Shots &shots) {
     }
     {
         KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
-        KeyEvent down; down.key = Key::Down; down.state = 1;
         menu.key(enter);
         snap("setup-internet");
-        for (int i = 0; i < 4; ++i) menu.key(down);
+        if (!move_to(menu, "Continue")) shots.menu_to("Continue without internet");
         menu.key(enter);                       // continue (with or without a connection)
         snap("setup-service");
         menu.problem("That did not work", "The AI service is down or unreachable (HTTP 530, code 1033). "
                                           "This is on the service's side; try again later.");
         snap("setup-problem");
         menu.pop();
-        for (int i = 0; i < 4; ++i) menu.key(down);
+        shots.menu_to("Skip this step");
         menu.key(enter);                       // skip the live test in screenshots
         set([](Settings &s) { s.llm_model = "example-chat-model"; s.stt_model = "example-speech-to-text"; s.tts_model = "example-text-to-speech"; });
         menu.refresh();
         snap("setup-models");
-        for (int i = 0; i < 4; ++i) menu.key(down);
+        shots.menu_to("Continue");
         menu.key(enter);
         set([](Settings &s) { s.user_name = "Sam"; s.home_city = "London"; s.home_country = "United Kingdom"; });
         menu.refresh();
         snap("setup-you");
-        for (int i = 0; i < 6; ++i) menu.key(down);
+        shots.menu_to("Continue");
         menu.key(enter);
         snap("setup-extras");
         if (!without_power_on(menu, "setup guide's extras", {"Speak replies", "Finish"})) failed = true;
@@ -637,32 +656,32 @@ void App::shots_settings(Shots &shots) {
         {"name": "Coast News"}]})");
     open_menu();
     snap("settings");                              // the top page: a row for each section
-    KeyEvent down; down.key = Key::Down; down.state = 1;
     KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
     KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
-    menu.key(enter);                               // "Assistant"
+    shots.menu_to("Assistant");
+    menu.key(enter);
     snap("settings-assistant");
     menu.key(esc);
-    menu.key(down);                                // "Device"
+    shots.menu_to("Device");
     menu.key(enter);
     snap("settings-device");
     if (!without_power_on(menu, "Device", {"Time zone", "Internet via phone"})) failed = true;
     menu.key(esc);
-    menu.key(down);                                // "Your data", whose first row is "Calendar"
+    shots.menu_to("Your data");                    // whose first row is "Calendar"
     menu.key(enter);
     shots_data(shots);
     shots_smart_home(shots);
     shots_radio(shots);
     menu.key(esc);                                 // the top page, still on "Your data"
-    menu.key(down);                                // "AI service"
+    shots.menu_to("AI service");
     menu.key(enter);
     snap("settings-service");
     menu.key(esc);
-    menu.key(down);                                // "About"
+    shots.menu_to("About");
     menu.key(enter);
     snap("settings-about");
     menu.key(esc);
-    menu.key(down);                                // "Keys": from settings, it opens at the keys for settings
+    shots.menu_to(kKeyGuideTitle);                 // from settings, it opens at the keys for settings
     menu.key(enter);
     snap("keys-settings");
     if (menu.title() != kKeyGuideTitle || menu.first_shown() == 0) {
@@ -676,7 +695,6 @@ void App::shots_settings(Shots &shots) {
 void App::shots_data(Shots &shots) {
     auto snap = [&shots](const char *name) { shots.snap(name); };
     bool &failed = shots.failed;
-    KeyEvent down; down.key = Key::Down; down.state = 1;
     KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
     KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
     Store &store = Store::get();
@@ -689,22 +707,24 @@ void App::shots_data(Shots &shots) {
     }
     menu.key(enter);
     snap("calendar");
+    shots.menu_to("Dinner with Marta");
     menu.key(enter);
     snap("event");
+    shots.menu_to("Title");
     menu.key(enter);
     snap("edit-text");
     menu.key(esc); menu.key(esc);
-    menu.key(down); menu.key(down);                // the third event: the birthday
+    shots.menu_to("Mum's birthday");
     menu.key(enter);
     snap("event-birthday");
     menu.key(esc); menu.key(esc);
-    menu.key(down);                                // "Reminders and timers"
+    shots.menu_to("Reminders and timers");
     menu.key(enter);
     snap("reminders");
     {
         // A timer that ends while the page is open takes its row away: the cursor stays on the
         // timer it was on, and the question before cancelling one says which.
-        menu.key(down);                            // "Study"
+        shots.menu_to("Study");
         store.delete_timer(food);                  // as when "Food out of the oven" has just ended
         menu.tick();
         const bool kept = menu.selected() == "Study";
@@ -719,7 +739,7 @@ void App::shots_data(Shots &shots) {
         }
     }
     menu.key(esc);
-    menu.key(down);                                // "Memory"
+    shots.menu_to("Memory");
     menu.key(enter);
     snap("memory");
     menu.key(esc);
@@ -728,32 +748,31 @@ void App::shots_data(Shots &shots) {
 // Your data > Smart home, the sample home's pages. From the section's page, and back to it.
 void App::shots_smart_home(Shots &shots) {
     auto snap = [&shots](const char *name) { shots.snap(name); };
-    KeyEvent down; down.key = Key::Down; down.state = 1;
     KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
     KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
-    menu.key(down); menu.key(down);                // "Smart home"
+    shots.menu_to("Smart home");
     menu.key(enter);
     snap("smart-home");
-    menu.key(enter);                               // the first thing: Bed heater
+    shots.menu_to("Bed heater");                   // the first thing
+    menu.key(enter);
     snap("home-thing");
     menu.key(esc);
-    menu.key(down);                                // Desk lamp, one socket of a strip
+    shots.menu_to("Desk lamp");                    // one socket of a strip
     menu.key(enter);
-    for (int i = 0; i < 5; ++i) menu.key(down);    // "Part of"
+    shots.menu_to("Part of");
     menu.key(enter);
     snap("home-device");
     menu.key(esc); menu.key(esc);
-    for (int i = 0; i < 5; ++i) menu.key(down);    // the strip that listed nothing, under "To set up"
+    shots.menu_to("Garden strip");                 // the strip that listed nothing, under "To set up"
     snap("home-to-set-up");
-    KeyEvent up; up.key = Key::Up; up.state = 1;
-    menu.key(up);                                  // the plug still to be set up
+    shots.menu_to("Tapo P110");                    // the plug still to be set up
     menu.key(enter);
     snap("home-setup");
-    for (int i = 0; i < 3; ++i) menu.key(down);    // "Set up…"
+    shots.menu_to("Set up…");
     menu.key(enter);
     snap("home-pairing");
     menu.key(esc); menu.key(esc);
-    for (int i = 0; i < 4; ++i) menu.key(down);    // "Tapo account", past the strip that listed nothing
+    shots.menu_to("Tapo account");                 // past the strip that listed nothing
     menu.key(enter);
     snap("tapo-account");
     menu.key(esc); menu.key(esc);                  // back to "Your data", on "Smart home"
@@ -763,17 +782,16 @@ void App::shots_smart_home(Shots &shots) {
 void App::shots_radio(Shots &shots) {
     auto snap = [&shots](const char *name) { shots.snap(name); };
     bool &failed = shots.failed;
-    KeyEvent down; down.key = Key::Down; down.state = 1;
     KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
     KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
-    menu.key(down); menu.key(down);                // "Radio stations", after "Music library"
+    shots.menu_to("Radio stations");
     menu.key(enter);
     snap("radio-stations");
     if (menu.title() != "Radio stations") {
         fprintf(stderr, "the key presses did not reach the radio stations page\n");
         failed = true;
     }
-    for (int i = 0; i < 3; ++i) menu.key(down);    // "Read the file again", below how to add stations
+    shots.menu_to("Read the file again");          // below how to add stations
     snap("radio-stations-help");
     {
         // ENTER on a station checks its stream before playing it, as the assistant does (a
@@ -783,8 +801,7 @@ void App::shots_radio(Shots &shots) {
         util::read_file(radio::path(), kept);
         util::write_file_atomic(radio::path(), R"({"stations": [{"name": "Closed FM", "url": "http://127.0.0.1:9/closed.pls"}]})");
         menu.refresh();
-        KeyEvent up; up.key = Key::Up; up.state = 1;
-        for (int i = 0; i < 12; ++i) menu.key(up);
+        shots.menu_to("Closed FM");
         const bool on_station = menu.selected() == "Closed FM";
         menu.key(enter);
         const bool waited = !audio::Music::get().live();   // not started before its check
@@ -801,14 +818,13 @@ void App::shots_radio(Shots &shots) {
         if (told) menu.pop();
         util::write_file_atomic(radio::path(), kept);
         menu.refresh();
-        for (int i = 0; i < 12; ++i) menu.key(down);   // back on "Read the file again", as before
+        shots.menu_to("Read the file again");      // as before
     }
     menu.key(esc);                                 // back to "Your data"
 }
 
 void App::shots_dark_settings(Shots &shots) {
     bool &failed = shots.failed;
-    KeyEvent down; down.key = Key::Down; down.state = 1;
     KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
     Store &store = Store::get();
     {
@@ -843,8 +859,14 @@ void App::shots_dark_settings(Shots &shots) {
         set([speak](Settings &s) { s.speak_replies = speak; });
 
         open_menu();
-        menu.key(down); menu.key(down); menu.key(enter);           // "Your data", on "Calendar"
-        menu.key(enter); menu.key(enter); menu.key(enter);         // the first event's title, in a text field
+        shots.menu_to("Your data");
+        menu.key(enter);
+        shots.menu_to("Calendar");
+        menu.key(enter);
+        shots.menu_to("Dinner with Marta");
+        menu.key(enter);
+        shots.menu_to("Title");
+        menu.key(enter);                                           // the first event's title, in a text field
         const bool field = menu.editing();
         const std::string shown = picture();
         dark = go_dark() && dark;
@@ -930,12 +952,11 @@ bool App::diagnostics_shots(Shots &shots) {
         json{{"role", "tool"}, {"tool_call_id", "call_1"}, {"content", "{\"tomorrow\":\"rain, 18 to 21 C\"}"}},
         json{{"role", "assistant"}, {"content", "Tomorrow in Lisbon looks wet. Take an umbrella."}}});
     const bool wrote = !activity::save_conversation(sample, 0).path.empty();
-    KeyEvent down; down.key = Key::Down; down.state = 1;
     KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
     open_menu();
-    for (int i = 0; i < 10 && menu.selected() != "Your data"; ++i) menu.key(down);
+    shots.menu_to("Your data");
     menu.key(enter);
-    for (int i = 0; i < 20 && menu.selected() != "Saved conversations"; ++i) menu.key(down);
+    move_to(menu, "Saved conversations");
     const bool listed = menu.selected() == "Saved conversations";
     menu.key(enter);
     snap("saved-conversations");
@@ -944,8 +965,8 @@ bool App::diagnostics_shots(Shots &shots) {
     menu.key(enter);
     snap("saved-conversations-delete");
     const bool asked = menu.selected() == "Cancel";
-    menu.key(down);
-    menu.key(enter);                               // "Delete all"
+    shots.menu_to("Delete all");
+    menu.key(enter);
     const bool gone = activity::saved_count() == 0;
     if (!wrote || !listed || !shown || !offered || !asked || !gone) {
         fprintf(stderr, "a saved conversation was not written, listed, shown or deleted as it should be\n");

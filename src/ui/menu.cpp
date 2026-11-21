@@ -194,6 +194,15 @@ bool Menu::in_guide() const {
 
 int Menu::first_shown() const { return stack_.empty() ? 0 : stack_.back().scroll; }
 
+int Menu::cursor() const { return stack_.empty() ? -1 : stack_.back().selected; }
+
+int Menu::row_of(const std::string &label) const {
+    if (stack_.empty()) return -1;
+    for (size_t i = 0; i < items_.size(); ++i)
+        if (items_[i].selectable() && items_[i].label == label) return static_cast<int>(i);
+    return -1;
+}
+
 std::string Menu::selected() const {
     if (stack_.empty()) return "";
     const int at = stack_.back().selected;
