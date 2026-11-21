@@ -26,6 +26,10 @@ import time
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import netguard   # noqa: E402
+netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
+
 paths = [a for a in sys.argv[1:] if os.sep in a or a.endswith("_cli") or a.endswith("zero_bot")]
 GROUPS = [a for a in sys.argv[1:] if a not in paths] or ["discover", "enumerate", "apply", "read", "moved", "swap", "hostile",
                                                          "app"]
@@ -49,7 +53,7 @@ def check(name, ok, detail=""):
 class Mock:
     def __init__(self):
         self.proc = subprocess.Popen([sys.executable, "-I", MOCK, "--max-seconds", "900"], stdin=subprocess.PIPE,
-                                     stdout=subprocess.PIPE, text=True)
+                                     stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
         line = self.proc.stdout.readline().split()
         if line[:2] != ["MOCK", "listening"]:
             raise RuntimeError("the mock did not start: %r" % line)

@@ -26,6 +26,10 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import netguard   # noqa: E402
+netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
+
 CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "unit", "shelly_cli")
 APP = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
 MOCK = os.path.join(HERE, "mocks", "shelly", "mock_shelly.py")
@@ -54,7 +58,7 @@ class Mock:
     def __init__(self, model, *extra):
         self.model = model
         self.proc = subprocess.Popen([sys.executable, "-I", MOCK, "--port", "0", "--model", model, *extra],
-                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, start_new_session=True)
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, start_new_session=True, env=netguard.mock_env())
         mocks.append(self)
         line = self.proc.stdout.readline().strip()
         if not line.startswith("MOCK listening on 127.0.0.1:"):

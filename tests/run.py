@@ -210,7 +210,7 @@ SCRUB = ("ZB_UNIT_BUILD_ONLY", "ZB_UNIT_SKIP_SCRIPTS", "ZB_UPDATE_SHOTS", "ZB_UP
          "ZB_FAST_MODE", "ZB_EVAL_TRACE")   # ZB_EVAL_TRACE: the live runs are traced by --trace, which records it
 # What a release refuses: it runs every case of both sets as they are defined.
 RELEASE_REFUSES = ("tags", "sample", "skip_tags", "only", "scored_only", "fast", "exp")
-RUNNER_EXP = ("ZB_EXP_TRACE", "ZB_EXP_WEB", "ZB_EXP_NO_HARDWARE")   # set by the live sets' runners per case
+RUNNER_EXP = ("ZB_EXP_TRACE", "ZB_EXP_WEB", "ZB_EXP_NO_HARDWARE", "ZB_EXP_NET")   # set by the live sets' runners per case
 
 PROFILES = {
     "quick": ("every offline group but the slow ones; leaves out firetv (about 5 min) and the live sets",
@@ -609,8 +609,8 @@ def probe_cli(path):
         return "%s is missing" % os.path.relpath(path, ROOT)
     tmp = tempfile.mkdtemp(prefix="zb-probe-")
     try:
-        base = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tmp, "TZ": "UTC", "ZB_DRY_RUN": "1", "ZB_NO_AUDIO": "1",
-                "XDG_CONFIG_HOME": tmp + "/config", "XDG_DATA_HOME": tmp + "/data", "XDG_CACHE_HOME": tmp + "/cache"}
+        base = netguard.child_env(netguard.mock_env(), HOME=tmp, TZ="UTC", ZB_DRY_RUN="1", ZB_NO_AUDIO="1", XDG_CONFIG_HOME=tmp + "/config",
+                                  XDG_DATA_HOME=tmp + "/data", XDG_CACHE_HOME=tmp + "/cache")   # the stand-in network, pinned
 
         def run(args, stdin="", **extra):
             return subprocess.run([path] + args, env=dict(base, **extra), input=stdin, capture_output=True, text=True,
@@ -631,6 +631,9 @@ def probe_cli(path):
         lines = [json.loads(l) for l in open(records, encoding="utf-8")] if os.path.exists(records) else []
         if not lines or lines[0].get("ev") != "start" or lines[-1].get("ev") != "end":
             return "it writes no evaluator's records (ZB_EVAL_RECORDS)"
+        lacking = [c for c in netguard.REQUIRED_CAPS if c not in (lines[0].get("caps") or [])]
+        if lacking:
+            return "it does not keep test runs off the real web and network (it lacks %s)" % ", ".join(lacking)
         return ""
     except (OSError, ValueError, subprocess.TimeoutExpired) as e:
         return "it could not be probed (%s)" % e.__class__.__name__
@@ -960,7 +963,7 @@ def group_env(tmp, extra, group=None):
             env.pop(k, None)
     else:
         env = netguard.child_env(env, keep=("ZB_API_BASE", "ZB_API_KEY") if live else (),
-                                 allow_hosts=(netguard.host_of(env.get("ZB_API_BASE")),) if live else ())
+                                 allow_origin=env.get("ZB_API_BASE", "") if live else "")
     for k in ("CONFIG", "DATA", "CACHE"):
         d = os.path.join(tmp, k.lower())
         os.makedirs(d, exist_ok=True)

@@ -101,7 +101,7 @@ def records(c, *turns, end=True):
     counts; one response with all of them when left out); {"new": True} is "/new". A turn without "answer"
     never ended."""
     asked = [t for t in c["turns"] if t != "/new"]
-    out, n, on = [{"ev": "start", "caps": ["records", "web", "web_all", "no_hardware"]}], 0, set()
+    out, n, on = [{"ev": "start", "caps": ["records", "web", "web_all", "no_hardware", "net"]}], 0, set()
     home = c.get("home") if isinstance(c.get("home"), dict) else None
     for t in turns:
         if "answer" not in t and not t.get("new") and n < len(asked): end = False   # a turn that never ended: no end of the run
@@ -1214,7 +1214,7 @@ env = {k: os.environ.get(k) for k in ("ZB_EXP_NO_HARDWARE", "ZB_FAKE_CAMERA", "Z
                                        "ALL_PROXY", "all_proxy", "ftp_proxy", "FTP_PROXY")}
 def rec(**r): f.write(json.dumps(dict(r, v=2, mono=0, wall=0)) + "\n")
 with open(path, "w") as f:
-    rec(ev="start", caps=os.environ.get("FAKE_CAPS", "records,web,web_all,no_hardware").split(","))
+    rec(ev="start", caps=os.environ.get("FAKE_CAPS", "records,web,web_all,no_hardware,net").split(","))
     n = 0
     for t in turns:
         if t == "/new":
@@ -1276,7 +1276,7 @@ def records_stream_strict():
              '{"v": 2, "ev": "turn_end", "turn": 1, "total": 1.0, "first": 0.5, "answer": "You are welcome.", "tool_calls": 0, "responses": [], "mono": 0, "wall": 0}\n')
     unscorable("an early end with no turns, then the turn (no start, no state, no end)", early, "the run does not begin with its start")
     unscorable("no start", "".join(lines[1:]), "the run does not begin with its start")
-    unscorable("a start that does not say what the build can do", good.replace(', "caps": ["records", "web", "web_all", "no_hardware"]', ""), "capabilities")
+    unscorable("a start that does not say what the build can do", good.replace(', "caps": ["records", "web", "web_all", "no_hardware", "net"]', ""), "capabilities")
     unscorable("a record after the end", good + lines[1], "after the end of the run")
     unscorable("a second start", "".join(lines[:1] + lines), "a second start")
     unscorable("a turn with no state", "".join(l for l in lines if '"state"' not in l), "ended without its saved state")
@@ -1538,7 +1538,7 @@ def guards_applied_last():
         check("trace: untraced when nothing asks for it", got["trace"] is False and ev.result_record(bare("hello"), got, "pass", [], True)["trace"] is False)
         check("probe (N5): a build that writes records and keeps the guards is fit", ev.probe_binary(app) == [], ev.probe_binary(app))
         older = os.path.join(folder, "older_app")
-        with open(older, "w") as f: f.write(FAKE_APP.replace('"records,web,web_all,no_hardware"', '"records,web"'))
+        with open(older, "w") as f: f.write(FAKE_APP.replace('"records,web,web_all,no_hardware,net"', '"records,web"'))
         os.chmod(older, 0o755)
         problems = ev.probe_binary(older)
         check("probe (N5): a build without the hardware guard is refused", any("no_hardware" in p for p in problems), problems)

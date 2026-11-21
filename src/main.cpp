@@ -178,7 +178,7 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
     // What this build can do for the test runners, which refuse a binary without it (tests/agent_eval.py
     // probe_binary): these records, the stand-in web (ZB_EXP_WEB), every tool's web read sent to it ("web_all":
     // search, forecasts, places, exchange rates and prices), and refusing hardware (ZB_EXP_NO_HARDWARE).
-    if (records) record({{"ev", "start"}, {"caps", {"records", "web", "web_all", "no_hardware"}}});
+    if (records) record({{"ev", "start"}, {"caps", {"records", "web", "web_all", "no_hardware", "net"}}});   // net: ZB_EXP_NET
 #endif
     Agent &agent = Agent::get();
     agent.start(ev);

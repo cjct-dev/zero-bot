@@ -27,6 +27,10 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import netguard   # noqa: E402
+netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
+
 MOCK = os.path.join(HERE, "mocks", "hue", "mock_hue.py")
 CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "unit", "hue_cli")
 APP = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
@@ -87,7 +91,7 @@ class Mock:
         if cert:
             self.set("cert", cert)
         self.proc = subprocess.Popen([sys.executable, "-I", MOCK, "--state", self.dir, "--max-seconds", "300"],
-                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=netguard.mock_env())
         line = self.proc.stdout.readline()
         if not line.startswith("PORT "):
             self.stop()

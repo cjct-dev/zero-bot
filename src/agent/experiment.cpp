@@ -5,6 +5,7 @@
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -119,6 +120,15 @@ const Switches &get() {
             }
         }
         r.no_hardware = env_on("ZB_EXP_NO_HARDWARE");
+        if (const char *n = getenv("ZB_EXP_NET"); n && *n) {
+            r.net = n;
+            const std::string v = n;
+            if (v != "loopback" && !((v.compare(0, 8, "https://") == 0 || v.compare(0, 7, "http://") == 0) &&
+                                     v.find_first_of("/?#@\\ ", v.find("://") + 3) == std::string::npos && v.size() > v.find("://") + 3)) {
+                fprintf(stderr, "ZB_EXP_NET=%s is neither loopback nor one origin (scheme://host[:port])\n", n);
+                exit(2);
+            }
+        }
         return r;
     }();
     return s;
@@ -134,6 +144,52 @@ std::string web(const std::string &url) {
 bool stand_in(const std::string &url) {
     const std::string &base = get().web;
     return !base.empty() && url.size() > base.size() && url.compare(0, base.size(), base) == 0 && url[base.size()] == '/';
+}
+
+namespace {
+// scheme, lower-case host and port of a URL ("" host when it cannot be read).
+struct Origin { std::string scheme, host; long port = 0; };
+Origin origin_of(const std::string &url) {
+    Origin o;
+    const size_t s = url.find("://");
+    if (s == std::string::npos) return o;
+    o.scheme = util::lower(url.substr(0, s));
+    const size_t start = s + 3, end = url.find_first_of("/?#", start);
+    std::string auth = url.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    if (auth.find('@') != std::string::npos) return Origin{};   // credentials in the address: never allowed
+    const size_t colon = auth.rfind(':');
+    if (colon != std::string::npos && auth.find(']') == std::string::npos) {
+        const std::string p = auth.substr(colon + 1);
+        if (p.empty() || p.size() > 5 || !std::all_of(p.begin(), p.end(), ::isdigit)) return Origin{};
+        o.port = std::stol(p);
+        auth = auth.substr(0, colon);
+    }
+    o.host = util::lower(auth);
+    if (o.port == 0) o.port = o.scheme == "https" ? 443 : 80;
+    return o;
+}
+bool loopback(const std::string &host) {
+    if (host == "localhost" || host == "[::1]") return true;
+    if (host.compare(0, 4, "127.") != 0) return false;
+    return std::all_of(host.begin(), host.end(), [](char c) { return isdigit(static_cast<unsigned char>(c)) || c == '.'; });
+}
+}  // namespace
+
+std::string net_refusal(const std::string &url) {
+    const std::string &net = get().net;
+    if (net.empty()) return "";
+    const Origin o = origin_of(url);
+    if (!o.host.empty() && (o.scheme == "http" || o.scheme == "https") && loopback(o.host)) return "";
+    if (net != "loopback") {
+        const Origin allowed = origin_of(net);
+        if (!o.host.empty() && o.scheme == allowed.scheme && o.host == allowed.host && o.port == allowed.port) return "";
+    }
+    return "refused: a test run sends nothing but to 127.x" + std::string(net == "loopback" ? "" : " and the AI service") +
+           " (ZB_EXP_NET), not to " + (o.host.empty() ? std::string("that address") : o.scheme + "://" + o.host + ":" + std::to_string(o.port));
+}
+
+std::string no_lan() {
+    return get().net.empty() ? "" : "The real network is not looked at in a test run (ZB_EXP_NET).";
 }
 
 std::string no_camera() {

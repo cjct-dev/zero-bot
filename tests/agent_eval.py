@@ -766,7 +766,7 @@ def preflight(env, cases, validate_errors):
     problems = list(validate_errors)
     for c in cases:
         e = netguard.child_env(case_web_env(env, c), keep=("ZB_API_BASE", "ZB_API_KEY", "ZB_SEARCH_KEY"),
-                               allow_hosts=(netguard.host_of(env.get("ZB_API_BASE")),), ZB_TEST_NETWORK="1")
+                               allow_origin=env.get("ZB_API_BASE", ""))
         problems += ["%s: %s" % (c["name"], p) for p in web_guard(e, c.get("env") or {})]
     return problems
 
@@ -812,6 +812,8 @@ def web_guard(env, case_env=None):
         if not set(x for x in (env.get(k) or "").split(",") if x) <= allowed:
             problems.append("%s exempts more than 127.0.0.1, localhost and the AI service" % k)
     if env.get("ZB_TEST_NETWORK") != "1": problems.append("ZB_TEST_NETWORK is not set: the real network would be identified")
+    if env.get("ZB_EXP_NET") != (netguard.origin_of(env.get("ZB_API_BASE", "")) or "loopback"):
+        problems.append("ZB_EXP_NET does not pin the app to 127.x and exactly the AI service's origin")
     return problems
 
 def web_base():
@@ -2032,7 +2034,7 @@ def run_case(binary, base_env, c):
     env = case_web_env(env, c)
     # The network boundary outside the app: every proxy variable at the runner's trap, which refuses whatever
     # reaches it, and only 127.0.0.1, localhost and the AI service's host exempt.
-    env = netguard.child_env(env, keep=("ZB_API_BASE", "ZB_API_KEY", "ZB_SEARCH_KEY"), allow_hosts=(netguard.host_of(env.get("ZB_API_BASE")),))
+    env = netguard.child_env(env, keep=("ZB_API_BASE", "ZB_API_KEY", "ZB_SEARCH_KEY"), allow_origin=env.get("ZB_API_BASE", ""))
     refused = web_guard(env, c["env"])
     if refused:
         shutil.rmtree(state, ignore_errors=True)
@@ -2380,7 +2382,7 @@ def probe_binary(binary):
         caps = first.get("caps") if isinstance(first.get("caps"), list) else []
         problems = []
         if first.get("v") != RECORDS_VERSION or first.get("ev") != "start": problems.append("%s writes records of another version" % binary)
-        problems += ["%s has no %s" % (binary, x) for x in ("records", "no_hardware", "web", "web_all") if x not in caps]
+        problems += ["%s has no %s" % (binary, x) for x in netguard.REQUIRED_CAPS if x not in caps]
         if not recs or recs[-1].get("ev") != "end": problems.append("%s did not write the end of its run" % binary)
         return problems
     finally:

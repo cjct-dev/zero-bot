@@ -1,5 +1,7 @@
 #include "net/http.h"
 
+#include "agent/experiment.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -82,6 +84,8 @@ std::string Response::describe() const {
 
 Response send(const Request &req) {
     Response res;
+    // A test run (ZB_EXP_NET, experiment builds only) sends only to 127.x and the AI service's own origin.
+    if (const std::string why = experiment::net_refusal(req.url); !why.empty()) { res.error = why; return res; }
     CURL *curl = curl_easy_init();
     if (!curl) { res.error = "could not start HTTP client"; return res; }
     Ctx ctx{&req, &res};
@@ -94,7 +98,7 @@ Response send(const Request &req) {
     if (g_share && !own_tls) curl_easy_setopt(curl, CURLOPT_SHARE, g_share);
     curl_easy_setopt(curl, CURLOPT_DNS_CACHE_TIMEOUT, 600L);   // addresses are remembered for ten minutes, not one
     curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, req.no_redirect || local ? 0L : 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, req.no_redirect || local || experiment::net_pinned() ? 0L : 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     if (local) {
         // A device on the home network: straight to it, whatever proxy the environment names,
