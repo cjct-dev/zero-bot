@@ -1,5 +1,6 @@
 // The app controller's state and parts, shared by the files that make it up: app.cpp (wiring, the
-// agent's events, recording, the first-run guide, run_app) and app_keys.cpp (what each key does).
+// agent's events, recording, the first-run guide, run_app), app_keys.cpp (what each key does) and
+// app_status.cpp (the status bar and footer, timers, alerts, the screen's light, the periodic work).
 // Nothing else includes it: the rest of the program sees only ui/app.h.
 #pragma once
 #include <atomic>
@@ -102,7 +103,7 @@ struct App {
     void handle_key(const KeyEvent &ev);
     void short_escape();
 
-    // ------------------------------------------------------------ periodic work
+    // ------------------------------------------------------------ periodic work (app_status.cpp)
     void update_footer();
     void update_indicators();
     void update_timers(unsigned long now_ms);
