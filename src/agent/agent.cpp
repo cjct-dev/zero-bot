@@ -356,6 +356,7 @@ private:
     };
 
     Then one_round(const Budget &budget);
+    void release_held(Round &r);
     std::optional<Then> judge_draft(Round &r, const Budget &budget);
     std::optional<Then> second_look(Round &r);
     bool on_error(Round &r);
@@ -471,19 +472,7 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     if (const auto then = second_look(r)) return *then;
 
     if (const auto then = judge_draft(r, budget)) return *then;
-    if (r.hold && !r.released && r.res.tool_calls.empty()) {
-        // The draft stands: release it as if it had streamed.
-        r.began = true;
-        if (a_.ev_.answer_begin) a_.ev_.answer_begin();
-        if (a_.ev_.answer_delta) a_.ev_.answer_delta(r.res.content);
-        a_.set_state(AgentState::Speaking);
-        for (auto &sentence : r.chunker.feed(r.res.content)) to_speech(sentence);
-    }
-    // Words held back while the user was talking, who then cancelled rather than adding anything.
-    if (!r.unsaid.empty() && r.res.tool_calls.empty()) {
-        a_.set_state(AgentState::Speaking);
-        for (auto &sentence : r.unsaid) to_speech(sentence);
-    }
+    release_held(r);
 
     if (!r.res.tool_calls.empty()) {
         json calls = json::array();
@@ -561,6 +550,24 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     if (r.res.content.empty() && a_.ev_.error) a_.ev_.error("The model returned an empty answer.");
     // Something typed while the answer was being spoken becomes the next request.
     return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+}
+
+// What was held back is spoken now that it stands: a draft kept for the second look, and words
+// composed while the microphone was open.
+void Agent::Turn::release_held(Round &r) {
+    if (r.hold && !r.released && r.res.tool_calls.empty()) {
+        // The draft stands: release it as if it had streamed.
+        r.began = true;
+        if (a_.ev_.answer_begin) a_.ev_.answer_begin();
+        if (a_.ev_.answer_delta) a_.ev_.answer_delta(r.res.content);
+        a_.set_state(AgentState::Speaking);
+        for (auto &sentence : r.chunker.feed(r.res.content)) to_speech(sentence);
+    }
+    // Words held back while the user was talking, who then cancelled rather than adding anything.
+    if (!r.unsaid.empty() && r.res.tool_calls.empty()) {
+        a_.set_state(AgentState::Speaking);
+        for (auto &sentence : r.unsaid) to_speech(sentence);
+    }
 }
 
 // The reply, judged before what is left of it is spoken: a claim no tool call backs is withdrawn and
