@@ -22,6 +22,7 @@
 #include "lvgl.h"
 #include "platform/audio.h"
 #include "platform/display.h"
+#include "platform/sys.h"
 #include "smarthome/home.h"
 #include "ui/key_guide.h"
 #include "ui/models.h"
@@ -298,7 +299,7 @@ void App::shots_dark_chat(Shots &shots) {
         set([](Settings &s) { s.screen_off_min = 5; });
         chat.set_now_playing("");
         auto go_dark = [&] {
-            const unsigned long t = display::now_ms();
+            const unsigned long t = sys::now_ms();
             wake_screen(t);
             tick_screen(t + screen::kDimAfterMs - 1, false);
             const bool lit = idle.light() == screen::Light::Lit;
@@ -350,7 +351,7 @@ void App::shots_dark_chat(Shots &shots) {
         press(Key::Char, " ", {1, 0});
         swallowed = swallowed && !display::screen_is_off() && !menu.open();
         press(Key::Char, " ", {1, 0});                              // settings, on "Assistant",
-        settle_keys(display::now_ms() + kDoubleTapMs);              // once SPACE SPACE is ruled out
+        settle_keys(sys::now_ms() + kDoubleTapMs);              // once SPACE SPACE is ruled out
         dark = go_dark() && dark;
         press(Key::Down, "", {1, 2, 0});
         swallowed = swallowed && menu.open() && menu.selected() == "Assistant";
@@ -404,7 +405,7 @@ void App::shots_keys(Shots &shots) {
         KeyEvent space; space.key = Key::Char; space.text = " "; space.state = 1;
         handle_key(space);
         const bool waited = !menu.open();                 // a second SPACE may yet come (DIAGNOSTICS)
-        settle_keys(display::now_ms() + kDoubleTapMs);    // none did: settings open
+        settle_keys(sys::now_ms() + kDoubleTapMs);    // none did: settings open
         const bool opened = waited && menu.open() && menu.depth() == 1 && menu.title() == "Settings" &&
                             menu.selected() == "Assistant";
         handle_key(space);
@@ -545,13 +546,13 @@ void App::shots_timers(Shots &shots) {
         muted = true;
         const int minutes = Settings::get().screen_off_min;
         set([](Settings &s) { s.screen_off_min = 5; });
-        const unsigned long t = display::now_ms();
+        const unsigned long t = sys::now_ms();
         wake_screen(t);
         tick_screen(t + 5 * 60000UL, false);
         const bool was_off = display::screen_is_off();
         set([minutes](Settings &s) { s.screen_off_min = minutes; });
         Store::get().add_timer("Eggs", 1, time(nullptr) - 5);
-        update_timers(display::now_ms());
+        update_timers(sys::now_ms());
         // The first frame drawn before the light comes on has the banner and the countdown.
         const bool rang = was_off && !display::screen_is_off() && display::frame_current() && alarm.ringing() &&
                           banner.visible() && audio::Music::get().holding(audio::Music::kAlarm);
@@ -863,7 +864,7 @@ void App::shots_dark_settings(Shots &shots) {
         const int minutes = Settings::get().screen_off_min;
         set([](Settings &s) { s.screen_off_min = 5; });
         auto go_dark = [&] {
-            const unsigned long t = display::now_ms();
+            const unsigned long t = sys::now_ms();
             wake_screen(t);
             tick_screen(t + 5 * 60000UL, false);
             return display::screen_is_off() && display::frame_black();
@@ -913,12 +914,12 @@ void App::shots_dark_settings(Shots &shots) {
         dark = go_dark() && dark;
         muted = true;
         store.add_timer("Tea", 1, time(nullptr) - 5);
-        update_timers(display::now_ms());
+        update_timers(sys::now_ms());
         const bool alarm_first_frame = !display::screen_is_off() && alarm.ringing() && banner.visible() && display::frame_current();
         press(Key::Char, "a", {1, 0});
         bool silenced = !alarm.ringing() && menu.open();
         store.add_timer("Kettle", 1, time(nullptr) - 5);
-        update_timers(display::now_ms());
+        update_timers(sys::now_ms());
         const bool rang_again = alarm.ringing();
         press(Key::None, "", {1});                                   // fn tapped on its own: "any key" too
         silenced = silenced && rang_again && !alarm.ringing() && menu.open();
@@ -946,7 +947,7 @@ bool App::diagnostics_shots(Shots &shots) {
     KeyEvent space; space.key = Key::Char; space.text = " "; space.state = 1;
     handle_key(space);
     handle_key(space);
-    settle_keys(display::now_ms() + kDoubleTapMs);
+    settle_keys(sys::now_ms() + kDoubleTapMs);
     update_footer();
     snap("save-nothing");
     if (menu.open() || level_text != "Nothing to save yet" || activity::saved_count() != 0) {
@@ -963,7 +964,7 @@ bool App::diagnostics_shots(Shots &shots) {
         const bool quick = menu.open() && menu.depth() == 1 && menu.title() == "Settings" && menu.selected() == "Device" &&
                            !space_tap.pending();
         menu.close();
-        settle_keys(display::now_ms() + kDoubleTapMs);
+        settle_keys(sys::now_ms() + kDoubleTapMs);
         if (!quick || menu.open()) {
             fprintf(stderr, "SPACE then Down at once did not open settings on their second section\n");
             failed = true;

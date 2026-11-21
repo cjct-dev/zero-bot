@@ -3,7 +3,6 @@
 #include "ui/app_impl.h"
 
 #include <ctime>
-#include <fstream>
 #include <string>
 #include <vector>
 
@@ -17,6 +16,8 @@
 #include "core/util.h"
 #include "platform/audio.h"
 #include "platform/display.h"
+#include "platform/power.h"
+#include "platform/sys.h"
 #include "ui/key_guide.h"
 #include "ui/theme.h"
 
@@ -26,7 +27,7 @@ namespace ui {
 void App::update_footer() {
     Agent &agent = Agent::get();
     const Settings &s = Settings::get();
-    if (level_until && display::now_ms() < level_until && !recorder.active() && !chat.typing()) {
+    if (level_until && sys::now_ms() < level_until && !recorder.active() && !chat.typing()) {
         chat.footer_hints(level_text);
         return;
     }
@@ -63,11 +64,9 @@ void App::update_indicators() {
     const bool phone = link.compare(0, 4, "bnep") == 0;
     int battery = -1;
 #if !ZB_DESKTOP
-    std::ifstream b("/sys/class/power_supply/bq27220-0/capacity");
-    if (!(b >> battery)) battery = -1;
-    std::string status;
-    std::ifstream("/sys/class/power_supply/bq27220-0/status") >> status;
-    charging = status == "Charging";
+    const power::Battery gauge = power::battery();
+    battery = gauge.percent;
+    charging = gauge.charging;
 #endif
     chat.set_indicators(online, phone, battery, charging, util::format_time(time(nullptr), "%H:%M"));
     audio::Music &music = audio::Music::get();
@@ -143,7 +142,7 @@ void App::check_alerts() {
         chat.add_alert(text);
         audio::chime(2);
         if (Settings::get().speak_replies) Agent::get().say("Reminder. " + text);
-        wake_screen(display::now_ms());
+        wake_screen(sys::now_ms());
     }
 }
 
@@ -175,7 +174,7 @@ void App::tick_screen(unsigned long now, bool busy) {
 }
 
 void App::periodic() {
-    const unsigned long now = display::now_ms();
+    const unsigned long now = sys::now_ms();
     if (esc_armed && now - esc_down >= kEscHoldMs) { g_exit = true; return; }
     settle_keys(now);   // DIAGNOSTICS (temporary)
     if (now - last_tick >= kTickMs) {

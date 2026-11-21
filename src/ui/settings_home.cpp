@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/result.h"
 #include "core/util.h"
 #include "smarthome/drivers/tapo_driver.h"
 #include "smarthome/home.h"
@@ -139,9 +140,10 @@ void open_home_thing(Menu &menu, const std::string &network_id, const std::strin
             items.push_back(MenuItem::val("Switch now", [is_on] { return std::string(is_on ? "On" : "Off"); }, [&menu, network_id, device_id, thing_id, is_on] {
                 menu.toast(is_on ? "Switching off…" : "Switching on…");
                 background([network_id, device_id, thing_id, is_on] { return home::switch_thing(network_id, device_id, thing_id, !is_on); },
-                           [&menu](const std::string &result) {
+                           [&menu](const std::string &outcome) {
                                if (!menu.open()) return;
-                               if (result.compare(0, 7, "ERROR: ") == 0) menu.problem("That did not work", result.substr(7));
+                               const std::string why = result::words(outcome);   // without its "ERROR: ", when it has one
+                               if (why != outcome) menu.problem("That did not work", why);
                                else menu.refresh();
                            });
             }));

@@ -4,7 +4,6 @@
 #include "ui/settings_pages.h"
 #include "ui/settings_internal.h"
 
-#include <fstream>
 #include <string>
 #include <vector>
 
@@ -16,7 +15,8 @@
 #include "core/util.h"
 #include "platform/audio.h"
 #include "platform/display.h"
-#include "platform/proc.h"
+#include "platform/net_status.h"
+#include "platform/power.h"
 #include "smarthome/home.h"
 #include "ui/key_guide.h"
 #include "ui/models.h"
@@ -48,26 +48,14 @@ void pick_model(Menu &menu, const std::string &title, const std::string &mode, s
 namespace {
 
 // ---------------------------------------------------------------- about
-int read_int(const char *path, int fallback) {
-    std::ifstream f(path);
-    int v;
-    return f >> v ? v : fallback;
-}
-
 void open_status(Menu &menu) {
     menu.toast("Checking…");
     background(
         [] {
             std::string text = "Zero Bot " ZB_VERSION "\n";
-            const proc::Result wifi = proc::run({"nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL", "dev", "wifi", "list", "--rescan", "no"}, "", 5000);
-            std::string net = "Wi-Fi: not connected";
-            for (auto &line : util::split(wifi.out, '\n'))
-                if (line.compare(0, 4, "yes:") == 0) {
-                    const auto f = util::split(line, ':');
-                    net = "Wi-Fi: " + (f.size() > 1 ? f[1] : "") + (f.size() > 2 ? " (" + f[2] + "%)" : "");
-                }
-            text += net + "\n";
-            const int batt = read_int("/sys/class/power_supply/bq27220-0/capacity", -1);
+            const net_status::WiFi wifi = net_status::wifi(5000);
+            text += (wifi.connected ? "Wi-Fi: " + wifi.ssid + (wifi.has_signal ? " (" + wifi.signal + "%)" : "") : std::string("Wi-Fi: not connected")) + "\n";
+            const int batt = power::battery().percent;
             if (batt >= 0) text += "Battery: " + std::to_string(batt) + "%\n";
             text += "Time zone: " + (S().timezone.empty() ? util::system_timezone() + " (system)" : S().timezone) + "\n";
             std::string err;

@@ -21,6 +21,7 @@
 #include "lvgl.h"
 #include "platform/audio.h"
 #include "platform/display.h"
+#include "platform/sys.h"
 #include "platform/keys.h"
 #include "platform/proc.h"
 #include "ui/models.h"
@@ -130,7 +131,7 @@ void App::start_recording() {
         Agent::get().set_listening(false);
         return;
     }
-    rec_start = display::now_ms();
+    rec_start = sys::now_ms();
 }
 
 void App::finish_recording(bool submit) {
@@ -225,7 +226,7 @@ int run_app(const std::string &shots_dir, bool keydump) {
     if (!s.setup_done) app.run_setup();
     input::set_dump(keydump);
     input::start();
-    app.idle.use(display::now_ms());
+    app.idle.use(sys::now_ms());
 
     while (!g_exit) {
         KeyEvent ev;

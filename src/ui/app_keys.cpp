@@ -13,6 +13,7 @@
 #include "core/util.h"
 #include "platform/audio.h"
 #include "platform/display.h"
+#include "platform/sys.h"
 #include "ui/key_guide.h"
 #include "ui/settings_pages.h"
 #include "ui/theme.h"
@@ -65,7 +66,7 @@ std::string App::level_bar(const char *label, int percent) {
 
 void App::show_level(const std::string &text) {
     level_text = text;
-    level_until = display::now_ms() + 1500;
+    level_until = sys::now_ms() + 1500;
     if (menu.open()) { menu.toast(text); menu.refresh(); }
 }
 
@@ -82,7 +83,7 @@ bool App::control_key(const KeyEvent &ev) {
             }, false).volume;
             muted = false;
             apply_volume(volume);
-            settings_dirty_at = display::now_ms();
+            settings_dirty_at = sys::now_ms();
             show_level(level_bar("Volume", volume));
             return true;
         }
@@ -102,7 +103,7 @@ bool App::control_key(const KeyEvent &ev) {
                 s.brightness = std::max(10, std::min(100, (s.brightness + (step > 0 ? 0 : 9)) / 10 * 10 + step));
             }, false).brightness;
             display::set_brightness(brightness);
-            settings_dirty_at = display::now_ms();
+            settings_dirty_at = sys::now_ms();
             show_level(level_bar("Brightness", brightness));
             return true;
         }
@@ -135,7 +136,7 @@ bool App::control_key(const KeyEvent &ev) {
 void App::change_station(int step) {
     const std::vector<radio::Station> list = radio::stations();
     if (list.size() < 2) { show_level(list.empty() ? "No radio stations set up" : "No other station"); return; }
-    const unsigned long now = display::now_ms();
+    const unsigned long now = sys::now_ms();
     const bool counting_on = !station_chosen.empty() && now - station_chosen_at < 30000;
     const int at = radio::find(list, counting_on ? station_chosen : audio::Music::get().title());
     const int n = static_cast<int>(list.size());
@@ -154,7 +155,7 @@ void App::change_station(int step) {
 }
 
 void App::handle_key(const KeyEvent &ev) {
-    const unsigned long now = display::now_ms();
+    const unsigned long now = sys::now_ms();
     // A key on a dark screen only wakes it, whatever is showing (the chat, typing, settings, the
     // key guide), and its repeats and its release go no further either.
     if (ev.state != 0 && wake_screen(now)) {
