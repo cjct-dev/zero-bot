@@ -109,16 +109,18 @@ def _gate_cmd(o, run):
 
 
 def _heldout_eval_cmd(o, run):
-    return heldout_command(eval_command(o, run), os.path.join(run, "eval-heldout.json"))
+    return heldout_command(eval_command(o, run), os.path.join(run, "eval-heldout.json"), o)
 
 
 def _heldout_suite_cmd(o, run):
-    return heldout_command(suite_command(o, run), os.path.join(run, "suite-heldout.json"))
+    return heldout_command(suite_command(o, run), os.path.join(run, "suite-heldout.json"), o)
 
 
 def _heldout_judge_cmd(o, run):
     files = ",".join(os.path.join(run, n) for n in ("eval-heldout.json", "suite-heldout.json"))
-    return py("tests/exp_compare.py", "--held-out", files, "--verdict", os.path.join(run, "heldout.json"))
+    n = max(1, getattr(o, "calibrate", 0))
+    return py("tests/exp_compare.py", "--held-out", files, "--verdict", os.path.join(run, "heldout.json"), "--repeats", str(n)) + \
+        (["--calibrate"] if getattr(o, "calibrate", 0) else [])
 
 
 def _validate(script):
@@ -417,11 +419,16 @@ def scored_only(o):
     return o.scored_only or o.only
 
 
-def heldout_command(cmd, out):
-    """A live set's command for the held-out run: the held-out seed, its own results file."""
+def heldout_command(cmd, out, o=None):
+    """A live set's command for the held-out run: the held-out seed, its own results file, and with --calibrate N
+    each case N times."""
     cmd = list(cmd)
     cmd[cmd.index("--json") + 1] = out
-    return cmd + ["--held-out"]
+    if "--repeat" in cmd:
+        k = cmd.index("--repeat")
+        del cmd[k:k + 2]
+    n = getattr(o, "calibrate", 0) if o is not None else 0
+    return cmd + ["--held-out"] + (["--repeat", str(n)] if n > 1 else [])
 
 
 def eval_command(o, run):
@@ -719,6 +726,9 @@ def choose(o):
                          + " and the live sets")
     if not names:
         names = []
+    if "held-out" in names and not (release_mode(o) or o.calibrate):
+        raise SystemExit("the held-out run is the release profile's alone (or --groups held-out --calibrate N, to set its "
+                         "floors): never tune on it")
     if (o.baseline or release_mode(o)) and any(n in names for n in LIVE):
         names.append("gate")
         why["gate"] = "a release" if release_mode(o) else "--baseline with a live run"
@@ -1004,7 +1014,10 @@ def run_group(group, o, run, gate_follows, warnings):
     t0 = time.time()
     rc_all = 0
     try:
-        env = group_env(tmp, dict(group.get("env") or {}, **(exp_env(o) if group.get("live") else {})), group)
+        extra = dict(group.get("env") or {}, **(exp_env(o) if group.get("live") else {}))
+        if group.get("heldout"):
+            extra["ZB_HELD_OUT_RUN"] = "calibrate" if o.calibrate else "release"   # the scorers take --held-out only then
+        env = group_env(tmp, extra, group)
         with open(logpath, "w") as log:
             log.write("# %s: %s\n" % (name, group["about"]))
             cmds = commands_of(group, o, run)
@@ -1164,6 +1177,8 @@ def parse(argv):
                     help="live sets: an experiment switch for a variant's run (inherited ZB_EXP_* are not passed on)")
     ap.add_argument("--repeat", type=int, default=1, help="live sets: run each case this many times")
     ap.add_argument("--fast", default=None, help="live sets: force fast mode on (1) or off (0)")
+    ap.add_argument("--calibrate", type=int, default=0, metavar="N",
+                    help="with --groups held-out only: run the held-out set N times and suggest its floors (HELD_OUT_FLOOR)")
     ap.add_argument("--self-test", action="store_true", help="check this runner and exit")
     o = ap.parse_args(argv)
     if o.baseline:
@@ -1172,6 +1187,9 @@ def parse(argv):
         k = e.split("=", 1)[0]
         if "=" not in e or not k.startswith("ZB_EXP_") or k in RUNNER_EXP:
             ap.error("--exp %s: give ZB_EXP_NAME=VALUE; %s are set by the runners" % (e, ", ".join(RUNNER_EXP)))
+    if o.calibrate and ([g.strip() for g in o.groups.split(",") if g.strip()] != ["held-out"] or o.profile or
+                        any(getattr(o, k) for k in RELEASE_REFUSES)):
+        ap.error("--calibrate N goes with --groups held-out alone, and no filter or variant")
     if release_mode(o):
         given = ["--" + k.replace("_", "-") for k in RELEASE_REFUSES if getattr(o, k)]
         if given:
@@ -1323,6 +1341,26 @@ def self_test():
     check("held-out: both sets on the held-out seed, then the judge", len(cmds) == 3 and all("--held-out" in c for c in cmds) and
           cmds[0][cmds[0].index("--json") + 1] == "/r/eval-heldout.json" and cmds[1][cmds[1].index("--json") + 1] == "/r/suite-heldout.json" and
           "tests/exp_compare.py" in cmds[2] and "/r/heldout.json" in cmds[2] and "--base" not in cmds[2], cmds)
+    for argv in (["--groups", "held-out"], ["--groups", "held-out,live-suite"]):
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                choose(parse(argv))
+            check("held-out outside the release is refused: %s" % " ".join(argv), False)
+        except SystemExit:
+            check("held-out outside the release is refused: %s" % " ".join(argv), True)
+    o = parse(["--groups", "held-out", "--calibrate", "3"])
+    chosen = choose(o)[0]
+    cmds = commands_of(BY_NAME["held-out"], o, "/r")
+    check("--calibrate 3: the held-out set three times, judged with three repeats and a calibration",
+          chosen == ["held-out"] and all(c[c.index("--repeat") + 1] == "3" for c in cmds[:2]) and
+          cmds[2][cmds[2].index("--repeats") + 1] == "3" and "--calibrate" in cmds[2], cmds)
+    for argv in (["--groups", "live-suite", "--calibrate", "3"], ["--groups", "held-out", "--calibrate", "3", "--tags", "timer"]):
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                parse(argv)
+            check("--calibrate refused: %s" % " ".join(argv), False)
+        except SystemExit:
+            check("--calibrate refused: %s" % " ".join(argv), True)
     check("held-out: the key line is the judge's", key_line("held-out scored 9/10 passed\nheld-out: passes\n") == "held-out: passes")
     check("no gate for live runs without a baseline", "gate" not in choose(parse(["--groups", "live-suite"]))[0])
     chosen = choose(parse(["--groups", "hue,unit,quick"]))[0]
