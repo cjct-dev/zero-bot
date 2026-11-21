@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <map>
+#include <optional>
 #include <unistd.h>
 
 #include "agent/experiment.h"
@@ -355,6 +356,7 @@ private:
     };
 
     Then one_round(const Budget &budget);
+    std::optional<Then> cut_short(Round &r);
     bool withdraw_if_steered(Round &r);
     void call_model(Round &r, const Budget &budget);
     void stream(Round &r, const std::string &piece);
@@ -460,20 +462,7 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     messages_for(r, budget);
     call_model(r, budget);
     if (withdraw_if_steered(r)) return Then::Again;   // a withdrawn draft does not count against the budget
-    if (a_.cancel_) {
-        if (r.began && a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, true);
-        return Then::Finish;
-    }
-    if (a_.interrupted_) {
-        // The user talked over the answer. Keep what was said so the model knows where it stopped.
-        if (!r.res.content.empty()) {
-            std::lock_guard<std::mutex> lk(a_.mtx_);
-            a_.history_.push_back({{"role", "assistant"}, {"content", r.res.content + " [the user interrupted here]"}});
-        }
-        if (r.began && a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, true);
-        a_.last_answer_ = r.res.content;
-        return Then::Leave;  // what they say next starts a new turn
-    }
+    if (const auto then = cut_short(r)) return *then;
     if (!r.res.error.empty()) {
         if (r.began && a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, true);
         if (a_.ev_.error) a_.ev_.error(r.res.error);
@@ -643,6 +632,25 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     if (r.res.content.empty() && a_.ev_.error) a_.ev_.error("The model returned an empty answer.");
     // Something typed while the answer was being spoken becomes the next request.
     return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+}
+
+// The user cancelled the request (Finish), or talked over its answer (Leave); nothing otherwise.
+std::optional<Agent::Turn::Then> Agent::Turn::cut_short(Round &r) {
+    if (a_.cancel_) {
+        if (r.began && a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, true);
+        return Then::Finish;
+    }
+    if (a_.interrupted_) {
+        // The user talked over the answer. Keep what was said so the model knows where it stopped.
+        if (!r.res.content.empty()) {
+            std::lock_guard<std::mutex> lk(a_.mtx_);
+            a_.history_.push_back({{"role", "assistant"}, {"content", r.res.content + " [the user interrupted here]"}});
+        }
+        if (r.began && a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, true);
+        a_.last_answer_ = r.res.content;
+        return Then::Leave;  // what they say next starts a new turn
+    }
+    return std::nullopt;
 }
 
 // What the user said while the reply was on its way takes its place: the draft is withdrawn, what
