@@ -108,9 +108,9 @@ VERDICT_EXIT = {"passes": 0, "fails": 1, "inconclusive": 3, "incomplete": 4}
 # The held-out run (tests/run.py's release profile: both sets once on the stand-in web's held-out seed and
 # variants, which no day-to-day run uses) is judged on its own, never paired with a baseline: each set's pass
 # rate must reach its floor, and every critical case must pass. The floors sit a few points under the first
-# held-out run (2026-11-21: .local-notes/eval/runs/s5-heldout3-*); a change that wins on the everyday seed
-# but loses here is fitted to the everyday answers.
-HELD_OUT_FLOOR = {"scored": 0.80, "suite": 0.80}
+# held-out run (2026-11-21); a change that wins on the everyday seed but loses here is fitted to the everyday
+# answers.
+HELD_OUT_FLOOR = {"scored": 0.92, "suite": 0.94}   # first held-out run: 97.9% and 97.3%
 HELD_OUT_FROM = 1000   # tests/mocks/fake_web.py: seeds from here on are held out
 
 # Cases that must pass every run on the variant. Scored-set names, and suite cases by tag (the suite's
