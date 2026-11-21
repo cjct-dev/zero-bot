@@ -47,6 +47,21 @@ std::string error_words(const std::string &result) {
     return util::truncate_utf8(e, 200, "...");
 }
 
+// The model calls a request may make (kMaxRounds), its tools' round trips included. A draft withdrawn
+// because the user said more does not count, and a request typed while the answer to the last one was
+// spoken starts afresh: one budget shared by chained requests once cut the last of them short.
+class Budget {
+public:
+    bool left() const { return used_ < kMaxRounds; }
+    bool last() const { return used_ == kMaxRounds - 1; }   // no tools are offered to the last call
+    bool spent() const { return used_ >= kMaxRounds; }
+    void spend() { ++used_; }
+    void restart() { used_ = 0; }
+
+private:
+    int used_ = 0;
+};
+
 // Set while run_blocking() owns the conversation, so input submitted during it (steering)
 // is absorbed by that run and does not start a second one on the worker thread.
 std::atomic<bool> g_blocking{false};
@@ -311,6 +326,16 @@ private:
         }
     };
 
+    // How a round ends: what the turn does next.
+    enum class Then {
+        Next,         // go round again: the model is called once more for this request
+        Again,        // the draft was withdrawn because the user said more: go round again, not counted
+        NewRequest,   // something typed while the answer was spoken is the next request: a fresh budget
+        Finish,       // the request is answered, cancelled, or the service failed
+        Leave,        // the user talked over the answer: what they say next starts a new turn
+    };
+
+    Then one_round(const Budget &budget);
     void new_request();
     int steer_in();
     void wait_while_listening();
@@ -379,303 +404,310 @@ void Agent::Turn::run() {
     activity::request();   // DIAGNOSTICS (temporary): the activity log
 
     tool_schema_ = tools::schema();
-    tools::Context &tool_ctx = req_.tool_ctx;
-    tool_ctx.in_conversation = true;
-    tool_ctx.cancel = &a_.cancel_;
-    tool_ctx.on_image = a_.ev_.image;
-    tool_ctx.on_breathe = a_.ev_.breathe;
+    req_.tool_ctx.in_conversation = true;
+    req_.tool_ctx.cancel = &a_.cancel_;
+    req_.tool_ctx.on_image = a_.ev_.image;
+    req_.tool_ctx.on_breathe = a_.ev_.breathe;
     speak_ = Settings::get().speak_replies && !getenv("ZB_NO_AUDIO");
 
-    int round = 0;
-    for (; round < kMaxRounds && !a_.cancel_; ++round) {
-        a_.set_state(AgentState::Thinking);
-        a_.round_cancel_ = false;
-
-        json messages = json::array({{{"role", "system"}, {"content", prompt::system_prompt()}}});
-        {
-            std::lock_guard<std::mutex> lk(a_.mtx_);
-            for (auto &m : a_.history_) messages.push_back(m);
-        }
-        if (round == kMaxRounds - 1) add_note(messages, guards::kLastRound);
-
-        const bool corrected = !correction_.empty();
-        if (corrected) add_note(messages, correction_);
-        correction_.clear();
-
-        bool began = false, speech_started = false, steered = false;
-        const guards::Claim *unbacked = nullptr;   // the claim guard a sentence tripped as it streamed
-        std::vector<std::string> unsaid;   // sentences composed while the microphone was open
-        SpeechQueue::Chunker chunker;
-        llm::ChatOptions opt;
-        opt.model = Settings::get().eff_llm_model();
-        opt.fast = Settings::get().fast_mode;
-        bool deciding;
-        {
-            std::lock_guard<std::mutex> lk(a_.mtx_);
-            deciding = a_.history_.empty() || util::jget(a_.history_.back(), "role", std::string()) != "tool";
-        }
-        // In fast mode the model's commonest mistake is to answer in words when it should have
-        // used a tool: "done" with nothing done, or a price or opening time from memory. So a reply
-        // that arrives with no tool call is held back and checked before a word of it is spoken.
-        const bool fast_decision = deciding && !req_.acted && !req_.guarded && opt.fast;
-        // Experiments only (E3b, ZB_EXP_DECIDE=required): the decision is forced into a tool call, words
-        // come through the reply tool and stream as they are written; nothing is held for a second look.
-        if (fast_decision && experiment::decide_required()) opt.tool_choice = "required";
-        const bool hold = fast_decision && (!experiment::decide_required() || experiment::reply_held());
-        // Experiments only (E3, ZB_EXP_DECIDE=parallel): a short check beside this call says whether a
-        // tool is needed at all. A draft it clears is spoken as it streams, without the second look.
-        experiment::ParallelCheck pcheck;
-        if (hold && experiment::parallel_check()) pcheck.start(messages, tool_schema_, opt.model);
-        bool released = false;     // E3: the held draft is being spoken as it streams
-        std::string held_text;     // E3: the draft so far, while the check has not cleared it
-        if (fast_decision) add_note(messages, guards::kDecideNote);
-        opt.purpose = round == kMaxRounds - 1 ? "last_round" : corrected ? "correction" : deciding ? "decide" : "after_tool";
-        opt.cancel = &a_.round_cancel_;
-        opt.on_text = [&](const std::string &piece) {
-            if (steered || unbacked) return;
-            std::string text = piece;
-            if (hold && !released) {
-                if (!pcheck.active() && !experiment::reply_held()) return;   // held whole, checked once complete
-                held_text += piece;
-                if (!pcheck.said_none()) return;   // E3c: released by on_call when the reply tool begins
-                released = true;                // E3: cleared while it is still being written
-                pcheck.used("stream");
-                text = held_text;
-            }
-            if (!began) { began = true; if (a_.ev_.answer_begin) a_.ev_.answer_begin(); }
-            if (a_.ev_.answer_delta) a_.ev_.answer_delta(text);
-            for (auto &sentence : chunker.feed(text)) {
-                // New input arrived before anything was said: withdraw this draft and let the
-                // model reconsider with the extra instruction.
-                if (!speech_started && a_.has_pending()) { steered = true; a_.round_cancel_ = true; return; }
-                // Checked before the first words are spoken: once said, a claim cannot be taken back.
-                // "Done" is false when no tool has run, and when every one that ran failed or is
-                // waiting for the user's yes.
-                if (!speech_started)
-                    for (const guards::Claim &c : guards::kClaims)
-                        if (c.as_it_streams && req_.claim_open(c) && c.test(sentence)) {
-                            unbacked = &c;
-                            a_.round_cancel_ = true;
-                            return;
-                        }
-                // The user has started talking: keep the words back until they have finished.
-                if (a_.listening_ || !unsaid.empty()) { unsaid.push_back(sentence); continue; }
-                speech_started = true;
-                a_.set_state(AgentState::Speaking);
-                to_speech(sentence);
-            }
-        };
-        // Experiments only (E3c): words written before the reply tool begins are its answer; before a real tool
-        // they are never spoken.
-        if (hold && experiment::reply_held())
-            opt.on_call = [&](const std::string &name) {
-                if (released || name != "reply") return;
-                released = true;
-                if (!held_text.empty()) opt.on_text(held_text);
-            };
-        llm::ChatResult res = llm::chat(messages, round == kMaxRounds - 1 ? json::array() : tool_schema_, opt);
-        // The user was talking when this step was decided. Nothing has been said or done yet, so
-        // what they add is taken into account first: a correction_ should land before the action.
-        const bool talked_over = !speech_started && a_.listening_;
-        if (!speech_started) wait_while_listening();
-
-        if (steered || (!speech_started && !res.cancelled && res.error.empty() && a_.has_pending() &&
-                        (res.tool_calls.empty() || talked_over))) {
-            if (began && a_.ev_.answer_discard) a_.ev_.answer_discard();
-            steer_in();
-            --round;  // a withdrawn draft does not count against the budget
-            continue;
-        }
-        if (a_.cancel_) {
-            if (began && a_.ev_.answer_end) a_.ev_.answer_end(res.content, true);
-            break;
-        }
-        if (a_.interrupted_) {
-            // The user talked over the answer. Keep what was said so the model knows where it stopped.
-            if (!res.content.empty()) {
-                std::lock_guard<std::mutex> lk(a_.mtx_);
-                a_.history_.push_back({{"role", "assistant"}, {"content", res.content + " [the user interrupted here]"}});
-            }
-            if (began && a_.ev_.answer_end) a_.ev_.answer_end(res.content, true);
-            a_.last_answer_ = res.content;
-            return;  // what they say next starts a new turn
-        }
-        if (!res.error.empty()) {
-            if (began && a_.ev_.answer_end) a_.ev_.answer_end(res.content, true);
-            if (a_.ev_.error) a_.ev_.error(res.error);
-            // Tools have run, so something may have changed, or failed, that the user has not been
-            // told about. Say what is known rather than leave them with silence.
-            if (req_.acted) {
-                const char *lost = "I lost the connection to the AI service before I could finish, so please ask again.";
-                deliver(speech_started ? lost
-                        : req_.done_said + (req_.failures ? "Something I tried did not work, and I lost the connection to the AI "
-                                                  "service before I could say what. Please ask again."
-                                                : lost));
-            }
-            break;
-        }
-
-        // E3: a draft the parallel check clears once the draft is complete stands without the second look.
-        bool cleared = released;
-        if (pcheck.active()) {
-            if (!res.tool_calls.empty()) pcheck.used("main_tool");
-            else if (hold && !released && !res.content.empty()) {
-                cleared = pcheck.wait_none(kCheckWaitMs);
-                pcheck.used(cleared ? "after" : pcheck.answered() ? "second_look" : "late");
-            }
-            pcheck.stop();
-            rt_.parallel_check(pcheck.summary());
-        }
-        if (hold && !cleared && res.tool_calls.empty() && !res.content.empty()) {
-            json review = messages;
-            review.push_back({{"role", "assistant"}, {"content", res.content}});
-            review.push_back({{"role", "user"}, {"content", guards::kSecondLook}});
-            llm::ChatOptions check;
-            check.model = opt.model;
-            check.fast = true;
-            check.cancel = &a_.cancel_;
-            check.purpose = "second_look";
-            llm::ChatResult second = llm::chat(review, tool_schema_, check);
-            if (experiment::tracing()) {
-                std::string outcome = second.error.empty() ? "" : "error";
-                for (const auto &c : second.tool_calls) outcome += (outcome.empty() ? "" : ",") + c.name;
-                rt_.second_look(outcome.empty() ? "ok" : outcome);
-            }
-            wait_while_listening();
-            if (a_.cancel_) break;
-            if (a_.has_pending()) {  // the user added something while the draft was being checked
-                steer_in();
-                --round;
-                continue;
-            }
-            // A failed check lets the draft through: a network hiccup must not silence the assistant.
-            if (second.error.empty() && !second.tool_calls.empty()) {
-                res.tool_calls = std::move(second.tool_calls);
-                res.content.clear();
-            }
-        }
-
-        // A draft that claims what no tool call backs is withdrawn, and the model told why (guards::kClaims).
-        const guards::Claim *claim = unbacked;
-        if (!claim && !speech_started && res.tool_calls.empty())
-            for (const guards::Claim &c : guards::kClaims)
-                if (req_.claim_open(c) && c.test(res.content)) { claim = &c; break; }
-        if (claim) {
-            (claim->scope == guards::Claim::NothingWorked ? req_.failure_guarded : req_.guarded) = true;
-            rt_.guard(claim->name);
-            if (began && a_.ev_.answer_discard) a_.ev_.answer_discard();
-            correction_ = claim->note(res.content);
-            continue;
-        }
-        // An empty reply leaves the user with silence: it goes back to the model once, and if the
-        // next one is empty too, an answer is made here from what is known.
-        if (res.tool_calls.empty() && util::trim(res.content).empty() && !speech_started && unsaid.empty()) {
-            if (began && a_.ev_.answer_discard) a_.ev_.answer_discard();
-            rt_.guard(req_.nudged || round >= kMaxRounds - 1 ? "empty_answered_here" : "empty");
-            if (!req_.nudged && round < kMaxRounds - 1) {
-                req_.nudged = true;
-                correction_ = guards::empty_reply_note(req_.failures);
-                continue;
-            }
-            deliver(req_.done_said + (req_.failures ? "Sorry, something I tried did not work." : "Sorry, I have no answer to that."));
-            if (a_.absorb_inputs(false) > 0) { new_request(); round = -1; continue; }   // a new request: fresh budget
-            break;
-        }
-        if (hold && !released && res.tool_calls.empty()) {
-            // The draft stands: release it as if it had streamed.
-            began = true;
-            if (a_.ev_.answer_begin) a_.ev_.answer_begin();
-            if (a_.ev_.answer_delta) a_.ev_.answer_delta(res.content);
-            a_.set_state(AgentState::Speaking);
-            for (auto &sentence : chunker.feed(res.content)) to_speech(sentence);
-        }
-        // Words held back while the user was talking, who then cancelled rather than adding anything.
-        if (!unsaid.empty() && res.tool_calls.empty()) {
-            a_.set_state(AgentState::Speaking);
-            for (auto &sentence : unsaid) to_speech(sentence);
-        }
-
-        if (!res.tool_calls.empty()) {
-            json calls = json::array();
-            for (auto &c : res.tool_calls)
-                calls.push_back({{"id", c.id}, {"type", "function"}, {"function", {{"name", c.name}, {"arguments", c.args}}}});
-            {
-                std::lock_guard<std::mutex> lk(a_.mtx_);
-                a_.history_.push_back({{"role", "assistant"}, {"content", res.content}, {"tool_calls", calls}});
-            }
-            if (began) {
-                const std::string rest = chunker.flush();
-                if (!rest.empty() && !a_.listening_ && unsaid.empty()) to_speech(rest);
-                if (a_.ev_.answer_end) a_.ev_.answer_end(res.content, false);
-            }
-            std::string confirm;
-            bool all_confirmed = true;
-            for (auto &c : res.tool_calls) {
-                const tools::Tool *tool = tools::find(c.name);
-                const std::string label = tool ? tool->label : c.name;
-                a_.set_state(AgentState::Working, label);
-                if (a_.ev_.tool) a_.ev_.tool(label);
-                const auto tool_started = std::chrono::steady_clock::now();
-                const std::string key = call_key(c.name, c.args);
-                const auto earlier = req_.failed_calls.find(key);
-                std::string result;
-                if (a_.cancel_) result = "ERROR: cancelled by the user";
-                else if (earlier != req_.failed_calls.end())
-                    result = "ERROR: this exact call already failed in this request, so it was not made again. It said: " +
-                             earlier->second + ". Change what that asks you to change, or tell the user it did not work";
-                else result = tools::run(c.name, c.args, tool_ctx);
-                const long tool_ms = static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - tool_started).count());
-                activity::tool(c.name, c.args, result, tool_ms);   // DIAGNOSTICS (temporary): the activity log
-                rt_.tool(c.name, tool_ms, result);
-#if ZB_EXPERIMENTS
-                if (a_.ev_.tool_done) a_.ev_.tool_done(c.id, c.name, c.args, result);
-#endif
-                if (result.size() > kMaxToolResult) result = util::truncate_utf8(result, kMaxToolResult, " …[truncated]");
-                if (tools::failed(result)) {
-                    ++req_.failures;
-                    // Refused only for what its "say" claimed, nothing done: it may come again
-                    // with another say, or after the step it lacked.
-                    if (!tool_ctx.say_refused) req_.failed_calls.emplace(key, error_words(result));
-                } else if (result.compare(0, 7, "CONFIRM") != 0) {
-                    req_.any_ok = true;
-                }
-                const std::string say = a_.cancel_ ? "" : tools::confirmation(c.name, c.args, result);
-                if (say.empty()) all_confirmed = false;
-                else if (confirm.find(say) == std::string::npos) confirm += (confirm.empty() ? "" : " ") + say;
-                if (!say.empty() && req_.done_said.find(say) == std::string::npos) req_.done_said += say + " ";
-                std::lock_guard<std::mutex> lk(a_.mtx_);
-                a_.history_.push_back({{"role", "tool"}, {"tool_call_id", c.id}, {"content", result}});
-            }
-            req_.acted = true;
-            wait_while_listening();
-            // Anything said meanwhile steers the next step, so the model has to look again.
-            if (steer_in() > 0 || a_.cancel_ || !all_confirmed) continue;
-
-            // Every call succeeded and came with its own confirmation: speak that now rather than
-            // spending another model call on it.
-            deliver(confirm);
-            if (a_.absorb_inputs(false) > 0) { new_request(); round = -1; continue; }   // a new request: fresh budget
-            break;
-        }
-
-        // Final answer for this request.
-        const std::string rest = chunker.flush();
-        if (!util::trim(rest).empty()) to_speech(rest);
-        {
-            std::lock_guard<std::mutex> lk(a_.mtx_);
-            a_.history_.push_back({{"role", "assistant"}, {"content", res.content}});
-        }
-        home::assistant_replied(res.content);   // it may put the question a smart-home change waits on
-        a_.last_answer_ = res.content;
-        if (began && a_.ev_.answer_end) a_.ev_.answer_end(res.content, false);
-        if (res.content.empty() && a_.ev_.error) a_.ev_.error("The model returned an empty answer.");
-        // Something typed while the answer was being spoken becomes the next request.
-        if (a_.absorb_inputs(false) > 0) { new_request(); round = -1; continue; }   // a new request: fresh budget
-        break;
+    Budget budget;
+    while (budget.left() && !a_.cancel_) {
+        const Then then = one_round(budget);
+        if (then == Then::Leave) return;   // the user talked over the answer: what they say next starts a new turn
+        if (then == Then::Finish) break;
+        if (then == Then::NewRequest) {
+            new_request();
+            budget.restart();
+        } else if (then == Then::Next) {
+            budget.spend();
+        }   // Then::Again: a withdrawn draft does not count against the budget
     }
     // Leaving by running out of rounds means the last one asked to go round again, so nothing has
     // been said for this request. Say so rather than falling silent.
-    if (round >= kMaxRounds && !a_.cancel_) deliver(req_.done_said + "Sorry, that took more steps than I can do in one go. Please ask again.");
+    if (budget.spent() && !a_.cancel_) deliver(req_.done_said + "Sorry, that took more steps than I can do in one go. Please ask again.");
     speech_.end_of_answer();
+}
+
+// One model call, and what comes of it: a draft withdrawn, a correction, tools run, an answer.
+Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
+    a_.set_state(AgentState::Thinking);
+    a_.round_cancel_ = false;
+
+    json messages = json::array({{{"role", "system"}, {"content", prompt::system_prompt()}}});
+    {
+        std::lock_guard<std::mutex> lk(a_.mtx_);
+        for (auto &m : a_.history_) messages.push_back(m);
+    }
+    if (budget.last()) add_note(messages, guards::kLastRound);
+
+    const bool corrected = !correction_.empty();
+    if (corrected) add_note(messages, correction_);
+    correction_.clear();
+
+    bool began = false, speech_started = false, steered = false;
+    const guards::Claim *unbacked = nullptr;   // the claim guard a sentence tripped as it streamed
+    std::vector<std::string> unsaid;   // sentences composed while the microphone was open
+    SpeechQueue::Chunker chunker;
+    llm::ChatOptions opt;
+    opt.model = Settings::get().eff_llm_model();
+    opt.fast = Settings::get().fast_mode;
+    bool deciding;
+    {
+        std::lock_guard<std::mutex> lk(a_.mtx_);
+        deciding = a_.history_.empty() || util::jget(a_.history_.back(), "role", std::string()) != "tool";
+    }
+    // In fast mode the model's commonest mistake is to answer in words when it should have
+    // used a tool: "done" with nothing done, or a price or opening time from memory. So a reply
+    // that arrives with no tool call is held back and checked before a word of it is spoken.
+    const bool fast_decision = deciding && !req_.acted && !req_.guarded && opt.fast;
+    // Experiments only (E3b, ZB_EXP_DECIDE=required): the decision is forced into a tool call, words
+    // come through the reply tool and stream as they are written; nothing is held for a second look.
+    if (fast_decision && experiment::decide_required()) opt.tool_choice = "required";
+    const bool hold = fast_decision && (!experiment::decide_required() || experiment::reply_held());
+    // Experiments only (E3, ZB_EXP_DECIDE=parallel): a short check beside this call says whether a
+    // tool is needed at all. A draft it clears is spoken as it streams, without the second look.
+    experiment::ParallelCheck pcheck;
+    if (hold && experiment::parallel_check()) pcheck.start(messages, tool_schema_, opt.model);
+    bool released = false;     // E3: the held draft is being spoken as it streams
+    std::string held_text;     // E3: the draft so far, while the check has not cleared it
+    if (fast_decision) add_note(messages, guards::kDecideNote);
+    opt.purpose = budget.last() ? "last_round" : corrected ? "correction" : deciding ? "decide" : "after_tool";
+    opt.cancel = &a_.round_cancel_;
+    opt.on_text = [&](const std::string &piece) {
+        if (steered || unbacked) return;
+        std::string text = piece;
+        if (hold && !released) {
+            if (!pcheck.active() && !experiment::reply_held()) return;   // held whole, checked once complete
+            held_text += piece;
+            if (!pcheck.said_none()) return;   // E3c: released by on_call when the reply tool begins
+            released = true;                // E3: cleared while it is still being written
+            pcheck.used("stream");
+            text = held_text;
+        }
+        if (!began) { began = true; if (a_.ev_.answer_begin) a_.ev_.answer_begin(); }
+        if (a_.ev_.answer_delta) a_.ev_.answer_delta(text);
+        for (auto &sentence : chunker.feed(text)) {
+            // New input arrived before anything was said: withdraw this draft and let the
+            // model reconsider with the extra instruction.
+            if (!speech_started && a_.has_pending()) { steered = true; a_.round_cancel_ = true; return; }
+            // Checked before the first words are spoken: once said, a claim cannot be taken back.
+            // "Done" is false when no tool has run, and when every one that ran failed or is
+            // waiting for the user's yes.
+            if (!speech_started)
+                for (const guards::Claim &c : guards::kClaims)
+                    if (c.as_it_streams && req_.claim_open(c) && c.test(sentence)) {
+                        unbacked = &c;
+                        a_.round_cancel_ = true;
+                        return;
+                    }
+            // The user has started talking: keep the words back until they have finished.
+            if (a_.listening_ || !unsaid.empty()) { unsaid.push_back(sentence); continue; }
+            speech_started = true;
+            a_.set_state(AgentState::Speaking);
+            to_speech(sentence);
+        }
+    };
+    // Experiments only (E3c): words written before the reply tool begins are its answer; before a real tool
+    // they are never spoken.
+    if (hold && experiment::reply_held())
+        opt.on_call = [&](const std::string &name) {
+            if (released || name != "reply") return;
+            released = true;
+            if (!held_text.empty()) opt.on_text(held_text);
+        };
+    llm::ChatResult res = llm::chat(messages, budget.last() ? json::array() : tool_schema_, opt);
+    // The user was talking when this step was decided. Nothing has been said or done yet, so
+    // what they add is taken into account first: a correction should land before the action.
+    const bool talked_over = !speech_started && a_.listening_;
+    if (!speech_started) wait_while_listening();
+
+    if (steered || (!speech_started && !res.cancelled && res.error.empty() && a_.has_pending() &&
+                    (res.tool_calls.empty() || talked_over))) {
+        if (began && a_.ev_.answer_discard) a_.ev_.answer_discard();
+        steer_in();
+        return Then::Again;  // a withdrawn draft does not count against the budget
+    }
+    if (a_.cancel_) {
+        if (began && a_.ev_.answer_end) a_.ev_.answer_end(res.content, true);
+        return Then::Finish;
+    }
+    if (a_.interrupted_) {
+        // The user talked over the answer. Keep what was said so the model knows where it stopped.
+        if (!res.content.empty()) {
+            std::lock_guard<std::mutex> lk(a_.mtx_);
+            a_.history_.push_back({{"role", "assistant"}, {"content", res.content + " [the user interrupted here]"}});
+        }
+        if (began && a_.ev_.answer_end) a_.ev_.answer_end(res.content, true);
+        a_.last_answer_ = res.content;
+        return Then::Leave;  // what they say next starts a new turn
+    }
+    if (!res.error.empty()) {
+        if (began && a_.ev_.answer_end) a_.ev_.answer_end(res.content, true);
+        if (a_.ev_.error) a_.ev_.error(res.error);
+        // Tools have run, so something may have changed, or failed, that the user has not been
+        // told about. Say what is known rather than leave them with silence.
+        if (req_.acted) {
+            const char *lost = "I lost the connection to the AI service before I could finish, so please ask again.";
+            deliver(speech_started ? lost
+                    : req_.done_said + (req_.failures ? "Something I tried did not work, and I lost the connection to the AI "
+                                              "service before I could say what. Please ask again."
+                                            : lost));
+        }
+        return Then::Finish;
+    }
+
+    // E3: a draft the parallel check clears once the draft is complete stands without the second look.
+    bool cleared = released;
+    if (pcheck.active()) {
+        if (!res.tool_calls.empty()) pcheck.used("main_tool");
+        else if (hold && !released && !res.content.empty()) {
+            cleared = pcheck.wait_none(kCheckWaitMs);
+            pcheck.used(cleared ? "after" : pcheck.answered() ? "second_look" : "late");
+        }
+        pcheck.stop();
+        rt_.parallel_check(pcheck.summary());
+    }
+    if (hold && !cleared && res.tool_calls.empty() && !res.content.empty()) {
+        json review = messages;
+        review.push_back({{"role", "assistant"}, {"content", res.content}});
+        review.push_back({{"role", "user"}, {"content", guards::kSecondLook}});
+        llm::ChatOptions check;
+        check.model = opt.model;
+        check.fast = true;
+        check.cancel = &a_.cancel_;
+        check.purpose = "second_look";
+        llm::ChatResult second = llm::chat(review, tool_schema_, check);
+        if (experiment::tracing()) {
+            std::string outcome = second.error.empty() ? "" : "error";
+            for (const auto &c : second.tool_calls) outcome += (outcome.empty() ? "" : ",") + c.name;
+            rt_.second_look(outcome.empty() ? "ok" : outcome);
+        }
+        wait_while_listening();
+        if (a_.cancel_) return Then::Finish;
+        if (a_.has_pending()) {  // the user added something while the draft was being checked
+            steer_in();
+            return Then::Again;
+        }
+        // A failed check lets the draft through: a network hiccup must not silence the assistant.
+        if (second.error.empty() && !second.tool_calls.empty()) {
+            res.tool_calls = std::move(second.tool_calls);
+            res.content.clear();
+        }
+    }
+
+    // A draft that claims what no tool call backs is withdrawn, and the model told why (guards::kClaims).
+    const guards::Claim *claim = unbacked;
+    if (!claim && !speech_started && res.tool_calls.empty())
+        for (const guards::Claim &c : guards::kClaims)
+            if (req_.claim_open(c) && c.test(res.content)) { claim = &c; break; }
+    if (claim) {
+        (claim->scope == guards::Claim::NothingWorked ? req_.failure_guarded : req_.guarded) = true;
+        rt_.guard(claim->name);
+        if (began && a_.ev_.answer_discard) a_.ev_.answer_discard();
+        correction_ = claim->note(res.content);
+        return Then::Next;
+    }
+    // An empty reply leaves the user with silence: it goes back to the model once, and if the
+    // next one is empty too, an answer is made here from what is known.
+    if (res.tool_calls.empty() && util::trim(res.content).empty() && !speech_started && unsaid.empty()) {
+        if (began && a_.ev_.answer_discard) a_.ev_.answer_discard();
+        rt_.guard(req_.nudged || budget.last() ? "empty_answered_here" : "empty");
+        if (!req_.nudged && !budget.last()) {
+            req_.nudged = true;
+            correction_ = guards::empty_reply_note(req_.failures);
+            return Then::Next;
+        }
+        deliver(req_.done_said + (req_.failures ? "Sorry, something I tried did not work." : "Sorry, I have no answer to that."));
+        return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+    }
+    if (hold && !released && res.tool_calls.empty()) {
+        // The draft stands: release it as if it had streamed.
+        began = true;
+        if (a_.ev_.answer_begin) a_.ev_.answer_begin();
+        if (a_.ev_.answer_delta) a_.ev_.answer_delta(res.content);
+        a_.set_state(AgentState::Speaking);
+        for (auto &sentence : chunker.feed(res.content)) to_speech(sentence);
+    }
+    // Words held back while the user was talking, who then cancelled rather than adding anything.
+    if (!unsaid.empty() && res.tool_calls.empty()) {
+        a_.set_state(AgentState::Speaking);
+        for (auto &sentence : unsaid) to_speech(sentence);
+    }
+
+    if (!res.tool_calls.empty()) {
+        json calls = json::array();
+        for (auto &c : res.tool_calls)
+            calls.push_back({{"id", c.id}, {"type", "function"}, {"function", {{"name", c.name}, {"arguments", c.args}}}});
+        {
+            std::lock_guard<std::mutex> lk(a_.mtx_);
+            a_.history_.push_back({{"role", "assistant"}, {"content", res.content}, {"tool_calls", calls}});
+        }
+        if (began) {
+            const std::string rest = chunker.flush();
+            if (!rest.empty() && !a_.listening_ && unsaid.empty()) to_speech(rest);
+            if (a_.ev_.answer_end) a_.ev_.answer_end(res.content, false);
+        }
+        std::string confirm;
+        bool all_confirmed = true;
+        for (auto &c : res.tool_calls) {
+            const tools::Tool *tool = tools::find(c.name);
+            const std::string label = tool ? tool->label : c.name;
+            a_.set_state(AgentState::Working, label);
+            if (a_.ev_.tool) a_.ev_.tool(label);
+            const auto tool_started = std::chrono::steady_clock::now();
+            const std::string key = call_key(c.name, c.args);
+            const auto earlier = req_.failed_calls.find(key);
+            std::string result;
+            if (a_.cancel_) result = "ERROR: cancelled by the user";
+            else if (earlier != req_.failed_calls.end())
+                result = "ERROR: this exact call already failed in this request, so it was not made again. It said: " +
+                         earlier->second + ". Change what that asks you to change, or tell the user it did not work";
+            else result = tools::run(c.name, c.args, req_.tool_ctx);
+            const long tool_ms = static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - tool_started).count());
+            activity::tool(c.name, c.args, result, tool_ms);   // DIAGNOSTICS (temporary): the activity log
+            rt_.tool(c.name, tool_ms, result);
+#if ZB_EXPERIMENTS
+            if (a_.ev_.tool_done) a_.ev_.tool_done(c.id, c.name, c.args, result);
+#endif
+            if (result.size() > kMaxToolResult) result = util::truncate_utf8(result, kMaxToolResult, " …[truncated]");
+            if (tools::failed(result)) {
+                ++req_.failures;
+                // Refused only for what its "say" claimed, nothing done: it may come again
+                // with another say, or after the step it lacked.
+                if (!req_.tool_ctx.say_refused) req_.failed_calls.emplace(key, error_words(result));
+            } else if (result.compare(0, 7, "CONFIRM") != 0) {
+                req_.any_ok = true;
+            }
+            const std::string say = a_.cancel_ ? "" : tools::confirmation(c.name, c.args, result);
+            if (say.empty()) all_confirmed = false;
+            else if (confirm.find(say) == std::string::npos) confirm += (confirm.empty() ? "" : " ") + say;
+            if (!say.empty() && req_.done_said.find(say) == std::string::npos) req_.done_said += say + " ";
+            std::lock_guard<std::mutex> lk(a_.mtx_);
+            a_.history_.push_back({{"role", "tool"}, {"tool_call_id", c.id}, {"content", result}});
+        }
+        req_.acted = true;
+        wait_while_listening();
+        // Anything said meanwhile steers the next step, so the model has to look again.
+        if (steer_in() > 0 || a_.cancel_ || !all_confirmed) return Then::Next;
+
+        // Every call succeeded and came with its own confirmation: speak that now rather than
+        // spending another model call on it.
+        deliver(confirm);
+        return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+    }
+
+    // Final answer for this request.
+    const std::string rest = chunker.flush();
+    if (!util::trim(rest).empty()) to_speech(rest);
+    {
+        std::lock_guard<std::mutex> lk(a_.mtx_);
+        a_.history_.push_back({{"role", "assistant"}, {"content", res.content}});
+    }
+    home::assistant_replied(res.content);   // it may put the question a smart-home change waits on
+    a_.last_answer_ = res.content;
+    if (began && a_.ev_.answer_end) a_.ev_.answer_end(res.content, false);
+    if (res.content.empty() && a_.ev_.error) a_.ev_.error("The model returned an empty answer.");
+    // Something typed while the answer was being spoken becomes the next request.
+    return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
 }
