@@ -43,7 +43,7 @@ MenuItem MenuItem::text(const std::string &text) {
 }
 
 void Menu::add_paragraph(std::vector<MenuItem> &items, const std::string &paragraph) {
-    const size_t width = 47;   // characters of body text that fit across the screen
+    const size_t width = kParagraphChars;
     size_t pos = 0;
     while (pos < paragraph.size()) {
         size_t len = std::min(width, paragraph.size() - pos);
@@ -193,6 +193,15 @@ bool Menu::in_guide() const {
 }
 
 int Menu::first_shown() const { return stack_.empty() ? 0 : stack_.back().scroll; }
+
+int Menu::cursor() const { return stack_.empty() ? -1 : stack_.back().selected; }
+
+int Menu::row_of(const std::string &label) const {
+    if (stack_.empty()) return -1;
+    for (size_t i = 0; i < items_.size(); ++i)
+        if (items_[i].selectable() && items_[i].label == label) return static_cast<int>(i);
+    return -1;
+}
 
 std::string Menu::selected() const {
     if (stack_.empty()) return "";
@@ -378,7 +387,7 @@ void Menu::toast(const std::string &text) {
     theme::fit_width(toast_, kScreenW - 24);   // see fit_width: a max width alone can hide a wrapped line
     lv_obj_remove_flag(toast_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(toast_);
-    toast_ticks_ = 28;
+    toast_ticks_ = kToastTicks;
 }
 
 void Menu::tick() {

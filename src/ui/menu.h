@@ -72,11 +72,17 @@ public:
     std::string title() const;      // the top page's title, and the label of the row the cursor
     std::string selected() const;   // is on ("" with no page): for the checks in --shots
     int first_shown() const;        // the row at the top of the screen (for --shots)
+    // For the walks in --shots: where the cursor is on the page on top, and the first row there with
+    // this label that the cursor can stop on (-1 when there is none). Rows count as in the page's build.
+    int cursor() const;
+    int row_of(const std::string &label) const;
     // The width a Pair row gives its key (the rest is for what it does): for the checks in --shots.
     static constexpr int kPairKeyW = 96;   // DIAGNOSTICS (temporary): 84 without the guide's "SPACE SPACE" line
     static int pair_text_width();
     // Splits a paragraph into Text rows that fit the screen width.
     static void add_paragraph(std::vector<MenuItem> &items, const std::string &paragraph);
+    static constexpr size_t kParagraphChars = 47;   // characters of body text that fit across the screen
+    static constexpr int kToastTicks = 28;          // ticks a toast stays: about 2 s
 
 private:
     void render();

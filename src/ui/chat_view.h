@@ -24,6 +24,7 @@ public:
     void add_image(const std::string &image_path, bool owned = false);
     void clear();
     void scroll(int dy);
+    static constexpr int kLineScroll = 34, kPageScroll = 110;   // pixels a scroll key moves, by line and by page
     bool empty() const { return count_ == 0; }
 
     // Status bar. Each redraws only what has changed, so they can be called on every tick.
