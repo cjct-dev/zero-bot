@@ -1,7 +1,7 @@
 #!/bin/sh
 # Device-free unit tests: the smart-home layer (store, names, schema, safety rules, locking,
 # pairing, the Tapo driver's refusals, colours), the drivers' own tests (Fire TV, HomeKit, Hue,
-# Kasa, WiZ, Shelly), the HTTP options for devices, the timers (the timer tool, storage, the
+# Kasa, WiZ, Shelly) and the helpers they share (drivers/support), the HTTP options for devices, the timers (the timer tool, storage, the
 # countdown, the alarm and its player), the radio (the station file, the tool, the check of a
 # stream, the player's live mode), the keys (what each does on the chat screen, and the key guide),
 # when the screen dims and goes off, what the other tools stand on (calculator, dates, time
@@ -38,18 +38,19 @@ trap 'rm -rf "$state"' EXIT INT TERM
 DRIVERS=$(echo src/smarthome/drivers/*.cpp)
 APP="src/smarthome/store.cpp src/smarthome/targets.cpp src/smarthome/control.cpp src/smarthome/tool.cpp
      src/smarthome/discovery.cpp src/smarthome/tapo.cpp $DRIVERS src/core/util.cpp src/platform/proc.cpp
-     src/platform/sys.cpp src/net/http.cpp"
+     src/platform/sys.cpp src/platform/net_status.cpp src/net/http.cpp"
 # The timers need only these, with util.cpp and proc.cpp from above.
 TIMERS="src/core/timers.cpp src/core/store.cpp src/platform/audio.cpp src/platform/codec.cpp"
-# The radio needs these on top of the smart-home objects (for its name cleaning) and audio.cpp.
-RADIO="src/core/radio.cpp src/core/tether.cpp src/platform/net_status.cpp"
+# The radio needs these on top of the smart-home objects (for its name cleaning; net_status.cpp for the
+# tether) and audio.cpp.
+RADIO="src/core/radio.cpp src/core/tether.cpp"
 # The tools' foundations need only the calculator, with util.cpp and proc.cpp from above.
 TOOLS="src/agent/calc.cpp"
 # DIAGNOSTICS (temporary): the activity log and saved conversations, with util.cpp from above.
 DIAG="src/core/activity.cpp src/core/settings.cpp"
 # What an older version left behind (core_test), with util.cpp and proc.cpp from above.
 UPGRADE="src/core/upgrade.cpp"
-# The shared helpers core_test checks, with net_status.cpp from RADIO and sys.cpp from APP.
+# The shared helpers core_test checks, with net_status.cpp and sys.cpp from APP.
 HELPERS="src/platform/power.cpp"
 # What every thread shares: files saved at once, the settings, the calendar's alerts (store.cpp
 # from TIMERS, util.cpp from above, settings.cpp from DIAG).
@@ -62,7 +63,7 @@ for src in $APP $TIMERS $RADIO $TOOLS $DIAG $UPGRADE $HELPERS tests/unit/activit
            tests/unit/radio_test.cpp tests/unit/tools_test.cpp tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp \
            tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp tests/unit/hue_test.cpp tests/unit/hue_cli.cpp \
            tests/unit/kasa_test.cpp tests/unit/kasa_cli.cpp tests/unit/wiz_test.cpp tests/unit/wiz_cli.cpp \
-           tests/unit/shelly_test.cpp tests/unit/shelly_cli.cpp src/ui/key_guide.cpp tests/unit/key_guide_test.cpp \
+           tests/unit/shelly_test.cpp tests/unit/shelly_cli.cpp tests/unit/support_test.cpp src/ui/key_guide.cpp tests/unit/key_guide_test.cpp \
            src/ui/screen_idle.cpp tests/unit/screen_idle_test.cpp tests/unit/models_test.cpp; do
     obj=$(obj_of "$src")
     if [ ! -f "$obj" ] || [ "$src" -nt "$obj" ] || [ -n "$newest_header" ]; then
@@ -105,6 +106,9 @@ $WRAP $CXX -o "$OUT/wiz_cli" "$OUT/tests_unit_wiz_cli.o" $objs -lcurl -lcrypto -
 # The same for the Shelly driver (tests/shelly_e2e.py drives shelly_cli).
 $WRAP $CXX -o "$OUT/shelly_test" "$OUT/tests_unit_shelly_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/shelly_cli" "$OUT/tests_unit_shelly_cli.o" $objs -lcurl -lcrypto -lpthread
+# The helpers the drivers share (drivers/support): JSON depth, UTF-8, MAC digits, hex, digests, certificates.
+$WRAP $CXX -o "$OUT/support_test" "$OUT/tests_unit_support_test.o" "$(obj_of src/smarthome/drivers/support.cpp)" \
+    "$(obj_of src/core/util.cpp)" "$(obj_of src/platform/proc.cpp)" -lcrypto -lpthread
 # What each key does on the chat screen, and the key guide that lists them (no screen needed).
 $WRAP $CXX -o "$OUT/key_guide_test" "$OUT/tests_unit_key_guide_test.o" "$(obj_of src/ui/key_guide.cpp)"
 # When the screen dims and goes off, and the backlight a crash puts back (no screen needed).
@@ -140,6 +144,8 @@ echo "=== WiZ driver"
 "$OUT/wiz_test" || failed=1
 echo "=== Shelly driver"
 "$OUT/shelly_test" || failed=1
+echo "=== the drivers' shared helpers"
+"$OUT/support_test" tests/mocks || failed=1
 echo "=== keys"
 "$OUT/key_guide_test" || failed=1
 echo "=== screen off"

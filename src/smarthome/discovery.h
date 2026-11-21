@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "platform/net_status.h"
+
 namespace discovery {
 
 // The network the device is on right now.
@@ -25,11 +27,11 @@ struct Network {
 };
 Network current_network();
 
-// The interface and gateway of the default route: one read of /proc/net/route, cheap enough to
-// check before every use of a remembered Network.
-struct Route {
-    std::string iface, gateway;
-};
+// The interface and gateway of the default route, the first one through a gateway (a default route
+// with none, a VPN or PPP link, has no router to identify the network by): net_status::default_route
+// with via_gateway, one read of /proc/net/route, cheap enough to check before every use of a
+// remembered Network.
+using Route = net_status::Route;
 Route default_route();
 
 // What kind of link an interface is, from what the kernel reports about it under `sys`
