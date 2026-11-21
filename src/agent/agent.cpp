@@ -5,6 +5,7 @@
 #include <optional>
 #include <unistd.h>
 
+#include "agent/controls.h"
 #include "agent/experiment.h"
 #include "agent/guards.h"
 #include "agent/llm.h"
@@ -252,7 +253,7 @@ int Agent::absorb_inputs(bool first) {
         std::lock_guard<std::mutex> lk(mtx_);
         // Numeric dates are spelt out here, by rule, so that the day/month order and the year are
         // never left to the model's reading.
-        std::string content = stamp + util::spell_numeric_dates(text);
+        std::string content = stamp + (controls::on(controls::DateSpelling) ? util::spell_numeric_dates(text) : text);
         if (!context_.empty()) {
             if (time(nullptr) - context_at_ < 600) content += "\n\n(Automatic note, not from the user: " + context_ + ")";
             context_.clear();
@@ -316,6 +317,7 @@ private:
 
         // A claim guard may still fire in this request: each kind fires at most once (guards::Claim).
         bool claim_open(const guards::Claim &c) const {
+            if (!controls::on(controls::ClaimGuards)) return false;
             return c.scope == guards::Claim::NoTool ? !acted && !guarded : acted && !any_ok && !failure_guarded;
         }
         void reset() {
@@ -469,11 +471,11 @@ void Agent::Turn::call_model(Round &r, const Budget &budget) {
     // Experiments only (E3b, ZB_EXP_DECIDE=required): the decision is forced into a tool call, words
     // come through the reply tool and stream as they are written; nothing is held for a second look.
     if (fast_decision && experiment::decide_required()) r.opt.tool_choice = "required";
-    r.hold = fast_decision && (!experiment::decide_required() || experiment::reply_held());
+    r.hold = fast_decision && controls::on(controls::SecondLook) && (!experiment::decide_required() || experiment::reply_held());
     // Experiments only (E3, ZB_EXP_DECIDE=parallel): a short check beside this call says whether a
     // tool is needed at all. A draft it clears is spoken as it streams, without the second look.
     if (r.hold && experiment::parallel_check()) r.pcheck.start(r.messages, tool_schema_, r.opt.model);
-    if (fast_decision) add_note(r.messages, guards::kDecideNote);
+    if (fast_decision && controls::on(controls::DecideNote)) add_note(r.messages, guards::kDecideNote);
     r.opt.purpose = budget.last() ? "last_round" : r.corrected ? "correction" : r.deciding ? "decide" : "after_tool";
     r.opt.cancel = &a_.round_cancel_;
     r.opt.on_text = [this, &r](const std::string &piece) { stream(r, piece); };
