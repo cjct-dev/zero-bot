@@ -450,43 +450,31 @@ std::string join(const std::vector<std::string> &parts) {
     for (size_t i = 0; i < parts.size(); i++) out += (i ? ", " : "") + parts[i];
     return out;
 }
-}  // namespace
 
-bool plan(const home::Thing &thing, const home::Change &change, std::vector<Action> &out, std::string &err) {
-    out.clear();
-    err.clear();
-    const bool volume = ref_flag(thing.ref, "volume"), power = ref_flag(thing.ref, "power");
-    std::vector<std::string> missing;   // what this TV does not offer over the network
-    std::string bad;                    // a request that makes no sense for any TV
-    const auto key = [&out](const char *action, int repeat = 1) {
+// plan()'s parts. Each adds actions in the order they are to be sent, or names what this TV does not
+// offer over the network (`missing`), or a request that makes no sense for any TV (`bad`: the last
+// one found).
+struct Planner {
+    std::vector<Action> &out;
+    std::vector<std::string> missing;
+    std::string bad;
+
+    void key(const char *action, int repeat = 1) {
         Action a;
         a.kind = Action::Key;
         a.what = action;
         a.repeat = repeat;
         out.push_back(a);
-    };
-    const auto media = [&out](const char *what, const char *body) {
+    }
+    void media(const char *what, const char *body) {
         Action a;
         a.kind = Action::Media;
         a.what = what;
         a.body = body;
         out.push_back(a);
-    };
-
-    if (change.brightness) missing.push_back("brightness");
-    if (change.kelvin) missing.push_back("colour temperature");
-    if (change.hs) missing.push_back("colour");
-    if (change.target_c || change.mode) missing.push_back("heating");
-    if (change.position) missing.push_back("position");
-    if (change.fan) missing.push_back("fan speed");
-    if (change.volume) missing.push_back("a volume level (only volume up and down)");
-
-    if (change.on && *change.on) {
-        Action a;
-        a.kind = Action::Wake;
-        out.push_back(a);
     }
-    if (change.key) {
+    // A remote key (Change::key).
+    void press(const home::Change &change, bool volume, bool power) {
         std::string k = lower_ascii(trim(*change.key));
         std::replace(k.begin(), k.end(), ' ', '_');
         std::replace(k.begin(), k.end(), '-', '_');
@@ -512,7 +500,8 @@ bool plan(const home::Thing &thing, const home::Change &change, std::vector<Acti
         else if (k.size() == 1 && k[0] >= '0' && k[0] <= '9') missing.push_back("the number keys");
         else bad = "There is no TV key called \"" + clean_name(*change.key, 24) + "\".";
     }
-    if (change.transport) {
+    // A playback control (Change::transport).
+    void playback(const home::Change &change) {
         const std::string t = lower_ascii(trim(*change.transport));
         if (t == "play" || t == "pause" || t == "play_pause") media("play", "");   // one toggle on this API
         else if (t == "rewind") media("scan", kScanBack);
@@ -520,17 +509,15 @@ bool plan(const home::Thing &thing, const home::Change &change, std::vector<Acti
         else if (t == "stop" || t == "next" || t == "previous") missing.push_back(t);
         else bad = "There is no playback control called \"" + clean_name(*change.transport, 24) + "\".";
     }
-    if (change.volume_step && *change.volume_step != 0) {
+    // Volume up or down several times (Change::volume_step).
+    void volume_steps(const home::Change &change, bool volume) {
         const int n = *change.volume_step;
         if (!volume) missing.push_back("volume");
         else if (n > 10 || n < -10) bad = "At most 10 volume steps can be made at once.";
         else key(n > 0 ? "volume_up" : "volume_down", n > 0 ? n : -n);
     }
-    // A chosen mute state cannot be set: the TV's only mute control is a key that toggles, and
-    // the API cannot read which way it is (an "unmute" sent as the toggle would mute an unmuted
-    // TV). The mute key itself is Change::key "mute".
-    if (change.mute) missing.push_back(volume ? "muting or unmuting (it only has a mute key that toggles)" : "mute");
-    if (change.source) {
+    // An app to open (Change::source).
+    void source(const home::Thing &thing, const home::Change &change) {
         const std::string s = trim(*change.source);
         if (s.empty()) bad = "Say which app to open.";
         // "HDMI 1" and the like name an input, which this API is not known to select (no source
@@ -545,7 +532,39 @@ bool plan(const home::Thing &thing, const home::Change &change, std::vector<Acti
             out.push_back(a);
         }
     }
-    if (change.on && !*change.on) key("sleep");   // last, after anything else asked for
+};
+}  // namespace
+
+bool plan(const home::Thing &thing, const home::Change &change, std::vector<Action> &out, std::string &err) {
+    out.clear();
+    err.clear();
+    const bool volume = ref_flag(thing.ref, "volume"), power = ref_flag(thing.ref, "power");
+    Planner p{out, {}, {}};
+    std::vector<std::string> &missing = p.missing;   // what this TV does not offer over the network
+    std::string &bad = p.bad;                        // a request that makes no sense for any TV
+
+    if (change.brightness) missing.push_back("brightness");
+    if (change.kelvin) missing.push_back("colour temperature");
+    if (change.hs) missing.push_back("colour");
+    if (change.target_c || change.mode) missing.push_back("heating");
+    if (change.position) missing.push_back("position");
+    if (change.fan) missing.push_back("fan speed");
+    if (change.volume) missing.push_back("a volume level (only volume up and down)");
+
+    if (change.on && *change.on) {
+        Action a;
+        a.kind = Action::Wake;
+        out.push_back(a);
+    }
+    if (change.key) p.press(change, volume, power);
+    if (change.transport) p.playback(change);
+    if (change.volume_step && *change.volume_step != 0) p.volume_steps(change, volume);
+    // A chosen mute state cannot be set: the TV's only mute control is a key that toggles, and
+    // the API cannot read which way it is (an "unmute" sent as the toggle would mute an unmuted
+    // TV). The mute key itself is Change::key "mute".
+    if (change.mute) missing.push_back(volume ? "muting or unmuting (it only has a mute key that toggles)" : "mute");
+    if (change.source) p.source(thing, change);
+    if (change.on && !*change.on) p.key("sleep");   // last, after anything else asked for
 
     if (!missing.empty()) {
         err = std::string(kUnsupported) + " " + join(missing) + ".";
