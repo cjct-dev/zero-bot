@@ -1276,13 +1276,29 @@ def _asked_days(request, day0):
     if re.search(DAY_WORDS[0], r): return [day0.isoformat()]
     return None
 
+# Weekday names in the languages the suite asks in (English first; Spanish, German, French, Italian, Portuguese, Dutch).
+WEEKDAY_NAMES = [r"monday|lunes|montag|lundi|luned[iì]|segunda|maandag", r"tuesday|martes|dienstag|mardi|marted[iì]|ter[cç]a|dinsdag",
+                 r"wednesday|mi[eé]rcoles|mittwoch|mercredi|mercoled[iì]|quarta|woensdag", r"thursday|jueves|donnerstag|jeudi|gioved[iì]|quinta|donderdag",
+                 r"friday|viernes|freitag|vendredi|venerd[iì]|sexta|vrijdag", r"saturday|s[aá]bado|samstag|samedi|sabato|zaterdag",
+                 r"sunday|domingo|sonntag|dimanche|domenica|zondag"]
+
 def _day_mentions(text, d0):
-    """(start, end, dates, today) for every day an answer names: today or now, tomorrow, a weekday, the weekend."""
+    """(start, end, dates, today) for every day an answer names: today or now, tomorrow, a weekday (today's weekday may
+    be today or a week on), the weekend, or a date written out ("27 November", "November 27th")."""
     out = [(m.start(), m.end(), {d0.isoformat()}, True) for m in re.finditer(DAY_WORDS[0], text, re.I)]
     out += [(m.start(), m.end(), {(d0 + datetime.timedelta(days=1)).isoformat()}, False) for m in re.finditer(DAY_WORDS[1], text, re.I)]
-    for wd, name in enumerate(WEEKDAYS):
-        d = d0 + datetime.timedelta(days=(wd - d0.weekday()) % 7)
-        out += [(m.start(), m.end(), {d.isoformat()}, d == d0) for m in re.finditer(r"\b%s\b" % name, text, re.I)]
+    for wd, names in enumerate(WEEKDAY_NAMES):
+        ahead = (wd - d0.weekday()) % 7
+        ds = {(d0 + datetime.timedelta(days=ahead)).isoformat()} | ({(d0 + datetime.timedelta(days=7)).isoformat()} if ahead == 0 else set())
+        out += [(m.start(), m.end(), ds, ahead == 0) for m in re.finditer(r"(?<!\w)(?:%s)(?!\w)" % names, text, re.I)]
+    for m in re.finditer(r"\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+(%s)\b|\b(%s)\s+(\d{1,2})(?:st|nd|rd|th)?\b" % ("|".join(MONTHS), "|".join(MONTHS)), text, re.I):
+        day_n, month = (int(m.group(1)), m.group(2)) if m.group(1) else (int(m.group(4)), m.group(3))
+        for year in (d0.year, d0.year + 1):
+            try: d = datetime.date(year, MONTHS.index(month.lower()) + 1, day_n)
+            except ValueError: break
+            if d >= d0:
+                out.append((m.start(), m.end(), {d.isoformat()}, d == d0))
+                break
     weekend = {(d0 + datetime.timedelta(days=(wd - d0.weekday()) % 7)) for wd in (5, 6)}
     out += [(m.start(), m.end(), {d.isoformat() for d in weekend}, d0 in weekend) for m in re.finditer(r"\bweekend\b", text, re.I)]
     return sorted(out)
@@ -1864,7 +1880,7 @@ CASES = [
 # The scorer's version, in every result (with the case's hash and whether it was traced), so that a
 # comparison of two runs knows when their verdicts are comparable. Raise it when what a check accepts
 # changes.
-SCORER_VERSION = "2026-11-21.8"   # ZB-086: .3 evidence, meaning, the day asked; .4 decimal comma; .5 round 2: visible facts, roles, units, currency bound; .6 unlabelled share, named days; .7 amounts in words; .8 round 3: day per clause, the model's cut, denied names, bare amounts, flags
+SCORER_VERSION = "2026-11-21.9"   # ZB-086: .3 evidence, meaning, the day asked; .4 decimal comma; .5 round 2: visible facts, roles, units, currency bound; .6 unlabelled share, named days; .7 amounts in words; .8 round 3: day per clause, the model's cut, denied names, bare amounts, flags; .9 weekdays in six languages, dates written out
 
 TOOL_RE = re.compile(r"^\s+-> (\w+) (.*)$")
 RESULT_RE = re.compile(r"^\s+<- (.*)$")

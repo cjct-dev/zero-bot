@@ -961,6 +961,12 @@ def served_checks():
           [{"calls": [forecast], "answer": "Tomorrow in Lisbon: sunny and 24 degrees."}], "did not serve for the day")
     trips("weather served (r3): today's and tomorrow's highs swapped fail", lisbon,
           [{"calls": [forecast], "answer": "Today will reach 17 degrees and tomorrow 24 degrees."}], "did not serve for the day")
+    passes("weather served (r3): a date written out binds its figures ('Saturday (20 November)')", lisbon,
+           {"calls": [forecast], "answer": "On Saturday (%s), light rain, 11 to 17 degrees." % (d0 + datetime.timedelta(days=1)).strftime("%-d %B")})
+    trips("weather served (r3): a weekday in Dutch binds its figures too", lisbon,
+          [{"calls": [forecast], "answer": "Vandaag 11 tot 17 graden, %s 15 tot 24 graden." % ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag",
+                                                                                      "zaterdag", "zondag"][(d0 + datetime.timedelta(days=1)).weekday()]}],
+          "did not serve for the day")
     passes("weather served (r3): each figure with its own day passes ('24 today and 17 tomorrow')", lisbon,
            {"calls": [forecast], "answer": "Up to 24 degrees today and 17 tomorrow, with light rain."})
     passes("weather served (r2): another day the answer names itself may be given", lisbon,
