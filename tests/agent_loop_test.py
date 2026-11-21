@@ -21,10 +21,12 @@ spoken apology; a fresh budget for a follow-up; retries on 5xx, the reasoning-fi
 refused keys, an outage page, an error inside the stream, an empty answer; think markers; time
 stamps and spelt-out dates; a byte-identical system prompt between calls; history trimming; the
 size of the first request; smart-home questions and answers on a stand-in home; a saved conversation
-("/save", what SPACE twice does on the device; diagnostics, temporary).
+("/save", what SPACE twice does on the device; diagnostics, temporary); typed and spoken requests
+(--ask-wav, --steer-wav: a typed one is answered on the screen only, one with anything said aloud is
+spoken too, counted at the stand-in speech service, with a stand-in player that plays nothing).
 
 Not covered (no command-line hook): cancel, interrupting a spoken answer, context notes from the
-timer's alarm, transcription of recorded speech.
+timer's alarm.
 """
 import argparse
 import json
@@ -135,12 +137,16 @@ HOME = _home({"id": "1", "name": "Fan heater", "type": "plug", "caps": 1, "room"
 
 
 def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, photo=False, timeout=60, radio=None, search_key=None,
-        inspect=None, trace=False, settings=None):
+        inspect=None, trace=False, settings=None, speech=False, ask_wav=False, steer_wav=False):
     """Runs the app once against `script`: --chat with each of `said`, or --ask `ask` (with `extra`
     arguments such as --steer). Returns a Run. `inspect(state_folder)` is called before the
     temporary home is removed, to look at what the run left there. `trace`: the experiments' trace
     (ZB_EXP_TRACE) is recorded, in Run.trace (events) and Run.trace_text. `settings` are added to
-    the app's settings file."""
+    the app's settings file. `speech`: spoken replies on and audio allowed (ZB_NO_AUDIO=0), with speech
+    models and uncompressed audio (one request a sentence), and a stand-in pw-cat on PATH that only reads,
+    so nothing is heard. `ask_wav`: the request is a recording (--ask-wav, half a second of silence, which
+    the stand-in transcribes as the script's "heard"); `steer_wav`: the same recording is handed over as
+    spoken steering during the first tool (--steer-wav)."""
     state = tempfile.mkdtemp(prefix="zb-loop-")
     model = None
     try:
@@ -149,8 +155,17 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
         app_settings = {"llm_model": "scripted", "speak_replies": False, "home_city": "London"}
         if search_key:
             app_settings["search_key"] = search_key
+        if speech:
+            app_settings.update(speak_replies=True, stt_model="scripted-ears", tts_model="scripted-voice", compress_audio=False)
         app_settings.update(settings or {})
         json.dump(app_settings, open(state + "/config/zero-bot/settings.json", "w"))
+        wav = state + "/said.wav"
+        if ask_wav or steer_wav:
+            with open(wav, "wb") as f:
+                f.write(b"RIFF" + (36 + 16000).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "little") +
+                        (1).to_bytes(2, "little") + (1).to_bytes(2, "little") + (16000).to_bytes(4, "little") +
+                        (32000).to_bytes(4, "little") + (2).to_bytes(2, "little") + (16).to_bytes(2, "little") +
+                        b"data" + (16000).to_bytes(4, "little") + b"\0" * 16000)
         if radio:
             json.dump({"stations": radio}, open(state + "/config/zero-bot/radio.json", "w"))
         json.dump(script, open(state + "/script.json", "w"))
@@ -180,8 +195,17 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
                 f.write(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9")
             e["ZB_FAKE_CAMERA"] = state + "/photo.jpg"
         e["ZB_EVAL_RECORDS"] = state + "/records.jsonl"   # the scorer's records, on a channel of their own
+        if speech:
+            os.makedirs(state + "/bin")
+            with open(state + "/bin/pw-cat", "w") as f:
+                f.write("#!/bin/sh\nexec cat > /dev/null\n")
+            os.chmod(state + "/bin/pw-cat", 0o755)
+            e.update(ZB_NO_AUDIO="0", PATH=state + "/bin:" + e.get("PATH", "/usr/bin:/bin"))
         e.update(env or {})
-        cmd = [APP] + (["--ask", ask] if ask is not None else ["--chat"]) + list(extra)
+        if ask_wav:
+            ask = wav   # the records name the recording as the request's words
+        cmd = [APP] + (["--ask-wav" if ask_wav else "--ask", ask] if ask is not None else ["--chat"]) + list(extra)
+        cmd += ["--steer-wav", wav] if steer_wav else []
         stdin = "" if ask is not None else "\n".join(said or []) + "\n"
         try:
             p = subprocess.run(cmd, input=stdin, env=e, capture_output=True, text=True, timeout=timeout)
@@ -572,6 +596,67 @@ def talk_over_holds_action():
     r = run(script, ask="set a timer for 12 minutes", extra=["--talk-over", "1000:no make it 15"])
     check(n + ": is dropped when the user adds something", [a.get("minutes") for t, a in r.tools()] == [15] and
           r.answer == "Your timer is set for 15 minutes.", r)
+
+
+# ------------------------------------------------------------------ spoken and typed requests (ZB-091)
+def spoken_lines(r):
+    """What the app asked the speech service to say, in order."""
+    return [q["body"].get("input") for q in r.requests if q["rule"] == "speech"]
+
+
+def heard(r):
+    return sum(q["rule"] == "transcription" for q in r.requests)
+
+
+LISBON = {"rules": [{"when": {"said": "portugal"}, "reply": {"text": "Lisbon is the capital of Portugal."}},
+                    {"when": {"said": "spain"}, "reply": {"text": "Madrid is the capital of Spain."}},
+                    {"when": {"said": "thanks"}, "reply": {"text": "You are welcome, it is running."}},
+                    {"when": {"said": "12 minutes"}, "reply": calls(TIMER_12)}]}
+
+
+@scenario
+def typed_answer_shown_only():
+    r = run(LISBON, ask="what is the capital of portugal", speech=True)
+    n = "a typed request, spoken replies on"
+    check(n + ": answered on the screen", r.answer == "Lisbon is the capital of Portugal." and "[error]" not in r.out, r)
+    check(n + ": nothing is sent to the speech service", spoken_lines(r) == [] and heard(r) == 0, spoken_lines(r))
+    r = run(LISBON, ask="set a timer for 12 minutes", speech=True)
+    check(n + ": a say confirmation is shown, not spoken", r.answer == "Your timer is set for 12 minutes." and spoken_lines(r) == [], r)
+
+
+@scenario
+def spoken_answer_spoken():
+    r = run(dict(LISBON, heard="what is the capital of portugal"), ask_wav=True, speech=True)
+    n = "a spoken request"
+    chat = [q["body"] for q in r.requests if q["rule"] not in ("speech", "transcription")]
+    check(n + ": transcribed once, and what was heard is the user's message", heard(r) == 1 and "[user] what is the capital of portugal" in r.out
+          and len(chat) == 1 and text_of(chat[0]["messages"][-1]).endswith("] what is the capital of portugal"), r)
+    check(n + ": answered on the screen and spoken, once", r.answer == "Lisbon is the capital of Portugal." and
+          spoken_lines(r) == ["Lisbon is the capital of Portugal."] and "[error]" not in r.out, (spoken_lines(r), r))
+    r = run(dict(LISBON, heard="set a timer for 12 minutes"), ask_wav=True, speech=True)
+    check(n + ": a say confirmation is spoken", r.answer == "Your timer is set for 12 minutes." and
+          spoken_lines(r) == ["Your timer is set for 12 minutes."], (spoken_lines(r), r))
+    r = run(dict(LISBON, heard="what is the capital of portugal"), ask_wav=True, settings={"stt_model": "scripted-ears"})
+    check(n + ": with ZB_NO_AUDIO (the command line's default) nothing is spoken", heard(r) == 1 and spoken_lines(r) == [] and
+          r.answer == "Lisbon is the capital of Portugal.", r)
+
+
+@scenario
+def mixed_requests_spoken():
+    r = run(dict(LISBON, heard="thanks"), ask="set a timer for 12 minutes", steer_wav=True, speech=True)
+    n = "typed, then spoken steering"
+    check(n + ": the spoken words join the request", "[steer] thanks" in r.out and heard(r) == 1, r)
+    check(n + ": the answer is spoken", r.answer == "You are welcome, it is running." and spoken_lines(r) == ["You are welcome, it is running."],
+          (spoken_lines(r), r))
+    r = run(dict(LISBON, heard="set a timer for 12 minutes"), ask_wav=True, speech=True, extra=["--steer", "thanks"])
+    n = "spoken, then typed steering"
+    check(n + ": the answer is spoken", "[steer] thanks" in r.out and r.answer == "You are welcome, it is running." and
+          spoken_lines(r) == ["You are welcome, it is running."], (spoken_lines(r), r))
+    r = run(dict(LISBON, heard="set a timer for 12 minutes"), ask_wav=True, speech=True,
+            extra=["--follow-ups", "what is the capital of spain"])
+    n = "spoken, then a typed request while its answer is given"
+    check(n + ": both answered; only the spoken one is spoken", r.answer == "Madrid is the capital of Spain." and
+          "Your timer is set for 12 minutes." in r.out and spoken_lines(r) == ["Your timer is set for 12 minutes."], (spoken_lines(r), r))
 
 
 # ------------------------------------------------------------------ the round budget

@@ -274,6 +274,18 @@ std::string wav_from_pcm(const std::vector<int16_t> &pcm, int rate) {
     return out;
 }
 
+bool pcm_from_wav(const std::string &wav, std::vector<int16_t> &pcm, int &rate) {
+    if (wav.size() < 46 || wav.compare(0, 4, "RIFF") != 0) return false;
+    uint32_t r = 0;
+    memcpy(&r, wav.data() + 24, 4);
+    const size_t data = wav.find("data", 12);
+    if (data == std::string::npos || data + 8 >= wav.size() || r < 8000) return false;
+    pcm.resize((wav.size() - data - 8) / 2);
+    memcpy(pcm.data(), wav.data() + data + 8, pcm.size() * 2);
+    rate = static_cast<int>(r);
+    return true;
+}
+
 void set_volume(int percent) {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;

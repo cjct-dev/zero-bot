@@ -1,5 +1,6 @@
-// The conversation loop: takes typed or spoken input, calls the model and tools, and
-// speaks the answer. New input that arrives mid-run is folded in as steering.
+// The conversation loop: takes typed or spoken input, calls the model and tools, and shows the
+// answer, speaking it too when the request was spoken. New input that arrives mid-run is folded in
+// as steering.
 #pragma once
 #include <atomic>
 #include <condition_variable>
@@ -56,8 +57,9 @@ public:
     bool has_pending();         // a request has been handed over but not yet picked up
 
     // Runs one request to completion on the calling thread and returns the final answer
-    // (used by the command-line test mode).
+    // (used by the command-line test mode): typed, or spoken (16 kHz mono, transcribed first).
     std::string run_blocking(const std::string &text);
+    std::string run_blocking(std::vector<int16_t> pcm);
     // A copy of the history. With `gone`, also how many messages have left it since the agent started
     // (trimmed from its front, or cleared with the conversation), taken under the same lock: the copy's
     // first message is message number *gone of the whole run, so a caller can tell exactly where a
@@ -75,7 +77,8 @@ private:
     class Turn;   // one call of run_turn (agent.cpp)
     void worker();
     void run_turn();
-    int absorb_inputs(bool first);
+    std::string run_blocking(Input in);
+    int absorb_inputs(bool first, bool *spoken = nullptr);
     void trim_history();
     void set_state(AgentState s, const std::string &detail = "");
 

@@ -48,7 +48,8 @@ void App::update_footer() {
             break;
         }
         case AgentState::Speaking:
-            chat.footer_busy(s.speak_replies ? "Speaking   ·   TAB to interrupt" : "Answering", theme::kAccent);
+            // A typed request's answer is shown, not spoken (ZB-091), as every answer is with spoken replies off.
+            chat.footer_busy(SpeechQueue::get().active() ? "Speaking   ·   TAB to interrupt" : "Answering", theme::kAccent);
             chat.set_status(s.agent_name, theme::kAccent);
             break;
         case AgentState::Idle:

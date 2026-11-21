@@ -67,7 +67,9 @@ private:
 };
 
 std::string wav_from_pcm(const std::vector<int16_t> &pcm, int rate);
-void set_volume(int percent);                     // system output volume, 0..100
+// The samples and rate of a 16-bit WAV (its "data" chunk, wherever it is). False when it is not one.
+bool pcm_from_wav(const std::string &wav, std::vector<int16_t> &pcm, int &rate);
+void set_volume(int percent);                  // system output volume, 0..100
 // The same without waiting: the mixer command runs on a thread of its own, and when several
 // settings arrive meanwhile (a held key, a settings row pressed repeatedly) only the newest is
 // applied. For the UI thread.

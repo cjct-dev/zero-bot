@@ -13,6 +13,7 @@
 #include "agent/experiment.h"
 #include "agent/llm.h"
 #include "agent/prompt.h"
+#include "agent/speech.h"
 #include "agent/tools.h"
 #include "core/activity.h"
 #include "core/music_lib.h"
@@ -20,6 +21,7 @@
 #include "core/store.h"
 #include "core/upgrade.h"
 #include "net/http.h"
+#include "platform/audio.h"
 #include "platform/codec.h"
 #include "smarthome/discovery.h"
 #include "smarthome/home.h"
@@ -35,7 +37,11 @@ void usage() {
          "  --ask \"text\"          run one request through the agent and print what happens\n"
          "  --chat                interactive text conversation on the terminal (/new starts a new one;\n"
          "                         /save saves it as SPACE twice does on the device: diagnostics, temporary)\n"
-         "  --steer \"text\"        with --ask/--chat: add this while the first tool of the first request runs\n"
+         "  --ask-wav FILE.wav    run one spoken request: the recording (16-bit mono, 16 kHz) is transcribed by\n"
+         "                         the speech-to-text service, and the answer spoken as on the device (not with\n"
+         "                         ZB_NO_AUDIO, which this mode sets unless it is set; ZB_NO_AUDIO=0 speaks)\n"
+         "  --steer \"text\"        with --ask/--ask-wav/--chat: add this while the first tool of the first request runs\n"
+         "  --steer-wav FILE.wav  the same, said aloud: the recording is handed over as speech\n"
          "  --home-refresh         read names and states from the saved smart-home devices on this network\n"
          "                         (ZB_TEST_NETWORK=1: a stand-in network where only 127.x devices are contacted)\n"
          "  --discover             look for smart-home devices on this network (discovery only) and list them\n"
@@ -61,10 +67,24 @@ void usage() {
     _exit(code);
 }
 
-// Terminal front end used for testing and tuning the agent without the screen.
-int run_cli(const std::string &ask, bool chat, const std::string &steer_text, const std::string &talk_over,
-            const std::string &follow_ups) {
+// A recording to hand over as speech (--ask-wav, --steer-wav): 16-bit, 16 kHz, as the recorder makes.
+bool read_speech(const std::string &path, std::vector<int16_t> &pcm) {
+    std::string wav;
+    int rate = 0;
+    if (util::read_file(path, wav) && audio::pcm_from_wav(wav, pcm, rate) && rate == audio::kMicRate) return true;
+    fprintf(stderr, "%s is not a 16-bit WAV recorded at %d Hz\n", path.c_str(), audio::kMicRate);
+    return false;
+}
+
+// Terminal front end used for testing and tuning the agent without the screen. A request is typed
+// (--ask, --chat) or spoken (--ask-wav: a recording); so is what --steer/--steer-wav add.
+int run_cli(const std::string &ask, const std::string &ask_wav, bool chat, const std::string &steer_text,
+            const std::string &steer_wav, const std::string &talk_over, const std::string &follow_ups) {
     setenv("ZB_NO_AUDIO", "1", 0);
+    std::vector<int16_t> ask_pcm;
+    static std::vector<int16_t> steer_pcm;
+    if (!ask_wav.empty() && !read_speech(ask_wav, ask_pcm)) return 2;
+    if (!steer_wav.empty() && !read_speech(steer_wav, steer_pcm)) return 2;
     AgentEvents ev;
     ev.user_message = [](const std::string &t, bool steering) { printf("%s %s\n", steering ? "[steer]" : "[user]", t.c_str()); };
     static std::chrono::steady_clock::time_point t0;
@@ -77,6 +97,7 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
     ev.tool = [since](const std::string &label) {
         printf("[tool +%.1fs] %s\n", since(), label.c_str());
         if (!steer.empty()) { Agent::get().submit_text(steer); steer.clear(); }
+        if (!steer_pcm.empty()) { Agent::get().submit_audio(std::move(steer_pcm)); steer_pcm.clear(); }
     };
     // Follow-ups queued while an answer is arriving are picked up by the same run.
     static std::vector<std::string> chain;
@@ -182,7 +203,8 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
 #endif
     Agent &agent = Agent::get();
     agent.start(ev);
-    auto one = [&](const std::string &text) {
+    // A typed request, or a spoken one (pcm; `text` then names its recording in the records).
+    auto one = [&](const std::string &text, std::vector<int16_t> pcm = {}) {
         // Where this request's messages will begin, counted over the whole run: the history only grows at
         // its end and loses messages at its front, and the agent counts those it loses.
         size_t gone = 0;
@@ -214,7 +236,7 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
                 agent.set_listening(false);
             });
         }
-        const std::string answer = agent.run_blocking(text);
+        const std::string answer = pcm.empty() ? agent.run_blocking(text) : agent.run_blocking(std::move(pcm));
         if (talker.joinable()) talker.join();
         const double total = since();
         const json hist = agent.history_snapshot(&gone);
@@ -260,6 +282,7 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
         fflush(stdout);
     };
     if (!ask.empty()) one(ask);
+    if (!ask_wav.empty()) one(ask_wav, std::move(ask_pcm));
     if (chat) {
         std::string line;
         while (printf("> "), fflush(stdout), std::getline(std::cin, line)) {
@@ -282,6 +305,8 @@ int run_cli(const std::string &ask, bool chat, const std::string &steer_text, co
         }
     }
     experiment::wait_probes(30000);   // speech probes of the experiments' trace (ZB_EXP_TTS_PROBE) still running
+    // Spoken answers still being synthesised or played (none with ZB_NO_AUDIO).
+    for (int waited = 0; SpeechQueue::get().active() && waited < 30000; waited += 20) usleep(20 * 1000);
 #if ZB_EXPERIMENTS
     if (records) record({{"ev", "end"}, {"turns", request_no}});
 #endif
@@ -296,14 +321,16 @@ int main(int argc, char **argv) {
     // five-second timeout (measured on a CardputerZero: 5.04 s against 0.03 s with this option).
     // Asking one after the other costs a few milliseconds. Must be set before the first lookup.
     setenv("RES_OPTIONS", "single-request", 0);
-    std::string ask, shots, steer, talk_over, follow_ups, tool_name, tool_args = "{}";
+    std::string ask, ask_wav, shots, steer, steer_wav, talk_over, follow_ups, tool_name, tool_args = "{}";
     std::string stt_file, tts_text, tts_out, bench_wav, bench_opus;
     bool chat = false, keydump = false, discover = false, home_refresh = false, show_prompt = false, show_schema = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--ask" && i + 1 < argc) ask = argv[++i];
         else if (a == "--chat") chat = true;
+        else if (a == "--ask-wav" && i + 1 < argc) ask_wav = argv[++i];
         else if (a == "--steer" && i + 1 < argc) steer = argv[++i];
+        else if (a == "--steer-wav" && i + 1 < argc) steer_wav = argv[++i];
         else if (a == "--discover") discover = true;
         else if (a == "--home-refresh") home_refresh = true;
         else if (a == "--talk-over" && i + 1 < argc) talk_over = argv[++i];
@@ -422,9 +449,9 @@ int main(int argc, char **argv) {
         puts(tools::run(tool_name, tool_args, ctx).c_str());
         quit(0);
     }
-    if (!ask.empty() || chat) {
+    if (!ask.empty() || !ask_wav.empty() || chat) {
         MusicLibrary::get().refresh(Settings::get().eff_music_dir());
-        quit(run_cli(ask, chat, steer, talk_over, follow_ups));
+        quit(run_cli(ask, ask_wav, chat, steer, steer_wav, talk_over, follow_ups));
     }
 #if ZB_CLI_ONLY
     (void)keydump;

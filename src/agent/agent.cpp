@@ -1,6 +1,7 @@
 #include "agent/agent.h"
 
 #include <chrono>
+#include <cstring>
 #include <map>
 #include <optional>
 #include <unistd.h>
@@ -63,6 +64,13 @@ public:
 private:
     int used_ = 0;
 };
+
+// ZB_NO_AUDIO (the command line sets it unless its caller did): nothing is spoken. "0" lets answers be
+// spoken there too, for the tests, which put a stand-in player on PATH.
+bool audio_off() {
+    const char *v = getenv("ZB_NO_AUDIO");
+    return v && strcmp(v, "0") != 0;
+}
 
 // Set while run_blocking() owns the conversation, so input submitted during it (steering)
 // is absorbed by that run and does not start a second one on the worker thread.
@@ -204,11 +212,22 @@ void Agent::worker() {
 }
 
 std::string Agent::run_blocking(const std::string &text) {
+    Input in;
+    in.text = text;
+    return run_blocking(std::move(in));
+}
+
+std::string Agent::run_blocking(std::vector<int16_t> pcm) {
+    Input in;
+    in.audio = true;
+    in.pcm = std::move(pcm);
+    return run_blocking(std::move(in));
+}
+
+std::string Agent::run_blocking(Input in) {
     g_blocking = true;
     {
         std::lock_guard<std::mutex> lk(mtx_);
-        Input in;
-        in.text = text;
         inputs_.push_back(std::move(in));
     }
     busy_ = true;
@@ -221,8 +240,9 @@ std::string Agent::run_blocking(const std::string &text) {
     return last_answer_;
 }
 
-// Moves queued input into the conversation. Returns how many user messages were added.
-int Agent::absorb_inputs(bool first) {
+// Moves queued input into the conversation. Returns how many user messages were added; `spoken` is
+// set when one of them was said aloud (it is left alone otherwise).
+int Agent::absorb_inputs(bool first, bool *spoken) {
     int added = 0;
     for (;;) {
         Input in;
@@ -260,6 +280,7 @@ int Agent::absorb_inputs(bool first) {
         }
         history_.push_back({{"role", "user"}, {"content", content}});
         ++added;
+        if (in.audio && spoken) *spoken = true;
     }
     return added;
 }
@@ -371,7 +392,9 @@ private:
     Then run_tools(Round &r);
     Then finish_answer(Round &r);
 
+    Then next_request();
     void new_request();
+    void set_spoken(bool spoken);
     int steer_in();
     void wait_while_listening();
     void to_speech(const std::string &sentence);
@@ -381,7 +404,8 @@ private:
     experiment::RequestTrace rt_;   // the experiments' trace (ZB_EXP_TRACE); empty in the app users run
     json tool_schema_;              // the tools offered, as the request began
     SpeechQueue &speech_ = SpeechQueue::get();
-    bool speak_ = false;            // answers are spoken, not only shown
+    bool speak_ = false;            // answers may be spoken (spoken replies are on)
+    bool spoken_ = false;           // the request has input the user said aloud, so its answer is spoken too (ZB-091)
     Request req_;
     std::string correction_;        // one-off note for the next model call; never stored in the history
 };
@@ -394,17 +418,18 @@ void Agent::Turn::run() {
     a_.cancel_ = false;
     a_.interrupted_ = false;
     rt_.absorbing();
-    if (a_.absorb_inputs(true) == 0) return;
+    bool spoken = false;
+    if (a_.absorb_inputs(true, &spoken) == 0) return;
     rt_.begin();
     a_.trim_history();
     activity::request();   // DIAGNOSTICS (temporary): the activity log
 
     tool_schema_ = tools::schema();
-    req_.tool_ctx.in_conversation = true;
     req_.tool_ctx.cancel = &a_.cancel_;
     req_.tool_ctx.on_image = a_.ev_.image;
     req_.tool_ctx.on_breathe = a_.ev_.breathe;
-    speak_ = Settings::get().speak_replies && !getenv("ZB_NO_AUDIO");
+    speak_ = Settings::get().speak_replies && !audio_off();
+    set_spoken(spoken);
 
     Budget budget;
     while (budget.left() && !a_.cancel_) {
@@ -653,7 +678,7 @@ std::optional<Agent::Turn::Then> Agent::Turn::judge_draft(Round &r, const Budget
             return Then::Next;
         }
         deliver(req_.done_said + (req_.failures ? "Sorry, something I tried did not work." : "Sorry, I have no answer to that."));
-        return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+        return next_request();
     }
     return std::nullopt;
 }
@@ -739,7 +764,7 @@ Agent::Turn::Then Agent::Turn::run_tools(Round &r) {
     // Every call succeeded and came with its own confirmation: speak that now rather than
     // spending another model call on it.
     deliver(confirm);
-    return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+    return next_request();
 }
 
 // The model's final answer for this request: the rest of it spoken, kept in the conversation, and
@@ -755,8 +780,16 @@ Agent::Turn::Then Agent::Turn::finish_answer(Round &r) {
     a_.last_answer_ = r.res.content;
     if (r.began && a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, false);
     if (r.res.content.empty() && a_.ev_.error) a_.ev_.error("The model returned an empty answer.");
-    // Something typed while the answer was being spoken becomes the next request.
-    return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+    return next_request();
+}
+
+// Something typed or said while the answer was given becomes the next request (NewRequest: a fresh
+// budget), spoken or not by what it was; with nothing new the turn is over (Finish).
+Agent::Turn::Then Agent::Turn::next_request() {
+    bool spoken = false;
+    if (a_.absorb_inputs(false, &spoken) == 0) return Then::Finish;
+    set_spoken(spoken);
+    return Then::NewRequest;
 }
 
 // A request typed while the last answer was spoken: it starts afresh.
@@ -765,11 +798,20 @@ void Agent::Turn::new_request() {
     req_.reset();
 }
 
+// Whether the request's answer is spoken: a typed request is answered on the screen only, and one with
+// anything said aloud is spoken too. Music a tool starts waits for a spoken answer, not for a shown one.
+void Agent::Turn::set_spoken(bool spoken) {
+    spoken_ = spoken;
+    req_.tool_ctx.in_conversation = spoken;
+}
+
 // Input that arrived meanwhile joins this request. It may be "try that again", so the calls
-// that failed may be made once more.
+// that failed may be made once more. Said aloud, it makes the rest of the answer spoken.
 int Agent::Turn::steer_in() {
-    const int added = a_.absorb_inputs(false);
+    bool spoken = false;
+    const int added = a_.absorb_inputs(false, &spoken);
     if (added > 0) { req_.failed_calls.clear(); rt_.steered(); }
+    if (spoken) set_spoken(true);
     return added;
 }
 
@@ -779,14 +821,15 @@ void Agent::Turn::wait_while_listening() {
     while (a_.listening_ && !a_.cancel_) usleep(50 * 1000);
 }
 
-// Every sentence handed to speech goes through here (traced whether or not it is spoken).
+// Every sentence handed to speech goes through here (traced whether or not it is spoken): spoken when
+// replies are and the request was spoken.
 void Agent::Turn::to_speech(const std::string &sentence) {
     rt_.sentence(sentence);
-    if (speak_) speech_.enqueue(sentence);
+    if (speak_ && spoken_) speech_.enqueue(sentence);
 }
 
-// An answer made here rather than by the model (a confirmation, an apology): shown, spoken and
-// kept in the conversation like the model's own.
+// An answer made here rather than by the model (a confirmation, an apology): shown, spoken as the
+// model's would be, and kept in the conversation like the model's own.
 void Agent::Turn::deliver(const std::string &text) {
     {
         std::lock_guard<std::mutex> lk(a_.mtx_);
