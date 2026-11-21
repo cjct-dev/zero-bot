@@ -1,10 +1,9 @@
 #include "core/tether.h"
 
-#include <fstream>
-#include <sstream>
 #include <vector>
 
 #include "core/util.h"
+#include "platform/net_status.h"
 #include "platform/proc.h"
 
 namespace tether {
@@ -19,18 +18,9 @@ std::vector<std::string> profiles() {
 }
 }  // namespace
 
-std::string default_link() {
-    std::ifstream f("/proc/net/route");
-    std::string line;
-    std::getline(f, line);  // header
-    while (std::getline(f, line)) {
-        std::istringstream ss(line);
-        std::string iface, dest;
-        ss >> iface >> dest;
-        if (dest == "00000000") return iface;
-    }
-    return "";
-}
+// The first default route, whether or not it goes through a gateway: a VPN or PPP link with none still
+// carries the app's requests (discovery, which identifies the network by its router, asks for one with).
+std::string default_link() { return net_status::default_route(false).iface; }
 
 bool online() { return !default_link().empty(); }
 

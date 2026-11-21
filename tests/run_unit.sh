@@ -42,7 +42,7 @@ APP="src/smarthome/store.cpp src/smarthome/targets.cpp src/smarthome/control.cpp
 # The timers need only these, with util.cpp and proc.cpp from above.
 TIMERS="src/core/timers.cpp src/core/store.cpp src/platform/audio.cpp src/platform/codec.cpp"
 # The radio needs these on top of the smart-home objects (for its name cleaning) and audio.cpp.
-RADIO="src/core/radio.cpp src/core/tether.cpp"
+RADIO="src/core/radio.cpp src/core/tether.cpp src/platform/net_status.cpp"
 # The tools' foundations need only the calculator, with util.cpp and proc.cpp from above.
 TOOLS="src/agent/calc.cpp"
 # DIAGNOSTICS (temporary): the activity log and saved conversations, with util.cpp from above.
