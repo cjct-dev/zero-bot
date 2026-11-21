@@ -1738,7 +1738,7 @@ CASES = [
 # The scorer's version, in every result (with the case's hash and whether it was traced), so that a
 # comparison of two runs knows when their verdicts are comparable. Raise it when what a check accepts
 # changes.
-SCORER_VERSION = "2026-11-21.2"   # ZB-086: checks read what the stand-in web served (.2: decimal comma, "fetch")
+SCORER_VERSION = "2026-11-21.3"   # ZB-086: checks read what the stand-in web served (.3: evidence, meaning, the day asked)
 
 TOOL_RE = re.compile(r"^\s+-> (\w+) (.*)$")
 RESULT_RE = re.compile(r"^\s+<- (.*)$")
