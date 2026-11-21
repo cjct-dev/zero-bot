@@ -711,76 +711,103 @@ Network current_network() {
     return net;
 }
 
-bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *heard_self) {
-    out.clear();
-    if (heard_self) *heard_self = false;
-    const Network net = current_network();
-    if (!net.usable) { err = net.why_not; return false; }
-    in_addr local;
-    inet_pton(AF_INET, net.address.c_str(), &local);
+namespace {
 
-    // mDNS gets two sockets: the well-known port, which hears answers sent to the whole group,
-    // and a private port, which devices answer directly. Each covers a case the other misses.
-    const int m_group = udp_socket(local, 5353, true);
-    const int m_direct = udp_socket(local, 0, false);
-    const int ssdp = udp_socket(local, 0, false);
-    const int tapo = udp_socket(local, 0, false);
-    const int kasa = udp_socket(local, 0, false);
+// ---------------------------------------------------------------- one scan
+// The sockets of one scan, one for each way of asking. mDNS gets two: the well-known port, which
+// hears answers sent to the whole group, and a private port, which devices answer directly. Each
+// covers a case the other misses.
+struct Sockets {
+    int m_group = -1, m_direct = -1, ssdp = -1, tapo = -1, kasa = -1, wiz = -1;
+
+    void close_all() const {
+        for (const int fd : {m_group, m_direct, ssdp, tapo, kasa, wiz})
+            if (fd >= 0) close(fd);
+    }
+};
+
+// Opens the sockets on this device's address. False, with all of them closed, when neither the mDNS
+// nor the TP-Link one could be opened.
+bool open_sockets(const in_addr &local, Sockets &sock) {
+    sock.m_group = udp_socket(local, 5353, true);
+    sock.m_direct = udp_socket(local, 0, false);
+    sock.ssdp = udp_socket(local, 0, false);
+    sock.tapo = udp_socket(local, 0, false);
+    sock.kasa = udp_socket(local, 0, false);
     // WiZ: sent from port 38899 of this device's address, as pywizlight does, so that an answer
     // sent to that port is heard as well as one sent back to the asking port; any free port when
     // 38899 is taken.
-    int wiz = udp_socket(local, kWizPort, false);
-    if (wiz < 0) wiz = udp_socket(local, 0, false);
-    if (m_direct < 0 && tapo < 0) {
-        for (const int fd : {m_group, m_direct, ssdp, tapo, kasa, wiz})
-            if (fd >= 0) close(fd);
-        err = "Could not open a network socket.";
+    sock.wiz = udp_socket(local, kWizPort, false);
+    if (sock.wiz < 0) sock.wiz = udp_socket(local, 0, false);
+    if (sock.m_direct < 0 && sock.tapo < 0) {
+        sock.close_all();
         return false;
     }
-    if (m_group >= 0) {
+    if (sock.m_group >= 0) {
         ip_mreq join{};
         inet_pton(AF_INET, "224.0.0.251", &join.imr_multiaddr);
         join.imr_interface = local;
-        setsockopt(m_group, IPPROTO_IP, IP_ADD_MEMBERSHIP, &join, sizeof(join));
+        setsockopt(sock.m_group, IPPROTO_IP, IP_ADD_MEMBERSHIP, &join, sizeof(join));
     }
-    for (const int fd : {m_group, m_direct}) {
+    for (const int fd : {sock.m_group, sock.m_direct}) {
         if (fd < 0) continue;
         const int ttl = 255;
         setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
     }
-    if (ssdp >= 0) { const int ttl = 2; setsockopt(ssdp, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)); }
+    if (sock.ssdp >= 0) { const int ttl = 2; setsockopt(sock.ssdp, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)); }
+    return true;
+}
 
+// A question to send once its time after the start of the scan has come.
+struct Step { int at_ms; std::function<void()> run; bool done; };
+
+// What one scan asks, and when.
+struct Questions {
+    const Sockets &sock;
+    const Network &net;
     const std::string q_group = mdns_query(false), q_direct = mdns_query(true);
     const std::string search = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: ssdp:all\r\n\r\n";
     // The search a Fire TV's own phone app makes: its answer can carry the TV's wake-up address.
     const std::string dial_search = std::string("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\n"
                                                 "MX: 1\r\nST: ") + kDialService + "\r\n\r\n";
-    auto ask_mdns = [&] {
-        send_to(m_group, q_group.data(), q_group.size(), "224.0.0.251", 5353);
-        send_to(m_direct, q_direct.data(), q_direct.size(), "224.0.0.251", 5353);
-    };
     const std::string kasa_query = kasa_scramble(kKasaQuery);
-    auto ask_tapo = [&] {
-        // Some access points pass only one of the two forms of broadcast.
-        send_to(tapo, kTapoQuery, sizeof(kTapoQuery), "255.255.255.255", 20002);
-        send_to(tapo, kTapoQuery, sizeof(kTapoQuery), net.broadcast.c_str(), 20002);
-        send_to(kasa, kasa_query.data(), kasa_query.size(), "255.255.255.255", kKasaPort);
-        send_to(kasa, kasa_query.data(), kasa_query.size(), net.broadcast.c_str(), kKasaPort);
-    };
-    auto ask_wiz = [&] {
-        send_to(wiz, kWizQuery, sizeof(kWizQuery) - 1, "255.255.255.255", kWizPort);
-        send_to(wiz, kWizQuery, sizeof(kWizQuery) - 1, net.broadcast.c_str(), kWizPort);
-    };
-    auto ask_ssdp = [&] {
-        send_to(ssdp, search.data(), search.size(), "239.255.255.250", 1900);
-        send_to(ssdp, dial_search.data(), dial_search.size(), "239.255.255.250", 1900);
-    };
-    struct Step { int at_ms; std::function<void()> run; bool done; };
-    std::vector<Step> steps = {{0, ask_mdns, false},    {0, ask_tapo, false},    {0, ask_ssdp, false},    {0, ask_wiz, false},
-                               {1000, ask_mdns, false}, {1000, ask_tapo, false}, {1500, ask_ssdp, false}, {1000, ask_wiz, false},
-                               {3000, ask_mdns, false}, {3000, ask_tapo, false}, {3000, ask_wiz, false}};
 
-    Seen seen;
+    Questions(const Sockets &sockets, const Network &network) : sock(sockets), net(network) {}
+
+    void ask_mdns() const {
+        send_to(sock.m_group, q_group.data(), q_group.size(), "224.0.0.251", 5353);
+        send_to(sock.m_direct, q_direct.data(), q_direct.size(), "224.0.0.251", 5353);
+    }
+    void ask_tapo() const {
+        // Some access points pass only one of the two forms of broadcast.
+        send_to(sock.tapo, kTapoQuery, sizeof(kTapoQuery), "255.255.255.255", 20002);
+        send_to(sock.tapo, kTapoQuery, sizeof(kTapoQuery), net.broadcast.c_str(), 20002);
+        send_to(sock.kasa, kasa_query.data(), kasa_query.size(), "255.255.255.255", kKasaPort);
+        send_to(sock.kasa, kasa_query.data(), kasa_query.size(), net.broadcast.c_str(), kKasaPort);
+    }
+    void ask_wiz() const {
+        send_to(sock.wiz, kWizQuery, sizeof(kWizQuery) - 1, "255.255.255.255", kWizPort);
+        send_to(sock.wiz, kWizQuery, sizeof(kWizQuery) - 1, net.broadcast.c_str(), kWizPort);
+    }
+    void ask_ssdp() const {
+        send_to(sock.ssdp, search.data(), search.size(), "239.255.255.250", 1900);
+        send_to(sock.ssdp, dial_search.data(), dial_search.size(), "239.255.255.250", 1900);
+    }
+    std::vector<Step> steps() const {
+        const auto ask_mdns = [this] { this->ask_mdns(); };
+        const auto ask_tapo = [this] { this->ask_tapo(); };
+        const auto ask_wiz = [this] { this->ask_wiz(); };
+        const auto ask_ssdp = [this] { this->ask_ssdp(); };
+        return {{0, ask_mdns, false},    {0, ask_tapo, false},    {0, ask_ssdp, false},    {0, ask_wiz, false},
+                {1000, ask_mdns, false}, {1000, ask_tapo, false}, {1500, ask_ssdp, false}, {1000, ask_wiz, false},
+                {3000, ask_mdns, false}, {3000, ask_tapo, false}, {3000, ask_wiz, false}};
+    }
+};
+
+// Sends each step when its time comes and gathers every answer into `seen`, until opt.listen_ms have
+// passed or opt.cancel is set. Each device is passed to opt.on_device as it is first seen.
+void receive_answers(const Options &opt, const Sockets &sock, const Network &net, std::vector<Step> &steps, Seen &seen,
+                     bool *heard_self) {
     std::set<std::string> told;
     const unsigned long start = sys::now_ms();
     std::vector<unsigned char> buf(kMaxPacket);
@@ -789,8 +816,8 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
         if (elapsed >= opt.listen_ms || (opt.cancel && *opt.cancel)) break;
         for (auto &s : steps)
             if (!s.done && elapsed >= s.at_ms) { s.run(); s.done = true; }
-        pollfd fds[6] = {{m_group, POLLIN, 0}, {m_direct, POLLIN, 0}, {ssdp, POLLIN, 0}, {tapo, POLLIN, 0}, {kasa, POLLIN, 0},
-                         {wiz, POLLIN, 0}};
+        pollfd fds[6] = {{sock.m_group, POLLIN, 0}, {sock.m_direct, POLLIN, 0}, {sock.ssdp, POLLIN, 0}, {sock.tapo, POLLIN, 0},
+                         {sock.kasa, POLLIN, 0},    {sock.wiz, POLLIN, 0}};
         if (poll(fds, 6, 100) <= 0) continue;
         bool news = false;
         for (int i = 0; i < 6; ++i) {
@@ -821,8 +848,27 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
             for (const Device &d : merge(seen))
                 if (told.insert(d.id).second) opt.on_device(d);
     }
-    for (const int fd : {m_group, m_direct, ssdp, tapo, kasa, wiz})
-        if (fd >= 0) close(fd);
+}
+
+}  // namespace
+
+bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *heard_self) {
+    out.clear();
+    if (heard_self) *heard_self = false;
+    const Network net = current_network();
+    if (!net.usable) { err = net.why_not; return false; }
+    in_addr local;
+    inet_pton(AF_INET, net.address.c_str(), &local);
+    Sockets sock;
+    if (!open_sockets(local, sock)) {
+        err = "Could not open a network socket.";
+        return false;
+    }
+    const Questions questions(sock, net);
+    std::vector<Step> steps = questions.steps();
+    Seen seen;
+    receive_answers(opt, sock, net, steps, seen, heard_self);
+    sock.close_all();
     out = merge(seen);
     return true;
 }
