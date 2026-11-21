@@ -257,7 +257,6 @@ void MusicLibrary::refresh(const std::string &dir, bool force) {
     }
     std::lock_guard<std::mutex> lk(mtx_);
     tracks_ = std::move(tracks);
-    dir_ = dir;
 }
 
 size_t MusicLibrary::size() {

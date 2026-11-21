@@ -53,23 +53,24 @@ set(LV_BUILD_CONF_PATH "${CMAKE_CURRENT_SOURCE_DIR}/src/lv_conf.h" CACHE PATH ""
 add_subdirectory("${LVGL_DIR}" "${CMAKE_BINARY_DIR}/lvgl" EXCLUDE_FROM_ALL)
 target_compile_options(lvgl PRIVATE -w)
 
+# LVGL's libraries: the SDL window (simulator), FreeType for the fonts, libpng for images (the app
+# also uses SDL and libpng itself, and gets them from here). ZB_DESKTOP is LVGL's as much as the app's:
+# lv_conf.h chooses the SDL or the framebuffer driver by it, so it is set on lvgl for both.
 if(ZB_DESKTOP)
     find_package(PkgConfig REQUIRED)
-    pkg_check_modules(ZB_DEPS REQUIRED IMPORTED_TARGET sdl2 freetype2 libpng libcurl libcrypto)
+    pkg_check_modules(ZB_DEPS REQUIRED IMPORTED_TARGET sdl2 freetype2 libpng)
     target_link_libraries(lvgl PUBLIC PkgConfig::ZB_DEPS)
     target_compile_definitions(lvgl PUBLIC ZB_DESKTOP=1)
 else()
-    set(_sr "${CMAKE_SYSROOT}")
-    set(_ma "aarch64-linux-gnu")
-    foreach(_lib freetype png16 curl crypto z)
+    foreach(_lib freetype png16 z)
         find_library(ZB_LIB_${_lib} NAMES ${_lib}
-            HINTS "${_sr}/usr/lib/${_ma}" "${_sr}/usr/lib" NO_DEFAULT_PATH REQUIRED)
-        list(APPEND ZB_DEVICE_LIBS "${ZB_LIB_${_lib}}")
+            HINTS "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu" "${CMAKE_SYSROOT}/usr/lib" NO_DEFAULT_PATH REQUIRED)
+        list(APPEND ZB_LVGL_LIBS "${ZB_LIB_${_lib}}")
     endforeach()
     target_include_directories(lvgl SYSTEM PUBLIC
-        "${_sr}/usr/include/freetype2"
-        "${_sr}/usr/include/libpng16")
-    target_link_libraries(lvgl PUBLIC ${ZB_DEVICE_LIBS} pthread m)
+        "${CMAKE_SYSROOT}/usr/include/freetype2"
+        "${CMAKE_SYSROOT}/usr/include/libpng16")
+    target_link_libraries(lvgl PUBLIC ${ZB_LVGL_LIBS} pthread m)
     target_compile_definitions(lvgl PUBLIC ZB_DESKTOP=0)
 endif()
 
@@ -82,6 +83,20 @@ if(ZB_CLI_ONLY)
     list(FILTER ZB_SOURCES EXCLUDE REGEX "/src/ui/|/platform/display\\.cpp$|/platform/input\\.cpp$")
 endif()
 
+# The app's own libraries: libcurl (every request) and libcrypto (the smart-home drivers), from the
+# system on a PC and from the BSP sysroot for the device.
+if(ZB_CLI_ONLY OR ZB_DESKTOP)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(ZB_APP_DEPS REQUIRED IMPORTED_TARGET libcurl libcrypto)
+    set(ZB_APP_LIBS PkgConfig::ZB_APP_DEPS)
+else()
+    foreach(_lib curl crypto)
+        find_library(ZB_LIB_${_lib} NAMES ${_lib}
+            HINTS "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu" "${CMAKE_SYSROOT}/usr/lib" NO_DEFAULT_PATH REQUIRED)
+        list(APPEND ZB_APP_LIBS "${ZB_LIB_${_lib}}")
+    endforeach()
+endif()
+
 add_executable(zero_bot ${ZB_SOURCES})
 target_include_directories(zero_bot PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -89,13 +104,11 @@ target_include_directories(zero_bot PRIVATE
 target_compile_options(zero_bot PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 target_compile_definitions(zero_bot PRIVATE ZB_VERSION="${PROJECT_VERSION}" ZB_EXPERIMENTS=$<BOOL:${ZB_EXPERIMENTS}>)
 if(ZB_CLI_ONLY)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(ZB_CLI_DEPS REQUIRED IMPORTED_TARGET libcurl libcrypto)
     target_compile_definitions(zero_bot PRIVATE ZB_CLI_ONLY=1 ZB_DESKTOP=1)
-    target_link_libraries(zero_bot PRIVATE PkgConfig::ZB_CLI_DEPS pthread ${CMAKE_DL_LIBS})
+    target_link_libraries(zero_bot PRIVATE ${ZB_APP_LIBS} pthread ${CMAKE_DL_LIBS})
 else()
     target_compile_definitions(zero_bot PRIVATE ZB_CLI_ONLY=0)
-    target_link_libraries(zero_bot PRIVATE lvgl pthread ${CMAKE_DL_LIBS})
+    target_link_libraries(zero_bot PRIVATE lvgl ${ZB_APP_LIBS} pthread ${CMAKE_DL_LIBS})
 endif()
 if(NOT ZB_DESKTOP)
     # Run on the stock image without needing a newer libstdc++ than Debian trixie ships.

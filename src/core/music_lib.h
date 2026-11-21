@@ -26,5 +26,4 @@ public:
 private:
     std::mutex mtx_;
     std::vector<Track> tracks_;
-    std::string dir_;
 };

@@ -300,6 +300,16 @@ const char *typed_date_hint() {
     return month_first() ? "Month/day/year hour:minute, 24-hour clock" : "Day/month/year hour:minute, 24-hour clock";
 }
 
+// The year a typed or spoken date means: a two-digit year in full (pivot_year), and with none given,
+// the next time that day and month come round (this year, or next year once the day has gone by).
+static int year_meant(bool has_year, int y, int mo, int d) {
+    if (has_year) return y < 100 ? pivot_year(y) : y;
+    char month_day[24];
+    snprintf(month_day, sizeof(month_day), "%02d-%02d", mo, d);
+    const int this_year = atoi(format_time(time(nullptr), "%Y").c_str());
+    return month_day < format_time(time(nullptr), "%m-%d") ? this_year + 1 : this_year;
+}
+
 bool parse_typed(const std::string &text, time_t &out) {
     std::string t = trim(text);
     for (char &c : t)
@@ -312,7 +322,6 @@ bool parse_typed(const std::string &text, time_t &out) {
     bool has_year = false;
     if (sscanf(t.c_str(), "%d%c%d%c%d%n", &a, &s1, &b, &s2, &y, &used) == 5 && is_sep(s1) && s2 == s1) {
         has_year = true;
-        if (y < 100) y = pivot_year(y);
     } else if (sscanf(t.c_str(), "%d%c%d%n", &a, &s1, &b, &used) == 3 && is_sep(s1)) {
         y = 0;
     } else {
@@ -328,15 +337,9 @@ bool parse_typed(const std::string &text, time_t &out) {
     }
     const int d = month_first() ? b : a, mo = month_first() ? a : b;
     if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
-    char iso[40];
-    if (!has_year) {
-        // No year given: the next time that date comes round.
-        const int this_year = atoi(format_time(time(nullptr), "%Y").c_str());
-        const std::string today = format_time(time(nullptr), "%m-%d");
-        snprintf(iso, sizeof(iso), "%02d-%02d", mo, d);
-        y = iso < today ? this_year + 1 : this_year;
-    }
+    y = year_meant(has_year, y, mo, d);
     if (y < 1900) return false;
+    char iso[40];
     snprintf(iso, sizeof(iso), "%04d-%02d-%02d %02d:%02d", y, mo, d, h, mi);
     if (!parse_local(iso, out)) return false;
     return format_time(out, "%d") == (d < 10 ? "0" : "") + std::to_string(d);   // rejects 31/02
@@ -381,15 +384,9 @@ std::string spell_numeric_dates(const std::string &text) {
         int d = month_first() ? b : a, mo = month_first() ? a : b;
         if (mo > 12 && d <= 12) std::swap(d, mo);   // only one reading is a real date
         if (mo < 1 || mo > 12 || d < 1 || d > 31) continue;
-        int y = has_year ? atoi(m[4].str().c_str()) : 0;
-        if (has_year && y < 100) y = pivot_year(y);
-        char iso[40];
-        if (!has_year) {
-            snprintf(iso, sizeof(iso), "%02d-%02d", mo, d);
-            const int this_year = atoi(format_time(time(nullptr), "%Y").c_str());
-            y = iso < format_time(time(nullptr), "%m-%d") ? this_year + 1 : this_year;
-        }
+        const int y = year_meant(has_year, has_year ? atoi(m[4].str().c_str()) : 0, mo, d);
         time_t when = 0;
+        char iso[40];
         snprintf(iso, sizeof(iso), "%04d-%02d-%02d 12:00", y, mo, d);
         if (y < 1900 || !parse_local(iso, when) || atoi(format_time(when, "%d").c_str()) != d) continue;
         out += text.substr(copied, after - copied);

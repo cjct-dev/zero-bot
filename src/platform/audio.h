@@ -51,7 +51,9 @@ class Speaker {
 public:
     ~Speaker();
     bool begin(int rate);                         // opens the output stream
-    void write(const void *data, size_t bytes);   // blocking
+    // Blocking. Another thread may stop(), kill() or finish() meanwhile: the write then fails or
+    // completes, and never reaches anything but this player.
+    void write(const void *data, size_t bytes);
     void finish();                                // no more audio; let it drain
     void stop();                                  // cut off immediately
     // Ends the player at once without waiting for it, from any thread; a write() stuck on a player
