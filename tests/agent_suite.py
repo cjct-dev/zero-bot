@@ -359,6 +359,8 @@ def k_either(s):
 
 def k_asks(s): return ev.asks_about(s["name"])
 def k_forecast_seen(s): return ev.chk_forecast_seen(s["days"], s["rain"])
+def k_served(s): return ev.chk_served(s["rule"], s["slots"], s.get("as", "name"), s.get("any", False))
+def k_weather_served(s): return ev.chk_weather_served
 def k_nothing_set(s): return ev.chk_said_nothing_set
 
 
@@ -469,7 +471,8 @@ SPEC = {"answer": {"re": "re", "what": "str?"}, "not_answer": {"re": "re", "what
         "home_switched": {"name": "str"}, "home_not_switched": {"name": "str"}, "home_all_off": {}, "home_step": {"sign": "int"},
         "home_no_action": {"actions": "list"}, "asks": {"name": "str"}, "forecast_seen": {"days": "int", "rain": "int?"},
         "nothing_set": {}, "event_time": {"event": "str", "zone": "str?"}, "unannounced_time": {"usual": "list?"},
-        "device_set": {"setting": "str", "value": "num"}, "music_playing": {"genre": "str"}}
+        "device_set": {"setting": "str", "value": "num"}, "music_playing": {"genre": "str"},
+        "served": {"rule": "str", "slots": "list", "as": "str?", "any": "bool?"}, "weather_served": {}}
 ONE_OF = {"arg": ("has", "num", "is", "any"), "weekday_of": ("md", "date")}
 TYPES = {"str": str, "num": (int, float), "int": int, "list": list, "dict": dict, "bool": bool}
 
@@ -541,6 +544,12 @@ def validate(cases):
             if s["kind"] == "either":
                 for g, group in enumerate(s.get("of") or []):
                     for k, x in enumerate(group if isinstance(group, list) else [group]): one(x, "%s, alternative %d.%d" % (where, g + 1, k + 1))
+            if s["kind"] == "served":
+                rule = fake_web.ALL_RULES.get(s.get("rule"))
+                if rule is None: err("%s: no stand-in search rule %r" % (where, s.get("rule")))
+                elif any(x not in rule.get("slots", {}) for x in s.get("slots") or []) or not s.get("slots"):
+                    err("%s: rule %s has slots %s, not %s" % (where, s["rule"], sorted(rule.get("slots", {})), s.get("slots")))
+                if s.get("as", "name") not in ("name", "time", "number", "score", "open_closed"): err("%s: no way to read %r" % (where, s.get("as")))
             if s["kind"] == "event_time" and s.get("event") not in fake_web.EVENTS: err("%s: no stand-in event %r" % (where, s.get("event")))
             if s["kind"] == "unannounced_time" and c["env"].get("ZB_EXP_WEB") != "@web/events": err("%s: unannounced_time needs the stand-in's events (@web/events)" % where)
             if s["kind"] == "language" and s.get("lang") not in LANGUAGE: err("%s: no language %r" % (where, s.get("lang")))
@@ -605,7 +614,12 @@ def main():
     ap.add_argument("--trace", action="store_true", help="record the experiments' trace (cli build, ZB_EXP_TRACE) into each turn of --json")
     ap.add_argument("--slowest", type=int, default=10, help="how many of the slowest cases to list")
     ap.add_argument("--validate", action="store_true", help="compile and check every case offline, run nothing (non-zero on any problem)")
+    ap.add_argument("--web-seed", type=int, default=None, help="the stand-in web's seed (default ZB_EVAL_SEED, else %d)" % ev.EVERYDAY_SEED)
+    ap.add_argument("--held-out", action="store_true", help="the release profile's held-out run: a seed from %d up (default %d)"
+                    % (ev.HELD_OUT_FROM, ev.HELD_OUT_SEED))
     args = ap.parse_args()
+    if not (args.validate or args.list):
+        ev.set_web_seed(args.web_seed if args.web_seed is not None else ev.HELD_OUT_SEED if args.held_out else ev.WEB_SEED, args.held_out)
 
     cases = json.load(open(args.cases, encoding="utf-8"))
     if args.validate:
@@ -671,6 +685,7 @@ def main():
         print("no cases selected")
         return
     print("\n%s | %s" % (ev.outcome_line(results), ev.timing_summary(results)))
+    print("stand-in web: seed %d%s, fixtures %s" % (ev.WEB_SEED, " (held out)" if ev.WEB_SEED >= ev.HELD_OUT_FROM else "", ev.web_version()[:12]))
     print("by tag: " + ", ".join("%s %d/%d%s" % (t, ok, k, " (%d unscorable)" % u if u else "")
                                  for t, (ok, k, u) in sorted(per_tag.items(), key=lambda kv: (kv[1][0] / kv[1][1], kv[0]))))
     slow = sorted(results, key=lambda r: -r["seconds"])[:args.slowest]

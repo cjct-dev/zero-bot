@@ -316,7 +316,7 @@ def sig(x, n=6):
 def rates(fx, base, seed=1):
     usd = usd_rates(seed)
     if base not in usd:
-        return 404, {"result": "error", "error-type": "unsupported-code"}
+        return 200, {"result": "error", "error-type": "unsupported-code"}   # as the real one: 200, and an error inside
     stamp = datetime.datetime.combine(today(), datetime.time(0, 2, 31), datetime.timezone.utc)
     nxt = stamp + datetime.timedelta(days=1)
     drop = set(fx.get("rates_drop", ()))

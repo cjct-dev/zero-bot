@@ -19,12 +19,13 @@ Each case: {"name", "tags", "turns", "must", "must_not", "checks", "env", "home"
             not a turn), so a middle turn can be held to something too
   long_ok   turns (numbered the same way) whose answer may run longer than the usual cap of 420
             characters: analytical and deeper follow-ups, where a long answer is wanted
-  env       environment changes for the run (null removes one; "@web/FIXTURE" is the stand-in web's address)
+  env       environment changes for the run (null removes one; "@web/FIXTURE" picks the stand-in web's fixture;
+            every case's web reads go to the stand-in, tests/mocks/fake_web.py)
   home      "eval", "tv" or "sockets": a made-up smart home from tests/agent_eval.py; "tv_silent" and
             "tv_closed": its TV, not answering over the network (these cases set env ZB_DRY_RUN null,
             so that the TV on 127.0.0.1 is really asked)
   tags      the category first, then features: asr, lang, lang-xx, uk, us, followup, compound,
-            notool, clarify, home, route, search (needs a search key), camera
+            notool, clarify, home, route, search (the stand-in web's search), camera
 Dates and times in checks are relative ("tomorrow", "next:4" for the coming Friday, "date:12-03"
 for the next 3 December) and are worked out when the case runs, so a confident wrong date fails.
 
@@ -55,6 +56,8 @@ def case(cat, turns, tags=(), must=(), must_not=(), checks=(), env=None, home=No
     if home and "home" not in tags: tags.append("home")
     CASES.append({"name": "%s-%03d" % (cat, COUNT[cat]), "tags": tags, "turns": turns, "must": list(must), "must_not": list(must_not),
                   "checks": list(checks), "env": env or {}, "home": home, "steer": steer})
+    # A forecast's figures are what the stand-in served: any temperature the answer gives must be one of them.
+    if any("weather" in m.split("|") for m in must): CASES[-1]["checks"].append({"kind": "weather_served"})
     if long_ok: CASES[-1]["long_ok"] = list(long_ok)
     if tried: CASES[-1]["tried"] = list(tried)
 
@@ -434,15 +437,28 @@ for text, subs in [("ive just landed in new york switch the clock over", ["new y
                    ("change your time zone to lisbon", ["lisbon"]), ("im back home in london set the clock back", ["london"])]:
     case("timezone", text, must=["set_timezone"], checks=[arg_has("set_timezone", "place", *subs)])
 
-# ------------------------------------------------------------------ the web (needs a search key)
-for text, tags in [("what time does the louvre open on sundays", []), ("is the british museum open on mondays", ["uk"]),
-                   ("who won the champions league final this year", []), ("whats in the news today", []),
-                   ("how much is a ticket to the top of the eiffel tower", []), ("who won the last formula one race", []),
-                   ("what films are on at the cinema in leicester square tonight", ["uk"]), ("who is the current prime minister of japan", []),
-                   ("what was the score in the arsenal game last night", ["uk"]), ("how did the yankees do last night", ["us"]),
-                   ("are there any train strikes in the uk this week", ["uk"]), ("when is the next home game for the chicago bulls", ["us"]),
-                   ("who won the mens singles at wimbledon this year", []), ("what are the opening hours of the sagrada familia", [])]:
-    case("search", text, tags=tags + ["search"], must=["web_search"])
+# ------------------------------------------------------------------ the web (the stand-in's search)
+# Each answer is what the stand-in web served (tests/mocks/web/search.json, a rule per question, its values
+# drawn from the run's seed): the check works the right answer out from the rule and the seed, and fails a
+# run whose search matched no rule, so a fixture that stops matching shows.
+def served(rule, *slots, how="name", any_of=False):
+    return {"kind": "served", "rule": rule, "slots": list(slots), "as": how, "any": any_of}
+for text, tags, check in [
+        ("what time does the louvre open on sundays", [], served("louvre-hours", "open", how="time")),
+        ("is the british museum open on mondays", ["uk"], served("british-museum", "status", how="open_closed")),
+        ("who won the champions league final this year", [], served("champions-league", "winner")),
+        ("whats in the news today", [], served("news-today", "story1", "story2", "story3", any_of=True)),
+        ("how much is a ticket to the top of the eiffel tower", [], served("eiffel-ticket", "top", how="number")),
+        ("who won the last formula one race", [], served("f1-last-race", "winner")),
+        ("what films are on at the cinema in leicester square tonight", ["uk"], served("cinema-films", "film1", "film2", "film3", any_of=True)),
+        ("who is the current prime minister of japan", [], served("japan-pm", "pm")),
+        ("what was the score in the arsenal game last night", ["uk"], served("arsenal-result", "score", how="score")),
+        ("how did the yankees do last night", ["us"], served("yankees-result", "score", how="score")),
+        ("are there any train strikes in the uk this week", ["uk"], served("uk-strikes", "operator")),
+        ("when is the next home game for the chicago bulls", ["us"], served("bulls-home-game", "opponent")),
+        ("who won the mens singles at wimbledon this year", [], served("wimbledon-mens", "winner")),
+        ("what are the opening hours of the sagrada familia", [], served("sagrada-hours", "open", how="time"))]:
+    case("search", text, tags=tags + ["search"], must=["web_search"], checks=[check])
 case("search", "what time does the louvre open on sundays", tags=["search", "nokey"], env={"ZB_SEARCH_KEY": None},
      checks=[ans(r"search|can'?t (check|look|confirm)|cannot|not set up|unable|not sure|may have changed|might have changed|check (the|their)|"
                  r"double.check|verify|usually|typically|normally|generally|i believe|from memory|as far as i know",
@@ -545,7 +561,7 @@ for yes in ["yes", "yes please", "go on then", "yeah do it"]:
 for no in ["no", "leave it off please", "actually no leave it", "no thanks"]:
     case("home", ["turn on the fan heater", no], tags=["confirm"], home=H,
          checks=[on_turn(0, simple("home_asked", name="heater")), every_turn(simple("home_not_switched", name="Fan heater"))])
-# The search comes from the stand-in web (tests/mocks/fake_web.py; tests/agent_eval.py replaces "@web"), so no search key is needed.
+# The search comes from the stand-in web (tests/mocks/fake_web.py), as every case's does.
 # The first turn searches, and the change waits for the user's word: asked about, never made.
 WEB = {"ZB_EXP_WEB": "@web/default", "ZB_SEARCH_KEY": "stand-in"}
 case("home", ["look up when the sun sets today, then turn on the bedroom lamp", "no, leave it"], tags=["confirm", "search"], home=H,
@@ -724,7 +740,8 @@ case("dialogue", "whats the market mood ahead of the monzo ipo, and can staff se
 case("dialogue", "what are analysts expecting from shell's results this week, and if they miss will the share price drop much",
      tags=["compound", "uk", "search"], must=["web_search"], long_ok=[0],
      checks=[max_calls("web_search", 2), ans(r"analyst|expect|forecast|estimate|consensus", "what is expected"),
-             ans(r"drop|fall|fell|decline|react|move|reaction|slide|hit", "what a miss would do")])
+             ans(r"drop|fall|fell|decline|react|move|reaction|slide|hit", "what a miss would do"),
+             served("shell-results", "profit", how="number")])
 # A deeper follow-up keeps the subject, and may take the room it needs.
 case("dialogue", ["when is the canva ipo", "could that mean the best designers cash out and leave the company"], tags=["search"], long_ok=[1],
      checks=[ans(r"canva|lock.?up|vest|retention|stock|shares|equity", "the company or how staff shares work"),
@@ -738,7 +755,8 @@ case("dialogue", ["when is shein going public", "what will its ticker symbol be"
      checks=[on_turn(1, max_words(40)), ans(r"lock.?up|price|sell|shares", "the subject")])
 case("dialogue", ["whats the stock market listing date for starling bank", "which exchange will it list on", "and is it likely to be a good long-term investment"],
      tags=["uk", "search"], long_ok=[2],
-     checks=[on_turn(1, max_words(40)), nans(r"which (company|bank)|what (company|bank)", "ask which company")])
+     checks=[on_turn(1, max_words(40)), nans(r"which (company|bank)|what (company|bank)", "ask which company"),
+             on_turn(1, served("starling-ipo", "exchange"))])
 
 
 def main():

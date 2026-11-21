@@ -7215,6 +7215,9 @@
     "has": [
      "lisbon"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7241,6 +7244,9 @@
     "has": [
      "madrid"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7267,6 +7273,9 @@
     "has": [
      "rome"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7293,6 +7302,9 @@
     "has": [
      "berlin"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7319,6 +7331,9 @@
     "has": [
      "paris"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7345,6 +7360,9 @@
     "has": [
      "new york"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7371,6 +7389,9 @@
     "has": [
      "chicago"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7397,6 +7418,9 @@
     "has": [
      "seattle"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7423,6 +7447,9 @@
     "has": [
      "edinburgh"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7450,6 +7477,9 @@
     "has": [
      "manchester"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7477,6 +7507,9 @@
     "has": [
      "dublin"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7503,6 +7536,9 @@
     "has": [
      "tokyo"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7529,6 +7565,9 @@
     "has": [
      "sydney"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7555,6 +7594,9 @@
     "has": [
      "cape town"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7581,6 +7623,9 @@
     "has": [
      "toronto"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7607,6 +7652,9 @@
     "has": [
      "barcelona"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7633,6 +7681,9 @@
     "has": [
      "amsterdam"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7659,6 +7710,9 @@
     "has": [
      "vienna"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7685,6 +7739,9 @@
     "has": [
      "prague"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7711,6 +7768,9 @@
     "has": [
      "boston"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7733,6 +7793,9 @@
   "checks": [
    {
     "kind": "home_weather"
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7755,6 +7818,9 @@
   "checks": [
    {
     "kind": "home_weather"
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7777,6 +7843,9 @@
   "checks": [
    {
     "kind": "home_weather"
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7799,6 +7868,9 @@
   "checks": [
    {
     "kind": "home_weather"
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7821,6 +7893,9 @@
   "checks": [
    {
     "kind": "home_weather"
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7848,6 +7923,9 @@
     "has": [
      "paris"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7875,6 +7953,9 @@
     "has": [
      "madrid"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7902,6 +7983,9 @@
     "has": [
      "paris"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7929,6 +8013,9 @@
     "has": [
      "berlin"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7956,6 +8043,9 @@
     "has": [
      "rome"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -7983,6 +8073,9 @@
     "has": [
      "dublin"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -8011,6 +8104,9 @@
     "has": [
      "porto"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -8039,6 +8135,9 @@
     "has": [
      "rom"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -8067,6 +8166,9 @@
     "has": [
      "madrid"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -9464,7 +9566,17 @@
    "web_search"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "served",
+    "rule": "louvre-hours",
+    "slots": [
+     "open"
+    ],
+    "as": "time",
+    "any": false
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -9482,7 +9594,17 @@
    "web_search"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "served",
+    "rule": "british-museum",
+    "slots": [
+     "status"
+    ],
+    "as": "open_closed",
+    "any": false
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -9499,7 +9621,17 @@
    "web_search"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "served",
+    "rule": "champions-league",
+    "slots": [
+     "winner"
+    ],
+    "as": "name",
+    "any": false
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -9516,7 +9648,19 @@
    "web_search"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "served",
+    "rule": "news-today",
+    "slots": [
+     "story1",
+     "story2",
+     "story3"
+    ],
+    "as": "name",
+    "any": true
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -9533,7 +9677,17 @@
    "web_search"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "served",
+    "rule": "eiffel-ticket",
+    "slots": [
+     "top"
+    ],
+    "as": "number",
+    "any": false
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -9550,7 +9704,17 @@
    "web_search"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "served",
+    "rule": "f1-last-race",
+    "slots": [
+     "winner"
+    ],
+    "as": "name",
+    "any": false
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -9568,7 +9732,19 @@
    "web_search"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "served",
+    "rule": "cinema-films",
+    "slots": [
+     "film1",
+     "film2",
+     "film3"
+    ],
+    "as": "name",
+    "any": true
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -9585,7 +9761,17 @@
    "web_search"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "served",
+    "rule": "japan-pm",
+    "slots": [
+     "pm"
+    ],
+    "as": "name",
+    "any": false
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -9603,7 +9789,17 @@
    "web_search"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "served",
+    "rule": "arsenal-result",
+    "slots": [
+     "score"
+    ],
+    "as": "score",
+    "any": false
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -9621,7 +9817,17 @@
    "web_search"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "served",
+    "rule": "yankees-result",
+    "slots": [
+     "score"
+    ],
+    "as": "score",
+    "any": false
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -9639,7 +9845,17 @@
    "web_search"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "served",
+    "rule": "uk-strikes",
+    "slots": [
+     "operator"
+    ],
+    "as": "name",
+    "any": false
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -9657,7 +9873,17 @@
    "web_search"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "served",
+    "rule": "bulls-home-game",
+    "slots": [
+     "opponent"
+    ],
+    "as": "name",
+    "any": false
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -9674,7 +9900,17 @@
    "web_search"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "served",
+    "rule": "wimbledon-mens",
+    "slots": [
+     "winner"
+    ],
+    "as": "name",
+    "any": false
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -9691,7 +9927,17 @@
    "web_search"
   ],
   "must_not": [],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "served",
+    "rule": "sagrada-hours",
+    "slots": [
+     "open"
+    ],
+    "as": "time",
+    "any": false
+   }
+  ],
   "env": {},
   "home": null,
   "steer": null
@@ -14479,7 +14725,11 @@
   "must_not": [
    "smart_home"
   ],
-  "checks": [],
+  "checks": [
+   {
+    "kind": "weather_served"
+   }
+  ],
   "env": {},
   "home": "eval",
   "steer": null
@@ -14795,6 +15045,9 @@
    {
     "kind": "language",
     "lang": "es"
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -14931,6 +15184,9 @@
     "has": [
      "berlin"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -15068,6 +15324,9 @@
    {
     "kind": "language",
     "lang": "fr"
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -15194,6 +15453,9 @@
     "has": [
      "rom"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -15297,6 +15559,9 @@
     "has": [
      "lisbo"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -15350,6 +15615,9 @@
     "has": [
      "amsterdam"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -15412,6 +15680,9 @@
     ],
     "tools": "reminder_set|calendar_add",
     "weekly": false
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -15480,6 +15751,9 @@
     "has": [
      "tokyo"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -15614,6 +15888,9 @@
     "has": [
      "leeds"
     ]
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -15647,6 +15924,9 @@
     "amount": 100,
     "from": "EUR",
     "to": "GBP"
+   },
+   {
+    "kind": "weather_served"
    }
   ],
   "env": {},
@@ -16095,6 +16375,15 @@
     "kind": "answer",
     "re": "drop|fall|fell|decline|react|move|reaction|slide|hit",
     "what": "what a miss would do"
+   },
+   {
+    "kind": "served",
+    "rule": "shell-results",
+    "slots": [
+     "profit"
+    ],
+    "as": "number",
+    "any": false
    }
   ],
   "env": {},
@@ -16226,6 +16515,16 @@
     "kind": "not_answer",
     "re": "which (company|bank)|what (company|bank)",
     "what": "ask which company"
+   },
+   {
+    "kind": "served",
+    "rule": "starling-ipo",
+    "slots": [
+     "exchange"
+    ],
+    "as": "name",
+    "any": false,
+    "turn": 1
    }
   ],
   "env": {},

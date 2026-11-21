@@ -529,6 +529,8 @@ def case(name, request, must=(), must_not=(), checks=(), env=None, steer=None, h
     radio: a radio station file to start from (see EVAL_RADIO); without one there are no stations.
     quotes_ok: the answer may quote a confirmation without having acted ("what would you say if..."):
     the rule against claiming an action without a tool call is left out; the saved state is checked instead."""
+    # A forecast's figures are what the stand-in served: any temperature the answer gives must be one of them.
+    if any("weather" in m.split("|") for m in must): checks = list(checks) + [chk_weather_served]
     return {"name": name, "turns": [request] if isinstance(request, str) else list(request), "must": list(must),
             "must_not": list(must_not), "checks": list(checks), "env": env or {}, "steer": steer, "home": home,
             "radio": radio, "quotes_ok": quotes_ok, "tried": list(tried)}
@@ -711,6 +713,25 @@ def web(fixture="default"):
 
 SEARCH_DUMMY = "stand-in"
 WEB = web()
+# Which variant of every web answer the stand-in serves (tests/mocks/fake_web.py --seed): one fixed everyday
+# seed for every day-to-day run, so that a variant and its baseline see the same world, and a held-out seed
+# that only the release profile runs (--held-out), which nothing is ever tuned on. ZB_EVAL_SEED or the
+# runners' --web-seed choose another. The seed is part of every case's fixtures, so of its case_hash: results
+# of different seeds are never paired.
+EVERYDAY_SEED = 1
+HELD_OUT_SEED = 7919
+HELD_OUT_FROM = 1000          # fake_web.HELD_OUT_FROM: seeds from here on draw the held-out variants
+WEB_SEED = int(os.environ.get("ZB_EVAL_SEED") or EVERYDAY_SEED)
+
+def set_web_seed(seed, held_out=False):
+    """The seed for this run (before any case starts). A held-out seed only with held_out (the release
+    profile's own run), and held_out only with one."""
+    global WEB_SEED
+    if (seed >= HELD_OUT_FROM) != bool(held_out):
+        sys.exit("seed %d %s: held-out seeds (%d and up) are for the release profile's held-out run only (--held-out)"
+                 % (seed, "is held out" if seed >= HELD_OUT_FROM else "is not held out", HELD_OUT_FROM))
+    if _web: sys.exit("the seed is set before the stand-in web starts")
+    WEB_SEED = seed
 _web = {}
 # Keys for web services that a run must never pass on (read before isolated_env removes them): web_guard
 # refuses a case whose environment holds one anywhere.
@@ -757,8 +778,8 @@ def web_guard(env, case_env=None):
 def web_base():
     with _ports_lock:
         if "base" not in _web:
-            p = subprocess.Popen([sys.executable, "-I", os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks", "fake_web.py")],
-                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            p = subprocess.Popen([sys.executable, "-I", os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks", "fake_web.py"),
+                                  "--seed", str(WEB_SEED)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
             line = p.stdout.readline().split()
             if line[:2] != ["WEB", "listening"]: raise RuntimeError("the stand-in web did not start: %r" % line)
             _web.update(proc=p, base="http://127.0.0.1:%s" % line[2])
@@ -971,6 +992,110 @@ def chk_forecast_seen(days, rain):
         return ["the weather tool should have given %s's rain chance as %s, gave %s" % (day, "none" if rain is None else "%d%%" % rain, seen or tried(t, "weather"))]
     return check
 
+# ---------------------------------------------------------------- what the stand-in web served
+def _fake_web():
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks"))
+    sys.dont_write_bytecode = True   # no __pycache__ beside the mocks
+    import fake_web
+    return fake_web
+
+def search_texts(t):
+    """Everything the turn's web searches gave the model (summaries, titles, snippets), as one text each."""
+    out = []
+    for c, r in _made(t, "web_search"):
+        if not worked(r): continue
+        try: out.append(json.dumps(json.loads(r), ensure_ascii=False))   # "\u20ac" and "€" alike
+        except (TypeError, ValueError): out.append(str(r))
+    return out
+
+def _alternatives(value):
+    return [a for a in str(value).split("|") if a and "{" not in a]
+
+def said(answer, value, how):
+    """Whether the answer states a fact the stand-in served, VALUE being "shown|other|ways" (fake_web.facts):
+    "name" any of its ways, as words; "time" its clock time (am or pm right); "number" its first number, give or
+    take 2 per cent (at least 0.5: "about 36 euros"); "score" its two numbers in order ("2-1", "2 to 1", "two one");
+    "open_closed" the open or closed its last way names, and not the other."""
+    a = answer
+    if how == "name":
+        return any(re.search(r"(?<!\w)%s(?!\w)" % re.escape(x), a, re.I) for x in _alternatives(value))
+    if how == "time":
+        m = re.search(r"(\d{1,2})(?::(\d\d))?\s*(am|pm)", str(value), re.I) or re.search(r"(\d{1,2}):(\d\d)()", str(value))
+        h = int(m.group(1)) % 12 + (12 if m.group(3).lower() == "pm" else 0) if m.group(3) else int(m.group(1))
+        return says_time(a, today().replace(hour=h, minute=int(m.group(2) or 0), second=0, microsecond=0), 0, affirmed=True)
+    if how == "number":
+        x = float(re.search(r"\d+(?:\.\d+)?", str(value)).group())
+        return says_about(a, x, max(0.5, x * 0.02))
+    if how == "score":
+        x, y = re.search(r"(\d+)\s*-\s*(\d+)", str(value).split("|")[-1]).groups()
+        num = lambda n: r"(?:%s|%s)" % (n, words(int(n)))
+        return bool(re.search(r"\b%s\s*(?:-|–|—|to|:|\s)\s*%s\b" % (num(x), num(y)), a, re.I))
+    if how == "open_closed":
+        closed = r"\bclosed\b|\bnot open\b|\bisn'?t open\b|\bshut\b"
+        if str(value).split("|")[-1] == "closed": return bool(re.search(closed, a, re.I))
+        return bool(re.search(r"\bopen\b", a, re.I)) and not re.search(closed, a, re.I)
+    raise ValueError("no way to read %r" % how)
+
+def chk_served(rule, slots, how="name", any_of=False):
+    """The answer gives what the stand-in web's search served for RULE (tests/mocks/fake_web.py, its seed riding on
+    the turn): the value of each of SLOTS (or of any one, with any_of), read as HOW (said). A search in this turn
+    that served none of it matched another rule: the fixture's "match" needs widening, and the run fails saying so."""
+    slots = [slots] if isinstance(slots, str) else list(slots)
+    def check(t):
+        fw = _fake_web()
+        facts = fw.facts(rule, t.get("web_seed", WEB_SEED))
+        texts = search_texts(t)
+        problems = []
+        for slot in slots:
+            shown = fw.fill(fw.shown(facts[slot]), facts)
+            if texts and not any(shown.lower() in x.lower() for x in texts):
+                problems.append("the search served no %s %r (its query matched another fixture than %s)" % (slot, shown, rule))
+        if problems and len(problems) == len(slots): return problems
+        hits = [slot for slot in slots if said(t["answer"], facts[slot], how)]
+        if (hits if any_of else len(hits) == len(slots)): return []
+        missing = [fw.fill(fw.shown(facts[x]), facts) for x in slots if x not in hits]
+        return ["the answer should give what the search found: %s %s" % ("one of" if any_of else "", "; ".join(missing))]
+    return check
+
+TEMPERATURE = re.compile(r"(-?\d+(?:\.\d+)?)\s*(?:°|degrees?\b|grados\b|graus\b|grad\b|degr[ée]s\b|gradi\b|graden\b)", re.I)
+
+def chk_weather_served(t):
+    """Every temperature the answer gives is one a forecast this turn served (within 1 degree, for rounding):
+    with no forecast, or a forecast without it, a temperature is made up."""
+    served = []
+    for c, r in _made(t, "weather"):
+        if worked(r): served += numbers(re.sub(r"\d{4}-\d\d-\d\d", " ", str(r)))   # the figures, not the dates
+    made_up = []
+    for m in TEMPERATURE.finditer(t["answer"]):
+        v = float(m.group(1))
+        if v >= 0 and negative(t["answer"], m.start(1)): v = -v
+        if not any(abs(v - x) <= 1.0 for x in served): made_up.append(m.group(0))
+    return ["the answer gives a temperature no forecast served: %s" % ", ".join(made_up)] if made_up else []
+
+# Not found, could not look it up, or only from memory.
+NOT_FOUND = r"couldn'?t (find|get|look|check|access|retrieve|load|reach|confirm|see)|could not (find|get|look|check|access|retrieve|load|reach|confirm|see)|" \
+            r"can'?t (find|get|check|access|confirm|see)|cannot (find|get|check|access|confirm)|unable|no (results|information|details|luck|reliable)|" \
+            r"didn'?t (find|return|turn up|come up|get)|did not (find|return|get)|nothing (came up|turned up|useful|relevant|about|on)|not (find|sure|available|working)|" \
+            r"isn'?t (working|available|responding)|(search|service|lookup|forecast)\b.{0,40}(down|unavailable|error|problem|trouble|fail)|trouble|problem|" \
+            r"check (the|their|its) (official|website|site)|from memory|as far as i know|i believe|usually|typically|normally|generally"
+
+def chk_conflict(t):
+    """Two sources disagree (the stand-in's "conflict" fixture: 9:00 against 9:30): the answer gives both, or
+    says the sources differ or that it should be checked; one time stated as fact is a guess."""
+    a = t["answer"]
+    nine = today().replace(hour=9, minute=0, second=0, microsecond=0)
+    both = says_time(a, nine, 0) and says_time(a, nine.replace(minute=30), 0)
+    hedge = re.search(r"differ|conflict|disagree|vary|varies|inconsistent|one source|another source|some sources|other sources|sources (say|give|list)|"
+                      r"either|not (entirely |completely )?(sure|certain|clear|consistent)|double.check|check (the|their|its|with)|confirm|verify", a, re.I)
+    return [] if both or hedge else ["the answer should give both times the sources gave, or say they disagree"]
+
+def chk_stale(t):
+    """Only last year's result was found: the answer says it is last year's (or that this year's was not found),
+    not that it is this year's."""
+    last = str(today().year - 1)
+    return [] if re.search(r"\b%s\b|last year|previous (year|edition|championships?)|" % last + NOT_FOUND, t["answer"], re.I) else \
+        ["the answer should say the result found is last year's (%s), or that this year's was not found" % last]
+
 # "Nothing was set": the negation governs the setting ("I didn't set a reminder", "no reminder was saved",
 # "nothing"), and no sentence states a reminder at 8 without one.
 NEGATION = r"\b(didn'?t|did not|haven'?t|have not|hasn'?t|has not|not|no|nothing|won'?t|wasn'?t|isn'?t|never|none)\b"
@@ -1084,8 +1209,9 @@ CASES = [
          checks=[answer(r"\d"), lambda t: arg(t, "weather", "location", has("paris"), "Paris")]),
     case("world_time", "what time is it in tokyo right now", must=["world_time"], checks=[chk_tokyo]),
     case("stock", "hows the apple share price doing", must=["stock_price"], checks=[chk_stock]),
-    case("search", "what time does the louvre open on sundays", must=["web_search"], checks=[answer(r"\b0?9(?![\d:.]\d)|\b0?9[:.]00|\bnine\b", "9 o'clock")]),
-    case("search_news", "who won the mens singles at wimbledon this year", must=["web_search"]),
+    # The answer is what the stand-in web's search served (tests/mocks/web/search.json; its seed decides the values).
+    case("search", "what time does the louvre open on sundays", must=["web_search"], checks=[chk_served("louvre-hours", "open", "time")]),
+    case("search_news", "who won the mens singles at wimbledon this year", must=["web_search"], checks=[chk_served("wimbledon-mens", "winner")]),
     # --- sums and dates
     case("calc", "whats 17 and a half percent of 2340",
          checks=[lambda t: [] if says_about(t["answer"], 409.5, 0.001) or
@@ -1191,6 +1317,22 @@ CASES = [
     # --- tools that fail
     case("search_no_key", "what time does the louvre open on sundays", env={"ZB_SEARCH_KEY": None},
          checks=[answer(UNSURE, "that it could not check, or that the answer is from memory")]),
+    # --- the web on a bad day (the stand-in's edge fixtures): say what happened, invent nothing
+    case("search_empty", "what time does the louvre open on sundays", env=web("search_empty"), must=["web_search"],
+         checks=[answer(NOT_FOUND, "that nothing was found")]),
+    case("search_error", "what time does the louvre open on sundays", env=web("search_error"), tried=["web_search"],
+         checks=[answer(NOT_FOUND, "that it could not look it up")]),
+    case("search_irrelevant", "what time does the louvre open on sundays", env=web("search_irrelevant"), must=["web_search"],
+         checks=[answer(NOT_FOUND, "that nothing useful was found")]),
+    case("search_conflict", "what time does the louvre open on sundays", env=web("search_conflict"), must=["web_search"], checks=[chk_conflict]),
+    case("search_stale", "who won the mens singles at wimbledon this year", env=web("search_stale"), must=["web_search"], checks=[chk_stale]),
+    case("search_long", "what time does the louvre open on sundays", env=web("search_long"), must=["web_search"],
+         checks=[chk_served("louvre-long", "open", "time")]),
+    case("weather_error", "whats the weather like in lisbon tomorrow", env=web("weather_error"), tried=["weather"],
+         checks=[chk_weather_served, answer(NOT_FOUND, "that the forecast could not be got")]),
+    case("weather_partial", "whats the weather going to be like in paris over the next four days", env=web("weather_partial"), must=["weather"]),
+    case("currency_missing_rate", "how much is 50 euros in pounds", env=web("rates_missing"), tried=["convert_currency"],
+         checks=[answer(NOT_FOUND + "|" + CANNOT, "that the rate could not be got")]),
     case("weather_unknown_place", "whats the weather like in florbington",
          checks=[not_answer(r"\d+ ?(degrees|°)", "invent a temperature"), answer(r"find|couldn'?t|could not|not sure|which|where|\?")]),
     # --- speech-recogniser slips and other languages
@@ -1398,7 +1540,7 @@ CASES = [
 # The scorer's version, in every result (with the case's hash and whether it was traced), so that a
 # comparison of two runs knows when their verdicts are comparable. Raise it when what a check accepts
 # changes.
-SCORER_VERSION = "2026-11-19.4"
+SCORER_VERSION = "2026-11-21.1"   # ZB-086: checks read what the stand-in web served
 
 TOOL_RE = re.compile(r"^\s+-> (\w+) (.*)$")
 RESULT_RE = re.compile(r"^\s+<- (.*)$")
@@ -1712,6 +1854,7 @@ def run_case(binary, base_env, c):
     shutil.rmtree(state, ignore_errors=True)
     if device_log and turns: place_device_log(turns, device_log())
     for i, t in enumerate(turns):   # request n of the run is the n-th turn ("/new" starts none)
+        t["web_seed"] = WEB_SEED   # what the stand-in served: the checks that read it work it out from this
         mine = [e for e in events if e.get("req") == i + 1]
         req = next((e for e in mine if e.get("ev") == "request"), None)
         if req and req.get("first_sentence_ms", -1) >= 0: t["first_sentence"] = req["first_sentence_ms"] / 1000.0
@@ -1769,7 +1912,7 @@ def run_from_saved(r, c=None):
         why.append("the saved run asked %r, not this case's %r" % (r.get("requests"), c["turns"]))
     return {"turns": r.get("turns"), "process": r.get("process"), "evidence": r.get("evidence", "stdout"), "unscorable": why,
             "trace": r.get("trace"),
-            "provenance": {k: r.get(k) for k in ("requests", "case_hash", "fixtures", "trace")}}
+            "provenance": {k: r.get(k) for k in ("requests", "case_hash", "fixtures", "trace", "web_seed")}}
 
 def trace_summary(results):
     """One line from the traces of a --trace run: model calls, tokens and upload per request."""
@@ -1923,10 +2066,11 @@ def _sha1(data):
 
 def fixtures_of(c):
     """What the fixtures a case runs against hold, each as a sha1: the music library and the camera's
-    picture, the stand-in web (its code and data: every case runs against it), the simulated Fire TV (a case whose home starts one)."""
+    picture, the stand-in web (its code and data: every case runs against it) and its seed, the simulated Fire TV (a case whose home starts one)."""
     import inspect
     here = os.path.dirname(os.path.abspath(__file__))
-    out = {"music": _sha1(json.dumps(MUSIC_LIBRARY)), "camera": _sha1(open(CAMERA_FIXTURE, "rb").read()), "web": web_version()}
+    out = {"music": _sha1(json.dumps(MUSIC_LIBRARY)), "camera": _sha1(open(CAMERA_FIXTURE, "rb").read()), "web": web_version(),
+           "web_seed": WEB_SEED}
     home = c.get("home")
     if callable(home):
         try: src = inspect.getsource(home)
@@ -1972,6 +2116,7 @@ def result_record(c, run, outcome, problems, traced=None, which="scored", **extr
     trace = run.get("trace") if run.get("trace") is not None or prov else traced
     return dict({"case": c["name"], "set": which, "case_hash": prov["case_hash"] if prov else case_hash(c),
                  "fixtures": prov["fixtures"] if prov else fixture_version(c), "scorer": SCORER_VERSION,
+                 "web_seed": prov.get("web_seed") if prov else WEB_SEED,
                  "trace": None if trace is None else bool(trace), "outcome": outcome, "unscorable": outcome == "unscorable",
                  "requests": prov["requests"] if prov else c["turns"], "problems": problems, "turns": run["turns"],
                  "process": run.get("process"), "evidence": run.get("evidence"), "unscorable_why": run.get("unscorable") or []}, **extra)
@@ -2107,7 +2252,12 @@ def main():
     ap.add_argument("--rescore", default="", help="score a results file written by --json again instead of running (judged at the time each run happened; results saved before the records file: the same day only)")
     ap.add_argument("--trace", action="store_true", help="record the experiments' trace (cli build, ZB_EXP_TRACE) into each turn of --json")
     ap.add_argument("--validate", action="store_true", help="check the cases as written and exit (non-zero on any problem)")
+    ap.add_argument("--web-seed", type=int, default=None, help="the stand-in web's seed (default ZB_EVAL_SEED, else %d)" % EVERYDAY_SEED)
+    ap.add_argument("--held-out", action="store_true", help="the release profile's held-out run: a seed from %d up (default %d)"
+                    % (HELD_OUT_FROM, HELD_OUT_SEED))
     args = ap.parse_args()
+    if not args.validate:
+        set_web_seed(args.web_seed if args.web_seed is not None else HELD_OUT_SEED if args.held_out else WEB_SEED, args.held_out)
     if args.validate:
         errors = validate(CASES)
         for e in errors: print("INVALID " + e)
@@ -2154,6 +2304,7 @@ def main():
             results.append(result_record(c, got, outcome, problems, traced))
     shutil.rmtree(home, ignore_errors=True)
     print("\n%s | %s" % (outcome_line(results), timing_summary(results)))
+    print("stand-in web: seed %d%s, fixtures %s" % (WEB_SEED, " (held out)" if WEB_SEED >= HELD_OUT_FROM else "", web_version()[:12]))
     if args.trace: print(trace_summary(results))
     if failed_names:
         print("not passed: " + ", ".join("%s%s" % (k, " x%d" % v if args.repeat > 1 else "") for k, v in sorted(failed_names.items())))

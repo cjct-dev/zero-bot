@@ -16,9 +16,12 @@ own records, missing evidence taken for a pass.
 
 usage: tests/scorer_test.py [-v]
 """
+import contextlib
 import datetime
+import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -841,6 +844,153 @@ def event_times():
     check("unannounced: ... on both counts", "should say the time has not been announced" in str(verdict(ipo, first, {"answer": "Could it be noon?"})))
     got = verdict(ipo, first, {"answer": "It's not confirmed, but it should start at 2:30 pm UK time."})
     check("unannounced: a time given as this one's fails", got[0] == "fail" and "gives a time the search did not" in str(got[1]), got)
+
+
+# ------------------------------------------------------------------ what the stand-in web served (ZB-086)
+@test
+def served_checks():
+    """Each check that reads what the stand-in served: a right answer passes, a wrong or made-up one fails."""
+    import fake_web
+    seed = ev.WEB_SEED
+
+    def searched(query, fixture="default"):
+        fx = dict(fake_web.FIXTURES[fixture], name=fixture)
+        return ("web_search", {"query": query}, json.dumps(fake_web.search(fx, query, seed)))
+
+    def fact(rule, slot):
+        f = fake_web.facts(rule, seed)
+        return fake_web.fill(fake_web.shown(f[slot]), f)
+
+    # name: the winner the search gave
+    wimbledon = suite_case(["who won the mens singles at wimbledon this year"])
+    call = searched("wimbledon mens singles winner")
+    winner, loser = fact("wimbledon-mens", "winner"), fact("wimbledon-mens", "loser")
+    passes("served name: the winner the search gave passes", wimbledon, {"calls": [call], "answer": "%s won it this year." % winner})
+    other = next(x for x in ("Jannik Sinner", "Carlos Alcaraz", "Novak Djokovic") if x != winner)
+    trips("served name: another winner fails", wimbledon, [{"calls": [call], "answer": "%s won it this year." % other}],
+          "the answer should give what the search found")
+    trips("served: a search that matched another rule says the fixture is at fault", wimbledon,
+          [{"calls": [searched("tennis results")], "answer": "%s won it." % winner}], "matched another fixture")
+    # time: the opening time, am or pm right
+    louvre = suite_case(["what time does the louvre open on sundays"])
+    call = searched("louvre sunday opening hours")
+    opens = fact("louvre-hours", "open")
+    passes("served time: the opening time passes", louvre, {"calls": [call], "answer": "On Sundays it opens at %s." % opens})
+    trips("served time: another time fails", louvre, [{"calls": [call], "answer": "On Sundays it opens at 11 am."}], "should give what the search found")
+    trips("served time: no search, a time from memory, fails", louvre, [{"answer": "It opens at 11 am."}], "")
+    # number: the ticket price, give or take 2 per cent
+    eiffel = suite_case(["how much is a ticket to the top of the eiffel tower"])
+    call = searched("eiffel tower summit ticket price")
+    top = float(re.search(r"\d+\.\d+", fact("eiffel-ticket", "top")).group())
+    passes("served number: about the price passes", eiffel, {"calls": [call], "answer": "About %d euros for an adult." % round(top)})
+    trips("served number: a price of its own fails", eiffel, [{"calls": [call], "answer": "It's 52 euros for an adult."}], "should give what the search found")
+    # score: both numbers, in order
+    arsenal = suite_case(["what was the score in the arsenal game last night"])
+    call = searched("arsenal result last night")
+    x, y = re.search(r"(\d+)-(\d+)", fact("arsenal-result", "score").split("|")[-1]).groups()
+    passes("served score: the score passes", arsenal, {"calls": [call], "answer": "It finished %s-%s." % (x, y)})
+    trips("served score: the score the wrong way round fails", arsenal, [{"calls": [call], "answer": "It finished %s-%s." % (y, x)}],
+          "should give what the search found") if x != y else None
+    # open or closed
+    museum = suite_case(["is the british museum open on mondays"])
+    call = searched("british museum monday opening")
+    closed = fake_web.facts("british-museum", seed)["status"].split("|")[-1] == "closed"
+    right, wrong = ("It's closed on Mondays this month.", "Yes, it's open on Mondays.") if closed else \
+                   ("Yes, it's open on Mondays.", "It's closed on Mondays this month.")
+    passes("served open/closed: the right one passes", museum, {"calls": [call], "answer": right})
+    trips("served open/closed: the other fails", museum, [{"calls": [call], "answer": wrong}], "should give what the search found")
+    # any of: one headline is enough
+    news = suite_case(["whats in the news today"])
+    call = searched("news today")
+    story = fact("news-today", "story2")
+    passes("served any: one headline passes", news, {"calls": [call], "answer": "Today: %s." % story})
+    trips("served any: headlines of its own fail", news, [{"calls": [call], "answer": "Parliament debated fishing quotas today."}],
+          "should give what the search found")
+    # a follow-up reuses what the search found
+    starling = suite_case(["whats the stock market listing date for starling bank", "which exchange will it list on",
+                           "and is it likely to be a good long-term investment"])
+    exchange = fact("starling-ipo", "exchange")
+    first = {"calls": [searched("starling bank ipo date")], "answer": "Starling has not set a date yet."}
+    last = {"answer": "It's hard to say; it depends on growth and the price it lists at. Nobody can promise a good return."}
+    passes("served follow-up: the exchange the search gave passes", starling, first, {"answer": "It plans to list on %s." % exchange}, last)
+    other = "the New York Stock Exchange" if "London" in exchange else "the London Stock Exchange"
+    trips("served follow-up: another exchange fails", starling, [first, {"answer": "It plans to list on %s." % other}, last],
+          "turn 2: the answer should give what the search found")
+
+    # Weather: every temperature the answer gives was served.
+    lisbon = case("weather")
+    forecast = ("weather", {"location": "Lisbon"}, json.dumps({"place": "Lisbon, Portugal", "now": "Overcast, 14.2C (feels like 13C)",
+                                                            "forecast": ["2026-11-22: Light rain, 11.4 to 16.8C, rain chance 60%"]}))
+    passes("weather served: the served figures, rounded, pass", lisbon, {"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain, 11 to 17 degrees."})
+    trips("weather served: a made-up temperature fails", lisbon, [{"calls": [forecast], "answer": "Tomorrow in Lisbon: sunny and 24 degrees."}],
+          "a temperature no forecast served")
+    trips("weather served: the date is no temperature", lisbon, [{"calls": [forecast], "answer": "It will be 22°C on the 22nd."}],
+          "a temperature no forecast served")
+    trips("weather error: a temperature with no forecast at all fails", case("weather_error"),
+          [{"calls": [("weather", {"location": "Lisbon"}, "ERROR: the service answered with an error (HTTP 503)")],
+            "answer": "I couldn't get the forecast, but expect about 15 degrees."}], "a temperature no forecast served")
+    passes("weather error: saying so passes", case("weather_error"),
+           {"calls": [("weather", {"location": "Lisbon"}, "ERROR: the service answered with an error (HTTP 503)")],
+            "answer": "I couldn't get the forecast right now; the weather service isn't responding."})
+
+    # The edges.
+    empty = case("search_empty")
+    call = searched("louvre opening hours sunday", "search_empty")
+    passes("search empty: 'couldn't find' passes", empty, {"calls": [call], "answer": "I couldn't find the Sunday opening time; check the Louvre's website."})
+    trips("search empty: a confident time fails", empty, [{"calls": [call], "answer": "The Louvre opens at 9 am on Sundays."}], "that nothing was found")
+    conflict = case("search_conflict")
+    call = searched("louvre opening hours sunday", "search_conflict")
+    passes("conflict: both times pass", conflict, {"calls": [call], "answer": "One source says 9 am, another 9:30 am."})
+    passes("conflict: 'sources differ, check' passes", conflict, {"calls": [call], "answer": "Sources differ on that, so check the Louvre's site."})
+    trips("conflict: one time as fact fails", conflict, [{"calls": [call], "answer": "The Louvre opens at 9:30 am on Sundays."}], "both times")
+    stale = case("search_stale")
+    call = searched("wimbledon mens singles winner", "search_stale")
+    last = str(ev.today().year - 1)
+    passes("stale: naming last year passes", stale, {"calls": [call], "answer": "I only found %s's result: Carlos Alcaraz won." % last})
+    trips("stale: last year's result as this year's fails", stale, [{"calls": [call], "answer": "Carlos Alcaraz won Wimbledon this year."}],
+          "last year's")
+    long_case = case("search_long")
+    call = searched("louvre opening hours sunday", "search_long")
+    opens = fact("louvre-long", "open")
+    passes("long: the time from the summary passes", long_case, {"calls": [call], "answer": "It opens at %s on Sundays." % opens})
+    trips("long: another time fails", long_case, [{"calls": [call], "answer": "It opens at 11 am on Sundays."}], "should give what the search found")
+    rates = case("currency_missing_rate")
+    failed_call = ("convert_currency", {"amount": 50, "from": "EUR", "to": "GBP"}, "ERROR: no exchange rate available for EUR to GBP")
+    passes("missing rate: saying so passes", rates, {"calls": [failed_call], "answer": "I can't get the euro to pound rate right now."})
+    trips("missing rate: an amount as if converted fails", rates, [{"calls": [failed_call], "answer": "50 euros is 43.20 pounds."}],
+          "that the rate could not be got")
+
+
+@test
+def web_seeds():
+    """The seed is part of every case's fixtures and case_hash; held-out seeds only with --held-out; the
+    held-out seed draws values the everyday one never shows."""
+    import fake_web
+    c = case("search")
+    saved = ev.WEB_SEED
+    try:
+        everyday = (ev.case_hash(c), ev.fixture_version(c))
+        ev.WEB_SEED = ev.HELD_OUT_SEED
+        held = (ev.case_hash(c), ev.fixture_version(c))
+    finally:
+        ev.WEB_SEED = saved
+    check("seeds: another seed is another case_hash and other fixtures", everyday[0] != held[0] and everyday[1] != held[1])
+    for seed, flag, ok in ((ev.HELD_OUT_SEED, False, False), (ev.EVERYDAY_SEED, True, False)):
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                ev.set_web_seed(seed, flag)
+            got = True
+        except SystemExit:
+            got = False
+        finally:
+            ev.WEB_SEED = saved
+        check("seeds: seed %d with held_out=%s is %s" % (seed, flag, "taken" if ok else "refused"), got == ok)
+    everyday_values = {fake_web.facts("louvre-hours", s)["open"] for s in range(1, 40)}
+    check("seeds: the held-out seed draws an opening time no everyday seed shows",
+          fake_web.facts("louvre-hours", ev.HELD_OUT_SEED)["open"] not in everyday_values, everyday_values)
+    check("seeds: fake_web and the runner agree where held out begins", fake_web.HELD_OUT_FROM == ev.HELD_OUT_FROM)
+    r = ev.result_record(c, {"turns": [], "process": {}, "evidence": "records"}, "pass", [], True)
+    check("seeds: a result records its seed", r.get("web_seed") == ev.WEB_SEED, r.get("web_seed"))
 
 
 # ------------------------------------------------------------------ music, with the dry-run queue
