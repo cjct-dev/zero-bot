@@ -14,6 +14,7 @@
 #include <system_error>
 #include <thread>
 
+#include "core/result.h"
 #include "smarthome/color.h"
 #include "smarthome/internal.h"
 
@@ -41,7 +42,7 @@ constexpr double kMinC = 5, kMaxC = 30;     // heating targets are clamped to th
 const char *const kActions[] = {"on",   "off",      "set",  "status", "scene",  "play",
                                 "pause", "stop", "next", "previous", "mute", "unmute", "press"};
 
-std::string fail(const std::string &why) { return "ERROR: " + why; }
+using result::fail;   // "ERROR: " and the words, the shape every tool's failure has
 
 std::string dump(const json &j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); }
 
@@ -987,34 +988,12 @@ void context_kept(size_t user_messages) {
 }
 
 // ---------------------------------------------------------------- commands
-std::string execute(const Command &cmd, bool dry_run) {
-    const discovery::Network net = network_now();
-    if (!net.usable) return fail(net.why_not.empty() ? "there is no home network right now" : net.why_not);
-    const NetworkEntry e = entry(net.id());
-    const std::vector<Item> items = catalog(e);
-    if (items.empty())
-        return fail("no smart-home device on this network may be used by the assistant. Tell the user they can set "
-                    "devices up in Settings, Smart home");
+namespace {
+// The steps of execute(), in its order. Each returns "" to go on, or the result to give the model.
 
-    std::string action = util::lower(util::trim(cmd.action));
-    if (action == "list" || action == "check") action = "status";
-    const bool has_value = cmd.brightness || !util::trim(cmd.color).empty() || cmd.temperature || cmd.position || cmd.volume ||
-                           cmd.volume_step || !util::trim(cmd.source).empty();
-    if (action == "on" && has_value) action = "set";   // "on at 30 percent"
-    if (std::find_if(std::begin(kActions), std::end(kActions), [&](const char *a) { return action == a; }) == std::end(kActions))
-        return fail("action must be one of on, off, set, status, scene, play, pause, stop, next, previous, mute, unmute, press");
-    if (action == "status") return status(net.id(), e, items, cmd.target, dry_run);
-    if (util::trim(cmd.target).empty()) {
-        const std::string verb = action == "on" || action == "off" ? "switch " + action : action == "set" ? "change" : action;
-        return fail("say which device, room or group to " + verb + " (target)");
-    }
-
-    Resolved r;
-    std::string err;
-    if (!resolve(items, cmd.target, r, err)) return fail(err);
-
-    // What is to change, in the fixed units of driver.h.
-    Change base;
+// What is to change, in the fixed units of driver.h, for an action already checked against
+// kActions; `has_value` is whether the command carries a value to set.
+std::string change_for(const std::string &action, const Command &cmd, bool has_value, Change &base) {
     if (action == "on" || action == "scene") base.on = true;
     else if (action == "off") base.on = false;
     else if (action == "play" || action == "pause" || action == "stop" || action == "next" || action == "previous") base.transport = action;
@@ -1058,9 +1037,11 @@ std::string execute(const Command &cmd, bool dry_run) {
             base.source = source;
         }
     }
+    return "";
+}
 
-    // Which of the things the name covers this action is for.
-    std::vector<const Item *> members;
+// Which of the things the name covers this action is for.
+std::string members_for(const std::string &action, const Resolved &r, const Change &base, std::vector<const Item *> &members) {
     auto has = [](const Item *i, uint32_t cap) { return (i->thing.caps & cap) != 0; };
     switch (r.scope) {
         case Scope::Everything:
@@ -1115,8 +1096,11 @@ std::string execute(const Command &cmd, bool dry_run) {
     if (action == "scene")
         for (const auto *m : members)
             if (m->thing.type != "scene") return fail(in_quotes(m->label) + " is not a scene. Use on or off for it");
+    return "";
+}
 
-    std::vector<Step> steps;
+// A step for each member that can take the change, as it can take it.
+std::string steps_for(const std::vector<const Item *> &members, const Change &base, std::vector<Step> &steps) {
     std::string why_not;
     for (const auto *m : members) {
         Step s{m, Change()};
@@ -1125,24 +1109,16 @@ std::string execute(const Command &cmd, bool dry_run) {
         else if (why_not.empty()) why_not = in_quotes(m->label) + " cannot do that: " + why;
     }
     if (steps.empty()) return fail((why_not.empty() ? "nothing there can do that" : why_not) + ". Tell the user");
+    return "";
+}
 
-    // The questions of the design's safety rules, asked in code: the model cannot answer them itself.
-    std::vector<const Thing *> to_change;
-    for (const auto &s : steps) to_change.push_back(&s.item->thing);
-    const std::string confirm = question_first(signature(action, r.label, steps), needs_yes(r, base, steps), action,
-                                               naming_of(items, r, to_change),
-                                               capitalised(describe(action, target_phrase(r, steps), base)) + "?");
-    if (!confirm.empty()) return confirm;
-
-    {
-        std::lock_guard<std::mutex> lk(g_ctl_mtx);
-        if (!g_rate.allow(r.label, now_ms(), err)) return fail(err);
-    }
-
+// Carries the steps out (a dry run takes them as done: tests check the choice of things without
+// switching anything), then saves the new state of each thing that changed.
+void carry_out(const std::string &network_id, const NetworkEntry &e, std::vector<Step> &steps, bool dry_run) {
     if (dry_run) {
-        for (auto &s : steps) s.ok = true;   // tests check the choice of things without switching anything
+        for (auto &s : steps) s.ok = true;
     } else {
-        run_steps(net.id(), e, steps);
+        run_steps(network_id, e, steps);
     }
     std::map<std::string, json> states;
     for (const auto &s : steps)
@@ -1151,8 +1127,11 @@ std::string execute(const Command &cmd, bool dry_run) {
             apply_to_state(s.change, t);
             states[key_of(s.item->device_id, t.id)] = t.state;
         }
-    save_states(net.id(), states, true);
+    save_states(network_id, states, true);
+}
 
+// What the model is told of what was done.
+std::string report(const Resolved &r, const Change &base, const std::vector<Step> &steps) {
     size_t changed = 0;
     json failed = json::array();
     const Step *first_failure = nullptr;
@@ -1176,6 +1155,56 @@ std::string execute(const Command &cmd, bool dry_run) {
     json out = {{"target", r.label}, {"changed", changed}, {"now", now}};
     if (!failed.empty()) out["failed"] = failed;
     return dump(out);
+}
+}  // namespace
+
+std::string execute(const Command &cmd, bool dry_run) {
+    const discovery::Network net = network_now();
+    if (!net.usable) return fail(net.why_not.empty() ? "there is no home network right now" : net.why_not);
+    const NetworkEntry e = entry(net.id());
+    const std::vector<Item> items = catalog(e);
+    if (items.empty())
+        return fail("no smart-home device on this network may be used by the assistant. Tell the user they can set "
+                    "devices up in Settings, Smart home");
+
+    std::string action = util::lower(util::trim(cmd.action));
+    if (action == "list" || action == "check") action = "status";
+    const bool has_value = cmd.brightness || !util::trim(cmd.color).empty() || cmd.temperature || cmd.position || cmd.volume ||
+                           cmd.volume_step || !util::trim(cmd.source).empty();
+    if (action == "on" && has_value) action = "set";   // "on at 30 percent"
+    if (std::find_if(std::begin(kActions), std::end(kActions), [&](const char *a) { return action == a; }) == std::end(kActions))
+        return fail("action must be one of on, off, set, status, scene, play, pause, stop, next, previous, mute, unmute, press");
+    if (action == "status") return status(net.id(), e, items, cmd.target, dry_run);
+    if (util::trim(cmd.target).empty()) {
+        const std::string verb = action == "on" || action == "off" ? "switch " + action : action == "set" ? "change" : action;
+        return fail("say which device, room or group to " + verb + " (target)");
+    }
+
+    Resolved r;
+    std::string err;
+    if (!resolve(items, cmd.target, r, err)) return fail(err);
+    Change base;
+    std::vector<const Item *> members;
+    std::vector<Step> steps;
+    std::string refused = change_for(action, cmd, has_value, base);
+    if (refused.empty()) refused = members_for(action, r, base, members);
+    if (refused.empty()) refused = steps_for(members, base, steps);
+    if (!refused.empty()) return refused;
+
+    // The questions of the design's safety rules, asked in code: the model cannot answer them itself.
+    std::vector<const Thing *> to_change;
+    for (const auto &s : steps) to_change.push_back(&s.item->thing);
+    const std::string confirm = question_first(signature(action, r.label, steps), needs_yes(r, base, steps), action,
+                                               naming_of(items, r, to_change),
+                                               capitalised(describe(action, target_phrase(r, steps), base)) + "?");
+    if (!confirm.empty()) return confirm;
+
+    {
+        std::lock_guard<std::mutex> lk(g_ctl_mtx);
+        if (!g_rate.allow(r.label, now_ms(), err)) return fail(err);
+    }
+    carry_out(net.id(), e, steps, dry_run);
+    return report(r, base, steps);
 }
 
 std::string switch_thing(const std::string &network_id, const std::string &device_id, const std::string &thing_id, bool on) {

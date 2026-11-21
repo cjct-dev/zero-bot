@@ -26,6 +26,7 @@
 #include "core/util.h"
 #include "net/http.h"
 #include "smarthome/color.h"
+#include "smarthome/drivers/support.h"
 #include "smarthome/home.h"
 
 namespace shelly {
@@ -40,6 +41,7 @@ const char *const kNotUnderstood = "The Shelly's answer could not be understood.
 namespace {
 
 constexpr size_t kMaxBody = 256 * 1024;
+constexpr int kMaxDepth = 32;             // of a reply's JSON, as detail::too_deep's default
 constexpr int kListMs = 4000;             // enumerate, read and pair
 constexpr size_t kMaxThings = 32;
 constexpr size_t kMaxChannels = 16;       // of one kind (Gen1 arrays)
@@ -83,27 +85,13 @@ int whole(const json *v, int lo, int hi, int fallback) {
 int rounded(double d) { return static_cast<int>(std::lround(d)); }
 
 // Parses text from a device: refused when too long, nested too deep or not JSON.
-bool parse(const std::string &body, json &out) {
-    if (body.size() > kMaxBody || detail::too_deep(body)) return false;
-    out = json::parse(body, nullptr, false);
-    return !out.is_discarded();
-}
+bool parse(const std::string &body, json &out) { return support::parse_reply(body, kMaxBody, kMaxDepth, out); }
 
 bool token_chars(const std::string &s, const char *extra, size_t max) {
     if (s.empty() || s.size() > max) return false;
     for (const unsigned char c : s)
         if (!isalnum(c) && !strchr(extra, c)) return false;
     return true;
-}
-
-std::string lower_hex_mac(const std::string &raw) {
-    std::string out;
-    for (const unsigned char c : raw) {
-        if (c == ':' || c == '-') continue;
-        if (!isxdigit(c)) return "";
-        out += static_cast<char>(tolower(c));
-    }
-    return out.size() == 12 ? out : "";
 }
 
 std::string upper(std::string s) {
@@ -207,22 +195,7 @@ bool ref_flag(const home::Thing &t, const char *key) { return boolean(member(t.r
 // ================================================================ detail
 namespace detail {
 
-bool too_deep(const std::string &text, int max) {
-    int depth = 0;
-    bool in_string = false, escaped = false;
-    for (const char c : text) {
-        if (in_string) {
-            if (escaped) escaped = false;
-            else if (c == '\\') escaped = true;
-            else if (c == '"') in_string = false;
-            continue;
-        }
-        if (c == '"') in_string = true;
-        else if (c == '[' || c == '{') { if (++depth > max) return true; }
-        else if (c == ']' || c == '}') --depth;
-    }
-    return false;
-}
+bool too_deep(const std::string &text, int max) { return support::json_too_deep(text, max); }
 
 bool valid_ipv4(const std::string &ip) {
     if (ip.empty() || ip.size() > 15) return false;
@@ -238,16 +211,7 @@ std::string basic_auth_header(const std::string &user, const std::string &passwo
 
 std::string fingerprint(const std::string &user, const std::string &password) {
     const std::string in = "zero-bot shelly login\n" + user + "\n" + password;
-    unsigned char md[EVP_MAX_MD_SIZE];
-    unsigned int len = 0;
-    if (EVP_Digest(in.data(), in.size(), md, &len, EVP_sha256(), nullptr) != 1) return "";
-    static const char hex[] = "0123456789abcdef";
-    std::string out;
-    for (unsigned int i = 0; i < len && out.size() < 32; ++i) {
-        out += hex[md[i] >> 4];
-        out += hex[md[i] & 15];
-    }
-    return out;
+    return support::hex(support::digest(EVP_sha256(), in)).substr(0, 32);   // "" when libcrypto fails
 }
 
 // Words of a name, lower case. Bytes of UTF-8 letters ("ü", "ż") belong to their word, so "Tür" is
@@ -391,7 +355,7 @@ bool parse_identity(const std::string &body, Identity &out) {
         out.auth = boolean(member(j, "auth")).value_or(false);
         out.num_meters = whole(member(j, "num_meters"), 0, 16, -1);
     }
-    out.mac = lower_hex_mac(text(member(j, "mac")));
+    out.mac = support::mac_digits(text(member(j, "mac")));
     if (out.gen == 1 && out.mac.empty()) return false;   // Gen1 is recognised by its MAC
     return true;
 }
@@ -661,76 +625,62 @@ json state_of(const home::Thing &thing, const json &status) {
     return s;
 }
 
-bool plan(const home::Thing &thing, const home::Change &c, Call &out, std::string &err) {
-    out = Call();
-    const int gen = ref_int(thing, "gen", 1, 9, 0);
-    const std::string comp = ref_text(thing, "comp");
-    const int id = ref_int(thing, "id", 0, kMaxComponentId, -1);
-    if (gen == 0 || comp.empty() || id < 0) {
-        err = std::string("Zero Bot does not know this Shelly channel properly. ") + kReadAgain;
+namespace {
+// The parts of plan(), one per kind of channel. `other`: the change asks for something no switch,
+// blind or light takes; `n`: the channel's id as text, for a Gen1 path.
+bool plan_switch(const home::Change &c, bool other, int gen, int id, const std::string &n, Call &out, std::string &err) {
+    if (!c.on || c.brightness || c.kelvin || c.hs || c.position || c.transport || other) {
+        err = "This switch can only be turned on and off.";
         return false;
     }
-    const std::string n = std::to_string(id);
-    const bool other = c.target_c || c.mode || c.fan || c.volume || c.volume_step || c.mute || c.source || c.key;
-    const bool stop = c.transport && *c.transport == "stop";
+    if (gen >= 2) {
+        out.method = "Switch.Set";
+        out.params = {{"id", id}, {"on", *c.on}};
+    } else {
+        out.path = "/relay/" + n + "?turn=" + (*c.on ? "on" : "off");
+    }
+    return true;
+}
 
-    if (comp == "temperature" || comp == "humidity" || comp == "pm1" || comp == "sensor") {
-        err = "This is a sensor; it can only be read.";
+bool plan_cover(const home::Thing &thing, const home::Change &c, bool other, bool stop, int gen, int id, const std::string &n,
+                Call &out, std::string &err) {
+    if (c.brightness || c.kelvin || c.hs || (c.transport && !stop) || other) {
+        err = "This blind can only be opened, closed, stopped or moved to a position.";
         return false;
     }
-    if ((gen >= 2 && comp == "switch") || (gen == 1 && comp == "relay")) {
-        if (!c.on || c.brightness || c.kelvin || c.hs || c.position || c.transport || other) {
-            err = "This switch can only be turned on and off.";
-            return false;
-        }
-        if (gen >= 2) {
-            out.method = "Switch.Set";
-            out.params = {{"id", id}, {"on", *c.on}};
-        } else {
-            out.path = "/relay/" + n + "?turn=" + (*c.on ? "on" : "off");
-        }
-        return true;
-    }
-    if ((gen >= 2 && comp == "cover") || (gen == 1 && comp == "roller")) {
-        if (c.brightness || c.kelvin || c.hs || (c.transport && !stop) || other) {
-            err = "This blind can only be opened, closed, stopped or moved to a position.";
-            return false;
-        }
-        if (stop && (c.position || c.on)) {
-            err = "A blind cannot be stopped and moved in one go.";
-            return false;
-        }
-        int target = -1;
-        if (c.position) target = std::max(0, std::min(100, *c.position));
-        else if (c.on) target = *c.on ? 100 : 0;
-        if (!stop && target < 0) {
-            err = "Nothing was asked of the blind.";
-            return false;
-        }
-        if (!stop && target > 0 && target < 100 && !ref_flag(thing, "calibrated")) {
-            err = "This blind has not been calibrated in the Shelly app, so it can only be opened, closed or stopped.";
-            return false;
-        }
-        if (gen >= 2) {
-            out.params = {{"id", id}};
-            if (stop) out.method = "Cover.Stop";
-            else if (target == 100) out.method = "Cover.Open";
-            else if (target == 0) out.method = "Cover.Close";
-            else { out.method = "Cover.GoToPosition"; out.params["pos"] = target; }
-        } else {
-            out.path = "/roller/" + n + "?go=";
-            if (stop) out.path += "stop";
-            else if (target == 100) out.path += "open";
-            else if (target == 0) out.path += "close";
-            else out.path += "to_pos&roller_pos=" + std::to_string(target);
-        }
-        return true;
-    }
-    const bool light = gen >= 2 ? (comp == "light" || comp == "rgb" || comp == "rgbw" || comp == "cct") : comp == "light";
-    if (!light) {
-        err = "Zero Bot cannot change this part of the Shelly.";
+    if (stop && (c.position || c.on)) {
+        err = "A blind cannot be stopped and moved in one go.";
         return false;
     }
+    int target = -1;
+    if (c.position) target = std::max(0, std::min(100, *c.position));
+    else if (c.on) target = *c.on ? 100 : 0;
+    if (!stop && target < 0) {
+        err = "Nothing was asked of the blind.";
+        return false;
+    }
+    if (!stop && target > 0 && target < 100 && !ref_flag(thing, "calibrated")) {
+        err = "This blind has not been calibrated in the Shelly app, so it can only be opened, closed or stopped.";
+        return false;
+    }
+    if (gen >= 2) {
+        out.params = {{"id", id}};
+        if (stop) out.method = "Cover.Stop";
+        else if (target == 100) out.method = "Cover.Open";
+        else if (target == 0) out.method = "Cover.Close";
+        else { out.method = "Cover.GoToPosition"; out.params["pos"] = target; }
+    } else {
+        out.path = "/roller/" + n + "?go=";
+        if (stop) out.path += "stop";
+        else if (target == 100) out.path += "open";
+        else if (target == 0) out.path += "close";
+        else out.path += "to_pos&roller_pos=" + std::to_string(target);
+    }
+    return true;
+}
+
+bool plan_light(const home::Thing &thing, const home::Change &c, bool other, int gen, const std::string &comp, int id,
+                const std::string &n, Call &out, std::string &err) {
     if (c.position || c.transport || other) {
         err = "This light can only be switched, dimmed" + std::string(thing.caps & home::kColor ? " or coloured." : ".");
         return false;
@@ -774,6 +724,35 @@ bool plan(const home::Thing &thing, const home::Change &c, Call &out, std::strin
         if (kelvin) out.path += "&temp=" + std::to_string(*kelvin);
     }
     return true;
+}
+}  // namespace
+
+bool plan(const home::Thing &thing, const home::Change &c, Call &out, std::string &err) {
+    out = Call();
+    const int gen = ref_int(thing, "gen", 1, 9, 0);
+    const std::string comp = ref_text(thing, "comp");
+    const int id = ref_int(thing, "id", 0, kMaxComponentId, -1);
+    if (gen == 0 || comp.empty() || id < 0) {
+        err = std::string("Zero Bot does not know this Shelly channel properly. ") + kReadAgain;
+        return false;
+    }
+    const std::string n = std::to_string(id);
+    const bool other = c.target_c || c.mode || c.fan || c.volume || c.volume_step || c.mute || c.source || c.key;
+    const bool stop = c.transport && *c.transport == "stop";
+
+    if (comp == "temperature" || comp == "humidity" || comp == "pm1" || comp == "sensor") {
+        err = "This is a sensor; it can only be read.";
+        return false;
+    }
+    if ((gen >= 2 && comp == "switch") || (gen == 1 && comp == "relay")) return plan_switch(c, other, gen, id, n, out, err);
+    if ((gen >= 2 && comp == "cover") || (gen == 1 && comp == "roller"))
+        return plan_cover(thing, c, other, stop, gen, id, n, out, err);
+    const bool light = gen >= 2 ? (comp == "light" || comp == "rgb" || comp == "rgbw" || comp == "cct") : comp == "light";
+    if (!light) {
+        err = "Zero Bot cannot change this part of the Shelly.";
+        return false;
+    }
+    return plan_light(thing, c, other, gen, comp, id, n, out, err);
 }
 
 bool allowed(const Call &call) {
@@ -1148,7 +1127,7 @@ public:
             // The status names the device's MAC (Gen1 "mac", Gen2+ "sys.mac"): another device at
             // this address is not read as this one.
             const json *sys = gen >= 2 ? member_obj(status, "sys") : &status;
-            const std::string mac = sys ? lower_hex_mac(text(member(*sys, "mac"))) : "";
+            const std::string mac = sys ? support::mac_digits(text(member(*sys, "mac"))) : "";
             const std::string known = known_device(things, "mac");
             if (!known.empty() && !mac.empty() && mac != known) {
                 err = std::string(kOtherDevice) + " Scan the network again in Settings, Smart home.";

@@ -86,8 +86,9 @@ bool set_socket_power(const Device &dev, const Credentials &cred, const std::str
 // were changed.
 void forget_sessions();
 
-// The protocol's building blocks, exposed so that tapo_test.cpp can check each against published
-// vectors. Not part of the interface. Byte strings are std::string holding raw bytes.
+// The protocol's building blocks, exposed so that each can be checked against published vectors
+// (tests/tapo_e2e.py checks them only end to end, against tests/mocks/mock_tapo.py). Not part of the
+// interface. Byte strings are std::string holding raw bytes.
 namespace detail {
 using Bytes = std::string;
 

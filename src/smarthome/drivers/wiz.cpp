@@ -28,6 +28,7 @@
 
 #include <openssl/evp.h>
 
+#include "smarthome/drivers/support.h"
 #include "smarthome/home.h"
 
 namespace wiz {
@@ -117,26 +118,8 @@ bool is_hex(const std::string &s) {
     return !s.empty() && std::all_of(s.begin(), s.end(), [](unsigned char c) { return std::isxdigit(c) != 0; });
 }
 
-std::string hex_of(const std::string &bytes) {
-    static const char *digits = "0123456789abcdef";
-    std::string out;
-    for (const unsigned char c : bytes) {
-        out += digits[c >> 4];
-        out += digits[c & 15];
-    }
-    return out;
-}
-
 std::string hmac_sha256_b64(const std::string &key, const std::string &text) {
-    unsigned char mac[EVP_MAX_MD_SIZE];
-    size_t len = 0;
-    if (!EVP_Q_mac(nullptr, "HMAC", nullptr, "SHA256", nullptr, key.data(), key.size(),
-                   reinterpret_cast<const unsigned char *>(text.data()), text.size(), mac, sizeof mac, &len))
-        return {};
-    std::string out((len + 2) / 3 * 4 + 1, '\0');
-    const int n = EVP_EncodeBlock(reinterpret_cast<unsigned char *>(&out[0]), mac, static_cast<int>(len));
-    out.resize(n > 0 ? static_cast<size_t>(n) : 0);
-    return out;
+    return util::base64(support::hmac("SHA256", key, text));   // "" when libcrypto fails, as base64 of nothing
 }
 
 enum class Got { Reply, Nothing, Garbage };
@@ -153,13 +136,11 @@ Got udp_exchange(const std::string &ip, int port, const std::string &method, con
     hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;   // an address, never a name to look up
     if (port <= 0 || port > 65535 || getaddrinfo(ip.c_str(), std::to_string(port).c_str(), &hints, &res) != 0 || !res)
         return Got::Nothing;
-    const int fd = socket(res->ai_family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    const support::Socket sock(socket(res->ai_family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
+    const int fd = sock.fd;
     const bool connected = fd >= 0 && connect(fd, res->ai_addr, res->ai_addrlen) == 0;
     freeaddrinfo(res);
-    if (!connected) {
-        if (fd >= 0) close(fd);
-        return Got::Nothing;
-    }
+    if (!connected) return Got::Nothing;
 
     long long next_send = now_ms();
     int interval = kFirstResendMs, sends = 0;
@@ -195,23 +176,14 @@ Got udp_exchange(const std::string &ip, int port, const std::string &method, con
             break;
         }
     }
-    close(fd);
     return got;
 }
 
-// A MAC as 12 lower-case hex digits ("A8:BB:50:06:03:3D" and "a8bb5006033d" alike); "" for anything else.
-std::string plain_mac(const std::string &text) {
-    std::string out;
-    for (const unsigned char c : text)
-        if (c != ':' && c != '-') out += static_cast<char>(std::tolower(c));
-    return out.size() == 12 && is_hex(out) ? out : std::string();
-}
-
-// The MAC this device was saved under: discovery names a WiZ device "wiz:<its MAC>". "" when the
-// saved record does not say.
+// The MAC this device was saved under, as 12 lower-case hex digits: discovery names a WiZ device
+// "wiz:<its MAC>". "" when the saved record does not say.
 std::string saved_mac(const Device &dev) {
-    const std::string from_id = dev.id.rfind("wiz:", 0) == 0 ? plain_mac(dev.id.substr(4)) : std::string();
-    return from_id.empty() ? plain_mac(dev.mac) : from_id;
+    const std::string from_id = dev.id.rfind("wiz:", 0) == 0 ? support::mac_digits(dev.id.substr(4)) : std::string();
+    return from_id.empty() ? support::mac_digits(dev.mac) : from_id;
 }
 
 // Whether a getSystemConfig or getPilot result came from this device. Addresses are handed out
@@ -221,7 +193,7 @@ std::string saved_mac(const Device &dev) {
 // asked for one thing would be spent on another. A result that names no MAC cannot be told apart.
 bool same_device(const std::string &expected, const json &result) {
     if (expected.empty()) return true;
-    const std::string got = plain_mac(jstr(result, "mac"));
+    const std::string got = support::mac_digits(jstr(result, "mac"));
     return got.empty() ? !(result.is_object() && result.contains("mac")) : got == expected;
 }
 
@@ -660,7 +632,7 @@ public:
             return false;
         }
         // Typed again: one more try, even for the key that was refused.
-        secrets_->set(kFamily, json{{"signing_key", hex_of(key)}});
+        secrets_->set(kFamily, json{{"signing_key", support::hex(key)}});
         return true;
     }
 

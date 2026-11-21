@@ -22,6 +22,7 @@
 #include <set>
 
 #include "core/util.h"
+#include "smarthome/drivers/support.h"
 #include "smarthome/home.h"
 
 namespace kasa {
@@ -40,6 +41,7 @@ constexpr int kListMs = 4000;          // enumerate and read
 constexpr int kDefaultPort = 9999;
 constexpr size_t kMaxSockets = 16;     // the largest strips have six
 constexpr size_t kMaxChildId = 64;     // a socket's id is the strip's id and two digits: 42 characters
+constexpr int kMaxDepth = 32;          // of a reply's JSON, as detail::too_deep's default
 
 const char *const kRelay = "system";
 const char *const kDimmer = "smartlife.iot.dimmer";
@@ -132,12 +134,6 @@ int left_ms(Clock::time_point until) {
     return d <= 0 ? 0 : static_cast<int>(std::min<long long>(d, 60000));
 }
 
-struct Fd {
-    int fd = -1;
-    ~Fd() {
-        if (fd >= 0) close(fd);
-    }
-};
 
 // Waits for `events` on `fd` until the deadline. False when the time ran out.
 bool wait_for(int fd, short events, Clock::time_point until) {
@@ -173,8 +169,7 @@ Outcome exchange(const std::string &ip, int port, const json &request, json &rep
     to.sin_family = AF_INET;
     if (port <= 0 || port > 65535 || inet_pton(AF_INET, ip.c_str(), &to.sin_addr) != 1) return Outcome::BadAddress;
     to.sin_port = htons(static_cast<uint16_t>(port));
-    Fd s;
-    s.fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    const support::Socket s(socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
     if (s.fd < 0) return Outcome::NoAnswer;
     if (connect(s.fd, reinterpret_cast<sockaddr *>(&to), sizeof(to)) != 0) {
         if (errno == ECONNREFUSED) return Outcome::Refused;
@@ -221,8 +216,7 @@ bool probe_says_new_login(const std::string &ip, Clock::time_point until, std::s
     to.sin_family = AF_INET;
     to.sin_port = htons(static_cast<uint16_t>(detail::probe_port()));
     if (inet_pton(AF_INET, ip.c_str(), &to.sin_addr) != 1 || left_ms(stop) == 0) return false;
-    Fd s;
-    s.fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    const support::Socket s(socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
     if (s.fd < 0 || connect(s.fd, reinterpret_cast<sockaddr *>(&to), sizeof(to)) != 0) return false;
     if (send(s.fd, kProbe, sizeof(kProbe), MSG_NOSIGNAL) != static_cast<ssize_t>(sizeof(kProbe))) return false;
     std::string buf(9000, '\0');
@@ -454,29 +448,11 @@ std::string frame(const std::string &plain) {
     return out + encrypt(plain);
 }
 
-bool too_deep(const std::string &t, int max) {
-    int depth = 0;
-    bool in_string = false, escaped = false;
-    for (const char c : t) {
-        if (in_string) {
-            if (escaped) escaped = false;
-            else if (c == '\\') escaped = true;
-            else if (c == '"') in_string = false;
-        } else if (c == '"') {
-            in_string = true;
-        } else if (c == '[' || c == '{') {
-            if (++depth > max) return true;
-        } else if (c == ']' || c == '}') {
-            --depth;
-        }
-    }
-    return false;
-}
+bool too_deep(const std::string &t, int max) { return support::json_too_deep(t, max); }
 
 bool parse_reply(const std::string &plain, json &out) {
-    if (plain.size() > kMaxReply || too_deep(plain)) return false;
-    json j = json::parse(plain, nullptr, false);
-    if (!j.is_object()) return false;
+    json j;
+    if (!support::parse_reply(plain, kMaxReply, kMaxDepth, j) || !j.is_object()) return false;
     out = std::move(j);
     return true;
 }
@@ -495,8 +471,8 @@ bool needs_new_login(const std::map<std::string, std::string> &info) {
 
 bool reply_says_new_login(const std::string &json_text, std::string *mac) {
     if (mac) mac->clear();
-    if (json_text.size() > 9000 || too_deep(json_text)) return false;
-    const json j = json::parse(json_text, nullptr, false);
+    json j;
+    if (!support::parse_reply(json_text, 9000, kMaxDepth, j)) return false;
     const json &r = member(j, "result");
     if (!r.is_object()) return false;
     const std::string type = upper(util::trim(text(r, "device_type")));
@@ -792,15 +768,7 @@ bool reply_ok(const json &request, const json &reply, std::string &err) {
     return true;
 }
 
-std::string mac_digits(const std::string &raw) {
-    std::string hex;
-    for (const char c : raw) {
-        if (c == ':' || c == '-') continue;
-        if (!isxdigit(static_cast<unsigned char>(c)) || hex.size() >= 12) return "";
-        hex += static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    }
-    return hex.size() == 12 ? hex : "";
-}
+std::string mac_digits(const std::string &raw) { return support::mac_digits(raw); }
 
 bool same_device(const std::string &saved_mac, const json &sysinfo) {
     const std::string saved = mac_digits(saved_mac);

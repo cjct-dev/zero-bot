@@ -65,6 +65,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "smarthome/drivers/support.h"
+
 namespace firetv {
 
 // Only kNoAnswer and kAlreadyOff messages may use the words control.cpp's unreachable() looks
@@ -120,13 +122,14 @@ const char *fault_name(Fault f) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Building blocks (and the small helpers a shared net/text library would hold later: UTF-8
-// cleaning, the nesting check, the magic packet, the key pin). Listed in STATUS.md.
+// Building blocks. UTF-8 repair, the nesting check, hex digits and the key pin come from
+// drivers/support.h (ZB-038); what is particular to this driver stays here.
 // ---------------------------------------------------------------------------------------------
 namespace detail {
 
 namespace {
 std::atomic<int> g_wake_port{9};   // the conventional Wake-on-LAN port (firehose WakeOnLan.PORT)
+constexpr int kMaxDepth = 32;      // of an answer's JSON, as too_deep's default
 
 std::string trim(const std::string &s) {
     const char *ws = " \t\r\n\f\v";
@@ -138,23 +141,6 @@ std::string trim(const std::string &s) {
 std::string lower_ascii(std::string s) {
     for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
-}
-
-int hex_digit(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-// Decodes one code point of valid UTF-8 at s[i]; returns its length (s must be valid UTF-8).
-size_t decode(const std::string &s, size_t i, uint32_t &cp) {
-    const unsigned char c = static_cast<unsigned char>(s[i]);
-    size_t len = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
-    if (i + len > s.size()) len = 1;
-    cp = len == 1 ? c : len == 2 ? (c & 0x1Fu) : len == 3 ? (c & 0x0Fu) : (c & 0x07u);
-    for (size_t k = 1; k < len; k++) cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3Fu);
-    return len;
 }
 
 // Characters that display as nothing, and so can make a name look like another one or like
@@ -171,14 +157,6 @@ bool invisible(uint32_t cp) {
            cp == 0x3164 || (cp >= 0xFE00 && cp <= 0xFE0F) || cp == 0xFEFF || cp == 0xFFA0 ||
            (cp >= 0xFFF0 && cp <= 0xFFFB) || (cp >= 0x1BCA0 && cp <= 0x1BCA3) || (cp >= 0x1D173 && cp <= 0x1D17A) ||
            (cp >= 0xE0000 && cp <= 0xE0FFF);
-}
-
-// Unicode White_Space: a gap between words, wherever it comes from (tab, line breaks, NEL,
-// no-break and ideographic spaces, the typographic spaces, line and paragraph separators).
-bool white_space(uint32_t cp) {
-    return (cp >= 0x09 && cp <= 0x0D) || cp == 0x20 || cp == 0x85 || cp == 0xA0 || cp == 0x1680 ||
-           (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 || cp == 0x2029 || cp == 0x202F || cp == 0x205F ||
-           cp == 0x3000;
 }
 }  // namespace
 
@@ -204,54 +182,19 @@ std::vector<WakeSend> wake_destinations(const std::vector<Ipv4Interface> &interf
 }
 
 std::string sanitize_utf8(const std::string &raw) {
-    static const char kReplacement[] = "\xEF\xBF\xBD";
-    std::string out;
-    out.reserve(raw.size());
-    const size_t n = raw.size();
-    for (size_t i = 0; i < n;) {
-        const unsigned char c = static_cast<unsigned char>(raw[i]);
-        if (c < 0x80) {
-            out += static_cast<char>(c);
-            i++;
-            continue;
-        }
-        size_t len;
-        uint32_t cp, min;
-        if ((c & 0xE0) == 0xC0) len = 2, cp = c & 0x1Fu, min = 0x80;
-        else if ((c & 0xF0) == 0xE0) len = 3, cp = c & 0x0Fu, min = 0x800;
-        else if ((c & 0xF8) == 0xF0) len = 4, cp = c & 0x07u, min = 0x10000;
-        else {
-            out += kReplacement;
-            i++;
-            continue;
-        }
-        bool ok = i + len <= n;
-        for (size_t k = 1; ok && k < len; k++) {
-            const unsigned char d = static_cast<unsigned char>(raw[i + k]);
-            if ((d & 0xC0) != 0x80) ok = false;
-            else cp = (cp << 6) | (d & 0x3Fu);
-        }
-        if (ok && (cp < min || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))) ok = false;
-        if (!ok) {
-            out += kReplacement;
-            i++;
-            continue;
-        }
-        out.append(raw, i, len);
-        i += len;
-    }
-    return out;
+    return support::sanitize_utf8(raw, support::BadUtf8::ReplacementCharacter);
 }
 
 std::string clean_name(const std::string &raw, size_t max) {
     const std::string s = sanitize_utf8(raw.size() > 4096 ? raw.substr(0, 4096) : raw);
+    const unsigned char *p = reinterpret_cast<const unsigned char *>(s.data());
     std::string out;
     bool space = false;
     for (size_t i = 0; i < s.size();) {
         uint32_t cp;
-        const size_t len = decode(s, i, cp);
-        if (white_space(cp)) {
-            space = true;   // keep words apart
+        const size_t len = support::utf8_at(p, s.size(), i, cp);   // never 0: s is well-formed UTF-8
+        if (support::unicode_space(cp)) {
+            space = true;   // a gap between words, wherever it comes from: keep words apart
         } else if (invisible(cp)) {
             // dropped: what is on either side joins up
         } else {
@@ -261,40 +204,18 @@ std::string clean_name(const std::string &raw, size_t max) {
         }
         i += len;
     }
-    if (out.size() > max) {
-        size_t cut = max;
-        while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80) cut--;   // not inside a sequence
-        out.erase(cut);
-        out = trim(out);
-    }
+    if (out.size() > max) out = trim(support::utf8_prefix(out, max));
     return out;
 }
 
-bool too_deep(const std::string &text, int max) {
-    int depth = 0;
-    bool in_string = false, escaped = false;
-    for (const char c : text) {
-        if (in_string) {
-            if (escaped) escaped = false;
-            else if (c == '\\') escaped = true;
-            else if (c == '"') in_string = false;
-        } else if (c == '"') {
-            in_string = true;
-        } else if (c == '[' || c == '{') {
-            if (++depth > max) return true;
-        } else if (c == ']' || c == '}') {
-            depth--;
-        }
-    }
-    return false;
-}
+bool too_deep(const std::string &text, int max) { return support::json_too_deep(text, max); }
 
 std::string normalise_mac(const std::string &text) {
     const std::string t = trim(text);
     if (t.size() != 17) return "";
     unsigned char b[6];
     for (int i = 0; i < 6; i++) {
-        const int hi = hex_digit(t[i * 3]), lo = hex_digit(t[i * 3 + 1]);
+        const int hi = support::hex_digit(t[i * 3]), lo = support::hex_digit(t[i * 3 + 1]);
         if (hi < 0 || lo < 0) return "";
         if (i < 5 && t[i * 3 + 2] != ':' && t[i * 3 + 2] != '-') return "";
         if (i < 5 && t[i * 3 + 2] != t[2]) return "";   // one separator throughout
@@ -339,34 +260,21 @@ std::string magic_packet(const std::string &mac) {
     const std::string m = normalise_mac(mac);
     if (m.empty()) return "";
     std::string addr;
-    for (int i = 0; i < 6; i++) addr += static_cast<char>(hex_digit(m[i * 3]) << 4 | hex_digit(m[i * 3 + 1]));
+    for (int i = 0; i < 6; i++) addr += static_cast<char>(support::hex_digit(m[i * 3]) << 4 | support::hex_digit(m[i * 3 + 1]));
     std::string out(6, '\xff');
     for (int i = 0; i < 16; i++) out += addr;
     return out;
 }
 
 std::string spki_pin_from_pem(const std::string &pem) {
-    if (pem.empty() || pem.size() > 64 * 1024) return "";
-    BIO *bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
-    if (!bio) return "";
-    X509 *cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
-    BIO_free(bio);
+    const support::Certificate cert = support::certificate_from_pem(pem);
     if (!cert) return "";
     std::string out;
-    const EVP_PKEY *key = X509_get0_pubkey(cert);
+    const EVP_PKEY *key = X509_get0_pubkey(cert.get());
     unsigned char *der = nullptr;
-    const int len = key ? i2d_PUBKEY(key, &der) : -1;
-    if (len > 0 && der) {
-        unsigned char md[EVP_MAX_MD_SIZE];
-        unsigned int md_len = 0;
-        if (EVP_Digest(der, static_cast<size_t>(len), md, &md_len, EVP_sha256(), nullptr) && md_len == 32) {
-            unsigned char b64[64];
-            const int n = EVP_EncodeBlock(b64, md, 32);
-            if (n > 0) out = "sha256//" + std::string(reinterpret_cast<char *>(b64), static_cast<size_t>(n));
-        }
-    }
+    const int len = key ? i2d_PUBKEY(key, &der) : -1;   // the decoded key, encoded again
+    if (len > 0 && der) out = support::sha256_pin(der, static_cast<size_t>(len));
     OPENSSL_free(der);
-    X509_free(cert);
     return out;
 }
 
@@ -404,9 +312,8 @@ PinReply read_pin_reply(long http_status, const std::string &body, std::string &
 }
 
 bool parse_capabilities(const std::string &body, Capabilities &out) {
-    if (body.size() > 64 * 1024 || too_deep(body)) return false;
-    const json j = json::parse(body, nullptr, false);
-    if (j.is_discarded() || !j.is_object()) return false;
+    json j;
+    if (!support::parse_reply(body, 64 * 1024, kMaxDepth, j) || !j.is_object()) return false;
     Capabilities c;
     const auto level_supported = [&j](const char *key) {
         const auto it = j.find(key);
@@ -543,43 +450,31 @@ std::string join(const std::vector<std::string> &parts) {
     for (size_t i = 0; i < parts.size(); i++) out += (i ? ", " : "") + parts[i];
     return out;
 }
-}  // namespace
 
-bool plan(const home::Thing &thing, const home::Change &change, std::vector<Action> &out, std::string &err) {
-    out.clear();
-    err.clear();
-    const bool volume = ref_flag(thing.ref, "volume"), power = ref_flag(thing.ref, "power");
-    std::vector<std::string> missing;   // what this TV does not offer over the network
-    std::string bad;                    // a request that makes no sense for any TV
-    const auto key = [&out](const char *action, int repeat = 1) {
+// plan()'s parts. Each adds actions in the order they are to be sent, or names what this TV does not
+// offer over the network (`missing`), or a request that makes no sense for any TV (`bad`: the last
+// one found).
+struct Planner {
+    std::vector<Action> &out;
+    std::vector<std::string> missing;
+    std::string bad;
+
+    void key(const char *action, int repeat = 1) {
         Action a;
         a.kind = Action::Key;
         a.what = action;
         a.repeat = repeat;
         out.push_back(a);
-    };
-    const auto media = [&out](const char *what, const char *body) {
+    }
+    void media(const char *what, const char *body) {
         Action a;
         a.kind = Action::Media;
         a.what = what;
         a.body = body;
         out.push_back(a);
-    };
-
-    if (change.brightness) missing.push_back("brightness");
-    if (change.kelvin) missing.push_back("colour temperature");
-    if (change.hs) missing.push_back("colour");
-    if (change.target_c || change.mode) missing.push_back("heating");
-    if (change.position) missing.push_back("position");
-    if (change.fan) missing.push_back("fan speed");
-    if (change.volume) missing.push_back("a volume level (only volume up and down)");
-
-    if (change.on && *change.on) {
-        Action a;
-        a.kind = Action::Wake;
-        out.push_back(a);
     }
-    if (change.key) {
+    // A remote key (Change::key).
+    void press(const home::Change &change, bool volume, bool power) {
         std::string k = lower_ascii(trim(*change.key));
         std::replace(k.begin(), k.end(), ' ', '_');
         std::replace(k.begin(), k.end(), '-', '_');
@@ -605,7 +500,8 @@ bool plan(const home::Thing &thing, const home::Change &change, std::vector<Acti
         else if (k.size() == 1 && k[0] >= '0' && k[0] <= '9') missing.push_back("the number keys");
         else bad = "There is no TV key called \"" + clean_name(*change.key, 24) + "\".";
     }
-    if (change.transport) {
+    // A playback control (Change::transport).
+    void playback(const home::Change &change) {
         const std::string t = lower_ascii(trim(*change.transport));
         if (t == "play" || t == "pause" || t == "play_pause") media("play", "");   // one toggle on this API
         else if (t == "rewind") media("scan", kScanBack);
@@ -613,17 +509,15 @@ bool plan(const home::Thing &thing, const home::Change &change, std::vector<Acti
         else if (t == "stop" || t == "next" || t == "previous") missing.push_back(t);
         else bad = "There is no playback control called \"" + clean_name(*change.transport, 24) + "\".";
     }
-    if (change.volume_step && *change.volume_step != 0) {
+    // Volume up or down several times (Change::volume_step).
+    void volume_steps(const home::Change &change, bool volume) {
         const int n = *change.volume_step;
         if (!volume) missing.push_back("volume");
         else if (n > 10 || n < -10) bad = "At most 10 volume steps can be made at once.";
         else key(n > 0 ? "volume_up" : "volume_down", n > 0 ? n : -n);
     }
-    // A chosen mute state cannot be set: the TV's only mute control is a key that toggles, and
-    // the API cannot read which way it is (an "unmute" sent as the toggle would mute an unmuted
-    // TV). The mute key itself is Change::key "mute".
-    if (change.mute) missing.push_back(volume ? "muting or unmuting (it only has a mute key that toggles)" : "mute");
-    if (change.source) {
+    // An app to open (Change::source).
+    void source(const home::Thing &thing, const home::Change &change) {
         const std::string s = trim(*change.source);
         if (s.empty()) bad = "Say which app to open.";
         // "HDMI 1" and the like name an input, which this API is not known to select (no source
@@ -638,7 +532,39 @@ bool plan(const home::Thing &thing, const home::Change &change, std::vector<Acti
             out.push_back(a);
         }
     }
-    if (change.on && !*change.on) key("sleep");   // last, after anything else asked for
+};
+}  // namespace
+
+bool plan(const home::Thing &thing, const home::Change &change, std::vector<Action> &out, std::string &err) {
+    out.clear();
+    err.clear();
+    const bool volume = ref_flag(thing.ref, "volume"), power = ref_flag(thing.ref, "power");
+    Planner p{out, {}, {}};
+    std::vector<std::string> &missing = p.missing;   // what this TV does not offer over the network
+    std::string &bad = p.bad;                        // a request that makes no sense for any TV
+
+    if (change.brightness) missing.push_back("brightness");
+    if (change.kelvin) missing.push_back("colour temperature");
+    if (change.hs) missing.push_back("colour");
+    if (change.target_c || change.mode) missing.push_back("heating");
+    if (change.position) missing.push_back("position");
+    if (change.fan) missing.push_back("fan speed");
+    if (change.volume) missing.push_back("a volume level (only volume up and down)");
+
+    if (change.on && *change.on) {
+        Action a;
+        a.kind = Action::Wake;
+        out.push_back(a);
+    }
+    if (change.key) p.press(change, volume, power);
+    if (change.transport) p.playback(change);
+    if (change.volume_step && *change.volume_step != 0) p.volume_steps(change, volume);
+    // A chosen mute state cannot be set: the TV's only mute control is a key that toggles, and
+    // the API cannot read which way it is (an "unmute" sent as the toggle would mute an unmuted
+    // TV). The mute key itself is Change::key "mute".
+    if (change.mute) missing.push_back(volume ? "muting or unmuting (it only has a mute key that toggles)" : "mute");
+    if (change.source) p.source(thing, change);
+    if (change.on && !*change.on) p.key("sleep");   // last, after anything else asked for
 
     if (!missing.empty()) {
         err = std::string(kUnsupported) + " " + join(missing) + ".";
@@ -956,7 +882,8 @@ int send_magic(const Target &t, const std::string &mac) {
     const int port = detail::wake_port();
     int sent = 0;
     for (const detail::WakeSend &w : detail::wake_destinations(interfaces, ntohl(tv.s_addr))) {
-        const int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+        const support::Socket sock(socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0));
+        const int fd = sock.fd;
         if (fd < 0) continue;
         const int one = 1;
         setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &one, sizeof one);
@@ -964,10 +891,7 @@ int send_magic(const Target &t, const std::string &mac) {
             sockaddr_in local{};
             local.sin_family = AF_INET;
             local.sin_addr.s_addr = htonl(w.from);
-            if (bind(fd, reinterpret_cast<sockaddr *>(&local), sizeof local) != 0) {
-                close(fd);
-                continue;
-            }
+            if (bind(fd, reinterpret_cast<sockaddr *>(&local), sizeof local) != 0) continue;
         }
         sockaddr_in to{};
         to.sin_family = AF_INET;
@@ -976,7 +900,6 @@ int send_magic(const Target &t, const std::string &mac) {
         if (sendto(fd, packet.data(), packet.size(), 0, reinterpret_cast<sockaddr *>(&to), sizeof to) ==
             static_cast<ssize_t>(packet.size()))
             sent++;
-        close(fd);
     }
     return sent;
 }

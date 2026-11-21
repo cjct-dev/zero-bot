@@ -37,6 +37,7 @@
 
 #include "net/http.h"
 #include "smarthome/color.h"
+#include "smarthome/drivers/support.h"
 
 namespace hue {
 namespace detail {
@@ -88,39 +89,9 @@ constexpr size_t kMaxThings = 400;
 }  // namespace
 
 // ---------------------------------------------------------------- text from the bridge
-std::string sanitize_utf8(const std::string &s) {
-    // RFC 3629 well-formed sequences only (no overlong forms, no surrogates), so that the JSON
-    // parser, which is as strict, never rejects a whole reply for one bad byte in a name.
-    std::string out;
-    out.reserve(s.size());
-    size_t i = 0;
-    const size_t n = s.size();
-    auto cont = [&](size_t k, unsigned char lo = 0x80, unsigned char hi = 0xBF) {
-        if (k >= n) return false;
-        const unsigned char c = static_cast<unsigned char>(s[k]);
-        return c >= lo && c <= hi;
-    };
-    while (i < n) {
-        const unsigned char c = static_cast<unsigned char>(s[i]);
-        size_t len = 0;
-        if (c < 0x80) len = 1;
-        else if (c >= 0xC2 && c <= 0xDF) len = cont(i + 1) ? 2 : 0;
-        else if (c == 0xE0) len = cont(i + 1, 0xA0, 0xBF) && cont(i + 2) ? 3 : 0;
-        else if ((c >= 0xE1 && c <= 0xEC) || c == 0xEE || c == 0xEF) len = cont(i + 1) && cont(i + 2) ? 3 : 0;
-        else if (c == 0xED) len = cont(i + 1, 0x80, 0x9F) && cont(i + 2) ? 3 : 0;
-        else if (c == 0xF0) len = cont(i + 1, 0x90, 0xBF) && cont(i + 2) && cont(i + 3) ? 4 : 0;
-        else if (c >= 0xF1 && c <= 0xF3) len = cont(i + 1) && cont(i + 2) && cont(i + 3) ? 4 : 0;
-        else if (c == 0xF4) len = cont(i + 1, 0x80, 0x8F) && cont(i + 2) && cont(i + 3) ? 4 : 0;
-        if (len == 0) {
-            out += '?';
-            ++i;
-        } else {
-            out.append(s, i, len);
-            i += len;
-        }
-    }
-    return out;
-}
+// RFC 3629 well-formed sequences only (no overlong forms, no surrogates), so that the JSON parser,
+// which is as strict, never rejects a whole reply for one bad byte in a name.
+std::string sanitize_utf8(const std::string &s) { return support::sanitize_utf8(s, support::BadUtf8::QuestionMark); }
 
 std::string clean_name(const std::string &raw, size_t max) {
     const std::string s = sanitize_utf8(raw.size() > 4096 ? raw.substr(0, 4096) : raw);
@@ -156,33 +127,13 @@ std::string clean_name(const std::string &raw, size_t max) {
     }
     while (!t.empty() && t.back() == ' ') t.pop_back();
     if (t.size() > max) {
-        size_t cut = max;
-        while (cut > 0 && (static_cast<unsigned char>(t[cut]) & 0xC0) == 0x80) --cut;
-        t.resize(cut);
+        t = support::utf8_prefix(t, max);
         while (!t.empty() && t.back() == ' ') t.pop_back();
     }
     return t;
 }
 
-bool too_deep(const std::string &text, int max) {
-    int depth = 0;
-    bool in_string = false, escaped = false;
-    for (const char c : text) {
-        if (in_string) {
-            if (escaped) escaped = false;
-            else if (c == '\\') escaped = true;
-            else if (c == '"') in_string = false;
-            continue;
-        }
-        if (c == '"') in_string = true;
-        else if (c == '[' || c == '{') {
-            if (++depth > max) return true;
-        } else if (c == ']' || c == '}') {
-            --depth;
-        }
-    }
-    return false;
-}
+bool too_deep(const std::string &text, int max) { return support::json_too_deep(text, max); }
 
 static bool charset_ok(const std::string &s, size_t max, const char *extra) {
     if (s.empty() || s.size() > max) return false;
@@ -214,50 +165,22 @@ std::string normalize_bridge_id(const std::string &id) {
 }
 
 // ---------------------------------------------------------------- the bridge's certificate
-namespace {
-struct X509Free {
-    void operator()(X509 *x) const { X509_free(x); }
-};
-std::unique_ptr<X509, X509Free> read_pem(const std::string &pem) {
-    if (pem.empty() || pem.size() > 64 * 1024) return nullptr;
-    BIO *bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
-    if (!bio) return nullptr;
-    X509 *x = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
-    BIO_free(bio);
-    return std::unique_ptr<X509, X509Free>(x);
-}
-std::string sha256(const unsigned char *data, size_t len) {
-    unsigned char md[EVP_MAX_MD_SIZE];
-    unsigned int md_len = 0;
-    if (EVP_Digest(data, len, md, &md_len, EVP_sha256(), nullptr) != 1) return "";
-    return std::string(reinterpret_cast<const char *>(md), md_len);
-}
-std::string base64(const std::string &raw) {
-    std::string out(4 * ((raw.size() + 2) / 3) + 1, '\0');
-    const int n = EVP_EncodeBlock(reinterpret_cast<unsigned char *>(&out[0]), reinterpret_cast<const unsigned char *>(raw.data()),
-                                  static_cast<int>(raw.size()));
-    out.resize(n > 0 ? static_cast<size_t>(n) : 0);
-    return out;
-}
-}  // namespace
-
 std::string pin_from_pem(const std::string &pem) {
-    const auto x = read_pem(pem);
+    const support::Certificate x = support::certificate_from_pem(pem);
     if (!x) return "";
     const X509_PUBKEY *pk = X509_get_X509_PUBKEY(x.get());   // const in OpenSSL 4, not in 3: both fit
     if (!pk) return "";
     unsigned char *der = nullptr;
-    const int len = i2d_X509_PUBKEY(pk, &der);
+    const int len = i2d_X509_PUBKEY(pk, &der);   // the certificate's own encoding, as libcurl pins it
     if (len <= 0 || !der) return "";
-    const std::string digest = sha256(der, static_cast<size_t>(len));
+    const std::string pin = support::sha256_pin(der, static_cast<size_t>(len));
     OPENSSL_free(der);
-    if (digest.size() != 32) return "";
-    return "sha256//" + base64(digest);
+    return pin;
 }
 
 std::vector<std::string> names_from_pem(const std::string &pem) {
     std::vector<std::string> out;
-    const auto x = read_pem(pem);
+    const support::Certificate x = support::certificate_from_pem(pem);
     if (!x) return out;
     const X509_NAME *subject = X509_get_subject_name(x.get());
     for (int pos = -1; subject && out.size() < 8;) {
@@ -465,49 +388,31 @@ struct GroupInfo {
 };
 }  // namespace
 
-void build_things(const Snapshot &s, std::vector<home::Thing> &out, BridgeInfo &info) {
-    out.clear();
-    info = BridgeInfo();
-    std::map<std::string, const json *> devices;
-    std::set<std::string> denied;
-    for (const auto &d : s.devices) {
-        if (devices.size() >= kMaxResources) break;
-        const std::string id = str(d, "id");
-        if (!safe_id(id)) continue;
-        devices[id] = &d;
-        for (const auto &svc : array(d, "services")) {
-            const std::string rtype = str(svc, "rtype");
-            if (denied_service(rtype)) denied.insert(id);
-            if (rtype == "bridge" && info.name.empty()) {
-                info.name = clean_name(str(field(d, "metadata"), "name"));
-                info.model = clean_name(str(field(d, "product_data"), "model_id"), 16);
-            }
-        }
-    }
-    auto device_of = [&](const std::string &id) -> const json * {
-        const auto it = devices.find(id);
-        return it == devices.end() ? nullptr : it->second;
-    };
-
+namespace {
+// What build_things() reads before it makes any thing: the devices (and those never exposed), every
+// light service, and the rooms, zones and whole home with the lights each holds. Its parts keep the
+// names they had as one function.
+struct Inventory {
     // Every light service, wanted or not: a group command reaches all of them, so all count
     // towards a group's membership even when one of them is never offered as a thing.
     struct L {
         const json *res;
         std::string id, device;
     };
+    std::map<std::string, const json *> devices;
+    std::set<std::string> denied;
     std::vector<L> lights;
     std::set<std::string> light_ids;
-    for (const auto &l : s.lights) {
-        if (lights.size() >= kMaxResources) break;
-        const std::string id = str(l, "id");
-        if (!safe_id(id) || !light_ids.insert(id).second) continue;
-        lights.push_back({&l, id, str(field(l, "owner"), "rid")});
-    }
-
     std::vector<GroupInfo> groups;
     std::map<std::string, size_t> room_of_device;            // device id -> index in groups
     std::map<std::string, std::vector<size_t>> zones_of_light;
-    auto add_group = [&](const json &g, const char *rtype) -> long {
+    long home = -1;   // the whole home, an index in groups (-1: none)
+
+    const json *device_of(const std::string &id) const {
+        const auto it = devices.find(id);
+        return it == devices.end() ? nullptr : it->second;
+    }
+    long add_group(const json &g, const char *rtype) {
         const std::string rid = str(g, "id");
         if (!safe_id(rid) || groups.size() >= kMaxResources) return -1;
         GroupInfo gi;
@@ -519,175 +424,222 @@ void build_things(const Snapshot &s, std::vector<home::Thing> &out, BridgeInfo &
         gi.fp = group_fingerprint(g);
         groups.push_back(gi);
         return static_cast<long>(groups.size() - 1);
-    };
-    for (const auto &r : s.rooms) {
-        const long gi = add_group(r, "room");
-        if (gi < 0) continue;
-        for (const auto &c : array(r, "children"))
-            if (str(c, "rtype") == "device" && safe_id(str(c, "rid"))) room_of_device.emplace(str(c, "rid"), static_cast<size_t>(gi));
     }
-    for (const auto &z : s.zones) {
-        const long gi = add_group(z, "zone");
-        if (gi < 0) continue;
-        for (const auto &c : array(z, "children"))
-            if (str(c, "rtype") == "light" && light_ids.count(str(c, "rid"))) {
-                auto &v = zones_of_light[str(c, "rid")];
-                if (std::find(v.begin(), v.end(), static_cast<size_t>(gi)) == v.end()) v.push_back(static_cast<size_t>(gi));
-            }
-    }
-    // The whole home: every light on the bridge.
-    long home = -1;
-    if (!s.homes.empty()) {
-        home = add_group(s.homes[0], "bridge_home");
-        if (home >= 0) {
-            std::vector<std::string> all;
-            for (const auto &l : lights) all.push_back(l.id);
-            groups[static_cast<size_t>(home)].fp = fingerprint(all);
-        }
-    }
-    for (const auto &l : lights) {
-        const auto r = room_of_device.find(l.device);
-        if (r != room_of_device.end()) groups[r->second].lights.push_back(l.id);
-        for (const size_t z : zones_of_light[l.id]) groups[z].lights.push_back(l.id);
-        if (home >= 0) groups[static_cast<size_t>(home)].lights.push_back(l.id);
-    }
-    auto group_ref = [&](const GroupInfo &g) {
+    json group_ref(const GroupInfo &g) const {
         return json{{"rtype", g.rtype}, {"rid", g.rid}, {"gl", g.gl}, {"n", g.lights.size()}, {"fp", g.fp}};
-    };
+    }
     // A smart plug is a light service whose archetype (or its device's) is "plug".
-    auto is_plug = [&](const L &l) {
+    bool is_plug(const L &l) const {
         const json *dev = device_of(l.device);
         return str(field(*l.res, "metadata"), "archetype") == "plug" || (dev && str(field(*dev, "metadata"), "archetype") == "plug");
-    };
+    }
+
+    void read_devices(const Snapshot &s, BridgeInfo &info) {
+        for (const auto &d : s.devices) {
+            if (devices.size() >= kMaxResources) break;
+            const std::string id = str(d, "id");
+            if (!safe_id(id)) continue;
+            devices[id] = &d;
+            for (const auto &svc : array(d, "services")) {
+                const std::string rtype = str(svc, "rtype");
+                if (denied_service(rtype)) denied.insert(id);
+                if (rtype == "bridge" && info.name.empty()) {
+                    info.name = clean_name(str(field(d, "metadata"), "name"));
+                    info.model = clean_name(str(field(d, "product_data"), "model_id"), 16);
+                }
+            }
+        }
+    }
+
+    void read_lights(const Snapshot &s) {
+        for (const auto &l : s.lights) {
+            if (lights.size() >= kMaxResources) break;
+            const std::string id = str(l, "id");
+            if (!safe_id(id) || !light_ids.insert(id).second) continue;
+            lights.push_back({&l, id, str(field(l, "owner"), "rid")});
+        }
+    }
+
+    void read_groups(const Snapshot &s) {
+        for (const auto &r : s.rooms) {
+            const long gi = add_group(r, "room");
+            if (gi < 0) continue;
+            for (const auto &c : array(r, "children"))
+                if (str(c, "rtype") == "device" && safe_id(str(c, "rid"))) room_of_device.emplace(str(c, "rid"), static_cast<size_t>(gi));
+        }
+        for (const auto &z : s.zones) {
+            const long gi = add_group(z, "zone");
+            if (gi < 0) continue;
+            for (const auto &c : array(z, "children"))
+                if (str(c, "rtype") == "light" && light_ids.count(str(c, "rid"))) {
+                    auto &v = zones_of_light[str(c, "rid")];
+                    if (std::find(v.begin(), v.end(), static_cast<size_t>(gi)) == v.end()) v.push_back(static_cast<size_t>(gi));
+                }
+        }
+        // The whole home: every light on the bridge.
+        if (!s.homes.empty()) {
+            home = add_group(s.homes[0], "bridge_home");
+            if (home >= 0) {
+                std::vector<std::string> all;
+                for (const auto &l : lights) all.push_back(l.id);
+                groups[static_cast<size_t>(home)].fp = fingerprint(all);
+            }
+        }
+        for (const auto &l : lights) {
+            const auto r = room_of_device.find(l.device);
+            if (r != room_of_device.end()) groups[r->second].lights.push_back(l.id);
+            for (const size_t z : zones_of_light[l.id]) groups[z].lights.push_back(l.id);
+            if (home >= 0) groups[static_cast<size_t>(home)].lights.push_back(l.id);
+        }
+    }
 
     // Lights and plugs.
-    for (const auto &l : lights) {
-        if (out.size() >= kMaxThings) break;
-        if (denied.count(l.device)) continue;
-        const json &res = *l.res;
-        bool on = false;
-        if (!boolean(field(res, "on"), "on", on)) continue;   // not a light this driver understands
-        const json *dev = device_of(l.device);
-        home::Thing t;
-        t.id = l.id;
-        t.name = clean_name(str(field(res, "metadata"), "name"));
-        if (t.name.empty() && dev) t.name = clean_name(str(field(*dev, "metadata"), "name"));
-        if (t.name.empty()) t.name = "Hue light";
-        t.type = is_plug(l) ? "plug" : "light";
-        t.caps = home::kPower;
-        json ref = {{"kind", "light"}, {"rid", l.id}, {"device", safe_id(l.device) ? l.device : std::string()}};
-        double b = 0;
-        if (num(field(res, "dimming"), "brightness", b)) t.caps |= home::kBrightness;
-        const json &schema = field(field(res, "color_temperature"), "mirek_schema");
-        if (schema.is_object()) {
-            t.caps |= home::kColorTemp;
-            double lo = 153, hi = 500;
-            num(schema, "mirek_minimum", lo);
-            num(schema, "mirek_maximum", hi);
-            // Some devices report 0 and 65535 (aiohue corrects the same); keep within what any light takes.
-            int ilo = lo < 50 ? 153 : clampi(std::lround(lo), 50, 1000);
-            int ihi = hi > 1000 ? 500 : clampi(std::lround(hi), 50, 1000);
-            if (ihi < ilo) { ilo = 153; ihi = 500; }
-            ref["mirek"] = {ilo, ihi};
+    void add_lights(std::vector<home::Thing> &out) {
+        for (const auto &l : lights) {
+            if (out.size() >= kMaxThings) break;
+            if (denied.count(l.device)) continue;
+            const json &res = *l.res;
+            bool on = false;
+            if (!boolean(field(res, "on"), "on", on)) continue;   // not a light this driver understands
+            const json *dev = device_of(l.device);
+            home::Thing t;
+            t.id = l.id;
+            t.name = clean_name(str(field(res, "metadata"), "name"));
+            if (t.name.empty() && dev) t.name = clean_name(str(field(*dev, "metadata"), "name"));
+            if (t.name.empty()) t.name = "Hue light";
+            t.type = is_plug(l) ? "plug" : "light";
+            t.caps = home::kPower;
+            json ref = {{"kind", "light"}, {"rid", l.id}, {"device", safe_id(l.device) ? l.device : std::string()}};
+            double b = 0;
+            if (num(field(res, "dimming"), "brightness", b)) t.caps |= home::kBrightness;
+            const json &schema = field(field(res, "color_temperature"), "mirek_schema");
+            if (schema.is_object()) {
+                t.caps |= home::kColorTemp;
+                double lo = 153, hi = 500;
+                num(schema, "mirek_minimum", lo);
+                num(schema, "mirek_maximum", hi);
+                // Some devices report 0 and 65535 (aiohue corrects the same); keep within what any light takes.
+                int ilo = lo < 50 ? 153 : clampi(std::lround(lo), 50, 1000);
+                int ihi = hi > 1000 ? 500 : clampi(std::lround(hi), 50, 1000);
+                if (ihi < ilo) { ilo = 153; ihi = 500; }
+                ref["mirek"] = {ilo, ihi};
+            }
+            const json &xy = field(field(res, "color"), "xy");
+            double x = 0, y = 0;
+            if (num(xy, "x", x) && num(xy, "y", y)) t.caps |= home::kColor;
+            // Room: the device's room, else the first of its zones by name.
+            const auto r = room_of_device.find(l.device);
+            json gl = json::array();
+            if (r != room_of_device.end()) {
+                t.room = groups[r->second].name;
+                if (!groups[r->second].gl.empty()) gl.push_back(group_ref(groups[r->second]));
+            }
+            std::vector<size_t> zones = zones_of_light[l.id];
+            std::stable_sort(zones.begin(), zones.end(), [&](size_t a, size_t b2) { return groups[a].name < groups[b2].name; });
+            for (const size_t z : zones) {
+                if (t.room.empty()) t.room = groups[z].name;
+                if (!groups[z].gl.empty()) gl.push_back(group_ref(groups[z]));
+            }
+            if (home >= 0 && !groups[static_cast<size_t>(home)].gl.empty()) gl.push_back(group_ref(groups[static_cast<size_t>(home)]));
+            ref["groups"] = gl;
+            t.ref = ref;
+            t.state = light_state(res);
+            out.push_back(t);
         }
-        const json &xy = field(field(res, "color"), "xy");
-        double x = 0, y = 0;
-        if (num(xy, "x", x) && num(xy, "y", y)) t.caps |= home::kColor;
-        // Room: the device's room, else the first of its zones by name.
-        const auto r = room_of_device.find(l.device);
-        json gl = json::array();
-        if (r != room_of_device.end()) {
-            t.room = groups[r->second].name;
-            if (!groups[r->second].gl.empty()) gl.push_back(group_ref(groups[r->second]));
-        }
-        std::vector<size_t> zones = zones_of_light[l.id];
-        std::stable_sort(zones.begin(), zones.end(), [&](size_t a, size_t b2) { return groups[a].name < groups[b2].name; });
-        for (const size_t z : zones) {
-            if (t.room.empty()) t.room = groups[z].name;
-            if (!groups[z].gl.empty()) gl.push_back(group_ref(groups[z]));
-        }
-        if (home >= 0 && !groups[static_cast<size_t>(home)].gl.empty()) gl.push_back(group_ref(groups[static_cast<size_t>(home)]));
-        ref["groups"] = gl;
-        t.ref = ref;
-        t.state = light_state(res);
-        out.push_back(t);
     }
 
-    // Scenes, unless one of their lights belongs to a device that is never exposed, or one of them
-    // switches on a smart plug: the Hue app puts a room's plugs in the scenes made for that room,
-    // and a plug may feed anything (a heater), which the app asks about before switching it on
-    // (Thing::ask_first) while a scene would switch it on without that question.
-    std::map<std::string, std::string> group_name;
-    for (const auto &g : groups)
-        if (g.rtype != "bridge_home") group_name[g.rid] = g.name;
-    std::map<std::string, std::string> device_of_light;
-    std::set<std::string> plugs;
-    for (const auto &l : lights) {
-        device_of_light[l.id] = l.device;
-        if (is_plug(l)) plugs.insert(l.id);
-    }
-    size_t scenes = 0;
-    for (const auto &sc : s.scenes) {
-        if (out.size() >= kMaxThings || ++scenes > kMaxResources) break;
-        const std::string id = str(sc, "id");
-        const std::string name = clean_name(str(field(sc, "metadata"), "name"));
-        // A scene whose members cannot be read is not offered: one of them might be a light
-        // that is never exposed.
-        if (!safe_id(id) || name.empty() || !field(sc, "actions").is_array()) continue;
-        bool ok = true;
-        for (const auto &a : array(sc, "actions")) {
-            const json &target = field(a, "target");
-            const std::string rid = str(target, "rid");
-            const auto it = device_of_light.find(rid);
-            if (str(target, "rtype") != "light" || it == device_of_light.end() || denied.count(it->second)) { ok = false; break; }
-            bool on = true;
-            const bool says_off = boolean(field(field(a, "action"), "on"), "on", on) && !on;
-            if (plugs.count(rid) && !says_off) { ok = false; break; }
+    void add_scenes(const Snapshot &s, std::vector<home::Thing> &out) const {
+        // Scenes, unless one of their lights belongs to a device that is never exposed, or one of them
+        // switches on a smart plug: the Hue app puts a room's plugs in the scenes made for that room,
+        // and a plug may feed anything (a heater), which the app asks about before switching it on
+        // (Thing::ask_first) while a scene would switch it on without that question.
+        std::map<std::string, std::string> group_name;
+        for (const auto &g : groups)
+            if (g.rtype != "bridge_home") group_name[g.rid] = g.name;
+        std::map<std::string, std::string> device_of_light;
+        std::set<std::string> plugs;
+        for (const auto &l : lights) {
+            device_of_light[l.id] = l.device;
+            if (is_plug(l)) plugs.insert(l.id);
         }
-        if (!ok) continue;
-        home::Thing t;
-        t.id = id;
-        t.name = name;
-        t.type = "scene";
-        t.caps = home::kScene;
-        const auto g = group_name.find(str(field(sc, "group"), "rid"));
-        if (g != group_name.end()) t.room = g->second;
-        t.ref = {{"kind", "scene"}, {"rid", id}};
-        t.state = json::object();
-        out.push_back(t);
+        size_t scenes = 0;
+        for (const auto &sc : s.scenes) {
+            if (out.size() >= kMaxThings || ++scenes > kMaxResources) break;
+            const std::string id = str(sc, "id");
+            const std::string name = clean_name(str(field(sc, "metadata"), "name"));
+            // A scene whose members cannot be read is not offered: one of them might be a light
+            // that is never exposed.
+            if (!safe_id(id) || name.empty() || !field(sc, "actions").is_array()) continue;
+            bool ok = true;
+            for (const auto &a : array(sc, "actions")) {
+                const json &target = field(a, "target");
+                const std::string rid = str(target, "rid");
+                const auto it = device_of_light.find(rid);
+                if (str(target, "rtype") != "light" || it == device_of_light.end() || denied.count(it->second)) { ok = false; break; }
+                bool on = true;
+                const bool says_off = boolean(field(field(a, "action"), "on"), "on", on) && !on;
+                if (plugs.count(rid) && !says_off) { ok = false; break; }
+            }
+            if (!ok) continue;
+            home::Thing t;
+            t.id = id;
+            t.name = name;
+            t.type = "scene";
+            t.caps = home::kScene;
+            const auto g = group_name.find(str(field(sc, "group"), "rid"));
+            if (g != group_name.end()) t.room = g->second;
+            t.ref = {{"kind", "scene"}, {"rid", id}};
+            t.state = json::object();
+            out.push_back(t);
+        }
     }
 
-    // Sensors: one thing per device that has a temperature or a motion service.
-    std::map<std::string, const json *> temps, motions;
-    for (const auto &r : s.temperatures)
-        if (temps.size() < kMaxResources && safe_id(str(r, "id"))) temps.emplace(str(r, "id"), &r);
-    for (const auto &r : s.motions)
-        if (motions.size() < kMaxResources && safe_id(str(r, "id"))) motions.emplace(str(r, "id"), &r);
-    for (const auto &d : devices) {
-        if (out.size() >= kMaxThings) break;
-        if (denied.count(d.first)) continue;
-        const json *tres = nullptr, *mres = nullptr;
-        std::string trid, mrid;
-        for (const auto &svc : array(*d.second, "services")) {
-            const std::string rtype = str(svc, "rtype"), rid = str(svc, "rid");
-            if (rtype == "temperature" && !tres && temps.count(rid)) { tres = temps[rid]; trid = rid; }
-            if (rtype == "motion" && !mres && motions.count(rid)) { mres = motions[rid]; mrid = rid; }
+    void add_sensors(const Snapshot &s, std::vector<home::Thing> &out) const {
+        // Sensors: one thing per device that has a temperature or a motion service.
+        std::map<std::string, const json *> temps, motions;
+        for (const auto &r : s.temperatures)
+            if (temps.size() < kMaxResources && safe_id(str(r, "id"))) temps.emplace(str(r, "id"), &r);
+        for (const auto &r : s.motions)
+            if (motions.size() < kMaxResources && safe_id(str(r, "id"))) motions.emplace(str(r, "id"), &r);
+        for (const auto &d : devices) {
+            if (out.size() >= kMaxThings) break;
+            if (denied.count(d.first)) continue;
+            const json *tres = nullptr, *mres = nullptr;
+            std::string trid, mrid;
+            for (const auto &svc : array(*d.second, "services")) {
+                const std::string rtype = str(svc, "rtype"), rid = str(svc, "rid");
+                if (rtype == "temperature" && !tres && temps.count(rid)) { tres = temps[rid]; trid = rid; }
+                if (rtype == "motion" && !mres && motions.count(rid)) { mres = motions[rid]; mrid = rid; }
+            }
+            if (!tres && !mres) continue;
+            home::Thing t;
+            t.id = d.first;
+            t.name = clean_name(str(field(*d.second, "metadata"), "name"));
+            if (t.name.empty()) t.name = "Hue sensor";
+            t.type = "sensor";
+            t.caps = home::kSensor;
+            const auto r = room_of_device.find(d.first);
+            if (r != room_of_device.end()) t.room = groups[r->second].name;
+            t.ref = {{"kind", "sensor"}, {"device", d.first}};
+            if (tres) t.ref["temperature"] = trid;
+            if (mres) t.ref["motion"] = mrid;
+            t.state = sensor_state(tres, mres);
+            out.push_back(t);
         }
-        if (!tres && !mres) continue;
-        home::Thing t;
-        t.id = d.first;
-        t.name = clean_name(str(field(*d.second, "metadata"), "name"));
-        if (t.name.empty()) t.name = "Hue sensor";
-        t.type = "sensor";
-        t.caps = home::kSensor;
-        const auto r = room_of_device.find(d.first);
-        if (r != room_of_device.end()) t.room = groups[r->second].name;
-        t.ref = {{"kind", "sensor"}, {"device", d.first}};
-        if (tres) t.ref["temperature"] = trid;
-        if (mres) t.ref["motion"] = mrid;
-        t.state = sensor_state(tres, mres);
-        out.push_back(t);
     }
+};
+}  // namespace
+
+void build_things(const Snapshot &s, std::vector<home::Thing> &out, BridgeInfo &info) {
+    out.clear();
+    info = BridgeInfo();
+    Inventory inv;
+    inv.read_devices(s, info);
+    inv.read_lights(s);
+    inv.read_groups(s);
+    inv.add_lights(out);
+    inv.add_scenes(s, out);
+    inv.add_sensors(s, out);
 }
 
 // ---------------------------------------------------------------- changes
@@ -1083,16 +1035,7 @@ std::string info_of(const home::Device &d, const char *key) {
 
 // SHA-256 of an application key, in hex: what is remembered of a key the bridge rejected.
 std::string key_hash(const std::string &key) {
-    unsigned char md[EVP_MAX_MD_SIZE];
-    unsigned int len = 0;
-    if (key.empty() || EVP_Digest(key.data(), key.size(), md, &len, EVP_sha256(), nullptr) != 1) return "";
-    static const char *const kHex = "0123456789abcdef";
-    std::string out;
-    for (unsigned int i = 0; i < len; ++i) {
-        out += kHex[md[i] >> 4];
-        out += kHex[md[i] & 15];
-    }
-    return out;
+    return key.empty() ? "" : support::hex(support::digest(EVP_sha256(), key));   // "" too when libcrypto fails
 }
 
 // Parses a CLIP v2 reply: an object whose "data" is an array. False when unusable.

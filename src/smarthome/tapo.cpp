@@ -27,6 +27,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "core/util.h"
+#include "smarthome/drivers/support.h"
+
 namespace tapo {
 
 // ---------------------------------------------------------------------------------------------
@@ -51,13 +54,6 @@ bool same(const Bytes &a, const Bytes &b) {   // constant-time for equal lengths
     return a.size() == b.size() && CRYPTO_memcmp(a.data(), b.data(), a.size()) == 0;
 }
 
-Bytes digest(const EVP_MD *md, const Bytes &b) {
-    unsigned char out[EVP_MAX_MD_SIZE];
-    unsigned int n = 0;
-    if (!EVP_Digest(b.data(), b.size(), out, &n, md, nullptr)) return Bytes();
-    return Bytes(reinterpret_cast<char *>(out), n);
-}
-
 template <class T, void (*F)(T *)> struct Del {
     void operator()(T *p) const { F(p); }
 };
@@ -68,43 +64,15 @@ using Point = std::unique_ptr<EC_POINT, Del<EC_POINT, EC_POINT_clear_free>>;
 using Cipher = std::unique_ptr<EVP_CIPHER_CTX, Del<EVP_CIPHER_CTX, EVP_CIPHER_CTX_free>>;
 }  // namespace
 
-std::string hex(const Bytes &b) {
-    static const char d[] = "0123456789abcdef";
-    std::string s;
-    for (unsigned char c : b) {
-        s += d[c >> 4];
-        s += d[c & 15];
-    }
-    return s;
-}
+std::string hex(const Bytes &b) { return support::hex(b); }
 
-bool unhex(const std::string &h, Bytes &out) {
-    out.clear();
-    if (h.size() % 2) return false;
-    auto nib = [](char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; };
-    for (size_t i = 0; i < h.size(); i += 2) {
-        const int a = nib(h[i]), b = nib(h[i + 1]);
-        if (a < 0 || b < 0) return false;
-        out += char(a * 16 + b);
-    }
-    return true;
-}
+// On failure `out` is left as it was (it used to be cleared and part filled): every caller gives up
+// on a false and never reads it.
+bool unhex(const std::string &h, Bytes &out) { return support::unhex(h, out); }
 
 static const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-std::string b64(const Bytes &b) {
-    std::string s;
-    for (size_t i = 0; i < b.size(); i += 3) {
-        const size_t n = std::min<size_t>(3, b.size() - i);
-        uint32_t v = 0;
-        for (size_t k = 0; k < 3; k++) v = v << 8 | (k < n ? static_cast<unsigned char>(b[i + k]) : 0);
-        s += kB64[v >> 18 & 63];
-        s += kB64[v >> 12 & 63];
-        s += n > 1 ? kB64[v >> 6 & 63] : '=';
-        s += n > 2 ? kB64[v & 63] : '=';
-    }
-    return s;
-}
+std::string b64(const Bytes &b) { return util::base64(b); }
 
 bool unb64(const std::string &s, Bytes &out) {
     out.clear();
@@ -122,18 +90,11 @@ bool unb64(const std::string &s, Bytes &out) {
     return true;
 }
 
-Bytes md5(const Bytes &b) { return digest(EVP_md5(), b); }
-Bytes sha1(const Bytes &b) { return digest(EVP_sha1(), b); }
-Bytes sha256(const Bytes &b) { return digest(EVP_sha256(), b); }
+Bytes md5(const Bytes &b) { return support::digest(EVP_md5(), b); }
+Bytes sha1(const Bytes &b) { return support::digest(EVP_sha1(), b); }
+Bytes sha256(const Bytes &b) { return support::digest(EVP_sha256(), b); }
 
-Bytes hmac_sha256(const Bytes &key, const Bytes &data) {
-    unsigned char out[32];
-    size_t n = 0;
-    if (!EVP_Q_mac(nullptr, "HMAC", nullptr, "SHA256", nullptr, key.data(), key.size(), u8(data), data.size(),
-                   out, sizeof out, &n))
-        return Bytes();
-    return Bytes(reinterpret_cast<char *>(out), n);
-}
+Bytes hmac_sha256(const Bytes &key, const Bytes &data) { return support::hmac("SHA256", key, data); }
 
 // RFC 5869. An empty salt stands for a block of zeros.
 Bytes hkdf_sha256(const Bytes &ikm, const Bytes &salt, const Bytes &info, size_t len) {
@@ -705,23 +666,15 @@ bool discover_tpap(const std::string &host, const std::string &base, State &st, 
     return true;
 }
 
-bool login_tpap(const std::string &host, const Device &dev, const std::string &pw_hex, State &st,
-                const std::string &fp, std::string &err) {
-    json info = dev.tpap.is_null() ? st.tpap : dev.tpap;
-    if (info.is_null()) {
-        if (!discover_tpap(host, "http://" + host + ":" + std::to_string(dev.port), st, info, err)) return false;
-        st.tpap = info;
-    }
-    int port = dev.port;
-    if (!check_variant(info, port, err)) return false;
-    const std::string base = "http://" + host + ":" + std::to_string(port);
+// What pake_register gives back: the plug's random, the salt and iterations for the password, its share.
+struct Registered {
+    Bytes dev_random, salt, dev_share;
+    long long iterations = 0;
+};
 
-    // Step 1, pake_register: the plug names salt, iterations and its share.
-    Bytes user_random(32, '\0');
-    if (RAND_bytes(reinterpret_cast<unsigned char *>(&user_random[0]), 32) != 1) {
-        err = "no random numbers available";
-        return false;
-    }
+// Step 1, pake_register: the plug names salt, iterations and its share.
+bool pake_register(const std::string &host, const std::string &base, State &st, const Bytes &user_random, Registered &out,
+                   std::string &err) {
     json resp;
     const json reg = {{"sub_method", "pake_register"},
                       {"username", detail::hex(detail::md5("admin"))},   // always "admin", never the e-mail
@@ -730,7 +683,8 @@ bool login_tpap(const std::string &host, const Device &dev, const std::string &p
                       {"encryption", {"aes_128_ccm"}},
                       {"passcode_type", "userpw"}};
     if (!login_step(host, base, reg, resp, err)) return false;
-    long long code = 0, suite = 0, iterations = 0;
+    long long code = 0, suite = 0;
+    long long &iterations = out.iterations;
     get_int(resp, "error_code", code);
     if (code == kLocked) return locked(st, resp, err);
     if (code != 0) {
@@ -738,7 +692,7 @@ bool login_tpap(const std::string &host, const Device &dev, const std::string &p
         return false;
     }
     const json &r = get_obj(resp, "result");
-    Bytes dev_random, salt, dev_share;
+    Bytes &dev_random = out.dev_random, &salt = out.salt, &dev_share = out.dev_share;
     if (!get_int(r, "cipher_suites", suite) || suite != 1 || get_str(r, "encryption") != "aes_128_ccm") {
         err = "the plug picked a cipher suite or encryption that is not supported";
         return false;
@@ -758,26 +712,35 @@ bool login_tpap(const std::string &host, const Device &dev, const std::string &p
         err = "the plug asks for a form of the password that is not supported";
         return false;
     }
+    return true;
+}
 
-    // Step 2: prove knowledge of the password without sending it.
+// Step 2: prove knowledge of the password without sending it.
+bool prove_password(const std::string &pw_hex, const Bytes &user_random, const Registered &reg, detail::SpakeProof &proof,
+                    std::string &err) {
     Bytes w0, w1;
-    detail::SpakeProof proof;
-    const bool proved = detail::spake2p_w0_w1(pw_hex, salt, static_cast<int>(iterations), w0, w1) &&
-                        detail::spake2p_prove(w0, w1, Bytes(), detail::tpap_context(user_random, dev_random), Bytes(),
-                                              Bytes(), dev_share, proof, err);
+    const bool proved = detail::spake2p_w0_w1(pw_hex, reg.salt, static_cast<int>(reg.iterations), w0, w1) &&
+                        detail::spake2p_prove(w0, w1, Bytes(), detail::tpap_context(user_random, reg.dev_random), Bytes(),
+                                              Bytes(), reg.dev_share, proof, err);
     if (!w0.empty()) OPENSSL_cleanse(&w0[0], w0.size());
     if (!w1.empty()) OPENSSL_cleanse(&w1[0], w1.size());
     if (!proved) {
         if (err.empty()) err = "the key exchange could not be computed";
         return false;
     }
+    return true;
+}
 
-    // Step 3, pake_share. From here on the plug counts a failure towards its lock, so whatever
-    // it rejects is remembered and never sent again.
+// Step 3, pake_share. From here on the plug counts a failure towards its lock, so whatever
+// it rejects is remembered and never sent again. On success `resp` holds the plug's answer, whose
+// proof of the password has been checked.
+bool pake_share(const std::string &host, const std::string &base, State &st, const std::string &fp,
+                const detail::SpakeProof &proof, json &resp, std::string &err) {
     const json share = {{"sub_method", "pake_share"},
                         {"user_share", detail::b64(proof.share)},
                         {"user_confirm", detail::b64(proof.confirm)}};
     if (!login_step(host, base, share, resp, err)) return false;
+    long long code = 0;
     get_int(resp, "error_code", code);
     if (code == kLocked) return locked(st, resp, err);
     if (code != 0) {
@@ -795,6 +758,12 @@ bool login_tpap(const std::string &host, const Device &dev, const std::string &p
         err = "the plug did not prove that it knows the password; it is not trusted";
         return false;
     }
+    return true;
+}
+
+// The session the plug opened: its token and first sequence number, checked before they are used.
+bool open_session(const json &sr, const std::string &base, const std::string &fp, const detail::SpakeProof &proof,
+                  State &st, std::string &err) {
     long long start_seq = 0;
     const std::string stok = get_str(sr, "stok");
     bool clean = !stok.empty() && stok.size() <= 256;
@@ -812,6 +781,31 @@ bool login_tpap(const std::string &host, const Device &dev, const std::string &p
     s->seq = static_cast<int32_t>(start_seq);
     st.session = std::move(s);
     return true;
+}
+
+bool login_tpap(const std::string &host, const Device &dev, const std::string &pw_hex, State &st,
+                const std::string &fp, std::string &err) {
+    json info = dev.tpap.is_null() ? st.tpap : dev.tpap;
+    if (info.is_null()) {
+        if (!discover_tpap(host, "http://" + host + ":" + std::to_string(dev.port), st, info, err)) return false;
+        st.tpap = info;
+    }
+    int port = dev.port;
+    if (!check_variant(info, port, err)) return false;
+    const std::string base = "http://" + host + ":" + std::to_string(port);
+
+    Bytes user_random(32, '\0');
+    if (RAND_bytes(reinterpret_cast<unsigned char *>(&user_random[0]), 32) != 1) {
+        err = "no random numbers available";
+        return false;
+    }
+    Registered reg;
+    if (!pake_register(host, base, st, user_random, reg, err)) return false;
+    detail::SpakeProof proof;
+    if (!prove_password(pw_hex, user_random, reg, proof, err)) return false;
+    json resp;
+    if (!pake_share(host, base, st, fp, proof, resp, err)) return false;
+    return open_session(get_obj(resp, "result"), base, fp, proof, st, err);
 }
 
 // --- One request on an open session ------------------------------------------------------------
@@ -882,18 +876,6 @@ std::string lower(std::string s) {
     return s;
 }
 
-// A MAC as 12 lower-case hex digits, whatever the notation ("AA-BB-..", "aa:bb:..", none); "" for
-// anything else.
-std::string mac_digits(const std::string &raw) {
-    std::string hex;
-    for (const unsigned char c : raw) {
-        if (c == ':' || c == '-') continue;
-        if (!isxdigit(c) || hex.size() >= 12) return "";
-        hex += static_cast<char>(tolower(c));
-    }
-    return hex.size() == 12 ? hex : "";
-}
-
 // Whether the plug in this session is the one saved (Device::mac, as `want`): another plug of the
 // same account given this one's address would accept the same login, and would then be switched
 // in its place. Asked once per session and per saved MAC (Session::mac), before anything else is
@@ -907,7 +889,7 @@ Sent check_plug(const std::string &host, Session &s, const std::string &want, bo
     const Sent sent = send(host, s, R"({"method":"get_device_info","params":null})", resp, keep, err);
     if (sent != Sent::ok) return sent;
     const json &result = get_obj(resp, "result");
-    if (result.is_object() && result.contains("mac") && mac_digits(get_str(result, "mac")) != want) {
+    if (result.is_object() && result.contains("mac") && support::mac_digits(get_str(result, "mac")) != want) {
         keep = false;
         err = "another plug answered at this plug's saved address, so nothing was sent to it";
         return Sent::failed;
@@ -973,7 +955,7 @@ bool exchange(const Device &dev, const Credentials &cred, const json &req, json 
     }
 
     const std::string host = dev.ip;
-    const std::string want_mac = mac_digits(dev.mac);
+    const std::string want_mac = support::mac_digits(dev.mac);
     const auto login = [&]() {
         st->session.reset();
         return tpap ? login_tpap(host, dev, pw_hex, *st, fp, err)
