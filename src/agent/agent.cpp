@@ -356,6 +356,7 @@ private:
     };
 
     Then one_round(const Budget &budget);
+    std::optional<Then> judge_draft(Round &r, const Budget &budget);
     std::optional<Then> second_look(Round &r);
     bool on_error(Round &r);
     std::optional<Then> cut_short(Round &r);
@@ -469,31 +470,7 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
 
     if (const auto then = second_look(r)) return *then;
 
-    // A draft that claims what no tool call backs is withdrawn, and the model told why (guards::kClaims).
-    const guards::Claim *claim = r.unbacked;
-    if (!claim && !r.speech_started && r.res.tool_calls.empty())
-        for (const guards::Claim &c : guards::kClaims)
-            if (req_.claim_open(c) && c.test(r.res.content)) { claim = &c; break; }
-    if (claim) {
-        (claim->scope == guards::Claim::NothingWorked ? req_.failure_guarded : req_.guarded) = true;
-        rt_.guard(claim->name);
-        if (r.began && a_.ev_.answer_discard) a_.ev_.answer_discard();
-        correction_ = claim->note(r.res.content);
-        return Then::Next;
-    }
-    // An empty reply leaves the user with silence: it goes back to the model once, and if the
-    // next one is empty too, an answer is made here from what is known.
-    if (r.res.tool_calls.empty() && util::trim(r.res.content).empty() && !r.speech_started && r.unsaid.empty()) {
-        if (r.began && a_.ev_.answer_discard) a_.ev_.answer_discard();
-        rt_.guard(req_.nudged || budget.last() ? "empty_answered_here" : "empty");
-        if (!req_.nudged && !budget.last()) {
-            req_.nudged = true;
-            correction_ = guards::empty_reply_note(req_.failures);
-            return Then::Next;
-        }
-        deliver(req_.done_said + (req_.failures ? "Sorry, something I tried did not work." : "Sorry, I have no answer to that."));
-        return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
-    }
+    if (const auto then = judge_draft(r, budget)) return *then;
     if (r.hold && !r.released && r.res.tool_calls.empty()) {
         // The draft stands: release it as if it had streamed.
         r.began = true;
@@ -584,6 +561,37 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     if (r.res.content.empty() && a_.ev_.error) a_.ev_.error("The model returned an empty answer.");
     // Something typed while the answer was being spoken becomes the next request.
     return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+}
+
+// The reply, judged before what is left of it is spoken: a claim no tool call backs is withdrawn and
+// the model told (Next), and an empty one goes back once, then is answered here.
+std::optional<Agent::Turn::Then> Agent::Turn::judge_draft(Round &r, const Budget &budget) {
+    // A draft that claims what no tool call backs is withdrawn, and the model told why (guards::kClaims).
+    const guards::Claim *claim = r.unbacked;
+    if (!claim && !r.speech_started && r.res.tool_calls.empty())
+        for (const guards::Claim &c : guards::kClaims)
+            if (req_.claim_open(c) && c.test(r.res.content)) { claim = &c; break; }
+    if (claim) {
+        (claim->scope == guards::Claim::NothingWorked ? req_.failure_guarded : req_.guarded) = true;
+        rt_.guard(claim->name);
+        if (r.began && a_.ev_.answer_discard) a_.ev_.answer_discard();
+        correction_ = claim->note(r.res.content);
+        return Then::Next;
+    }
+    // An empty reply leaves the user with silence: it goes back to the model once, and if the
+    // next one is empty too, an answer is made here from what is known.
+    if (r.res.tool_calls.empty() && util::trim(r.res.content).empty() && !r.speech_started && r.unsaid.empty()) {
+        if (r.began && a_.ev_.answer_discard) a_.ev_.answer_discard();
+        rt_.guard(req_.nudged || budget.last() ? "empty_answered_here" : "empty");
+        if (!req_.nudged && !budget.last()) {
+            req_.nudged = true;
+            correction_ = guards::empty_reply_note(req_.failures);
+            return Then::Next;
+        }
+        deliver(req_.done_said + (req_.failures ? "Sorry, something I tried did not work." : "Sorry, I have no answer to that."));
+        return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+    }
+    return std::nullopt;
 }
 
 // Fast mode's second look at a draft held back because it called no tool: the model, shown its own
