@@ -2,10 +2,10 @@
 
 #include <chrono>
 #include <map>
-#include <regex>
 #include <unistd.h>
 
 #include "agent/experiment.h"
+#include "agent/guards.h"
 #include "agent/llm.h"
 #include "agent/prompt.h"
 #include "agent/speech.h"
@@ -22,33 +22,6 @@ constexpr size_t kMaxToolResult = 6000;  // characters of tool output passed bac
 constexpr size_t kMaxEarlier = 200;      // DIAGNOSTICS (temporary): trimmed messages kept for a saved conversation
 constexpr int kCheckWaitMs = 1500;       // experiments only (E3): how long a finished draft waits for the parallel check
 
-// Appended after a reply that was drafted without tools (fast mode only). The second look reuses
-// the whole prompt, so the server answers it from its prefix cache in a fraction of a normal
-// call, and asked this pointedly the model catches what it missed in passing.
-const char *const kSecondLook =
-    "(Automatic check, not from the user.) CHECK BEFORE SPEAKING. The reply above is only a draft: the user has not heard it, and it was written without "
-    "calling any tool. Call the right tool now, instead of replying, if the draft does any of these:\n"
-    "- says or implies something was done, saved, set, added, moved, cancelled, played, stopped, switched or "
-    "changed. Nothing has been; call the tool that does it.\n"
-    "- states from memory something a tool provides: weather, a share price, an exchange rate or converted amount, "
-    "the time in another place, opening hours or days, prices, news, results, anything recent or changeable.\n"
-    "- gives the result of counting days or finding the weekday of a date (date_info), or of arithmetic that is more "
-    "than one easy step (calculator).\n"
-    "- is about something the user is looking at or holding, including saying you cannot see it (look).\n"
-    "- says what is or is not in the user's calendar, reminders, timers or music library, or how long a timer has "
-    "left, without having checked.\n"
-    "If none of these apply, reply with the single word OK and the draft will be spoken as it is. That is the right "
-    "outcome for conversation, settled general knowledge, translations, the current local time, facts you "
-    "remember about the user, a question asking for a missing detail, or honestly saying you cannot do something "
-    "none of your tools does.";
-
-// Rides along with the newest request (fast mode only). The same rule is in the system prompt,
-// but with reasoning off the model heeds what it read last.
-const char *const kDecideNote =
-    "(Automatic note, not from the user: if this asks you to do something, or needs live, local or changeable "
-    "information, a date or a sum worked out, or the camera, call the tool now instead of replying. Reply in words "
-    "only when no tool applies.)";
-
 // Adds an instruction for this one model call. It is attached to the newest user message where
 // possible, because some chat templates reject a system message after the first.
 void add_note(json &messages, const std::string &note) {
@@ -57,72 +30,6 @@ void add_note(json &messages, const std::string &note) {
         last["content"] = last["content"].get<std::string>() + "\n\n" + note;
     else
         messages.push_back({{"role", "system"}, {"content", note}});
-}
-
-// True when a draft tells the user that something has been done. Said in a turn where no tool
-// ran, that is a false claim, and it is cheaper to catch here than to pay for the model's
-// reasoning on every call. Covers English and the commonest phrasings in a few other languages.
-// True when a draft says something is not in the calendar or reminders. Only meaningful in a
-// turn where nothing was looked up.
-bool claims_not_saved(const std::string &raw) {
-    std::string text = raw;
-    for (size_t at; (at = text.find("\xE2\x80\x99")) != std::string::npos;) text.replace(at, 3, "'");
-    static const std::regex re(
-        "\\b(don'?t|do not|doesn'?t) (have|see|know|seem to have) [^.!?]{0,60}"
-        "(birthday|anniversary|appointment|calendar|reminder|event|saved|on record|booked|scheduled)"
-        "|\\b(no|nothing|isn'?t|not) [^.!?]{0,40}\\b(in|on) your (calendar|diary|reminders)",
-        std::regex::icase | std::regex::optimize);
-    return std::regex_search(text, re);
-}
-
-bool claims_action(const std::string &raw) {
-    std::string text = raw;
-    for (size_t at; (at = text.find("\xE2\x80\x99")) != std::string::npos;) text.replace(at, 3, "'");  // typographic apostrophe
-    static const std::regex re(
-        "\\b(i'?ve|i have|i just|i) (now |just |already )?(added|saved|set|scheduled|put|noted|cancell?ed|deleted|removed|"
-        "moved|sent|booked|turned|changed|updated|switched|stopped|started|reserved|ordered|called|texted|messaged)\\b"
-        "|\\b(is|it'?s|that'?s) (now |already )?(on|in|added to|saved (in|to)) your (calendar|diary|memory)"
-        "|\\b(timer|reminder|alarm|event|message|text|volume|brightness) (is|has been|was) (now |already )?"
-        "(set|saved|added|cancell?ed|sent|scheduled|deleted|turned|changed)"
-        "|\\bnow playing\\b|\\bi'?ll (remember|keep that in mind|remind you)|\\bi will (remember|remind you)"
-        "|^\\W*(done|all set|all done|got it|noted|saved|sorted|sent)\\b"
-        "|^\\W*(listo|hecho|fertig|erledigt|fait|c'est fait|feito|pronto|fatto)\\b"
-        "|\\b(he|ich habe|j'ai|ho) [^.!?]{0,40}(añadido|guardado|puesto|programado|gestellt|gespeichert|eingetragen|"
-        "hinzugefügt|ajouté|enregistré|programmé|réglé|aggiunto|salvato|impostato)",
-        std::regex::icase | std::regex::optimize);
-    return std::regex_search(text, re);
-}
-
-// "Done" said after tool calls that all failed or wait for the user's yes. An offer put as a
-// question is not that claim, and is often the right answer then: "Shall I put it in for next
-// year?" after a date in the past, "Shall I set the heater to 28 degrees?" for a change that waits
-// for a yes. "Done, anything else?" still claims.
-//
-// Something said to be on: "Here is Closed FM.", "Playing Jazz FM", "It's playing now", the radio
-// and music tools' own confirmations, after the call that would have started it failed. Judged
-// sentence by sentence, and not in one that says no or asks: "Nothing is playing right now" (the
-// honest answer to "skip this song" with no music on), "Closed FM isn't playing", "Here's the
-// problem", "The speaker is playing at 20 %; shall I set it to 90 %?" (a change that waits for a yes).
-bool claims_done(const std::string &raw) {
-    static const std::regex offer("\\b(shall|should|can|could|may|will|would|do) i\\b", std::regex::icase | std::regex::optimize);
-    static const std::regex on_air(
-        "^\\W*(here('s| is| comes| you go| we go)\\b(?![^:]*\\b(problem|issue|trouble|thing|what|why|how|error|sorry|list)\\b)"
-        "|playing\\b)|\\b(is|are|i'?m|it'?s) (now |already )?playing\\b",
-        std::regex::icase | std::regex::optimize);
-    static const std::regex says_no("\\b(no|not|nothing|none|nobody|never|neither|nor|cannot|unable|failed|sorry)\\b|n't\\b",
-                                    std::regex::icase | std::regex::optimize);
-    std::string text = std::regex_replace(raw, offer, "$1");
-    for (size_t at; (at = text.find("\xE2\x80\x99")) != std::string::npos;) text.replace(at, 3, "'");  // typographic apostrophe
-    if (claims_action(text)) return true;
-    for (size_t from = 0; from < text.size();) {
-        const size_t end = text.find_first_of(".!?", from);
-        const std::string sentence = text.substr(from, end == std::string::npos ? std::string::npos : end - from);
-        const bool question = end != std::string::npos && text[end] == '?';
-        if (!question && std::regex_search(sentence, on_air) && !std::regex_search(sentence, says_no)) return true;
-        if (end == std::string::npos) break;
-        from = end + 1;
-    }
-    return false;
 }
 
 // What a tool call asked for, to recognise the same call again: the tool and its arguments in a
@@ -480,7 +387,7 @@ void Agent::run_turn() {
         if (hold && experiment::parallel_check()) pcheck.start(messages, tool_schema, opt.model);
         bool released = false;     // E3: the held draft is being spoken as it streams
         std::string held_text;     // E3: the draft so far, while the check has not cleared it
-        if (fast_decision) add_note(messages, kDecideNote);
+        if (fast_decision) add_note(messages, guards::kDecideNote);
         opt.purpose = round == kMaxRounds - 1 ? "last_round" : corrected ? "correction" : deciding ? "decide" : "after_tool";
         opt.cancel = &round_cancel_;
         opt.on_text = [&](const std::string &piece) {
@@ -503,8 +410,8 @@ void Agent::run_turn() {
                 // Checked before the first words are spoken: once said, a claim cannot be taken back.
                 // "Done" is false when no tool has run, and when every one that ran failed or is
                 // waiting for the user's yes.
-                if (!speech_started && ((!acted && !guarded && claims_action(sentence)) ||
-                                        (acted && !any_ok && !failure_guarded && claims_done(sentence)))) {
+                if (!speech_started && ((!acted && !guarded && guards::claims_action(sentence)) ||
+                                        (acted && !any_ok && !failure_guarded && guards::claims_done(sentence)))) {
                     unbacked = true;
                     round_cancel_ = true;
                     return;
@@ -580,7 +487,7 @@ void Agent::run_turn() {
         if (hold && !cleared && res.tool_calls.empty() && !res.content.empty()) {
             json review = messages;
             review.push_back({{"role", "assistant"}, {"content", res.content}});
-            review.push_back({{"role", "user"}, {"content", kSecondLook}});
+            review.push_back({{"role", "user"}, {"content", guards::kSecondLook}});
             llm::ChatOptions check;
             check.model = opt.model;
             check.fast = true;
@@ -608,7 +515,7 @@ void Agent::run_turn() {
 
         // "Done" after tool calls that all failed or wait for the user's yes: nothing was done, and
         // the user must hear what went wrong, or the question, instead.
-        if (acted && (unbacked || (!any_ok && !failure_guarded && !speech_started && res.tool_calls.empty() && claims_done(res.content)))) {
+        if (acted && (unbacked || (!any_ok && !failure_guarded && !speech_started && res.tool_calls.empty() && guards::claims_done(res.content)))) {
             failure_guarded = true;
             rt.guard("claims_done");
             if (began && ev_.answer_discard) ev_.answer_discard();
@@ -620,7 +527,7 @@ void Agent::run_turn() {
         }
         // "Done, it's in your calendar" with no tool call behind it: withdraw the draft and make
         // the model either do the thing or admit it cannot.
-        if (unbacked || (!acted && !guarded && !speech_started && res.tool_calls.empty() && claims_action(res.content))) {
+        if (unbacked || (!acted && !guarded && !speech_started && res.tool_calls.empty() && guards::claims_action(res.content))) {
             guarded = true;
             rt.guard("claims_action");
             if (began && ev_.answer_discard) ev_.answer_discard();
@@ -632,7 +539,7 @@ void Agent::run_turn() {
             continue;
         }
         // "I don't have Dad's birthday saved", said without looking: the calendar may well have it.
-        if (!unbacked && !acted && !guarded && !speech_started && res.tool_calls.empty() && claims_not_saved(res.content)) {
+        if (!unbacked && !acted && !guarded && !speech_started && res.tool_calls.empty() && guards::claims_not_saved(res.content)) {
             guarded = true;
             rt.guard("claims_not_saved");
             if (began && ev_.answer_discard) ev_.answer_discard();
