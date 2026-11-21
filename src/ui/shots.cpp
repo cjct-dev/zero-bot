@@ -24,6 +24,7 @@
 #include "platform/display.h"
 #include "smarthome/home.h"
 #include "ui/key_guide.h"
+#include "ui/models.h"
 #include "ui/settings_pages.h"
 #include "ui/theme.h"
 
@@ -596,6 +597,22 @@ void App::shots_sample_data(Shots &shots) {
 void App::shots_setup(Shots &shots) {
     auto snap = [&shots](const char *name) { shots.snap(name); };
     bool &failed = shots.failed;
+    {
+        // The two rules for choosing models from the service's list (ui/models.h) stay two: the app's
+        // own choice takes only a model labelled for chat, the setup guide's also one with no label,
+        // and neither replaces a model already chosen. Checked, not pictured.
+        const models::List offered = {{"plain", ""}, {"chatty", "chat"}, {"ears", "audio_transcription"}, {"voice", "audio_speech"}};
+        Settings first, guide, kept;
+        kept.llm_model = "mine";
+        models::choose_first(first, offered);
+        models::choose_for_setup(guide, offered);
+        models::choose_for_setup(kept, offered);
+        if (first.llm_model != "chatty" || first.stt_model != "ears" || first.tts_model != "voice" || guide.llm_model != "plain" ||
+            guide.stt_model != "ears" || guide.tts_model != "voice" || kept.llm_model != "mine") {
+            fprintf(stderr, "a model was chosen from the service's list by the wrong rule\n");
+            failed = true;
+        }
+    }
     run_setup();
     snap("setup-welcome");
     {

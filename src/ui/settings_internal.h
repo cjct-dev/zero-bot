@@ -1,7 +1,7 @@
 // What the settings pages share: reading and changing the settings, a few ways of showing values,
 // slow work off the UI thread, and the pages one file opens from another. For settings_pages.cpp
 // (the top page, its sections, the status page, the key guide), settings_data.cpp (Your data),
-// settings_home.cpp (Smart home) and setup_guide.cpp (the first-run guide); nothing else includes it.
+// settings_home.cpp (Smart home), setup_guide.cpp (the first-run guide) and models.cpp (background).
 #pragma once
 #include <algorithm>
 #include <cstdio>

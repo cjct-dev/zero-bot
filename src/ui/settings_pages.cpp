@@ -6,10 +6,8 @@
 
 #include <fstream>
 #include <string>
-#include <utility>
 #include <vector>
 
-#include "agent/llm.h"
 #include "core/activity.h"
 #include "core/music_lib.h"
 #include "core/radio.h"
@@ -21,6 +19,7 @@
 #include "platform/proc.h"
 #include "smarthome/home.h"
 #include "ui/key_guide.h"
+#include "ui/models.h"
 #include "ui/screen_idle.h"
 
 namespace ui {
@@ -29,29 +28,23 @@ namespace ui {
 void pick_model(Menu &menu, const std::string &title, const std::string &mode, std::string Settings::*field,
                 bool allow_default) {
     menu.toast("Loading models…");
-    background(
-        [] {
-            std::string err;
-            auto models = llm::list_models(err);
-            return std::make_pair(models, err);
-        },
-        [&menu, title, mode, field, allow_default](const std::pair<std::vector<llm::ModelInfo>, std::string> &r) {
-            if (!menu.open()) return;
-            if (!r.second.empty()) { menu.problem("Could not load models", r.second); return; }
-            // Services that label what each model is for get a filtered list; others show everything.
-            bool labelled = false;
-            for (auto &m : r.first) labelled = labelled || !m.mode.empty();
-            std::vector<std::string> options;
-            const std::string same = "(same as language model)";
-            if (allow_default) options.push_back(same);
-            for (auto &m : r.first)
-                if (!labelled || m.mode == mode) options.push_back(m.id);
-            const std::string now = S().*field;
-            const std::string current = now.empty() && allow_default ? same : now;
-            menu.choose(title, options, current, [field, same](const std::string &pick) {
-                change([&](Settings &s) { s.*field = pick == same ? "" : pick; });
-            });
+    models::fetch([&menu, title, mode, field, allow_default](const models::List &list, const std::string &err) {
+        if (!menu.open()) return;
+        if (!err.empty()) { menu.problem("Could not load models", err); return; }
+        // Services that label what each model is for get a filtered list; others show everything.
+        bool labelled = false;
+        for (auto &m : list) labelled = labelled || !m.mode.empty();
+        std::vector<std::string> options;
+        const std::string same = "(same as language model)";
+        if (allow_default) options.push_back(same);
+        for (auto &m : list)
+            if (!labelled || m.mode == mode) options.push_back(m.id);
+        const std::string now = S().*field;
+        const std::string current = now.empty() && allow_default ? same : now;
+        menu.choose(title, options, current, [field, same](const std::string &pick) {
+            change([&](Settings &s) { s.*field = pick == same ? "" : pick; });
         });
+    });
 }
 
 namespace {
@@ -80,8 +73,8 @@ void open_status(Menu &menu) {
             if (batt >= 0) text += "Battery: " + std::to_string(batt) + "%\n";
             text += "Time zone: " + (S().timezone.empty() ? util::system_timezone() + " (system)" : S().timezone) + "\n";
             std::string err;
-            const auto models = llm::list_models(err);
-            text += err.empty() ? "AI service: reachable, " + std::to_string(models.size()) + " models" : "AI service: " + err;
+            const models::List list = models::list(err);
+            text += err.empty() ? "AI service: reachable, " + std::to_string(list.size()) + " models" : "AI service: " + err;
             text += "\nMusic: " + std::to_string(MusicLibrary::get().size()) + " tracks";
             return text;
         },

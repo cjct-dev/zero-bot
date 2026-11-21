@@ -5,12 +5,11 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <utility>
 #include <vector>
 
-#include "agent/llm.h"
 #include "core/tether.h"
 #include "core/util.h"
+#include "ui/models.h"
 
 namespace ui {
 
@@ -132,24 +131,12 @@ struct Setup {
             items.push_back(MenuItem::action("Test and continue", [self, &m] {
                 if (!S().configured()) { m.toast("Enter both the address and the key first"); return; }
                 m.toast("Contacting the service…");
-                background(
-                    [] {
-                        std::string err;
-                        auto models = llm::list_models(err);
-                        return std::make_pair(models, err);
-                    },
-                    [self, &m](const std::pair<std::vector<llm::ModelInfo>, std::string> &r) {
-                        if (!r.second.empty()) { m.problem("That did not work", r.second); return; }
-                        change([&r](Settings &st) {
-                            for (auto &model : r.first) {
-                                if (st.llm_model.empty() && (model.mode == "chat" || model.mode.empty())) st.llm_model = model.id;
-                                if (st.stt_model.empty() && model.mode == "audio_transcription") st.stt_model = model.id;
-                                if (st.tts_model.empty() && model.mode == "audio_speech") st.tts_model = model.id;
-                            }
-                        });
-                        m.toast("Connected: " + std::to_string(r.first.size()) + " models available");
-                        self->step_models();
-                    });
+                models::fetch([self, &m](const models::List &list, const std::string &err) {
+                    if (!err.empty()) { m.problem("That did not work", err); return; }
+                    change([&list](Settings &st) { models::choose_for_setup(st, list); });
+                    m.toast("Connected: " + std::to_string(list.size()) + " models available");
+                    self->step_models();
+                });
             }));
             items.push_back(MenuItem::action("Skip this step", [self] { self->step_models(); }));
             return items;

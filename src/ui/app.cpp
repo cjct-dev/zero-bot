@@ -14,7 +14,6 @@
 #include <vector>
 
 #include "agent/agent.h"
-#include "agent/llm.h"
 #include "core/settings.h"
 #include "core/tether.h"
 #include "core/ui_queue.h"
@@ -24,6 +23,7 @@
 #include "platform/display.h"
 #include "platform/keys.h"
 #include "platform/proc.h"
+#include "ui/models.h"
 #include "ui/settings_pages.h"
 #include "ui/theme.h"
 
@@ -94,17 +94,11 @@ void App::auto_select_models() {
     if (selecting_models.exchange(true)) return;
     std::thread([this] {
         std::string err;
-        const auto models = llm::list_models(err);
+        const models::List list = models::list(err);
         selecting_models = false;
         if (!err.empty()) return;   // offline, most likely; periodic() tries again later
-        uiq::post([this, models] {
-            const Settings st = Settings::update([&models](Settings &s) {
-                for (auto &m : models) {
-                    if (s.stt_model.empty() && m.mode == "audio_transcription") s.stt_model = m.id;
-                    if (s.tts_model.empty() && m.mode == "audio_speech") s.tts_model = m.id;
-                    if (s.eff_llm_model().empty() && m.mode == "chat") s.llm_model = m.id;
-                }
-            });
+        uiq::post([this, list] {
+            const Settings st = Settings::update([&list](Settings &s) { models::choose_first(s, list); });
             if ((st.stt_model.empty() || st.tts_model.empty()) && !warned_models) {
                 warned_models = true;
                 chat.add_note("Choose speech models in settings (SPACE) to use voice.", theme::kThink);
