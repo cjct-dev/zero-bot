@@ -1006,16 +1006,7 @@ std::string info_of(const home::Device &d, const char *key) {
 
 // SHA-256 of an application key, in hex: what is remembered of a key the bridge rejected.
 std::string key_hash(const std::string &key) {
-    unsigned char md[EVP_MAX_MD_SIZE];
-    unsigned int len = 0;
-    if (key.empty() || EVP_Digest(key.data(), key.size(), md, &len, EVP_sha256(), nullptr) != 1) return "";
-    static const char *const kHex = "0123456789abcdef";
-    std::string out;
-    for (unsigned int i = 0; i < len; ++i) {
-        out += kHex[md[i] >> 4];
-        out += kHex[md[i] & 15];
-    }
-    return out;
+    return key.empty() ? "" : support::hex(support::digest(EVP_sha256(), key));   // "" too when libcrypto fails
 }
 
 // Parses a CLIP v2 reply: an object whose "data" is an array. False when unusable.

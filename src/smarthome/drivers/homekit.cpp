@@ -265,22 +265,14 @@ bool unhex(const std::string &h, Bytes &out) { return support::unhex(h, out); }
 // Primitives over libcrypto
 // ---------------------------------------------------------------------------------------------
 Bytes sha512(const Bytes &b) {
-    unsigned char out[64];
-    unsigned int n = 0;
-    if (!EVP_Digest(b.data(), b.size(), out, &n, EVP_sha512(), nullptr) || n != 64) return Bytes();
-    return Bytes(reinterpret_cast<char *>(out), 64);
+    const Bytes d = support::digest(EVP_sha512(), b);
+    return d.size() == 64 ? d : Bytes();
 }
 
 Bytes hmac_sha512(const Bytes &key, const Bytes &data) {
     // HMAC pads its key with zeros to the block size, so an empty key is the same as one zero byte.
-    static const unsigned char zero = 0;
-    unsigned char out[64];
-    size_t n = 0;
-    if (!EVP_Q_mac(nullptr, "HMAC", nullptr, "SHA512", nullptr, key.empty() ? &zero : u8(key),
-                   key.empty() ? 1 : key.size(), u8(data), data.size(), out, sizeof out, &n) ||
-        n != 64)
-        return Bytes();
-    return Bytes(reinterpret_cast<char *>(out), 64);
+    const Bytes mac = support::hmac("SHA512", key.empty() ? Bytes(1, '\0') : key, data);
+    return mac.size() == 64 ? mac : Bytes();
 }
 
 // RFC 5869 with SHA-512.

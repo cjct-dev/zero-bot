@@ -211,16 +211,7 @@ std::string basic_auth_header(const std::string &user, const std::string &passwo
 
 std::string fingerprint(const std::string &user, const std::string &password) {
     const std::string in = "zero-bot shelly login\n" + user + "\n" + password;
-    unsigned char md[EVP_MAX_MD_SIZE];
-    unsigned int len = 0;
-    if (EVP_Digest(in.data(), in.size(), md, &len, EVP_sha256(), nullptr) != 1) return "";
-    static const char hex[] = "0123456789abcdef";
-    std::string out;
-    for (unsigned int i = 0; i < len && out.size() < 32; ++i) {
-        out += hex[md[i] >> 4];
-        out += hex[md[i] & 15];
-    }
-    return out;
+    return support::hex(support::digest(EVP_sha256(), in)).substr(0, 32);   // "" when libcrypto fails
 }
 
 // Words of a name, lower case. Bytes of UTF-8 letters ("ü", "ż") belong to their word, so "Tür" is

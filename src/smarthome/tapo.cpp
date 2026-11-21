@@ -27,6 +27,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "core/util.h"
 #include "smarthome/drivers/support.h"
 
 namespace tapo {
@@ -53,13 +54,6 @@ bool same(const Bytes &a, const Bytes &b) {   // constant-time for equal lengths
     return a.size() == b.size() && CRYPTO_memcmp(a.data(), b.data(), a.size()) == 0;
 }
 
-Bytes digest(const EVP_MD *md, const Bytes &b) {
-    unsigned char out[EVP_MAX_MD_SIZE];
-    unsigned int n = 0;
-    if (!EVP_Digest(b.data(), b.size(), out, &n, md, nullptr)) return Bytes();
-    return Bytes(reinterpret_cast<char *>(out), n);
-}
-
 template <class T, void (*F)(T *)> struct Del {
     void operator()(T *p) const { F(p); }
 };
@@ -78,19 +72,7 @@ bool unhex(const std::string &h, Bytes &out) { return support::unhex(h, out); }
 
 static const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-std::string b64(const Bytes &b) {
-    std::string s;
-    for (size_t i = 0; i < b.size(); i += 3) {
-        const size_t n = std::min<size_t>(3, b.size() - i);
-        uint32_t v = 0;
-        for (size_t k = 0; k < 3; k++) v = v << 8 | (k < n ? static_cast<unsigned char>(b[i + k]) : 0);
-        s += kB64[v >> 18 & 63];
-        s += kB64[v >> 12 & 63];
-        s += n > 1 ? kB64[v >> 6 & 63] : '=';
-        s += n > 2 ? kB64[v & 63] : '=';
-    }
-    return s;
-}
+std::string b64(const Bytes &b) { return util::base64(b); }
 
 bool unb64(const std::string &s, Bytes &out) {
     out.clear();
@@ -108,18 +90,11 @@ bool unb64(const std::string &s, Bytes &out) {
     return true;
 }
 
-Bytes md5(const Bytes &b) { return digest(EVP_md5(), b); }
-Bytes sha1(const Bytes &b) { return digest(EVP_sha1(), b); }
-Bytes sha256(const Bytes &b) { return digest(EVP_sha256(), b); }
+Bytes md5(const Bytes &b) { return support::digest(EVP_md5(), b); }
+Bytes sha1(const Bytes &b) { return support::digest(EVP_sha1(), b); }
+Bytes sha256(const Bytes &b) { return support::digest(EVP_sha256(), b); }
 
-Bytes hmac_sha256(const Bytes &key, const Bytes &data) {
-    unsigned char out[32];
-    size_t n = 0;
-    if (!EVP_Q_mac(nullptr, "HMAC", nullptr, "SHA256", nullptr, key.data(), key.size(), u8(data), data.size(),
-                   out, sizeof out, &n))
-        return Bytes();
-    return Bytes(reinterpret_cast<char *>(out), n);
-}
+Bytes hmac_sha256(const Bytes &key, const Bytes &data) { return support::hmac("SHA256", key, data); }
 
 // RFC 5869. An empty salt stands for a block of zeros.
 Bytes hkdf_sha256(const Bytes &ikm, const Bytes &salt, const Bytes &info, size_t len) {

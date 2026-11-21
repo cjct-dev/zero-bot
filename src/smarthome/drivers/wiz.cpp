@@ -119,15 +119,7 @@ bool is_hex(const std::string &s) {
 }
 
 std::string hmac_sha256_b64(const std::string &key, const std::string &text) {
-    unsigned char mac[EVP_MAX_MD_SIZE];
-    size_t len = 0;
-    if (!EVP_Q_mac(nullptr, "HMAC", nullptr, "SHA256", nullptr, key.data(), key.size(),
-                   reinterpret_cast<const unsigned char *>(text.data()), text.size(), mac, sizeof mac, &len))
-        return {};
-    std::string out((len + 2) / 3 * 4 + 1, '\0');
-    const int n = EVP_EncodeBlock(reinterpret_cast<unsigned char *>(&out[0]), mac, static_cast<int>(len));
-    out.resize(n > 0 ? static_cast<size_t>(n) : 0);
-    return out;
+    return util::base64(support::hmac("SHA256", key, text));   // "" when libcrypto fails, as base64 of nothing
 }
 
 enum class Got { Reply, Nothing, Garbage };
