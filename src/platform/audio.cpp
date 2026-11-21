@@ -219,19 +219,25 @@ bool Speaker::begin(int rate) {
 }
 
 void Speaker::write(const void *data, size_t bytes) {
+    // The write goes through a descriptor of its own, taken under the lock. stop() (SpeechQueue::stop()
+    // on the UI thread while the speech thread writes), finish() and playing() close the player's pipe,
+    // and the number it had is then handed to whatever the app opens next (a file being saved, the next
+    // request's socket): a write that went on with the number would put the sound there. The copy keeps
+    // this write on the pipe, which fails once the player has gone.
     int fd;
     {
         std::lock_guard<std::mutex> lk(mtx_);
-        fd = child_.in;
+        fd = child_.in >= 0 ? fcntl(child_.in, F_DUPFD_CLOEXEC, 0) : -1;
     }
     if (fd < 0) return;
     const char *p = static_cast<const char *>(data);
     while (bytes) {
         ssize_t n = ::write(fd, p, bytes);
-        if (n <= 0) return;  // player was stopped
+        if (n <= 0) break;  // player was stopped
         p += n;
         bytes -= static_cast<size_t>(n);
     }
+    ::close(fd);
 }
 
 void Speaker::finish() {
