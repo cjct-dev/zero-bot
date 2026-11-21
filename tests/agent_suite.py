@@ -17,8 +17,9 @@ Other options as in tests/agent_eval.py: --bin, --repeat, --jobs (keep 1 for tim
 experiments' trace of each turn in --json: model calls, tokens, timings; tests/exp_report.py).
 --validate compiles every case offline (kinds, nested ones too, what each needs, regular expressions,
 the turns checks look at, homes, the stand-in web's fixtures) and exits non-zero on a problem. It needs
-ZB_API_BASE and ZB_API_KEY (and model names in ZB_EVAL_LLM_MODEL etc.); cases tagged "search" are
-left out without ZB_SEARCH_KEY. Every case starts from an empty state with ZB_DRY_RUN, as in the
+ZB_API_BASE and ZB_API_KEY (and model names in ZB_EVAL_LLM_MODEL etc.); no search key: every case's
+web reads (search included) go to the stand-in web, as in the scored set, and a run refuses to start if a
+case could reach a real web service (tests/agent_eval.py preflight). Every case starts from an empty state with ZB_DRY_RUN, as in the
 scored set, and a small stand-in music library (MUSIC_LIBRARY: tags only, no sound) unless
 ZB_EVAL_MUSIC_DIR names a folder; ZB_EVAL_MUSIC_DIR= (empty) gives an empty library, as runs before
 2026-11-19 had. The summary gives the pass rate per tag and the slowest cases.
@@ -541,7 +542,7 @@ def validate(cases):
                 for g, group in enumerate(s.get("of") or []):
                     for k, x in enumerate(group if isinstance(group, list) else [group]): one(x, "%s, alternative %d.%d" % (where, g + 1, k + 1))
             if s["kind"] == "event_time" and s.get("event") not in fake_web.EVENTS: err("%s: no stand-in event %r" % (where, s.get("event")))
-            if s["kind"] == "unannounced_time" and "ZB_EXP_WEB" not in c["env"]: err("%s: unannounced_time needs the stand-in web" % where)
+            if s["kind"] == "unannounced_time" and c["env"].get("ZB_EXP_WEB") != "@web/events": err("%s: unannounced_time needs the stand-in's events (@web/events)" % where)
             if s["kind"] == "language" and s.get("lang") not in LANGUAGE: err("%s: no language %r" % (where, s.get("lang")))
             if s["kind"] in ("time_in", "time_conv") and isinstance(s.get("zone"), str):
                 from zoneinfo import ZoneInfo
@@ -549,8 +550,8 @@ def validate(cases):
                 except Exception:   # noqa: BLE001
                     err("%s: no time zone %r" % (where, s["zone"]))
         for i, s in enumerate(c["checks"] if isinstance(c["checks"], list) else []): one(s, "check %d" % (i + 1))
-        if any(isinstance(s, dict) and s.get("kind") == "event_time" for s in c["checks"]) and "ZB_EXP_WEB" not in c["env"]:
-            err("event_time needs the stand-in web (env ZB_EXP_WEB)")
+        if any(isinstance(s, dict) and s.get("kind") == "event_time" for s in c["checks"]) and c["env"].get("ZB_EXP_WEB") != "@web/events":
+            err("event_time needs the stand-in's events (env ZB_EXP_WEB @web/events)")
         if any(e.startswith(name + ":") for e in errors): continue
         try: compiled = compile_case(c)
         except Exception as e:   # noqa: BLE001
@@ -613,13 +614,6 @@ def main():
         print("%d cases, %d problems" % (len(cases), len(errors)))
         sys.exit(1 if errors else 0)
     chosen = selected(cases, args)
-    if not args.rescore and not args.list and not os.environ.get("ZB_SEARCH_KEY"):
-        # Cases whose search comes from the stand-in web (env ZB_EXP_WEB) need no key.
-        dropped = [c for c in chosen if "search" in c["tags"] and not c.get("env", {}).get("ZB_SEARCH_KEY", "x") is None
-                   and "ZB_EXP_WEB" not in c.get("env", {})]
-        if dropped:
-            print("no ZB_SEARCH_KEY: leaving out %d cases tagged search" % len(dropped))
-            chosen = [c for c in chosen if c not in dropped]
     if args.list:
         tags = {}
         for c in chosen:
@@ -643,6 +637,11 @@ def main():
     if args.fast is not None: env["ZB_FAST_MODE"] = args.fast
     if args.trace: env["ZB_EVAL_TRACE"] = "1"
     compiled = {c["name"]: compile_case(c) for c in chosen}
+    if not args.rescore:
+        refused = ev.preflight(env, list(compiled.values()), validate(chosen))
+        if refused:
+            shutil.rmtree(home, ignore_errors=True)
+            sys.exit("refused: a case could reach a real web service or carry a real key:\n  " + "\n  ".join(refused))
     jobs = [c for c in chosen for _ in range(len(saved.get(c["name"], [])) if args.rescore else args.repeat)]
     run = (lambda c: ev.run_from_saved(saved[c["name"]].pop(0), compiled[c["name"]])) if args.rescore else (lambda c: ev.run_case(args.bin, env, compiled[c["name"]]))
     traced = args.trace if not args.rescore else None

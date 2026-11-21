@@ -97,7 +97,7 @@ def records(c, *turns, end=True):
     counts; one response with all of them when left out); {"new": True} is "/new". A turn without "answer"
     never ended."""
     asked = [t for t in c["turns"] if t != "/new"]
-    out, n, on = [{"ev": "start", "caps": ["records", "web", "no_hardware"]}], 0, set()
+    out, n, on = [{"ev": "start", "caps": ["records", "web", "web_all", "no_hardware"]}], 0, set()
     home = c.get("home") if isinstance(c.get("home"), dict) else None
     for t in turns:
         if "answer" not in t and not t.get("new") and n < len(asked): end = False   # a turn that never ended: no end of the run
@@ -911,7 +911,7 @@ def validation():
            dict(base, name="bad-event", checks=[{"kind": "event_time", "event": "unknown"}])]
     errors = suite.validate(bad + [dict(base, name="bad-kind")])
     want = {"bad-kind": "no check kind 'no_such_kind'", "bad-nested": "alternative 2.1: no check kind 'misspelt'", "bad-field": "answer needs re",
-            "bad-re": "is not a regular expression", "bad-turn": "looks at turn 3", "bad-fixture": "names a stand-in fixture that does not exist",
+            "bad-re": "is not a regular expression", "bad-turn": "looks at turn 3", "bad-fixture": "must name a stand-in fixture",
             "bad-home": "no home called 'castle'", "bad-missing": "no must", "bad-event": "no stand-in event 'unknown'"}
     for c in bad:
         check("validate: %s is caught, saying so" % c["name"], any(e.startswith(c["name"] + ":") and want[c["name"]] in e for e in errors),
@@ -940,7 +940,7 @@ if os.environ.get("FAKE_NO_RECORDS") or not path:
 env = {k: os.environ.get(k) for k in ("ZB_EXP_NO_HARDWARE", "ZB_FAKE_CAMERA", "ZB_DRY_RUN", "ZB_EXP_TRACE", "ZB_EVAL_RECORDS", "HOME")}
 def rec(**r): f.write(json.dumps(dict(r, v=2, mono=0, wall=0)) + "\n")
 with open(path, "w") as f:
-    rec(ev="start", caps=os.environ.get("FAKE_CAPS", "records,web,no_hardware").split(","))
+    rec(ev="start", caps=os.environ.get("FAKE_CAPS", "records,web,web_all,no_hardware").split(","))
     n = 0
     for t in turns:
         if t == "/new":
@@ -1002,7 +1002,7 @@ def records_stream_strict():
              '{"v": 2, "ev": "turn_end", "turn": 1, "total": 1.0, "first": 0.5, "answer": "You are welcome.", "tool_calls": 0, "responses": [], "mono": 0, "wall": 0}\n')
     unscorable("an early end with no turns, then the turn (no start, no state, no end)", early, "the run does not begin with its start")
     unscorable("no start", "".join(lines[1:]), "the run does not begin with its start")
-    unscorable("a start that does not say what the build can do", good.replace(', "caps": ["records", "web", "no_hardware"]', ""), "capabilities")
+    unscorable("a start that does not say what the build can do", good.replace(', "caps": ["records", "web", "web_all", "no_hardware"]', ""), "capabilities")
     unscorable("a record after the end", good + lines[1], "after the end of the run")
     unscorable("a second start", "".join(lines[:1] + lines), "a second start")
     unscorable("a turn with no state", "".join(l for l in lines if '"state"' not in l), "ended without its saved state")
@@ -1040,9 +1040,28 @@ def provenance_kept():
     got = ev.verdict(a, back)
     check("rescore: a saved run of other requests is unscorable for this case", got[0] == "unscorable" and "the saved run asked" in got[1][0], got)
     check("rescore: ... and keeps its own requests", ev.result_record(a, back, *got)["requests"] == ["set a timer for 15 minutes"])
+    # The web guard (ZB-086): every case on the stand-in at 127.x, the dummy key or none, never a real key.
+    ok_env = {"ZB_EXP_WEB": "http://127.0.0.1:4000/default", "ZB_SEARCH_KEY": ev.SEARCH_DUMMY}
+    check("web guard: the stand-in and the dummy key pass", ev.web_guard(ok_env, {}) == [], ev.web_guard(ok_env, {}))
+    for bad, why in (({"ZB_EXP_WEB": ""}, "ZB_EXP_WEB"), ({"ZB_EXP_WEB": "https://api.example.com"}, "ZB_EXP_WEB"),
+                     ({"ZB_EXP_WEB": "http://10.0.0.1:80/x"}, "ZB_EXP_WEB"), ({"ZB_SEARCH_KEY": "tvly-real"}, "dummy key")):
+        check("web guard refuses %r" % bad, any(why in p for p in ev.web_guard(dict(ok_env, **bad), {})), ev.web_guard(dict(ok_env, **bad), {}))
+    no_key = dict(ok_env)
+    del no_key["ZB_SEARCH_KEY"]
+    check("web guard: no key only for a case that asks for none", ev.web_guard(no_key, {"ZB_SEARCH_KEY": None}) == [] and
+          ev.web_guard(no_key, {}) != [])
+    saved_keys = list(ev.REAL_KEYS)
+    ev.REAL_KEYS[:] = ["real-key-42"]
+    try:
+        check("web guard: a real key anywhere in the environment is refused",
+              any("holds a real" in p for p in ev.web_guard(dict(ok_env, SOMETHING="x real-key-42"), {})))
+    finally:
+        ev.REAL_KEYS[:] = saved_keys
+    check("every scored case is on the stand-in web, with the dummy key unless it asks for none",
+          all(ev.web_guard(ev.case_web_env({}, c), c.get("env") or {}) == [] for c in ev.CASES))
     web_case = case("review_rain_59")
-    check("fixtures: a case on the stand-in web hashes the stand-in", "web" in ev.fixtures_of(web_case) and "web" not in ev.fixtures_of(a),
-          ev.fixtures_of(web_case))
+    check("fixtures: every case runs on the stand-in web and hashes it", "web" in ev.fixtures_of(web_case) and
+          ev.fixtures_of(web_case)["web"] == ev.fixtures_of(a)["web"], ev.fixtures_of(web_case))
     check("fixtures: the simulated Fire TV is a fixture of the case that starts it", "firetv" in ev.fixtures_of(case("review_tv_refused_once")))
     before, before_v = ev.case_hash(a), ev.fixture_version(a)
     saved_lib = list(ev.MUSIC_LIBRARY)
@@ -1221,10 +1240,12 @@ def guards_applied_last():
         check("trace: untraced when nothing asks for it", got["trace"] is False and ev.result_record(bare("hello"), got, "pass", [], True)["trace"] is False)
         check("probe (N5): a build that writes records and keeps the guards is fit", ev.probe_binary(app) == [], ev.probe_binary(app))
         older = os.path.join(folder, "older_app")
-        with open(older, "w") as f: f.write(FAKE_APP.replace('"records,web,no_hardware"', '"records,web"'))
+        with open(older, "w") as f: f.write(FAKE_APP.replace('"records,web,web_all,no_hardware"', '"records,web"'))
         os.chmod(older, 0o755)
         problems = ev.probe_binary(older)
         check("probe (N5): a build without the hardware guard is refused", any("no_hardware" in p for p in problems), problems)
+        # A build from before every web read went to the stand-in sends rates and prices to the real services.
+        check("probe: a build that does not send every web read to the stand-in is refused", any("web_all" in p for p in problems), problems)
         silent = os.path.join(folder, "silent_app")
         with open(silent, "w") as f: f.write("#!/bin/sh\nexit 0\n")
         os.chmod(silent, 0o755)

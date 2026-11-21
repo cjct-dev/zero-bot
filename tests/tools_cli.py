@@ -6,10 +6,14 @@ temporary state folder (HOME and the XDG folders), with ZB_DRY_RUN (no music, in
 is used), ZB_NO_AUDIO, ZB_TEST_NETWORK and no AI service configured. Each result must be the right
 one or an ERROR sentence that says what to change, the program must not crash, and nothing may be
 written outside the state folder. Tools that need the internet (weather, currency, stocks, web
-search, a place looked up by name, the photo's description) are not run here, except web search against
-the local stand-in (tests/mocks/fake_web.py) to check the experiments' guards: ZB_EXP_NO_HARDWARE keeps
-the camera and the infrared transmitter out of a test run, a bad ZB_EXP_WEB stops the run cleanly, and a
-request to the stand-in takes no proxy and follows no redirect.
+search, a place looked up by name, the photo's description) are run only against the local stand-in
+(tests/mocks/fake_web.py), to check the experiments' guards: ZB_EXP_NO_HARDWARE keeps the camera and the
+infrared transmitter out of a test run, a bad ZB_EXP_WEB stops the run cleanly, and a request to the
+stand-in takes no proxy and follows no redirect. no_real_web runs one case through the live sets' own runner
+(tests/agent_eval.py run_case) against a scripted model (tests/mocks/fake_model.py) that calls every tool
+that reads the web, with every proxy variable pointing at a trap: no request leaves 127.x (the trap sees
+none), each service is answered by the stand-in, the search carries the dummy key and never the inherited
+one, and a case whose environment holds a real key is refused before the app starts.
 
 usage: tests/tools_cli.py [path/to/zero_bot]          (default: build/cli/zero_bot)
 """
@@ -318,6 +322,7 @@ def run_all(root):
     error(s, "smart_home", {"action": "on", "target": "lamp"}, "no smart-home device")
 
     guards(root)
+    no_real_web(root)
 
 
 class Trap:
@@ -341,7 +346,7 @@ class Trap:
                 self.send_header("Location", "http://127.0.0.1:%d/landed" % self.server.server_address[1])
                 self.send_header("Content-Length", "0")
                 self.end_headers()
-            do_GET = do_POST = answer
+            do_GET = do_POST = do_CONNECT = answer   # CONNECT: an https request sent through it as a proxy
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.url = "http://127.0.0.1:%d" % self.server.server_address[1]
@@ -431,6 +436,80 @@ def guards(root):
         trap.close()
         web.stdin.close()
         web.wait(timeout=10)
+
+
+
+def no_real_web(root):
+    """A live set's case, run by the live sets' own runner with a scripted model, reaches no web service but
+    the stand-in: zero requests leave 127.x."""
+    sys.path.insert(0, HERE)
+    sys.dont_write_bytecode = True
+    import agent_eval as ev
+    g = State(root, "no-real-web")
+    trap = Trap()
+    log, weblog = g.dir + "/model.log", g.dir + "/web.log"
+    calls = [{"name": "web_search", "args": {"query": "louvre opening hours on sunday"}},
+             {"name": "weather", "args": {"location": "Lisbon", "days": 2}},
+             {"name": "convert_currency", "args": {"amount": 10, "from": "EUR", "to": "GBP"}},
+             {"name": "stock_price", "args": {"symbol": "Rolls Royce"}},
+             {"name": "stock_price", "args": {"symbol": "AAPL"}},
+             {"name": "world_time", "args": {"place": "Auckland"}}]
+    with open(g.dir + "/script.json", "w") as f:
+        json.dump({"rules": [{"when": {"said": "check everything", "last": "user"}, "reply": {"calls": calls}},
+                             {"when": {"last": "tool"}, "reply": {"text": "Here is what I found."}}],
+                   "default": {"text": "Here is what I found."}}, f)
+    model = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "fake_model.py"), g.dir + "/script.json", log],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    web = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "fake_web.py"), "--log", weblog],
+                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    saved_web = dict(ev._web)
+    try:
+        mline, wline = model.stdout.readline().split(), web.stdout.readline().split()
+        check("the scripted model and the stand-in web start", mline[:2] == ["MODEL", "listening"] and wline[:2] == ["WEB", "listening"],
+              (mline, wline))
+        ev._web.update(proc=web, base="http://127.0.0.1:%s" % wline[2])   # the runner's stand-in, logging
+        proxy = {k: trap.url for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy")}
+        base = dict(g.env(), ZB_API_BASE="http://127.0.0.1:%s/v1" % mline[2], ZB_API_KEY="test", ZB_SEARCH_KEY="inherited-key-0001",
+                    ZB_EXP_WEB="http://127.0.0.1:9/elsewhere", no_proxy="127.0.0.1", NO_PROXY="127.0.0.1", **proxy)
+        base.pop("ZB_TEST_NETWORK", None)
+        case = {"name": "no-real-web", "turns": ["check everything"], "env": {}, "steer": None, "checks": [], "must": []}
+        ev.REAL_KEYS[:] = ["inherited-key-0001"]
+        try:
+            ev.run_case(APP, dict(base, OTHER="x inherited-key-0001"), case)
+            check("a case whose environment holds a real key is refused", False)
+        except RuntimeError as e:
+            check("a case whose environment holds a real key is refused", "OTHER holds a real web-service key" in str(e), str(e))
+        check("the refused case never started the app", not os.path.exists(log) or not open(log).read().strip())
+        run = ev.run_case(APP, base, case)
+        turn = (run["turns"] or [{}])[0]
+        got = {}
+        for name, args in turn.get("tools", []):
+            got.setdefault(name, []).append(args)
+        results = [r for r in turn.get("results", [])] if isinstance(turn.get("results"), list) else []
+        check("the scripted turn ran every web tool", sorted(got) == sorted({c["name"] for c in calls}), sorted(got))
+        check("no tool failed", not any(str(r).startswith("ERROR") for r in results), results[:3])
+        check("zero requests left 127.x (the trap, every proxy, saw none)", not trap.seen, trap.seen)
+        seen = [json.loads(l) for l in open(weblog)] if os.path.exists(weblog) else []
+        hosts = {w["host"].split(".")[0] + "." + w["path"].strip("/").split("/")[0] for w in seen}
+        for want in ("api.search", "geocoding-api.v1", "api.v1", "open.v6", "query1.v1", "query1.v8"):
+            check("the stand-in answered %s" % want, want in hosts, sorted(hosts))
+        check("every stand-in answer was a success", seen and all(w["status"] == 200 for w in seen), [w for w in seen if w["status"] != 200])
+        check("the search carried the dummy key, not the inherited one", [w.get("key") for w in seen if w["path"] == "/search"] == ["stand-in"],
+              [w.get("key") for w in seen])
+        check("the run used the runner's stand-in, not an inherited ZB_EXP_WEB", all(w["fixture"] == "default" for w in seen))
+        # The control: without the stand-in the same tool goes to the real service, and the trap catches it
+        # (it answers the proxy's CONNECT with a redirect, so nothing leaves this computer).
+        del trap.seen[:]
+        g.run("convert_currency", {"amount": 1, "from": "EUR", "to": "GBP"}, **proxy)
+        check("the trap catches a request for a real web service", any("CONNECT open.er-api.com:443" in x for x in trap.seen), trap.seen)
+    finally:
+        ev.REAL_KEYS[:] = []
+        ev._web.clear()
+        ev._web.update(saved_web)
+        trap.close()
+        for p in (model, web):
+            p.stdin.close()
+            p.wait(timeout=10)
 
 
 if __name__ == "__main__":

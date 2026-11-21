@@ -9,7 +9,7 @@ pass/fail, tool calls, timings and averages, so changes to prompts, tool descrip
 the loop can be compared run against run.
 
 Usage:
-    . path/to/env.sh            # sets ZB_API_BASE, ZB_API_KEY, optional ZB_SEARCH_KEY
+    . path/to/env.sh            # sets ZB_API_BASE and ZB_API_KEY (the AI service; nothing else)
     tests/agent_eval.py [--bin build/cli/zero_bot] [--repeat N] [--only substring[,substring]]
                         [--fast 0|1] [--jobs N] [--json out.json] [--rescore out.json] [--trace]
 
@@ -18,7 +18,10 @@ Usage:
 summarises such files. --validate checks the cases as written and runs nothing.
 
 Side effects are disabled (ZB_DRY_RUN): no music plays, no infrared is sent and no smart-home
-device is switched. Every case starts from an empty calendar, memory and settings, in a home folder
+device is switched. No case reaches a real web service: every web read a tool makes (search, forecasts,
+place names, exchange rates, prices) goes to the stand-in web (tests/mocks/fake_web.py, ZB_EXP_WEB, set
+last by run_case), search gets a dummy key, an inherited ZB_SEARCH_KEY never reaches the app, and a run
+refuses to start when a case or the binary could still reach a real one (web_guard, probe_binary). Every case starts from an empty calendar, memory and settings, in a home folder
 of the run's own with a stand-in music library (MUSIC_LIBRARY), a fixture photo for the camera and
 ZB_EXP_NO_HARDWARE (camera and infrared refuse); the smart-home cases start from a made-up home on
 the stand-in test network (ZB_TEST_NETWORK). A case that must really reach a device (a TV that does
@@ -699,14 +702,57 @@ def every_turn(check):
 LIVE = {"ZB_DRY_RUN": None}
 _ports, _ports_lock = {}, threading.Lock()
 
-# The stand-in web (tests/mocks/fake_web.py): web search, forecasts and place names from canned
-# fixtures, and search without a key, through the cli build's ZB_EXP_WEB. "@web" in a case's env is
-# replaced by the stand-in's address when the case runs; one stand-in serves the whole run.
+# The stand-in web (tests/mocks/fake_web.py): every web service a tool reads (search, forecasts, place
+# names, exchange rates, prices), through the cli build's ZB_EXP_WEB, for every case: run_case sets it
+# last, with the fixture a case names ("@web/NAME" in its env; "default" otherwise) and a dummy search key
+# (SEARCH_DUMMY; the stand-in takes no other). One stand-in serves the whole run.
 def web(fixture="default"):
-    return {"ZB_EXP_WEB": "@web/" + fixture, "ZB_SEARCH_KEY": "stand-in"}
+    return {"ZB_EXP_WEB": "@web/" + fixture, "ZB_SEARCH_KEY": SEARCH_DUMMY}
 
+SEARCH_DUMMY = "stand-in"
 WEB = web()
 _web = {}
+# Keys for web services that a run must never pass on (read before isolated_env removes them): web_guard
+# refuses a case whose environment holds one anywhere.
+WEB_KEYS = ("ZB_SEARCH_KEY",)
+REAL_KEYS = [v for v in (os.environ.get(k) for k in WEB_KEYS) if v and v != SEARCH_DUMMY]
+STAND_IN = re.compile(r"http://127\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){2}(?::\d{1,5})?(?:/[\w.-]*)*")
+
+def case_web_env(env, c):
+    """ENV with the web as run_case sets it for case c: the stand-in, and the dummy key unless c asks for none."""
+    env = dict(env, ZB_EXP_WEB=web_base() + "/" + web_fixture(c))
+    for k in WEB_KEYS:
+        if (c.get("env") or {}).get(k, SEARCH_DUMMY) is None: env.pop(k, None)
+        else: env[k] = SEARCH_DUMMY
+    return env
+
+def preflight(env, cases, validate_errors):
+    """Why a live run must not start: a case as written could reach a real web service (VALIDATE_ERRORS, the
+    runner's own validation of the cases), or the environment every case starts from holds a real key."""
+    problems = list(validate_errors)
+    for c in cases:
+        problems += ["%s: %s" % (c["name"], p) for p in web_guard(case_web_env(env, c), c.get("env") or {})]
+    return problems
+
+def web_fixture(c):
+    """The stand-in fixture a case names ("@web/NAME" in its env), or "default"."""
+    v = (c.get("env") or {}).get("ZB_EXP_WEB")
+    return v[5:] if isinstance(v, str) and v.startswith("@web/") and v[5:] else "default"
+
+def web_guard(env, case_env=None):
+    """Why this environment could still reach a real web service or carry a real key ([] when it cannot): the
+    stand-in must be set to an http://127.x address, the search key must be the dummy or absent (absent only
+    when the case asks for no key), and no variable may hold a real key."""
+    problems = []
+    if not STAND_IN.fullmatch(env.get("ZB_EXP_WEB") or ""):
+        problems.append("ZB_EXP_WEB is %r, not the stand-in web on 127.x" % env.get("ZB_EXP_WEB"))
+    for k in WEB_KEYS:
+        if k in env and env[k] != SEARCH_DUMMY: problems.append("%s is not the stand-in's dummy key" % k)
+        elif k not in env and case_env is not None and case_env.get(k, "") is not None:
+            problems.append("%s is missing (only a case that asks for no key goes without)" % k)
+    for name, value in env.items():
+        if any(key in str(value) for key in REAL_KEYS): problems.append("%s holds a real web-service key" % name)
+    return problems
 
 def web_base():
     with _ports_lock:
@@ -1606,9 +1652,8 @@ def run_case(binary, base_env, c):
         if isinstance(home, tuple): home, device_log = home      # and a simulated device whose log is kept
         json.dump(home, open(state + "/data/zero-bot/smarthome.json", "w"))
     for k, v in c["env"].items():
-        if k in GUARDED: continue   # validate() reports it
+        if k in GUARDED or k in ("ZB_EXP_WEB",) + WEB_KEYS: continue   # validate() reports it; the web is set below
         if v is None: env.pop(k, None)
-        elif isinstance(v, str) and v.startswith("@web"): env[k] = web_base() + v[4:]   # the stand-in web, started once
         else: env[k] = v
     # The guards, last. No hardware beyond what the case simulates: camera and infrared refuse (experiment
     # builds), and the camera's photo is a fixture (ZB_EVAL_CAMERA, a runner's choice, may name another).
@@ -1616,6 +1661,13 @@ def run_case(binary, base_env, c):
                ZB_EXP_NO_HARDWARE="1", ZB_FAKE_CAMERA=base_env.get("ZB_FAKE_CAMERA") or CAMERA_FIXTURE, ZB_EVAL_RECORDS=records)
     if home is not None: env["ZB_TEST_NETWORK"] = "1"
     else: env.pop("ZB_TEST_NETWORK", None)
+    # The web, last: every case on the stand-in (the fixture it names), with the dummy search key unless it
+    # asks for none; a real key never. A case whose environment could reach a real web service is refused.
+    env = case_web_env(env, c)
+    refused = web_guard(env, c["env"])
+    if refused:
+        shutil.rmtree(state, ignore_errors=True)
+        raise RuntimeError("%s: refused, it could reach a real web service: %s" % (c["name"], "; ".join(refused)))
     if c["env"].get("ZB_DRY_RUN", "") is None and device_home(home): env.pop("ZB_DRY_RUN", None)
     else: env["ZB_DRY_RUN"] = "1"
     if "ZB_DRY_RUN" not in env:
@@ -1871,19 +1923,24 @@ def _sha1(data):
 
 def fixtures_of(c):
     """What the fixtures a case runs against hold, each as a sha1: the music library and the camera's
-    picture (every case), the stand-in web (its source: fixtures and how it serves them; cases with
-    "@web/..."), the simulated Fire TV (a case whose home starts one)."""
+    picture, the stand-in web (its code and data: every case runs against it), the simulated Fire TV (a case whose home starts one)."""
     import inspect
     here = os.path.dirname(os.path.abspath(__file__))
-    out = {"music": _sha1(json.dumps(MUSIC_LIBRARY)), "camera": _sha1(open(CAMERA_FIXTURE, "rb").read())}
-    if any(isinstance(v, str) and v.startswith("@web") for v in (c.get("env") or {}).values()):
-        out["web"] = _sha1(open(os.path.join(here, "mocks", "fake_web.py"), "rb").read())
+    out = {"music": _sha1(json.dumps(MUSIC_LIBRARY)), "camera": _sha1(open(CAMERA_FIXTURE, "rb").read()), "web": web_version()}
     home = c.get("home")
     if callable(home):
         try: src = inspect.getsource(home)
         except (OSError, TypeError): src = ""
         if "mock_firetv" in src: out["firetv"] = _sha1(open(os.path.join(here, "mocks", "firetv", "mock_firetv.py"), "rb").read())
     return out
+
+def web_version():
+    """The stand-in web every case runs against: its code and every data file beside it (tests/mocks/web/)."""
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks")
+    data = os.path.join(here, "web")
+    parts = [open(os.path.join(here, "fake_web.py"), "rb").read()] + \
+            [name.encode() + open(os.path.join(data, name), "rb").read() for name in sorted(os.listdir(data))]
+    return _sha1(b"\0".join(parts))
 
 def fixture_version(c):
     """One short string for fixtures_of(c), as results carry it ("fixtures")."""
@@ -1921,8 +1978,9 @@ def result_record(c, run, outcome, problems, traced=None, which="scored", **extr
 
 def probe_binary(binary):
     """Why a binary cannot run the live sets ([] when it can): it must be an experiments build that writes
-    the records file, of this version, and says it refuses hardware (ZB_EXP_NO_HARDWARE) and has the
-    stand-in web. It is run once with no request, in an empty home of its own, with dry run on."""
+    the records file, of this version, and says it refuses hardware (ZB_EXP_NO_HARDWARE) and sends every
+    tool's web read to the stand-in web ("web_all": an older build sends rates and prices to the real
+    services). It is run once with no request, in an empty home of its own, with dry run on."""
     folder = tempfile.mkdtemp(prefix="zb-probe-")
     try:
         path = os.path.join(folder, "records.jsonl")
@@ -1939,7 +1997,7 @@ def probe_binary(binary):
         caps = first.get("caps") if isinstance(first.get("caps"), list) else []
         problems = []
         if first.get("v") != RECORDS_VERSION or first.get("ev") != "start": problems.append("%s writes records of another version" % binary)
-        problems += ["%s has no %s" % (binary, x) for x in ("records", "no_hardware", "web") if x not in caps]
+        problems += ["%s has no %s" % (binary, x) for x in ("records", "no_hardware", "web", "web_all") if x not in caps]
         if not recs or recs[-1].get("ev") != "end": problems.append("%s did not write the end of its run" % binary)
         return problems
     finally:
@@ -1979,9 +2037,11 @@ def validate(cases):
             if k == "ZB_DRY_RUN" and v is None and not (callable(c.get("home")) or device_home(c.get("home"))):
                 err("only a case whose home has a simulated device to reach may run without ZB_DRY_RUN")
             if not (v is None or isinstance(v, str)): err("env %s must be text or null" % k)
-            if isinstance(v, str) and v.startswith("@web"):
-                fx = v[5:] or "default"
-                if not v.startswith("@web/") or fx not in fake_web.FIXTURES: err("env %s names a stand-in fixture that does not exist: %r" % (k, v))
+            if k == "ZB_EXP_WEB" and not (isinstance(v, str) and v.startswith("@web/") and v[5:] in fake_web.FIXTURES):
+                err("env %s must name a stand-in fixture (\"@web/NAME\"): %r" % (k, v))
+            if k in WEB_KEYS and v not in (None, SEARCH_DUMMY): err("env %s may only be null (no key) or the dummy %r" % (k, SEARCH_DUMMY))
+        if (c.get("env") or {}).get("ZB_DRY_RUN", "") is None and c.get("radio"):
+            err("a case that runs without ZB_DRY_RUN may not have radio stations (a station is checked over the internet)")
         for i in c.get("long_ok", []):
             if not (isinstance(i, int) and -n <= i < n): err("long_ok names turn %r; the case has %d" % (i, n))
     return errors
@@ -2020,11 +2080,12 @@ def make_music_library(folder):
 
 def isolated_env(home):
     """The environment every case of a run starts from: side effects off (ZB_DRY_RUN, ZB_NO_AUDIO), an empty
-    home folder of the run's own (so nothing under the home of whoever runs it is read), and the stand-in
-    music library unless ZB_EVAL_MUSIC_DIR names one."""
+    home folder of the run's own (so nothing under the home of whoever runs it is read), no web-service key
+    (WEB_KEYS), and the stand-in music library unless ZB_EVAL_MUSIC_DIR names one."""
     if "ZB_EVAL_MUSIC_DIR" not in os.environ:
         os.environ["ZB_EVAL_MUSIC_DIR"] = make_music_library(os.path.join(home, "Music"))
     env = dict(os.environ, ZB_DRY_RUN="1", ZB_NO_AUDIO="1", HOME=home)
+    for k in WEB_KEYS + ("ZB_EXP_WEB",): env.pop(k, None)   # run_case sets the stand-in's own, never these
     if os.environ.get("ZB_EVAL_CAMERA"): env["ZB_FAKE_CAMERA"] = os.environ["ZB_EVAL_CAMERA"]
     return env
 
@@ -2068,6 +2129,11 @@ def main():
 
     wanted = [w for w in args.only.split(",") if w]
     cases = [c for c in CASES if not wanted or any(w in c["name"] for w in wanted)]
+    if not args.rescore:
+        refused = preflight(env, cases, validate(cases))
+        if refused:
+            shutil.rmtree(home, ignore_errors=True)
+            sys.exit("refused: a case could reach a real web service or carry a real key:\n  " + "\n  ".join(refused))
     jobs = [c for c in cases for _ in range(len(saved.get(c["name"], [])) if args.rescore else args.repeat)]
     run = (lambda c: run_from_saved(saved[c["name"]].pop(0), c)) if args.rescore else (lambda c: run_case(args.bin, env, c))
     traced = args.trace if not args.rescore else None

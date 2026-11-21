@@ -197,13 +197,13 @@ groups need first. Which to use:
 - To see that everything offline still passes: `tests/run.py --profile quick` (about 5 minutes; it
   leaves out Fire TV's end-to-end test and the live sets). `--profile offline` includes Fire TV.
 - Named groups: `tests/run.py --groups unit,hue`; a live check:
-  `tests/run.py --groups live-suite --tags timer --repeat 5 --no-search`; a variant against a
+  `tests/run.py --groups live-suite --tags timer --repeat 5`; a variant against a
   baseline: `--exp ZB_EXP_TOOLS=lean --baseline B.json` (inherited `ZB_EXP_*` are never passed on).
 - Before a release: `tests/run.py --profile release --baseline EVAL.json,SUITE.json` (or `--groups
   release`, the same mode) builds (unless `--no-build`: then a build older than any input stops it),
   runs every offline group, every case of both live sets once, then the gate of `tests/exp_compare.py`
   with `--release`. It refuses `--tags`, `--sample`, `--skip-tags`, `--only`, `--scored-only`,
-  `--fast` and `--exp`; `--no-search` is the declared exception. Live cases run only on a cli build
+  `--fast` and `--exp`. Live cases run only on a cli build
   that is an experiments build, whose hardware guard holds and which writes the records. It does not
   start without a baseline that covers the roster (below): record one with
   `tests/run.py --groups live-scored,live-suite` (its `eval.json` and `suite.json`). It also builds
@@ -212,8 +212,13 @@ groups need first. Which to use:
   `[state]`) or a build machine's path (`/home/`).
 
 `ZB_EVAL_WRAPPER` prefixes every live run (a lock, or a script that sets the service's variables);
-live runs always use `--jobs 1`. `--no-search` leaves out what needs the real web search (cases on
-the stand-in web stay). Groups never inherit switches that change what they test (`ZB_UPDATE_SHOTS`,
+live runs always use `--jobs 1`. **No test uses a live web service** (the owner's search allowance is
+spent by test runs otherwise): every live case's web reads, search included, go to the stand-in web
+(below), with a dummy search key; the runners remove any inherited `ZB_SEARCH_KEY` and refuse to start
+when a case or the binary could still reach a real web service (`agent_eval.py` `preflight`, `web_guard`,
+`probe_binary`'s `web_all`). `tools_cli.py` (`no_real_web`) proves it: a case run by the runner itself
+against a scripted model that calls every web tool, with every proxy variable pointing at a trap, makes no
+request outside 127.x. `--no-search` is accepted and changes nothing. Groups never inherit switches that change what they test (`ZB_UPDATE_SHOTS`,
 `ZB_UPDATE_SNAPSHOTS`, `ZB_UNIT_*`, `HUE_E2E_ONLY`, `ZB_FAST_MODE`, `ZB_EXP_*`). A new test script
 gets a line in the group table at the top of `tests/run.py`, and a rule in its path map for the
 files it covers.
@@ -333,7 +338,7 @@ What exists:
   `--shots DIR` (render every screen to PNG; `sim` build), `--keydump`, `--version`.
 - **Scored agent set**: `tests/agent_eval.py` runs spoken-style requests through the `cli`
   build against a live service and checks tool calls, arguments and answers. It needs
-  `ZB_API_BASE`, `ZB_API_KEY`, optionally `ZB_SEARCH_KEY`, and model names in `ZB_EVAL_LLM_MODEL`
+  `ZB_API_BASE`, `ZB_API_KEY` (no search key), and model names in `ZB_EVAL_LLM_MODEL`
   etc. Use `--only`, `--repeat N` (models are not deterministic: repeat a changed case 5 to 8
   times) and `--fast 0|1`. Expect one or two flaky cases; compare against a run of the
   previous code before blaming a change. Cases run with `ZB_DRY_RUN`, except those that must reach a
@@ -357,11 +362,12 @@ What exists:
   conversation (`chk_moved_item`: one saved, then exactly one at the new time). Numbers keep their
   sign and times their am or pm. A run that times out counts once, in the turn it stopped in; later
   turns are "not started", and the summary gives the completion rate and the time to the first
-  sentence (with `--trace`) beside the time to the first text. `web(fixture)` in a case's env sends
-  web search, forecasts and place names to a stand-in (`tests/mocks/fake_web.py`, through the `cli`
-  build's `ZB_EXP_WEB`, honoured only for an `http://127.x` address and compiled out of the device
-  build): canned answers, search without a key, forecasts (`rain59`, `rain60`, `rainmissing`) and event
-  times (`events`: one published, one not announced). **The scorer's own test**: `tests/scorer_test.py`
+  sentence (with `--trace`) beside the time to the first text. Every case's web reads (search,
+  forecasts, place names, exchange rates, stock prices) go to the stand-in web (`tests/mocks/fake_web.py`
+  and its data in `tests/mocks/web/`, through the `cli` build's `ZB_EXP_WEB`, honoured only for an
+  `http://127.x` address and compiled out of the device build); `web(fixture)` in a case's env picks a
+  fixture other than `default`: forecasts (`rain59`, `rain60`, `rainmissing`), event times (`events`: one
+  published, one not announced) and the edges (below). **The scorer's own test**: `tests/scorer_test.py`
   (offline, no service) feeds deliberately wrong transcripts that must fail and right ones that must
   pass, one per check, each asserting its problem text; run it after any change to a check, and add a
   wrong transcript for any new kind of mistake.

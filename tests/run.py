@@ -6,10 +6,10 @@ one line per group and a short summary instead of each script's own output.
     tests/run.py --profile quick                 every offline group but the slow ones (a few minutes)
     tests/run.py --profile change [--base REF]   the groups that cover the files changed since REF
     tests/run.py --profile offline               every offline group
-    tests/run.py --profile release --baseline EVAL.json,SUITE.json [--no-search] [--no-build]
+    tests/run.py --profile release --baseline EVAL.json,SUITE.json [--no-build]
                                                  build, offline, the scored set and the suite once, the gate
     tests/run.py --groups unit,hue               these groups only
-    tests/run.py --groups live-suite --tags timer --repeat 5 --no-search
+    tests/run.py --groups live-suite --tags timer --repeat 5
     tests/run.py --groups live-scored --scored-only radio_ --repeat 5
     tests/run.py --groups live-suite --exp ZB_EXP_TOOLS=lean --baseline B.json    a variant, gated
     tests/run.py ... --plan                      say what would run and why; run nothing
@@ -24,7 +24,9 @@ must be traced too.
 
 A release (--profile release, or --groups release: the same thing) runs every case of both sets as they
 are defined: --tags, --sample, --skip-tags, --only, --scored-only, --fast and --exp are refused, and
---no-search is the one declared exception (the gate is told what it left out). It builds first unless
+--no-search is accepted and changes nothing: every live case's web reads go to the stand-in web
+(tests/mocks/fake_web.py; the runners refuse a case that could reach a real web service), so no run spends
+a search allowance and none needs a search key. It builds first unless
 --no-build, and then a build older than any of its inputs (src, third_party, cmake, CMakeLists.txt,
 CMakePresets.json) stops it. It also builds the device binary (cp0), which no group runs, and fails when that
 binary's version is not the one in CMakeLists.txt or it holds a cli-only string or a path of the build machine. It starts only with a baseline measured against the roster of cases defined
@@ -175,8 +177,7 @@ LIVE_FILE = {"live-scored": "eval.json", "live-suite": "suite.json"}   # their r
 # Inherited switches that change what a group tests: never passed on (the runner sets its own).
 SCRUB = ("ZB_UNIT_BUILD_ONLY", "ZB_UNIT_SKIP_SCRIPTS", "ZB_UPDATE_SHOTS", "ZB_UPDATE_SNAPSHOTS", "HUE_E2E_ONLY",
          "ZB_FAST_MODE", "ZB_EVAL_TRACE")   # ZB_EVAL_TRACE: the live runs are traced by --trace, which records it
-# What a release refuses: it runs every case of both sets as they are defined (--no-search is declared, and
-# the gate is told what it left out).
+# What a release refuses: it runs every case of both sets as they are defined.
 RELEASE_REFUSES = ("tags", "sample", "skip_tags", "only", "scored_only", "fast", "exp")
 RUNNER_EXP = ("ZB_EXP_TRACE", "ZB_EXP_WEB", "ZB_EXP_NO_HARDWARE")   # set by the live sets' runners per case
 
@@ -210,7 +211,7 @@ PATH_RULES = [
     (r"^tests/suite/from_conversation\.py$", ["cases", "scorer", "loop"],
      "drafts a case from a saved conversation (agent_loop_test.py runs it)"),
     (r"^tests/suite/", ["cases", "scorer"], "the generated suite (scorer_test.py reads its cases)"),
-    (r"^tests/mocks/fake_web\.py$", ["cases", "scorer", "tools"],
+    (r"^tests/mocks/(fake_web\.py|web/)", ["cases", "scorer", "tools"],
      "the stand-in web (its fixtures: the validators and scorer_test.py; tools_cli.py starts it)"),
     (r"^tests/(golden/|shots/|shots_compare\.py$)", ["screens"], "the golden screenshots"),
     (r"^tests/mocks/mock_tapo\.py$", ["tapo", "loop"],
@@ -349,82 +350,6 @@ def diff_reader(fork):
 
 
 # ---------------------------------------------------------------- the live sets
-def stand_in_web(c):
-    """The case's web search goes to the stand-in (tests/mocks/fake_web.py), which needs no key."""
-    return "ZB_EXP_WEB" in (c.get("env") or {})
-
-
-def exact_only(cases, keep):
-    """KEEP as one --only value when it selects exactly those names among CASES (--only matches any name
-    containing one of its parts), else None."""
-    want = set(keep)
-    return ",".join(keep) if {c["name"] for c in cases if any(k in c["name"] for k in keep)} == want else None
-
-
-def search_free_eval_cases(only):
-    """The scored set's names that need no real web search (the stand-in's cases are kept), as an --only
-    that selects exactly them, or None when that cannot be done cleanly (names that contain one another)."""
-    try:
-        sys.path.insert(0, HERE)
-        import agent_eval as ev
-        cases = ev.CASES
-    except Exception:  # the scored set could not be read: say the search cases are void instead
-        return None
-    finally:
-        if sys.path and sys.path[0] == HERE:
-            sys.path.pop(0)
-    wanted = [w for w in only.split(",") if w]
-
-    def picked(c, words):
-        return not words or any(w in c["name"] for w in words)
-
-    def needs_search(c):
-        if stand_in_web(c):
-            return False
-        if "ZB_SEARCH_KEY" in c.get("env", {}) and c["env"]["ZB_SEARCH_KEY"] is None:
-            return False
-        said = " ".join(t for t in c["turns"] if isinstance(t, str))
-        return "web_search" in c.get("must", []) or \
-            bool(re.search(r"\blook (it )?up\b|\bsearch\b|\bgoogle\b", said, re.I))
-
-    keep = [c["name"] for c in cases if picked(c, wanted) and not needs_search(c)]
-    if keep and exact_only(cases, keep) is None:
-        return None
-    left_out = [c["name"] for c in cases if picked(c, wanted) and needs_search(c)]
-    return keep, left_out
-
-
-def suite_cases():
-    with open(os.path.join(HERE, "suite", "cases.json"), encoding="utf-8") as f:
-        return json.load(f)
-
-
-def suite_selected(o, skip):
-    sys.path.insert(0, HERE)
-    try:
-        import agent_suite as su
-        return su.selected(suite_cases(), argparse.Namespace(tags=o.tags, skip_tags=skip, only=o.only,
-                                                             sample=o.sample, seed=o.seed))
-    finally:
-        if sys.path and sys.path[0] == HERE:
-            sys.path.pop(0)
-
-
-def search_free_suite(o):
-    """With --no-search: the suite's chosen cases but those that need the real web search (tagged search,
-    without the stand-in), as (--only value, kept names, left-out names); None when that cannot be done
-    cleanly, and then --skip-tags search leaves out the stand-in's cases too."""
-    try:
-        chosen = suite_selected(o, o.skip_tags)
-        cases = suite_cases()
-    except Exception:
-        return None
-    keep = [c["name"] for c in chosen if "search" not in c["tags"] or stand_in_web(c)]
-    left = [c["name"] for c in chosen if "search" in c["tags"] and not stand_in_web(c)]
-    only = exact_only(cases, keep) if keep else ""
-    return None if only is None else (only, keep, left)
-
-
 PER_CASE = 3.6   # seconds a live case takes at --jobs 1 (whole runs: 480 s for 123, 2100 s for 601)
 
 
@@ -433,14 +358,8 @@ def live_count(name, o):
     sys.path.insert(0, HERE)
     try:
         if name == "live-suite":
-            free = search_free_suite(o) if o.no_search else None
-            if free is not None:
-                return len(free[1])
-            return len(suite_selected(o, skip_tags(o)))
+            return len(suite_selected(o, o.skip_tags))
         only = scored_only(o)
-        free = search_free_eval_cases(only) if o.no_search else None
-        if free is not None:
-            return len(free[0])
         import agent_eval as ev
         words = [w for w in only.split(",") if w]
         return sum(1 for c in ev.CASES if not words or any(w in c["name"] for w in words))
@@ -472,10 +391,6 @@ def eval_command(o, run):
     # both be traced (tests/exp_compare.py leaves out traced-against-untraced pairs).
     cmd = live_prefix() + py("tests/agent_eval.py", "--jobs", "1", "--trace", "--json", os.path.join(run, "eval.json"))
     only = scored_only(o)
-    if o.no_search:
-        free = search_free_eval_cases(only)
-        if free and free[0]:
-            only = ",".join(free[0])
     if only:
         cmd += ["--only", only]
     if o.repeat > 1:
@@ -485,25 +400,13 @@ def eval_command(o, run):
     return cmd
 
 
-def skip_tags(o):
-    """The suite's --skip-tags: the user's, and search when --no-search cannot keep the stand-in's cases."""
-    tags = [t for t in o.skip_tags.split(",") if t]
-    if o.no_search and "search" not in tags:
-        tags.append("search")
-    return ",".join(tags)
-
-
 def suite_command(o, run):
     cmd = live_prefix() + py("tests/agent_suite.py", "--jobs", "1", "--trace", "--json", os.path.join(run, "suite.json"))
-    free = search_free_suite(o) if o.no_search else None
-    if free is not None:
-        cmd += ["--only", free[0]] if free[0] else []    # the selection, made here, minus the real-search cases
-    else:
-        for flag, value in (("--tags", o.tags), ("--skip-tags", skip_tags(o)), ("--only", o.only)):
-            if value:
-                cmd += [flag, value]
-        if o.sample:
-            cmd += ["--sample", str(o.sample), "--seed", str(o.seed)]
+    for flag, value in (("--tags", o.tags), ("--skip-tags", o.skip_tags), ("--only", o.only)):
+        if value:
+            cmd += [flag, value]
+    if o.sample:
+        cmd += ["--sample", str(o.sample), "--seed", str(o.seed)]
     if o.repeat > 1:
         cmd += ["--repeat", str(o.repeat)]
     if o.fast is not None:
@@ -527,11 +430,6 @@ def gate_command(o, run):
         cmd += ["--require", ",".join(LIVE_SET[g] for g in ran)]
     if o.skip_tags:
         cmd += ["--skip-tags", o.skip_tags]
-    if o.no_search:   # what this run left out on purpose, so that a critical one is not read as missing
-        left = (search_free_eval_cases(scored_only(o)) or ((), ()))[1] if "live-scored" in ran else ()
-        left = list(left) + (list((search_free_suite(o) or ((), (), ()))[2]) if "live-suite" in ran else [])
-        if left:
-            cmd += ["--not-run", ",".join(left)]
     return cmd
 
 
@@ -542,20 +440,8 @@ def exp_env(o):
 
 def live_notes(o, chosen):
     notes = []
-    if o.no_search and "live-scored" in chosen:
-        free = search_free_eval_cases(scored_only(o))
-        if free:
-            notes.append("scored set without search: left out %s (the stand-in web's cases are kept)"
-                         % (", ".join(free[1]) or "nothing"))
-        else:
-            notes.append("scored set: its search cases could not be left out cleanly; count them as void")
-    if o.no_search and "live-suite" in chosen:
-        free = search_free_suite(o)
-        if free:
-            notes.append("suite without search: left out %d cases that need the real web search (the stand-in "
-                         "web's are kept)" % len(free[2]))
-        else:
-            notes.append("suite: --skip-tags search (the stand-in web's search cases are left out too)")
+    if o.no_search and any(n in chosen for n in LIVE):
+        notes.append("--no-search changes nothing: every live case's web reads go to the stand-in web, search included")
     if any(n in chosen for n in LIVE):
         exp = sorted(k for k in os.environ if k.startswith("ZB_EXP_"))
         if exp:
@@ -819,7 +705,7 @@ def advice_lines(advice, o):
     if not advice:
         return []
     tags, hit, scored = advice
-    ns = " --no-search" if o.no_search else ""
+    ns = ""
     out = ["what the model is told changed (%s): run the live cases it touches five times," % ", ".join(hit)]
     if tags == "all":
         out.append("  tests/run.py --groups live-suite --sample 60 --repeat 5%s   (a few from every category)" % ns)
@@ -1215,7 +1101,8 @@ def parse(argv):
     ap.add_argument("--no-build", action="store_true", help="a release: do not build; any build older than an input stops it")
     ap.add_argument("--live", action="store_true", help="for --profile change: also run the live suite it advises")
     ap.add_argument("--baseline", default="", help="results file(s) to gate the live runs against (A.json[,B.json])")
-    ap.add_argument("--no-search", action="store_true", help="leave out what needs web search (key over quota)")
+    ap.add_argument("--no-search", action="store_true", help="changes nothing (kept for old command lines): every live case "
+                    "uses the stand-in web, search included")
     ap.add_argument("--tags", default="", help="live suite: cases with any of these tags (a+b means both)")
     ap.add_argument("--skip-tags", default="", help="live suite and gate: leave out cases with these tags")
     ap.add_argument("--sample", type=int, default=0, help="live suite: a stratified sample of this many cases")
@@ -1238,7 +1125,7 @@ def parse(argv):
         given = ["--" + k.replace("_", "-") for k in RELEASE_REFUSES if getattr(o, k)]
         if given:
             ap.error("a release runs every case of both sets as defined, with the build as it is: %s cannot be "
-                     "given (--no-search is the one declared exception)" % ", ".join(given))
+                     "given" % ", ".join(given))
         if not o.no_build:
             o.build = True   # a release always builds, unless --no-build: then a stale build stops it
     return o
@@ -1382,7 +1269,7 @@ def self_test():
               (cmd is not None and cmd[-1] == "--validate") == has, cmd)
     check("a command that has nothing to run is left out", None not in commands_of(BY_NAME["cases"], parse([]), "<run>"))
 
-    # The live commands: --jobs 1 and --trace always, the pass-through options, --no-search.
+    # The live commands: --jobs 1 and --trace always, the pass-through options.
     o = parse(["--groups", "live-suite", "--tags", "timer", "--repeat", "5", "--sample", "9"])
     cmd = suite_command(o, "/r")
     check("suite command", cmd[cmd.index("--jobs") + 1] == "1" and "--trace" in cmd and cmd[cmd.index("--tags") + 1] == "timer" and
@@ -1396,48 +1283,27 @@ def self_test():
             del os.environ["ZB_EVAL_WRAPPER"]
         else:
             os.environ["ZB_EVAL_WRAPPER"] = saved
-    o = parse(["--baseline", "b.json", "--no-search", "--skip-tags", "camera", "--groups", "live-suite"])
+    o = parse(["--baseline", "b.json", "--skip-tags", "camera", "--groups", "live-suite"])
     choose(o)
     gate = gate_command(o, "<run>")
-    check("gate: only the asked-for skips (no search: the run left those cases out)", gate[gate.index("--skip-tags") + 1] == "camera", gate)
-    check("gate: the cases left out for no search are named", "--not-run" in gate and
-          "search-001" in gate[gate.index("--not-run") + 1].split(","), gate)
+    check("gate: only the asked-for skips", gate[gate.index("--skip-tags") + 1] == "camera" and "--not-run" not in gate, gate)
     check("gate: a verdict file, and the sets this run ran required", "--verdict" in gate and
           gate[gate.index("--require") + 1] == "suite" and "--release" not in gate, gate)
     o = parse(["--profile", "release", "--baseline", "b.json"])
     choose(o)
     gate = gate_command(o, "<run>")
     check("gate in a release: both sets and the manifest", "--release" in gate and gate[gate.index("--require") + 1] == "scored,suite", gate)
-    free = search_free_eval_cases("")
-    if free is not None:
-        keep, left = free
-        check("no-search leaves out the scored set's search cases", "search" in left and "search_news" in left and
-              "search" not in keep, left)
-        check("no-search keeps the case that runs without a key", "search_no_key" in keep)
-        check("no-search keeps the stand-in web's cases", "home_after_web_no" in keep and "home_after_web_later" in keep, left)
-    o = parse(["--no-search", "--groups", "live-suite"])
-    free = search_free_suite(o)
-    if free is not None:
-        only, keep, left = free
-        check("no-search, suite: the stand-in web's search case is kept", "home-055" in keep and "home-055" not in left, left)
-        check("no-search, suite: real search cases are left out", "search-001" in left and "dialogue-001" in left and
-              "search-001" not in keep, left)
-        cases = suite_cases()
-        check("no-search, suite: --only selects exactly the kept cases",
-              {c["name"] for c in cases if any(k in c["name"] for k in only.split(","))} == set(keep))
-        cmd = suite_command(o, "/r")
-        check("no-search, suite command: the selection, not --skip-tags search", "--skip-tags" not in cmd and "--only" in cmd, cmd[:12])
-        check("no-search, suite count", live_count("live-suite", o) == len(keep))
-        o = parse(["--no-search", "--tags", "home", "--groups", "live-suite"])
-        free = search_free_suite(o)
-        tagged = {c["name"] for c in cases if "home" in c["tags"]}
-        # home-055 and home-056 both take their search from the stand-in web, so both are kept; nothing left out
-        # uses it.
-        by_name = {c["name"]: c for c in cases}
-        check("no-search with --tags: the tags still choose", free and "home-055" in free[1] and "home-056" in free[1]
-              and set(free[1]) <= tagged and not any(stand_in_web(by_name[n]) for n in free[2]), free and free[2][:5])
+    # --no-search is kept for old command lines and changes nothing: every live case uses the stand-in web.
+    for argv in (["--groups", "live-suite,live-scored", "--tags", "search"], ["--profile", "release", "--baseline", "b.json"]):
+        a, b = parse(argv), parse(argv + ["--no-search"])
+        choose(a)
+        choose(b)
+        check("--no-search changes no command (%s)" % " ".join(argv),
+              (suite_command(a, "/r"), eval_command(a, "/r"), gate_command(a, "<run>")) ==
+              (suite_command(b, "/r"), eval_command(b, "/r"), gate_command(b, "<run>")))
+    check("--no-search says it changes nothing", any("changes nothing" in n for n in live_notes(b, LIVE)))
 
-    n = live_count("live-suite", parse(["--only", "timer-001,calc-001", "--no-search"]))
+    n = live_count("live-suite", parse(["--only", "timer-001,calc-001"]))
     check("a live subset's size", n in (None, 2), n)
     if n is not None:
         check("a live subset's time", group_secs("live-suite", parse(["--only", "timer-001", "--repeat", "3"])) < 60)
@@ -1519,7 +1385,7 @@ def self_test():
                 check("refused: " + " ".join(argv), False)
             except SystemExit:
                 check("refused: " + " ".join(argv), True)
-        o = parse(["--groups", "release", "--baseline", good, "--no-search"])
+        o = parse(["--groups", "release", "--baseline", good])
         chosen = choose(o)[0]
         gate = gate_command(o, "<run>")
         check("--groups release: the release's groups, its gate and its build", chosen == PROFILES["release"][1] + ["gate"] and
