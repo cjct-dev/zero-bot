@@ -26,6 +26,7 @@
 #include "core/util.h"
 #include "net/http.h"
 #include "smarthome/color.h"
+#include "smarthome/drivers/support.h"
 #include "smarthome/home.h"
 
 namespace shelly {
@@ -207,22 +208,7 @@ bool ref_flag(const home::Thing &t, const char *key) { return boolean(member(t.r
 // ================================================================ detail
 namespace detail {
 
-bool too_deep(const std::string &text, int max) {
-    int depth = 0;
-    bool in_string = false, escaped = false;
-    for (const char c : text) {
-        if (in_string) {
-            if (escaped) escaped = false;
-            else if (c == '\\') escaped = true;
-            else if (c == '"') in_string = false;
-            continue;
-        }
-        if (c == '"') in_string = true;
-        else if (c == '[' || c == '{') { if (++depth > max) return true; }
-        else if (c == ']' || c == '}') --depth;
-    }
-    return false;
-}
+bool too_deep(const std::string &text, int max) { return support::json_too_deep(text, max); }
 
 bool valid_ipv4(const std::string &ip) {
     if (ip.empty() || ip.size() > 15) return false;

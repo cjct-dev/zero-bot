@@ -22,6 +22,7 @@
 #include <set>
 
 #include "core/util.h"
+#include "smarthome/drivers/support.h"
 #include "smarthome/home.h"
 
 namespace kasa {
@@ -454,24 +455,7 @@ std::string frame(const std::string &plain) {
     return out + encrypt(plain);
 }
 
-bool too_deep(const std::string &t, int max) {
-    int depth = 0;
-    bool in_string = false, escaped = false;
-    for (const char c : t) {
-        if (in_string) {
-            if (escaped) escaped = false;
-            else if (c == '\\') escaped = true;
-            else if (c == '"') in_string = false;
-        } else if (c == '"') {
-            in_string = true;
-        } else if (c == '[' || c == '{') {
-            if (++depth > max) return true;
-        } else if (c == ']' || c == '}') {
-            --depth;
-        }
-    }
-    return false;
-}
+bool too_deep(const std::string &t, int max) { return support::json_too_deep(t, max); }
 
 bool parse_reply(const std::string &plain, json &out) {
     if (plain.size() > kMaxReply || too_deep(plain)) return false;

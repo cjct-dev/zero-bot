@@ -37,6 +37,7 @@
 
 #include "net/http.h"
 #include "smarthome/color.h"
+#include "smarthome/drivers/support.h"
 
 namespace hue {
 namespace detail {
@@ -164,25 +165,7 @@ std::string clean_name(const std::string &raw, size_t max) {
     return t;
 }
 
-bool too_deep(const std::string &text, int max) {
-    int depth = 0;
-    bool in_string = false, escaped = false;
-    for (const char c : text) {
-        if (in_string) {
-            if (escaped) escaped = false;
-            else if (c == '\\') escaped = true;
-            else if (c == '"') in_string = false;
-            continue;
-        }
-        if (c == '"') in_string = true;
-        else if (c == '[' || c == '{') {
-            if (++depth > max) return true;
-        } else if (c == ']' || c == '}') {
-            --depth;
-        }
-    }
-    return false;
-}
+bool too_deep(const std::string &text, int max) { return support::json_too_deep(text, max); }
 
 static bool charset_ok(const std::string &s, size_t max, const char *extra) {
     if (s.empty() || s.size() > max) return false;

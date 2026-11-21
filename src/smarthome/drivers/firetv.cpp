@@ -65,6 +65,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "smarthome/drivers/support.h"
+
 namespace firetv {
 
 // Only kNoAnswer and kAlreadyOff messages may use the words control.cpp's unreachable() looks
@@ -270,24 +272,7 @@ std::string clean_name(const std::string &raw, size_t max) {
     return out;
 }
 
-bool too_deep(const std::string &text, int max) {
-    int depth = 0;
-    bool in_string = false, escaped = false;
-    for (const char c : text) {
-        if (in_string) {
-            if (escaped) escaped = false;
-            else if (c == '\\') escaped = true;
-            else if (c == '"') in_string = false;
-        } else if (c == '"') {
-            in_string = true;
-        } else if (c == '[' || c == '{') {
-            if (++depth > max) return true;
-        } else if (c == ']' || c == '}') {
-            depth--;
-        }
-    }
-    return false;
-}
+bool too_deep(const std::string &text, int max) { return support::json_too_deep(text, max); }
 
 std::string normalise_mac(const std::string &text) {
     const std::string t = trim(text);
