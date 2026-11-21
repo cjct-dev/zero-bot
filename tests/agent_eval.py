@@ -192,7 +192,7 @@ def counts(turn, name, result, args=None):
     # A read counts though it failed (a search with no result is still a search), except a web read, which on the
     # stand-in must work (a failed one is a broken fixture or a failure the case expects, and then it uses "tried"),
     # and any read in a case that names a stand-in fixture.
-    return worked(result) or (not is_change(name, args) and not turn.get("strict_reads") and name not in WEB_TOOLS)
+    return worked(result) or (not is_change(name, args) and not turn.get("strict_reads") and name not in WEB_READS)
 
 def calls(turn, name):
     """Parsed arguments of the calls to `name` (or any of a|b) in this turn that did what they asked: a
@@ -316,14 +316,14 @@ def chk_currency_split(t):
     res = [r for r in results(t, "convert_currency") if isinstance(r, dict) and "rate" in r]
     if not res: return ["no usable convert_currency result"]
     share = 85 * res[0]["rate"] / 3
-    return [] if says_money(t["answer"], share, money_tol(share)) else ["answer should give a third of the converted amount, %.2f" % share]
+    return [] if says_money(t["answer"], share, money_tol(share), "GBP") else ["answer should give a third of the converted amount, %.2f" % share]
 
 def chk_two_currencies(t):
     got = {str(r.get("to")): r for r in results(t, "convert_currency") if isinstance(r, dict)}
     problems = []
     for code in ("EUR", "JPY"):
         if code not in got: problems.append("no convert_currency call to " + code)
-        elif not says_money(t["answer"], 200 * got[code]["rate"], money_tol(200 * got[code]["rate"])):
+        elif not says_money(t["answer"], 200 * got[code]["rate"], money_tol(200 * got[code]["rate"]), code):
             problems.append("answer should give %.2f %s" % (200 * got[code]["rate"], code))
     return problems
 
@@ -331,7 +331,7 @@ def chk_tip(t):
     res = [r for r in results(t, "convert_currency") if isinstance(r, dict) and "rate" in r]
     if not res: return ["no usable convert_currency result"]
     want = 64 * 1.15 * res[0]["rate"]
-    return [] if says_money(t["answer"], want, money_tol(want)) else ["answer should give %.2f pounds" % want]
+    return [] if says_money(t["answer"], want, money_tol(want), "GBP") else ["answer should give %.2f pounds" % want]
 
 def chk_stock(t):
     res = [r for r in results(t, "stock_price") if isinstance(r, dict) and r.get("price")]
@@ -770,8 +770,11 @@ def preflight(env, cases, validate_errors):
         problems += ["%s: %s" % (c["name"], p) for p in web_guard(e, c.get("env") or {})]
     return problems
 
-WEB_TOOLS = {"web_search", "weather", "convert_currency", "stock_price"}
+WEB_TOOLS = {"web_search", "weather", "convert_currency", "stock_price"}   # the held-out "web" floor's tools
 WEB_TAGS = {"search", "weather", "currency", "stock"}
+# Reads that go to a web service (the stand-in): a failed one never counts as made. world_time and set_timezone
+# look a city up there when given a place rather than a time zone.
+WEB_READS = WEB_TOOLS | {"world_time"}
 
 def web_backed(c):
     """Whether a case rests on a web service: it must call (or try) one of WEB_TOOLS, names a stand-in fixture, or
@@ -1057,16 +1060,32 @@ def annotate_served(c, turns):
     fixture = web_fixture(c)
     fx = dict(fw.FIXTURES.get(fixture, {}), name=fixture)
     so_far = []
+    # "/new" starts a fresh conversation: what was searched before it is no evidence after it.
+    new_before = []
+    seen_turns = 0
+    for x in (case_turns(c) if c.get("turns") else []):
+        if x == "/new": new_before.append(seen_turns)
+        else: seen_turns += 1
     for i, t in enumerate(turns):
+        if i in new_before: so_far = []
         for a, r in _made(t, "web_search"):
             q = str(a.get("query", ""))
             rule = None if fx.get("search_mode") else fw.search_rule(fx, q)
-            entry = {"turn": i, "query": q, "worked": worked(r), "rule": rule["id"] if rule else None}
+            entry = {"turn": i, "query": q, "worked": worked(r), "rule": rule["id"] if rule else None, "facts": {}}
             if rule and entry["worked"]:
-                try: entry["facts"] = fw.facts(rule["id"], t.get("web_seed", WEB_SEED), web_day(t))
-                except KeyError as e: entry["facts_error"] = str(e)
+                try: facts = fw.facts(rule["id"], t.get("web_seed", WEB_SEED), web_day(t))
+                except KeyError as e: entry["facts_error"], facts = str(e), {}
+                # Only what the model could see: a fact counts when the response it was given shows it.
+                body = _visible(r)
+                entry["facts"] = {k: v for k, v in facts.items() if fw.fill(fw.shown(v), facts).lower() in body.lower()}
+                entry["hidden"] = sorted(k for k in facts if k not in entry["facts"])
             so_far.append(entry)
         t["served"] = list(so_far)
+
+def _visible(result):
+    """A tool's result as the model saw it, as text ("\u20ac" and "€" alike)."""
+    try: return json.dumps(json.loads(result), ensure_ascii=False)
+    except (TypeError, ValueError): return str(result or "")
 
 def search_texts(t):
     """Everything the turn's web searches gave the model (summaries, titles, snippets), as one text each."""
@@ -1127,13 +1146,20 @@ def said(answer, value, how, facts=None, slot=None):
         num = lambda n: r"(?:%s|%s)" % (n, words(int(n)))
         pair = lambda p, q: r"\b%s\s*(?:-|–|—|to|:|\s)\s*%s\b" % (num(p), num(q))
         if not (re.search(pair(x, y), a, re.I) or re.search(pair(y, x), a, re.I)): return False
-        other = (facts or {}).get("opponent", "")
-        win, loss = r"\b(?:beat|beats|won|win|wins|victory|winning)\b", r"\b(?:lost|lose|loses|loss|defeat(?:ed)?|beaten)\b"
-        draw = r"\b(?:drew|draw|drawn|level|tied|all square)\b"
-        rival_won = bool(other) and re.search(r"(?<!\w)%s(?!\w)\s+(?:\w+\s+){0,2}?(?:beat|beats|won|wins|defeated)\b" % re.escape(other), a, re.I)
-        if shown.startswith("beat"): return bool(re.search(win, a, re.I)) and not re.search(loss + "|" + draw, a, re.I) and not rival_won
-        if shown.startswith("lost"): return bool(re.search(loss, a, re.I) or rival_won) and not re.search(draw, a, re.I)
-        if shown.startswith("drew"): return bool(re.search(draw, a, re.I)) and not re.search(win + "|" + loss, a, re.I)
+        rival = re.escape((facts or {}).get("opponent", "")) or r"(?!x)x"
+        team = r"(?:%s)" % "|".join(re.escape(x) for x in ((facts or {}).get("_team") or "they").split("|") + ["they", "we"])
+        win = r"(?:beat|beats|won|win|wins|defeated|defeats|overcame|edged|thrashed|saw off)"
+        lose = r"(?:lost|lose|loses|losing|went down|fell|were beaten|was beaten|were defeated|was defeated)"
+        near = r"(?<!\w)%s(?!\w)[^.,;!?]{0,25}?\b%s\b"
+        sc = r"\d+\s*(?:-|–|—|to)\s*\d+"
+        team_won = re.search(near % (team, win), a, re.I) or re.search(r"\b(?:victory|win)\s+(?:for|over)\b|%s\s+(?:to|for)\s+(?:the\s+)?%s(?!\w)" % (sc, team), a, re.I) \
+            or re.search(r"\b(?:beating|defeating)\s+(?:the\s+)?%s(?!\w)" % rival, a, re.I)
+        team_lost = re.search(near % (team, lose), a, re.I) or re.search(near % (rival, win), a, re.I) or \
+            re.search(r"\b(?:loss|defeat)\s+(?:to|against)\s+(?:the\s+)?%s(?!\w)|\bbeaten by\b|%s\s+(?:to|for)\s+(?:the\s+)?%s(?!\w)" % (rival, sc, rival), a, re.I)
+        drew = re.search(r"\b(?:drew|draw|drawn|tied|all square|shared the points|ended level|finished level)\b", a, re.I)
+        if shown.startswith("beat"): return bool(team_won) and not team_lost and not drew
+        if shown.startswith("lost"): return bool(team_lost) and not team_won and not drew
+        if shown.startswith("drew"): return bool(drew) and not team_won and not team_lost
         return True
     if how == "open_closed":
         closed = r"\bclosed\b|\bnot open\b|\bisn'?t open\b|\bshut\b"
@@ -1141,14 +1167,16 @@ def said(answer, value, how, facts=None, slot=None):
         return bool(re.search(r"\bopen\b", a, re.I)) and not re.search(closed, a, re.I)
     raise ValueError("no way to read %r" % how)
 
-def _says_other(answer, rule, slot, value, how, day):
+def _says_other(answer, rule, slot, value, how, day, seed=None):
     """Another value this slot can take (fake_web.candidates), said beside the served one: the answer hedges or
     contradicts itself ("Sinner won. Or Alcaraz"), or gives what the search did not."""
     if how not in ("name", "winner", "time", "number"): return None
     fw = _fake_web()
-    for other in fw.candidates(rule, slot, day):
+    for other in fw.candidates(rule, slot, day, WEB_SEED if seed is None else seed):
         if fw.shown(other) == fw.shown(value) or set(_alternatives(other)) & set(_alternatives(value)): continue
-        if how in ("name", "winner") and re.search(r"(?<!\w)%s(?!\w)" % _names(other), answer, re.I): return fw.shown(other)
+        # Said, and not denied in its own clause ("London, not New York" names New York only to set it aside).
+        if how in ("name", "winner") and any(not denied(answer, m.start()) for m in re.finditer(r"(?<!\w)%s(?!\w)" % _names(other), answer, re.I)):
+            return fw.shown(other)
         if how == "time" and says_time(answer, _clock(other), 0, affirmed=True): return fw.shown(other)
         if how == "number" and abs(_first_number(other) - _first_number(value)) > max(0.5, _first_number(value) * 0.02) and \
                 says_about(answer, _first_number(other), 0.05): return fw.shown(other)
@@ -1168,36 +1196,49 @@ def chk_served(rule, slots, how="name", any_of=False):
         if served is None:   # a turn scored without the annotation (a hand-made one): this turn's searches only
             annotate_served({"env": {}}, [t])
             served = t["served"]
-        mine = [e for e in served if e["rule"] == rule and e["worked"] and "facts" in e]
+        mine = [e for e in served if e["rule"] == rule and e["worked"]]
         if not mine:
             about = fw.ALL_RULES[rule].get("about") or fw.ALL_RULES[rule]["match"]
             on_subject = [e for e in served if re.search(about, e["query"], re.I)]
             if on_subject and any(e["worked"] for e in on_subject):
-                return [UNSCORABLE + "fixture: the search %r is about %s, but the stand-in matched it to %s (widen its rules)"
-                        % (on_subject[0]["query"], rule, on_subject[0]["rule"] or "nothing")]
+                raise Unscorable("fixture: the search %r is about %s, but the stand-in matched it to %s (widen its rules)"
+                                 % (on_subject[0]["query"], rule, on_subject[0]["rule"] or "nothing"))
             if any(not e["worked"] for e in served):
                 return ["the search failed, so the answer cannot rest on what it found"]
             if served:
                 return ["the search was for something else (%r), not what was asked" % served[0]["query"]]
             return ["no search: the answer cannot rest on what the search found"]
-        facts = mine[-1]["facts"]
+        facts = {}
+        for e in mine: facts.update(e["facts"])   # what any search for it showed
+        unseen = [x for x in slots if x not in facts]
+        if unseen and (any_of and len(unseen) == len(slots) or not any_of):
+            # The search showed none of it: the right answer says so, and gives no value of its own.
+            invented = [fw.shown(v) for x in unseen for v in fw.candidates(rule, x, web_day(t), t.get("web_seed", WEB_SEED))
+                        if re.search(r"(?<!\w)%s(?!\w)" % _names(v), t["answer"], re.I)]
+            if invented: return ["the search did not show the %s, but the answer gives one: %s" % ("/".join(unseen), invented[0])]
+            if re.search(NOT_FOUND + r"|didn'?t (say|show|give|mention)|doesn'?t (say|show|give|mention)|no (word|mention)", t["answer"], re.I):
+                return []
+            return ["the search did not show the %s: the answer should say so" % "/".join(unseen)]
+        facts = dict(facts, _team=fw.ALL_RULES[rule].get("team", ""))
         hits, problems = [], []
         for slot in slots:
+            if slot not in facts: continue
             if said(t["answer"], facts[slot], how, facts, slot):
                 # Another value of the slot said too (not for "any of" several topics, whose keywords overlap)
-                other = None if any_of else _says_other(t["answer"], rule, slot, facts[slot], how, web_day(t))
+                other = None if any_of else _says_other(t["answer"], rule, slot, facts[slot], how, web_day(t), t.get("web_seed", WEB_SEED))
                 if other: problems.append("the answer also gives %r, which the search did not" % other)
                 else: hits.append(slot)
         if problems: return problems
-        if (hits if any_of else len(hits) == len(slots)): return []
+        if (hits if any_of else len(hits) == len([x for x in slots if x in facts])): return []
         missing = [fw.fill(fw.shown(facts[x]), facts) for x in slots if x not in hits]
         return ["the answer should give what the search found%s: %s" % (" (one of)" if any_of else "", "; ".join(missing))]
     return check
 
-TEMPERATURE = re.compile(r"(-?\d+(?:[.,]\d+)?)\s*(?:°|degrees?\b|grados\b|graus\b|grad\b|degr[ée]s\b|gradi\b|graden\b)", re.I)
+TEMPERATURE = re.compile(r"(-?\d+(?:[.,]\d+)?)\s*(?:°|degrees?\b|grados\b|graus\b|grad\b|degr[ée]s\b|gradi\b|graden\b)"
+                         r"(?:\s*(?:(f\b|fahrenheit)|c\b|celsius|centigrade))?", re.I)
 # A range of temperatures: "11 to 17 degrees", "between 8,5 y 20,8 grados", "6–17°C": both ends are temperatures.
 TEMP_RANGE = re.compile(r"(-?\d+(?:[.,]\d+)?)\s*(?:°\s*[cf]?|degrees?)?\s*(?:to|-|–|—|and|y|und|et|e|en|a|bis|à)\s*(-?\d+(?:[.,]\d+)?)\s*"
-                        r"(?:°|degrees?\b|grados\b|graus\b|grad\b|degr[ée]s\b|gradi\b|graden\b)", re.I)
+                        r"(?:°|degrees?\b|grados\b|graus\b|grad\b|degr[ée]s\b|gradi\b|graden\b)(?:\s*(?:(f\b|fahrenheit)|c\b|celsius|centigrade))?", re.I)
 DAY_WORDS = {0: r"\b(today|tonight|now|right now|at the moment|currently|outside|hoy|heute|aujourd'hui|oggi|hoje|vandaag)\b",
              1: r"\b(tomorrow|mañana|morgen|demain|domani|amanhã)\b"}
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -1238,27 +1279,45 @@ def chk_weather_served(t):
     a = t["answer"]
     numbers_ = []
     for m in TEMP_RANGE.finditer(a):
-        numbers_ += [(m.group(1), m.start(1)), (m.group(2), m.start(2))]
-    covered = {p for _, p in numbers_}
-    numbers_ += [(m.group(1), m.start(1)) for m in TEMPERATURE.finditer(a) if m.start(1) not in covered]
+        numbers_ += [(m.group(1), m.start(1), m.group(3)), (m.group(2), m.start(2), m.group(3))]
+    covered = {p for _, p, _ in numbers_}
+    numbers_ += [(m.group(1), m.start(1), m.group(2)) for m in TEMPERATURE.finditer(a) if m.start(1) not in covered]
     made_up = []
-    for text, pos in numbers_:
+    for text, pos, fahrenheit in numbers_:
         v = float(text.replace(",", "."))
         if v >= 0 and negative(a, pos): v = -v
-        if not any(abs(v - x) <= 1.0 for x in allowed): made_up.append(text)
+        if fahrenheit:   # "62°F" for a served 16.8°C: compared in Celsius, within the same rounding
+            v = (v - 32) * 5 / 9
+        if not any(abs(v - x) <= (1.2 if fahrenheit else 1.0) for x in allowed): made_up.append(text + ("°F" if fahrenheit else ""))
     if made_up:
         return ["the answer gives a temperature the forecast did not serve for %s: %s" % ("the day asked about" if asked else "any day",
                                                                                           ", ".join(sorted(set(made_up))))]
     return []
 
-def says_money(text, value, tol):
+# The words, codes and signs a currency is given by (and the languages the suite asks in).
+CURRENCY_WORDS = {"GBP": r"pounds?|quid|sterling|£|gbp|pfund|libras?|livres?|sterlin[ae]|pond", "EUR": r"euros?|€|eur",
+                  "USD": r"(?:us )?dollars?|bucks|\$|usd|dólar(?:es)?|dollar", "JPY": r"yen|¥|jpy", "CHF": r"(?:swiss )?francs?|chf|franken",
+                  "CAD": r"canadian dollars?|cad|c\$|dollars?", "AUD": r"australian dollars?|aud|a\$|dollars?"}
+
+def says_money(text, value, tol, code=None):
     """The answer gives an amount near VALUE: as a number, as "23 pounds 72 pence", or (10 and over) rounded to the
-    whole unit, as speech rounds it ("about 17 pounds" for 17.12)."""
-    if abs(value) >= 10 and says_int(text, int(round(value))): return True
+    whole unit, as speech rounds it ("about 17 pounds" for 17.12). With CODE, that number is given in that currency:
+    its name, code or sign right after it (or the sign right before), so "17 euros" is not 17 pounds."""
     text = re.sub(r"(\d),(\d{1,2})\b(?![.,]?\d)", r"\1.\2", text)   # "42,20 Pfund" is 42.20 (a decimal comma)
-    text = re.sub(r"\b(\d+) (?:pounds?|dollars?|euros?|quid|bucks)(?:,? and)? (?:(\d{1,2}) ?(?:pence|p|cents?)|(\d{2}))\b(?![.,]\d)",
-                  lambda m: "%s.%02d" % (m.group(1), int(m.group(2) or m.group(3))), text, flags=re.I)
-    return says_about(text, value, tol)
+    text = re.sub(r"\b(\d+) (pounds?|dollars?|euros?|quid|bucks)(?:,? and)? (?:(\d{1,2}) ?(?:pence|p|cents?)|(\d{2}))\b(?![.,]\d)",
+                  lambda m: "%s.%02d %s" % (m.group(1), int(m.group(3) or m.group(4)), m.group(2)), text, flags=re.I)
+    words_ = CURRENCY_WORDS.get(code or "", "")
+    for m in re.finditer(r"\d[\d,]*\.?\d*", text):
+        x = m.group().replace(",", "")
+        try: v = float(x)
+        except ValueError: continue
+        if not (abs(v - value) <= tol or (abs(value) >= 10 and float(v).is_integer() and v == round(value))): continue
+        if not words_: return True
+        after, before = text[m.end():m.end() + 30], text[max(0, m.start() - 3):m.start()]
+        if re.match(r"\s*(?:%s)(?!\w)" % words_, after, re.I) or re.search(r"(?:£|€|\$|¥)\s*$", before) and \
+                re.search(r"(?:%s)" % words_, before, re.I):
+            return True
+    return False
 
 def money_tol(value):
     """A spoken amount is rounded ("about 62 pounds" for 62.17): 0.6 per cent, at least 6 pence."""
@@ -2263,17 +2322,21 @@ def _score(c, turns):
             elif n == "all":
                 for i, t in enumerate(turns):
                     if t.get("unstarted"): continue
-                    try: problems += ["turn %d: %s" % (i + 1, p) for p in check(t)]
+                    try: problems += [_at("turn %d: " % (i + 1), p) for p in check(t)]
                     except Unscorable as e: problems.append(UNSCORABLE + "turn %d: %s" % (i + 1, e))
             elif n is not None and not -len(turns) <= n < len(turns):
                 problems.append("a check of turn %d, which did not happen" % (n + 1))
             else:
                 t = last if n is None else turns[n]
                 if t.get("unstarted"): continue   # reported above, once
-                problems += [where + p for p in check(t)]
+                problems += [_at(where, p) for p in check(t)]
         except Unscorable as e: problems.append(UNSCORABLE + where + str(e))
         except Exception as e: problems.append(UNSCORABLE + where + "the check could not run: %r" % e)
     return problems
+
+def _at(where, p):
+    """A check's problem labelled with its turn, keeping an unscorable one marked as such (the mark comes first)."""
+    return UNSCORABLE + where + p[len(UNSCORABLE):] if p.startswith(UNSCORABLE) else where + p
 
 # ---------------------------------------------------------------- what a result can be compared on
 def _fingerprint(x, seen=None):

@@ -961,6 +961,9 @@ def served_checks():
           [{"calls": [forecast], "answer": "Tomorrow in Lisbon: sunny and 24 degrees."}], "did not serve for the day asked about")
     trips("weather served (W8): the rain chance read as a temperature fails", lisbon,
           [{"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain and 60 degrees."}], "did not serve")
+    passes("weather served (r2): a converted Fahrenheit figure (62°F for 16.8°C) passes", lisbon,
+           {"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain, up to 62°F."})
+    trips("weather served (r2): 17°F for a served 16.8°C fails", lisbon, [{"calls": [forecast], "answer": "Tomorrow: up to 17°F."}], "did not serve")
     trips("weather served (W8): each end of a range counts ('99 to 17')", lisbon,
           [{"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain, 99 to 17 degrees."}], "99")
     passes("weather served: a decimal comma is one number", case("spanish_weather"),
@@ -979,12 +982,52 @@ def served_checks():
            {"calls": [("weather", {"location": "Lisbon"}, "ERROR: the service answered with an error (HTTP 503)")],
             "answer": "I couldn't get the forecast right now; the weather service isn't responding."})
 
+    # Round 2, item 4: facts the model could see, cleared on /new, and a fixture fault that stays unscorable in a later turn.
+    empty = ("web_search", {"query": "wimbledon mens singles winner"}, json.dumps({"results": []}))
+    trips("served (r2): an empty result credits nothing: a lucky winner fails", wimbledon,
+          [{"calls": [empty], "answer": "%s won it." % winner}], "did not show")
+    passes("served (r2): an empty result, and an honest 'it gave no winner', passes", wimbledon,
+           {"calls": [empty], "answer": "The search didn't say who won, sorry."})
+    two = dict(bare("who won the mens singles at wimbledon this year", "/new", "who won it"),
+               checks=[ev.chk_served("wimbledon-mens", "winner", "winner")], must=[])
+    trips("served (r2): what was searched before /new is no evidence after it", two,
+          [{"calls": [call], "answer": "%s won." % winner}, {"new": True}, {"answer": "%s won." % winner}], "no search")
+    fake_web.FIXTURES["default"] = {"search": [shadow] + fake_web.RULES}
+    fake_web.ALL_RULES["shadow"] = shadow
+    try:
+        later = dict(bare("who won the mens singles at wimbledon this year", "thanks"),
+                     checks=[ev.on_turn(0, ev.chk_served("wimbledon-mens", "winner", "winner"))])
+        got = verdict(later, {"calls": [searched("wimbledon mens singles winner")], "answer": "%s won it." % winner}, {"answer": "You're welcome."})
+    finally:
+        fake_web.FIXTURES["default"] = saved_default
+        del fake_web.ALL_RULES["shadow"]
+    check("served (r2): a fixture fault in an earlier turn's check is unscorable, not a model failure", got[0] == "unscorable" and
+          got[1][0].startswith(ev.UNSCORABLE + "turn 1"), got)
+    # Round 2, item 5: roles and negation within the clause.
+    passes("served winner (r2): 'X defeated Y' is a win", wimbledon,
+           {"calls": [searched("wimbledon mens winner")], "answer": "%s defeated %s in the final." % (winner, loser)})
+    starling_ex = fact("starling-ipo", "exchange")
+    other_ex = "the New York Stock Exchange" if "London" in starling_ex else "the London Stock Exchange"
+    passes("served (r2): another candidate set aside ('X, not Y') passes", starling, first,
+           {"answer": "It plans to list on %s, not %s." % (starling_ex, other_ex)}, last)
+    if verb == "won":
+        passes("served score (r2): 'Arsenal defeated ...' is a win", arsenal,
+               {"calls": [call], "answer": "Arsenal defeated %s %s-%s." % (fact("arsenal-result", "opponent"), x, y)})
+    # W6 (r2): a world_time whose city lookup failed is no read that was made.
+    check("calls (r2): a failed world_time city lookup does not count",
+          ev.calls(one_turn(calls=[("world_time", {"place": "Florbington"}, "ERROR: could not find a place called 'Florbington'")]), "world_time") == [])
+    # W9 (r2): everyday scoring never reads the held-out candidates.
+    check("candidates (r2): an everyday seed reads only the everyday values",
+          not set(fake_web.ALL_RULES["wimbledon-mens"]["held_out"]["winner"]) & set(fake_web.candidates("wimbledon-mens", "winner", None, 1)))
+
     # W8: a conversion's answer gives what it returned.
     cur = suite_case(["how much is 20 euros in pounds"])
     conv = ("convert_currency", {"amount": 20, "from": "EUR", "to": "GBP"},
             json.dumps({"amount": 20, "from": "EUR", "to": "GBP", "rate": 0.8561, "result": "17.12 GBP", "rate_date": "Sat, 21 Nov 2026"}))
     passes("currency (W8): the converted amount passes", cur, {"calls": [conv], "answer": "20 euros is about 17.12 pounds."})
     passes("currency: rounded as speech rounds it passes", cur, {"calls": [conv], "answer": "That's about 17 pounds."})
+    trips("currency (r2): the amount given in the wrong currency fails", cur, [{"calls": [conv], "answer": "That's about 17.12 euros."}],
+          "the converted amount")
     trips("currency (W8): 'I don't know' after a working conversion fails", cur, [{"calls": [conv], "answer": "I don't know, sorry."}],
           "the converted amount")
     share = suite_case(["how much is 85 euros in pounds and split that between three people"])
