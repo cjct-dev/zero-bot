@@ -132,7 +132,7 @@ def critical(name, tags):
 
 
 # ---------------------------------------------------------------- the roster
-def load_roster(seed=None):
+def load_roster(seed=None, date=None):
     """Every case defined in this tree: {"scorer": the current scorer, "seed": the stand-in's seed, "sets": {set: {name:
     {"hash", "tags", "web"}}}}, from tests/agent_eval.py's CASES and tests/suite/cases.json, hashed as the runners
     hash them with SEED (default: the runners' own, the everyday one). "web": the case rests on a web service."""
@@ -140,8 +140,9 @@ def load_roster(seed=None):
     import agent_suite as su
     with open(os.path.join(HERE, "suite", "cases.json"), encoding="utf-8") as f:
         suite = json.load(f)
-    saved = ev.WEB_SEED
+    saved, saved_date = ev.WEB_SEED, ev.WEB_DATE
     ev.WEB_SEED = saved if seed is None else seed
+    if date is not None: ev.WEB_DATE = date   # a run's own fixture date (date_workload)
     try:
         compiled = [(c, su.compile_case(c)) for c in suite]
         return {"scorer": ev.SCORER_VERSION, "seed": ev.WEB_SEED,
@@ -150,7 +151,7 @@ def load_roster(seed=None):
                          "suite": {c["name"]: {"hash": ev.case_hash(k), "tags": c["tags"], "web": ev.web_backed(k), "requests": ev.case_turns(k)}
                                    for c, k in compiled}}}
     finally:
-        ev.WEB_SEED = saved
+        ev.WEB_SEED, ev.WEB_DATE = saved, saved_date
 
 
 def roster_critical(roster):
@@ -673,10 +674,19 @@ def main(argv=None):
         import agent_eval as ev
         try:
             roster = load_roster(ev.HELD_OUT_SEED)
+            # A case whose answers move with the date (agent_eval.date_workload) is expected with the hash of the run's
+            # own fixture date, so that a run judged after midnight is not stale.
+            for d in sorted({r.get("web_date") for r in res if isinstance(r.get("web_date"), str)}):
+                dated = load_roster(ev.HELD_OUT_SEED, d)
+                for s_, cases in dated["sets"].items():
+                    for n, x in cases.items():
+                        roster["sets"][s_][n].setdefault("hash_by_date", {})[d] = x["hash"]
         except Exception as e:   # noqa: BLE001  no roster: incomplete, never a pass
             roster, problems = {"scorer": None, "seed": None, "sets": {}}, problems + ["the roster could not be read: %s" % e]
         v = held_out_verdict(res, problems, floors, roster, a.repeats, a.max_unscorable)
-        if a.calibrate:
+        if a.calibrate and a.repeats < 3:
+            print("calibrate: refused: floors come from three runs or more (--repeats %d); none suggested" % a.repeats)
+        elif a.calibrate:
             v["calibration"] = calibration(v)
             for g, c in sorted(v["calibration"].items()):
                 print("calibrate %-6s mean %.1f%%, sd %.1f, runs %.1f%% to %.1f%%: floor %.0f%%"
@@ -706,13 +716,21 @@ def main(argv=None):
 
 def executed(r, x):
     """A record that shows a run took place (the held-out judge's evidence): its own run_id, the traced app, the
-    requests the roster expects (the held-out question forms), and every one of them answered: a turn that ended."""
+    requests the roster expects (the held-out question forms), and every one of them answered: a turn that ended
+    with an answer that is not empty, and whose own trace holds the app's record of that request."""
     turns = r.get("turns")
     asked = [t for t in x.get("requests") or [] if t != "/new"]
     return (isinstance(r.get("run_id"), str) and len(r["run_id"]) >= 16 and r.get("trace") is True
             and r.get("requests") == x.get("requests") and isinstance(turns, list) and len(turns) == len(asked) and asked
             and all(isinstance(t, dict) and not t.get("unstarted") and not t.get("timed_out") and t.get("total") is not None
-                    and isinstance(t.get("answer"), str) for t in turns))
+                    and isinstance(t.get("answer"), str) and t["answer"].strip() and traced_turn(t, k) for k, t in enumerate(turns)))
+
+
+def traced_turn(t, k):
+    """The turn's own trace: a list holding the app's record of request k+1 (ev "request"); a null or empty trace,
+    or another request's, is no evidence that the turn ran."""
+    trace = t.get("trace")
+    return isinstance(trace, list) and any(isinstance(e, dict) and e.get("ev") == "request" and e.get("req") == k + 1 for e in trace)
 
 
 def held_out_verdict(results, load_problems, floors, roster, repeats=1, max_unscorable=MAX_UNSCORABLE, out=None):
@@ -738,7 +756,7 @@ def held_out_verdict(results, load_problems, floors, roster, repeats=1, max_unsc
     stale, wrong_count = [], []
     for n, (s_, x) in defined.items():
         rs = runs.get(n, [])
-        ok = [r for r in rs if not record_problems(r) and set_of(r) == s_ and r.get("case_hash") == x["hash"]
+        ok = [r for r in rs if not record_problems(r) and set_of(r) == s_ and r.get("case_hash") == x.get("hash_by_date", {}).get(r.get("web_date"), x["hash"])
               and r.get("scorer") == roster["scorer"] and r.get("web_seed") == roster["seed"] and executed(r, x)]
         ids = [r.get("run_id") for r in ok]
         if len(set(ids)) != len(ids):   # three copies of one run are one run
@@ -796,13 +814,13 @@ def held_out_verdict(results, load_problems, floors, roster, repeats=1, max_unsc
     return v
 
 
-def calibration(v, margin_points=2.0, sd_factor=2.0):
+def calibration(v, margin_points=2.0, sd_factor=2.0, min_runs=3):
     """Suggested floors from a held-out run of several repeats (v: held_out_verdict's result): each group's mean
     pass rate per run, less the larger of MARGIN_POINTS and SD_FACTOR standard deviations, rounded down."""
     import statistics
     out = {}
     for g, rates in v["per_repeat"].items():
-        if not rates: continue
+        if len(rates) < min_runs: continue   # no floor from fewer than three runs
         mean = statistics.mean(rates)
         sd = statistics.stdev(rates) if len(rates) > 1 else 0.0
         out[g] = {"mean": mean, "sd": sd, "min": min(rates), "max": max(rates),
@@ -1100,6 +1118,7 @@ def self_test():
                             h="stale" if name in stale else None)
                     r["web_seed"] = seed
                     r["run_id"] = "%032x" % random.getrandbits(128)
+                    r["turns"][0]["trace"] = [{"ev": "call", "req": 1}, {"ev": "request", "req": 1}]
                     out.append(r)
         for name in extra:
             r = rec(name)
@@ -1139,6 +1158,9 @@ def self_test():
             if r["case"] == "home_after_web_no": f(r)
         return held_out_verdict(rs, [], fl, ro, out=quiet)
     for what, f in (("no turns", lambda r: r.update(turns=[])), ("an unanswered turn", lambda r: r["turns"][0].update(total=None)),
+                    ("a null trace (r3)", lambda r: r["turns"][0].update(trace=None)), ("an empty trace (r3)", lambda r: r["turns"][0].update(trace=[])),
+                    ("another request's trace (r3)", lambda r: r["turns"][0].update(trace=[{"ev": "request", "req": 2}])),
+                    ("an empty answer (r3)", lambda r: r["turns"][0].update(answer=" ")),
                     ("other requests", lambda r: r.update(requests=["y"])), ("untraced", lambda r: r.update(trace=False)),
                     ("no run id", lambda r: r.pop("run_id"))):
         v = tamper(f)
@@ -1149,6 +1171,20 @@ def self_test():
     for r in copies: r["run_id"] = copies[0]["run_id"]
     v = held_out_verdict(rs, [], fl, ro, repeats=3, out=quiet)
     check("held-out (r2): three copies of one run are not three runs", v["verdict"] == "incomplete" and "s04" in str(v["reasons"]), v["reasons"])
+    # Round 3, item 9: a date-dependent case is expected with the hash of the run's own fixture date.
+    rd = h_roster()
+    rd["sets"]["scored"]["s05"]["hash_by_date"] = {"2026-11-21": "h-s05", "2026-11-22": "h-s05-sunday"}
+    rs = held(rd)
+    for r in rs: r["web_date"] = "2026-11-21"
+    v = held_out_verdict(rs, [], fl, rd, out=quiet)
+    check("held-out (r3): a run judged after midnight keeps its own date's hash", v["verdict"] == "passes", v["reasons"])
+    for r in rs:
+        if r["case"] == "s05": r["web_date"] = "2026-11-22"
+    v = held_out_verdict(rs, [], fl, rd, out=quiet)
+    check("held-out (r3): ... and a record whose hash is not its date's is stale", v["verdict"] == "incomplete" and "s05" in str(v["reasons"]))
+    # Round 3, item 7: no floor from fewer than three runs.
+    v = held_out_verdict(held(ro, repeats=2), [], fl, ro, repeats=2, out=quiet)
+    check("held-out (r3): no floor suggested from two runs", calibration(v) == {}, calibration(v))
     v = held_out_verdict(held(ro, repeats=3, fail=("s08",)), [], fl, ro, repeats=3, out=quiet)
     cal = calibration(v)
     check("held-out: three repeats, per-run rates and a floor under their mean", v["verdict"] == "passes" and len(v["per_repeat"]["scored"]) == 3

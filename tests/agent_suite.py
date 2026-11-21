@@ -251,7 +251,7 @@ def k_currency(s):
             if s.get("from") and str(c.get("from", "")).upper() != s["from"]: continue
             if s.get("to") and str(c.get("to", "")).upper() != s["to"]: continue
             try: got = json.loads(r)
-            except (TypeError, ValueError): return [ev.UNSCORABLE + "the conversion's result is not readable"]
+            except (TypeError, ValueError): raise ev.Unscorable("the conversion's result is not readable")
             rate, amount = float(got.get("rate", 0)), got.get("amount")
             if s.get("amount") is None:
                 if ev.says_money(t["answer"], rate, max(0.005, rate * 0.01), str(got.get("to", "")).upper()) or \
