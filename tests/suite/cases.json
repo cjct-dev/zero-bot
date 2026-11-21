@@ -16411,7 +16411,7 @@
    },
    {
     "kind": "answer",
-    "re": "drop|fall|fell|decline|react|move|reaction|slide|hit",
+    "re": "drop|fall|fell|decline|react|move|reaction|slide|hit|knock|lose|lower|down",
     "what": "what a miss would do"
    },
    {

@@ -1274,6 +1274,14 @@ def chk_weather_served(t):
     humidity or wind is no temperature; with no forecast, any temperature is made up."""
     days, now = _served_weather(t)
     asked = _asked_days(t.get("request"), web_day(t))
+    if asked is not None:   # and any day the answer itself goes on to name ("Monday looks wetter, 10 degrees")
+        d0, ans = web_day(t), t["answer"]
+        named = [d0.isoformat()] if re.search(DAY_WORDS[0], ans, re.I) else []
+        if re.search(DAY_WORDS[1], ans, re.I): named.append((d0 + datetime.timedelta(days=1)).isoformat())
+        wds = [wd for wd, name in enumerate(WEEKDAYS) if re.search(r"\b%s\b" % name, ans, re.I)]
+        if re.search(r"\bweekend\b", ans, re.I): wds += [5, 6]
+        named += [(d0 + datetime.timedelta(days=(wd - d0.weekday()) % 7)).isoformat() for wd in wds]
+        asked = sorted(set(asked) | set(named))
     allowed = [x for d, v in days.items() if asked is None or d in asked for x in v]
     if asked is None or web_day(t).isoformat() in asked: allowed += now
     a = t["answer"]
@@ -1317,6 +1325,10 @@ def says_money(text, value, tol, code=None):
         if re.match(r"\s*(?:%s)(?!\w)" % words_, after, re.I) or re.search(r"(?:£|€|\$|¥)\s*$", before) and \
                 re.search(r"(?:%s)" % words_, before, re.I):
             return True
+        others = "|".join(w for c, w in CURRENCY_WORDS.items() if c != code)
+        labelled = re.match(r"\s*(?:%s)(?!\w)" % others, after, re.I) or re.search(r"(?:£|€|\$|¥)\s*$", before)
+        if not labelled and re.search(r"(?<!\w)(?:%s)(?!\w)" % words_, text, re.I):
+            return True   # no currency by it, in an answer that names the right one: "71.80 pounds ... 23.93 each"
     return False
 
 def money_tol(value):
@@ -1800,7 +1812,7 @@ CASES = [
 # The scorer's version, in every result (with the case's hash and whether it was traced), so that a
 # comparison of two runs knows when their verdicts are comparable. Raise it when what a check accepts
 # changes.
-SCORER_VERSION = "2026-11-21.5"   # ZB-086: .3 evidence, meaning, the day asked; .4 decimal comma; .5 round 2: visible facts, roles, units, currency bound
+SCORER_VERSION = "2026-11-21.6"   # ZB-086: .3 evidence, meaning, the day asked; .4 decimal comma; .5 round 2: visible facts, roles, units, currency bound; .6 unlabelled share, named days
 
 TOOL_RE = re.compile(r"^\s+-> (\w+) (.*)$")
 RESULT_RE = re.compile(r"^\s+<- (.*)$")

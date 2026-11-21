@@ -959,6 +959,8 @@ def served_checks():
     passes("weather served: the served figures, rounded, pass", lisbon, {"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain, 11 to 17 degrees."})
     trips("weather served (W8): today's high given for tomorrow fails", lisbon,
           [{"calls": [forecast], "answer": "Tomorrow in Lisbon: sunny and 24 degrees."}], "did not serve for the day asked about")
+    passes("weather served (r2): another day the answer names itself may be given", lisbon,
+           {"calls": [forecast], "answer": "Tomorrow: light rain, 11 to 17 degrees. Today was sunnier, up to 24 degrees."})
     trips("weather served (W8): the rain chance read as a temperature fails", lisbon,
           [{"calls": [forecast], "answer": "Tomorrow in Lisbon: light rain and 60 degrees."}], "did not serve")
     passes("weather served (r2): a converted Fahrenheit figure (62°F for 16.8°C) passes", lisbon,
@@ -1040,6 +1042,10 @@ def served_checks():
     check("currency: a thousands comma stays one number", ev.says_money("That is 1,250 pounds.", 1250.0, 1) and
           not ev.says_money("That is 1,250 pounds.", 1.25, 0.01))
     passes("currency: '23 pounds 72 pence' is 23.72", share, {"calls": [conv85], "answer": "85 euros is 71.16 pounds, so 23 pounds 72 pence each."})
+    passes("currency (r2): a share with no currency word, in an answer that names pounds, passes", share,
+           {"calls": [conv85], "answer": "85 euros is about 71.16 pounds. Split three ways, that's around 23.72 each."})
+    trips("currency (r2): a share given in euros fails", share,
+          [{"calls": [conv85], "answer": "85 euros is 71.16 pounds, so 23.72 euros each."}], "answer should give")
     rate_case = suite_case(["whats the exchange rate between the euro and the dollar"])
     conv1 = ("convert_currency", {"amount": 1, "from": "EUR", "to": "USD"}, json.dumps({"amount": 1, "from": "EUR", "to": "USD", "rate": 1.0843}))
     passes("currency: the rate asked for passes", rate_case, {"calls": [conv1], "answer": "One euro is 1.08 dollars."})
