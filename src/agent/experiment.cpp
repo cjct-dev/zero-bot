@@ -3,6 +3,9 @@
 
 #if ZB_EXPERIMENTS
 
+#include <arpa/inet.h>
+#include <curl/curl.h>
+#include <netinet/in.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -147,31 +150,38 @@ bool stand_in(const std::string &url) {
 }
 
 namespace {
-// scheme, lower-case host and port of a URL ("" host when it cannot be read).
-struct Origin { std::string scheme, host; long port = 0; };
+// scheme, lower-case host and port of a URL, as libcurl itself reads it (the scheme's own port when none is written;
+// a written port, 0 included, as written); "" host when it cannot be read or carries credentials.
+struct Origin { std::string scheme, host; long port = -1; };
 Origin origin_of(const std::string &url) {
     Origin o;
-    const size_t s = url.find("://");
-    if (s == std::string::npos) return o;
-    o.scheme = util::lower(url.substr(0, s));
-    const size_t start = s + 3, end = url.find_first_of("/?#", start);
-    std::string auth = url.substr(start, end == std::string::npos ? std::string::npos : end - start);
-    if (auth.find('@') != std::string::npos) return Origin{};   // credentials in the address: never allowed
-    const size_t colon = auth.rfind(':');
-    if (colon != std::string::npos && auth.find(']') == std::string::npos) {
-        const std::string p = auth.substr(colon + 1);
-        if (p.empty() || p.size() > 5 || !std::all_of(p.begin(), p.end(), ::isdigit)) return Origin{};
-        o.port = std::stol(p);
-        auth = auth.substr(0, colon);
+    CURLU *u = curl_url();
+    if (!u) return o;
+    char *scheme = nullptr, *host = nullptr, *port = nullptr, *user = nullptr;
+    if (curl_url_set(u, CURLUPART_URL, url.c_str(), 0) == CURLUE_OK && curl_url_get(u, CURLUPART_USER, &user, 0) != CURLUE_OK &&
+        curl_url_get(u, CURLUPART_SCHEME, &scheme, 0) == CURLUE_OK && curl_url_get(u, CURLUPART_HOST, &host, 0) == CURLUE_OK &&
+        curl_url_get(u, CURLUPART_PORT, &port, CURLU_DEFAULT_PORT) == CURLUE_OK) {
+        const std::string p = port;
+        if (!p.empty() && p.size() <= 5 && std::all_of(p.begin(), p.end(), ::isdigit)) {
+            o.scheme = util::lower(scheme);
+            o.host = util::lower(host);
+            o.port = std::stol(p);
+        }
     }
-    o.host = util::lower(auth);
-    if (o.port == 0) o.port = o.scheme == "https" ? 443 : 80;
+    curl_free(scheme);
+    curl_free(host);
+    curl_free(port);
+    curl_free(user);
+    curl_url_cleanup(u);
     return o;
 }
+// A numeric loopback address, checked as an address: IPv4 in 127.0.0.0/8, or ::1. No name (not even localhost).
 bool loopback(const std::string &host) {
-    if (host == "localhost" || host == "[::1]") return true;
-    if (host.compare(0, 4, "127.") != 0) return false;
-    return std::all_of(host.begin(), host.end(), [](char c) { return isdigit(static_cast<unsigned char>(c)) || c == '.'; });
+    in_addr v4;
+    if (inet_pton(AF_INET, host.c_str(), &v4) == 1) return (ntohl(v4.s_addr) >> 24) == 127;
+    in6_addr v6;
+    const std::string bare = host.size() > 2 && host.front() == '[' && host.back() == ']' ? host.substr(1, host.size() - 2) : host;
+    return inet_pton(AF_INET6, bare.c_str(), &v6) == 1 && IN6_IS_ADDR_LOOPBACK(&v6);
 }
 }  // namespace
 

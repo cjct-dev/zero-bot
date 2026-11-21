@@ -96,6 +96,18 @@ def origin_of(url):
         return ""
 
 
+def send_to_trap(url, target):
+    """A request for TARGET (an absolute URL) written straight to the trap's socket at URL, as a proxy is sent one:
+    no proxy setting, no NO_PROXY and no name lookup is involved, so nothing can leave this computer. Returns the
+    trap's status line."""
+    import socket
+    u = urllib.parse.urlsplit(url)
+    with socket.create_connection((u.hostname, u.port), timeout=5) as s:
+        host = urllib.parse.urlsplit(target).hostname or ""
+        s.sendall(("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n" % (target, host)).encode())
+        return s.recv(200).split(b"\r\n", 1)[0].decode("latin-1", "replace")
+
+
 def child_env(base=None, keep=(), allow_origin="", **extra):
     """BASE (default os.environ) without credentials but KEEP, without inherited proxy settings, with every proxy
     variable at the trap and only 127.0.0.1, localhost and ALLOW_ORIGIN's host exempt; the app's own pin (ZB_EXP_NET:
