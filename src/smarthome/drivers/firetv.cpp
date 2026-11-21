@@ -165,14 +165,6 @@ bool invisible(uint32_t cp) {
            (cp >= 0xFFF0 && cp <= 0xFFFB) || (cp >= 0x1BCA0 && cp <= 0x1BCA3) || (cp >= 0x1D173 && cp <= 0x1D17A) ||
            (cp >= 0xE0000 && cp <= 0xE0FFF);
 }
-
-// Unicode White_Space: a gap between words, wherever it comes from (tab, line breaks, NEL,
-// no-break and ideographic spaces, the typographic spaces, line and paragraph separators).
-bool white_space(uint32_t cp) {
-    return (cp >= 0x09 && cp <= 0x0D) || cp == 0x20 || cp == 0x85 || cp == 0xA0 || cp == 0x1680 ||
-           (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 || cp == 0x2029 || cp == 0x202F || cp == 0x205F ||
-           cp == 0x3000;
-}
 }  // namespace
 
 void set_wake_port(int port) {
@@ -208,8 +200,8 @@ std::string clean_name(const std::string &raw, size_t max) {
     for (size_t i = 0; i < s.size();) {
         uint32_t cp;
         const size_t len = support::utf8_at(p, s.size(), i, cp);   // never 0: s is well-formed UTF-8
-        if (white_space(cp)) {
-            space = true;   // keep words apart
+        if (support::unicode_space(cp)) {
+            space = true;   // a gap between words, wherever it comes from: keep words apart
         } else if (invisible(cp)) {
             // dropped: what is on either side joins up
         } else {
@@ -219,12 +211,7 @@ std::string clean_name(const std::string &raw, size_t max) {
         }
         i += len;
     }
-    if (out.size() > max) {
-        size_t cut = max;
-        while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80) cut--;   // not inside a sequence
-        out.erase(cut);
-        out = trim(out);
-    }
+    if (out.size() > max) out = trim(support::utf8_prefix(out, max));
     return out;
 }
 

@@ -127,9 +127,7 @@ std::string clean_name(const std::string &raw, size_t max) {
     }
     while (!t.empty() && t.back() == ' ') t.pop_back();
     if (t.size() > max) {
-        size_t cut = max;
-        while (cut > 0 && (static_cast<unsigned char>(t[cut]) & 0xC0) == 0x80) --cut;
-        t.resize(cut);
+        t = support::utf8_prefix(t, max);
         while (!t.empty() && t.back() == ' ') t.pop_back();
     }
     return t;

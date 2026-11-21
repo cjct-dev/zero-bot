@@ -801,11 +801,6 @@ int HttpReader::feed(const Bytes &buf, size_t &pos) {
 Bytes sanitize_utf8(const Bytes &in) { return support::sanitize_utf8(in, support::BadUtf8::ReplacementCharacter); }
 
 namespace {
-// Unicode White_Space (PropList.txt).
-bool space_char(uint32_t cp) {
-    return cp == ' ' || (cp >= 0x09 && cp <= 0x0D) || cp == 0x85 || cp == 0xA0 || cp == 0x1680 ||
-           (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 || cp == 0x2029 || cp == 0x202F || cp == 0x205F || cp == 0x3000;
-}
 // What a name must not keep: control characters; format and default-ignorable characters, which
 // are invisible or reorder text (bidi controls, zero-width characters, tags, variation selectors);
 // the fillers that render as blank; non-characters; and U+FFFD, which stands for bytes that were
@@ -831,7 +826,7 @@ std::string clean_name(const std::string &raw) {
         const size_t len = support::utf8_at(p, s.size(), i, cp);
         const size_t at = i;
         i += len ? len : 1;
-        if (len && space_char(cp)) {
+        if (len && support::unicode_space(cp)) {
             space = !out.empty();
             continue;
         }
