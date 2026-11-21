@@ -7,6 +7,7 @@
 #include <thread>
 #include <unistd.h>
 
+#include "core/result.h"
 #include "core/tether.h"
 #include "core/ui_queue.h"
 #include "net/http.h"
@@ -18,7 +19,7 @@ namespace radio {
 
 namespace {
 
-std::string fail(const std::string &msg) { return "ERROR: " + msg; }
+using result::fail;
 
 // Names in sentences for the model are in double quotes, which home::clean_name() has removed from
 // every name: a name cannot close its quotes and read as part of the sentence.

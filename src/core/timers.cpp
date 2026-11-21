@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <thread>
 
+#include "core/result.h"
 #include "platform/audio.h"
 
 namespace timers {
@@ -21,7 +22,7 @@ constexpr long kJustEnded = 180;   // seconds: a timer that ended this recently 
 
 std::atomic<time_t> g_fixed_clock{0};
 
-std::string fail(const std::string &msg) { return "ERROR: " + msg; }
+using result::fail;
 
 // Labels are the user's words: never let an odd byte in one make the result throw.
 std::string reply(const json &j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); }
