@@ -355,6 +355,7 @@ private:
     };
 
     Then one_round(const Budget &budget);
+    bool withdraw_if_steered(Round &r);
     void call_model(Round &r, const Budget &budget);
     void stream(Round &r, const std::string &piece);
     void messages_for(Round &r, const Budget &budget);
@@ -458,17 +459,7 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
 
     messages_for(r, budget);
     call_model(r, budget);
-    // The user was talking when this step was decided. Nothing has been said or done yet, so
-    // what they add is taken into account first: a correction should land before the action.
-    const bool talked_over = !r.speech_started && a_.listening_;
-    if (!r.speech_started) wait_while_listening();
-
-    if (r.steered || (!r.speech_started && !r.res.cancelled && r.res.error.empty() && a_.has_pending() &&
-                    (r.res.tool_calls.empty() || talked_over))) {
-        if (r.began && a_.ev_.answer_discard) a_.ev_.answer_discard();
-        steer_in();
-        return Then::Again;  // a withdrawn draft does not count against the budget
-    }
+    if (withdraw_if_steered(r)) return Then::Again;   // a withdrawn draft does not count against the budget
     if (a_.cancel_) {
         if (r.began && a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, true);
         return Then::Finish;
@@ -652,6 +643,23 @@ Agent::Turn::Then Agent::Turn::one_round(const Budget &budget) {
     if (r.res.content.empty() && a_.ev_.error) a_.ev_.error("The model returned an empty answer.");
     // Something typed while the answer was being spoken becomes the next request.
     return a_.absorb_inputs(false) > 0 ? Then::NewRequest : Then::Finish;   // a new request: fresh budget
+}
+
+// What the user said while the reply was on its way takes its place: the draft is withdrawn, what
+// they said joins the request, and the model is asked again. True when that happened.
+bool Agent::Turn::withdraw_if_steered(Round &r) {
+    // The user was talking when this step was decided. Nothing has been said or done yet, so
+    // what they add is taken into account first: a correction should land before the action.
+    const bool talked_over = !r.speech_started && a_.listening_;
+    if (!r.speech_started) wait_while_listening();
+
+    if (r.steered || (!r.speech_started && !r.res.cancelled && r.res.error.empty() && a_.has_pending() &&
+                    (r.res.tool_calls.empty() || talked_over))) {
+        if (r.began && a_.ev_.answer_discard) a_.ev_.answer_discard();
+        steer_in();
+        return true;
+    }
+    return false;
 }
 
 // The round's model call, streamed through stream(). Decides first whether a reply without a tool
