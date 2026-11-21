@@ -257,33 +257,9 @@ bool id_of(const json &j, const char *key, int64_t &out) {
 
 namespace detail {
 
-std::string hex(const Bytes &b) {
-    static const char *const d = "0123456789abcdef";
-    std::string s;
-    s.reserve(b.size() * 2);
-    for (const unsigned char c : b) {
-        s += d[c >> 4];
-        s += d[c & 15];
-    }
-    return s;
-}
+std::string hex(const Bytes &b) { return support::hex(b); }
 
-bool unhex(const std::string &h, Bytes &out) {
-    if (h.size() % 2) return false;
-    Bytes r;
-    r.reserve(h.size() / 2);
-    for (size_t i = 0; i < h.size(); i += 2) {
-        int v[2];
-        for (int k = 0; k < 2; k++) {
-            const char c = h[i + k];
-            v[k] = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
-            if (v[k] < 0) return false;
-        }
-        r += static_cast<char>(v[0] << 4 | v[1]);
-    }
-    out.swap(r);
-    return true;
-}
+bool unhex(const std::string &h, Bytes &out) { return support::unhex(h, out); }
 
 // ---------------------------------------------------------------------------------------------
 // Primitives over libcrypto
@@ -844,14 +820,11 @@ std::string clean_name(const std::string &raw) {
 }
 
 namespace {
-int hex_digit(char c) {
-    return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
-}
 bool hex4_at(const Bytes &s, size_t at, unsigned &v) {
     if (at > s.size() || s.size() - at < 4) return false;
     v = 0;
     for (size_t k = 0; k < 4; k++) {
-        const int d = hex_digit(s[at + k]);
+        const int d = support::hex_digit(s[at + k]);
         if (d < 0) return false;
         v = v * 16 + static_cast<unsigned>(d);
     }
@@ -1036,7 +1009,7 @@ bool well_formed_service_type(const json &service) {
     const json *t = member(service, "type");
     if (!t || !t->is_string()) return false;
     const std::string &u = t->get_ref<const std::string &>();
-    auto hexd = [](char c) { return hex_digit(c) >= 0; };
+    auto hexd = [](char c) { return support::hex_digit(c) >= 0; };
     if (!u.empty() && u.size() <= 8) return std::all_of(u.begin(), u.end(), hexd);
     if (u.size() != 36) return false;
     for (size_t i = 0; i < u.size(); i++)

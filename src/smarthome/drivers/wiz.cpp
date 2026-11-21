@@ -118,16 +118,6 @@ bool is_hex(const std::string &s) {
     return !s.empty() && std::all_of(s.begin(), s.end(), [](unsigned char c) { return std::isxdigit(c) != 0; });
 }
 
-std::string hex_of(const std::string &bytes) {
-    static const char *digits = "0123456789abcdef";
-    std::string out;
-    for (const unsigned char c : bytes) {
-        out += digits[c >> 4];
-        out += digits[c & 15];
-    }
-    return out;
-}
-
 std::string hmac_sha256_b64(const std::string &key, const std::string &text) {
     unsigned char mac[EVP_MAX_MD_SIZE];
     size_t len = 0;
@@ -653,7 +643,7 @@ public:
             return false;
         }
         // Typed again: one more try, even for the key that was refused.
-        secrets_->set(kFamily, json{{"signing_key", hex_of(key)}});
+        secrets_->set(kFamily, json{{"signing_key", support::hex(key)}});
         return true;
     }
 

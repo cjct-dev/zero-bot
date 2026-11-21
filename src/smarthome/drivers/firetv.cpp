@@ -143,13 +143,6 @@ std::string lower_ascii(std::string s) {
     return s;
 }
 
-int hex_digit(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
 // Characters that display as nothing, and so can make a name look like another one or like
 // nothing at all: C0 and C1 controls, DEL, and Unicode's Default_Ignorable_Code_Point set (soft
 // hyphen, combining grapheme joiner, Arabic letter mark, Hangul fillers, Khmer inherent vowels,
@@ -222,7 +215,7 @@ std::string normalise_mac(const std::string &text) {
     if (t.size() != 17) return "";
     unsigned char b[6];
     for (int i = 0; i < 6; i++) {
-        const int hi = hex_digit(t[i * 3]), lo = hex_digit(t[i * 3 + 1]);
+        const int hi = support::hex_digit(t[i * 3]), lo = support::hex_digit(t[i * 3 + 1]);
         if (hi < 0 || lo < 0) return "";
         if (i < 5 && t[i * 3 + 2] != ':' && t[i * 3 + 2] != '-') return "";
         if (i < 5 && t[i * 3 + 2] != t[2]) return "";   // one separator throughout
@@ -267,7 +260,7 @@ std::string magic_packet(const std::string &mac) {
     const std::string m = normalise_mac(mac);
     if (m.empty()) return "";
     std::string addr;
-    for (int i = 0; i < 6; i++) addr += static_cast<char>(hex_digit(m[i * 3]) << 4 | hex_digit(m[i * 3 + 1]));
+    for (int i = 0; i < 6; i++) addr += static_cast<char>(support::hex_digit(m[i * 3]) << 4 | support::hex_digit(m[i * 3 + 1]));
     std::string out(6, '\xff');
     for (int i = 0; i < 16; i++) out += addr;
     return out;

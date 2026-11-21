@@ -70,27 +70,11 @@ using Point = std::unique_ptr<EC_POINT, Del<EC_POINT, EC_POINT_clear_free>>;
 using Cipher = std::unique_ptr<EVP_CIPHER_CTX, Del<EVP_CIPHER_CTX, EVP_CIPHER_CTX_free>>;
 }  // namespace
 
-std::string hex(const Bytes &b) {
-    static const char d[] = "0123456789abcdef";
-    std::string s;
-    for (unsigned char c : b) {
-        s += d[c >> 4];
-        s += d[c & 15];
-    }
-    return s;
-}
+std::string hex(const Bytes &b) { return support::hex(b); }
 
-bool unhex(const std::string &h, Bytes &out) {
-    out.clear();
-    if (h.size() % 2) return false;
-    auto nib = [](char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; };
-    for (size_t i = 0; i < h.size(); i += 2) {
-        const int a = nib(h[i]), b = nib(h[i + 1]);
-        if (a < 0 || b < 0) return false;
-        out += char(a * 16 + b);
-    }
-    return true;
-}
+// On failure `out` is left as it was (it used to be cleared and part filled): every caller gives up
+// on a false and never reads it.
+bool unhex(const std::string &h, Bytes &out) { return support::unhex(h, out); }
 
 static const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
