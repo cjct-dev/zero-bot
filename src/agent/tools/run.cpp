@@ -139,9 +139,9 @@ std::string no_such_tool(const std::string &name) {
 // it, and so does text that only begins like one. Done before anything is added to a result or it is
 // cut short, either of which would leave a JSON failure unreadable, and so a success (ZB-090).
 std::string one_shape(const std::string &result) {
-    if (!result::failed(result) || result.compare(0, 5, "ERROR") == 0) return result;
-    json j = json::parse(result, nullptr, false);
-    if (!j.is_object() || !j.contains("error")) return fail(result);   // {"error"... that is not JSON: as it came
+    json j;   // the result as JSON, read once by result::failed
+    if (result.compare(0, 5, "ERROR") == 0 || !result::failed(result, &j)) return result;
+    if (!j.is_object()) return fail(result);   // {"error"... that is not JSON: as it came
     const json e = j["error"];
     std::string what = e.is_string() ? e.get<std::string>() : e.is_null() ? "" : e.dump(-1, ' ', false, json::error_handler_t::replace);
     if (what.empty()) what = "the tool failed without saying why";

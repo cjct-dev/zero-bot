@@ -261,12 +261,22 @@ def run_all(root):
 
     # ---- timers picked by id (an argument the schema does not list, so the timer tool reads it itself)
     t = State(root, "timers")
+    timers = lambda: [x for x in t.file("data", "zero-bot", "reminders.json") or [] if x.get("kind") == "timer"]
     ok(t, "timer", {"action": "start", "minutes": 10, "label": "pasta"}, '"started"')
+    before = timers()
+    # A number that is not one is refused before a timer is chosen: with one running, "1oops" once fell through to
+    # "the only one" and cancelled it.
+    for action in ("cancel", "add_time"):
+        error(t, "timer", {"action": action, "id": "1oops", "minutes": 5}, "id must be a whole number", '"1oops" is not one')
+    error(t, "timer", {"action": "cancel", "id": True}, "id must be a whole number", "true is not one")
+    error(t, "timer", {"action": "add_time", "hours": "1 hour"}, "hours must be a number", '"1 hour" is not one')
+    check("the only timer was neither cancelled nor changed", len(before) == 1 and timers() == before, (before, timers()))
     ok(t, "timer", {"action": "start", "minutes": 6, "label": "eggs"}, '"started"')
-    error(t, "timer", {"action": "cancel", "id": "1oops"}, "more than one timer could be meant")   # not timer 1
+    error(t, "timer", {"action": "cancel", "id": "1oops"}, "id must be a whole number")   # not timer 1
     error(t, "timer", {"action": "cancel", "id": 1e300}, "no running timer has that id")
-    check("neither timer was cancelled", len([x for x in t.file("data", "zero-bot", "reminders.json") or [] if x.get("kind") == "timer"]) == 2,
-          t.file("data", "zero-bot", "reminders.json"))
+    check("neither timer was cancelled", len(timers()) == 2, timers())
+    ok(t, "timer", {"action": "cancel", "id": " 1 "}, '"cancelled":["Pasta"]')   # a number as text is still one
+    ok(t, "timer", {"action": "cancel", "id": ""}, '"cancelled":["Eggs"]')      # empty text is no id: the only one
 
     # ---- memory
     m = State(root, "memory")
@@ -349,6 +359,9 @@ def run_all(root):
             out = error(p, "run_python", {"code": "print(%r)" % printed, "bogus": 1}, words, "(this tool has no argument called 'bogus'")
             check("run_python printing %s: the shaped error comes first" % printed, out.startswith(words), out)
         out = error(p, "run_python", {"code": "print('{\"error\": 5')", "bogus": 1}, "ERROR: {\"error\": 5 (this tool has no argument")
+        # The key as JSON reads it, however it is escaped: "error" is "error".
+        out = error(p, "run_python", {"code": "print('{\"attempt\": 1, \"err\\\\u006fr\": \"disk full\"}')"},
+                    "ERROR: disk full. {\"attempt\":1}")
     else:
         print("(no bwrap or python3 here: the sandbox checks were skipped)")
 

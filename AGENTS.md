@@ -213,8 +213,11 @@ Things in that loop that exist for a reason; do not remove them without re-runni
     one. Every failure has one shape, `ERROR: what was wrong. What to do` (a tool's JSON
     `{"error": ...}`, whatever "error" holds, is turned into it before anything is added to the
     result or it is cut short); `result::failed()` (`src/core/result.h`; `tools::failed` forwards
-    to it) recognises it, and a JSON object holding "error". Tools whose schema is made at run time
-    (`smart_home`, `radio`: `Tool::spec`) check their own arguments.
+    to it) recognises it, and a JSON object holding "error" as JSON reads the key (`"err\u006fr"`
+    too), parsed once. Tools whose schema is made at run time (`smart_home`, `radio`: `Tool::spec`)
+    check their own arguments, as do tools reading an argument their schema lacks (the timer's
+    `id`): a number that is not one is refused before any target is chosen, and in `smart_home` a
+    percentage may carry its sign ("40%").
   - *Retries.* Only what is safe to repeat is sent again by itself: the AI service, transcription,
     speech, and the tools' reads and searches (`fetch_json`), through `http::send_retrying`, after
     a failure on the way (`http::transient`: no connection, a dropped one, 408, 429, 5xx but 501
@@ -766,7 +769,9 @@ key, real audio), say so plainly rather than implying it was.
   takes finite values only and `clamp_int` brings them into range first; text arguments accept a
   number as its digits. A number sent as text is read as a whole (`util::to_number`): `strtod`
   stops quietly at the first character it cannot read, so `"id": "12oops"` once cancelled reminder
-  12. Nested brackets overflowed the calculator's stack: recursive parsers need a depth limit.
+  12. A number that is not one must be refused, not passed over as if not given: the timer's
+  `"id": "1oops"` then fell through to "the only timer running" and cancelled it. Nested
+  brackets overflowed the calculator's stack: recursive parsers need a depth limit.
   nlohmann's parser does not recurse, but copying, comparing and printing the tree do, a level a
   call: JSON from another machine (a device, a web service, the AI service, a tool call's arguments)
   is read with `util::parse_untrusted_json`, which refuses unread anything nested deeper than
