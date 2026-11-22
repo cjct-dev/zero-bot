@@ -58,6 +58,18 @@ void background(Work work, Done done) {
     }).detach();
 }
 
+// As background(), for slow work started from the page on top of `menu`: the work is done whatever
+// happens, but `done` runs only while that page is still the one on top, with no text field open
+// over it (Menu::showing). Run late, an answer would otherwise open over the page the user has gone
+// on to (a list of models over the setup guide's next step), or act on the chat after settings closed.
+template <typename Work, typename Done>
+void background_on_page(Menu &menu, Work work, Done done) {
+    const unsigned long page = menu.on_top();
+    background(work, [&menu, page, done](const auto &result) {
+        if (menu.showing(page)) done(result);
+    });
+}
+
 // The pages one file opens from another.
 void pick_model(Menu &menu, const std::string &title, const std::string &mode, std::string Settings::*field,
                 bool allow_default);   // settings_pages.cpp

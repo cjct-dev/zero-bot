@@ -1078,11 +1078,16 @@ state), must be added to `App::lively` or to `App::sleep_ms`'s deadlines, or it 
 second late; `--shots` checks the sleep (`loop_sleeps_ok`).
 A settings page that needs something slow (a subprocess, the network, the first full look at the
 network) reads it with `background()` and refreshes itself when the answer comes, showing a
-placeholder meanwhile; a late answer acts only while its page is still the one on top (the Smart
-home page checks its title, the setup guide its `still_on`). So does a row's value, which is read at
-every redraw of its page: the Smart home row on Your data shows the last count while it counts again
-(`home_things`); counting at each key press ran `iw` on the UI thread. `--shots` opens both pages
-with a network that answers only after 1.5 s (`opens_at_once`).
+placeholder meanwhile. A late answer acts only while the page that asked is still the one on top,
+with no text field open over it (`background_on_page`, or `Menu::on_top` and `showing`, a number
+each page pushed gets): a check of `menu.open()` let a list of models fetched on the setup guide
+open over its next step. So does a row's value, which is read at every redraw of its page: the
+Smart home row on Your data shows the last count while it counts again (`home_things`); counting at
+each key press ran `iw` on the UI thread. A device's page asks what its driver still needs
+(`home::pairing_step`, which looks at the network) the same way, and "Set up…" is handed the answer.
+`--shots` opens these pages with a network that answers only after 1.5 s (`opens_at_once`), and
+holds the setup guide's late answers in the UI queue until the user has moved on, then delivers
+them (`late_setup_answers_ignored`).
 
 **Something shown over every screen** (the timer's alarm banner, `AlarmView`): make it a child
 of the screen, created after the other views, and `raise()` it again whenever another view

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -45,40 +46,45 @@ std::string thing_value(const home::Saved &d, const home::Thing &t) {
 }
 
 void open_home_device(Menu &menu, const std::string &network_id, const std::string &device_id);
-void run_pairing(Menu &menu, const std::string &network_id, const std::string &device_id);
+void run_pairing(Menu &menu, const std::string &network_id, const std::string &device_id, const home::PairStep &step);
 
 // Hands what the user typed (or "" after a button) to the device's driver, then carries on with
-// the next step, or reads the device once it is ready.
+// the next step, or reads the device once it is ready. The next step is asked for off the UI
+// thread too: it looks at the network (home::pairing_step).
 void submit_pairing(Menu &menu, const std::string &network_id, const std::string &device_id, const std::string &input) {
+    struct Outcome {
+        bool ok = false;
+        std::string err;
+        home::PairStep next;
+    };
     menu.toast("Checking…");
-    background(
+    background_on_page(
+        menu,
         [network_id, device_id, input] {
-            std::string err;
-            const bool ok = home::pairing_submit(network_id, device_id, input, err);
-            return std::make_pair(ok, err);
+            Outcome r;
+            r.ok = home::pairing_submit(network_id, device_id, input, r.err);
+            if (r.ok) r.next = home::pairing_step(network_id, device_id);
+            return r;
         },
-        [&menu, network_id, device_id](const std::pair<bool, std::string> &r) {
-            if (!menu.open()) return;
-            if (!r.first) { menu.problem("Not set up yet", r.second); return; }
-            run_pairing(menu, network_id, device_id);
+        [&menu, network_id, device_id](const Outcome &r) {
+            if (!r.ok) { menu.problem("Not set up yet", r.err); return; }
+            run_pairing(menu, network_id, device_id, r.next);
         });
 }
 
-// The one-time setup a device's driver asks for, one step at a time: press a button, accept a
-// prompt on the device, or type a code, password or token.
-void run_pairing(Menu &menu, const std::string &network_id, const std::string &device_id) {
-    const home::PairStep step = home::pairing_step(network_id, device_id);
+// The one-time setup a device's driver asks for, one step at a time (`step`, as home::pairing_step
+// gave it): press a button, accept a prompt on the device, or type a code, password or token.
+void run_pairing(Menu &menu, const std::string &network_id, const std::string &device_id, const home::PairStep &step) {
     switch (step.kind) {
         case home::Pairing::None:
             // Read the device, and the others of its family still waiting: an account typed for
             // one Tapo plug serves every one of them.
             menu.toast("Asking the device…");
-            background([network_id, device_id] { return home::refresh_after_pairing(network_id, device_id); },
-                       [&menu](const std::string &summary) {
-                           if (!menu.open()) return;
-                           menu.toast(summary);
-                           menu.refresh();
-                       });
+            background_on_page(menu, [network_id, device_id] { return home::refresh_after_pairing(network_id, device_id); },
+                               [&menu](const std::string &summary) {
+                                   menu.toast(summary);
+                                   menu.refresh();
+                               });
             return;
         case home::Pairing::PressButton:
         case home::Pairing::AcceptPrompt: {
@@ -149,13 +155,12 @@ void open_home_thing(Menu &menu, const std::string &network_id, const std::strin
             const bool is_on = on != t.state.end() && on->is_boolean() && on->get<bool>();
             items.push_back(MenuItem::val("Switch now", [is_on] { return std::string(is_on ? "On" : "Off"); }, [&menu, network_id, device_id, thing_id, is_on] {
                 menu.toast(is_on ? "Switching off…" : "Switching on…");
-                background([network_id, device_id, thing_id, is_on] { return home::switch_thing(network_id, device_id, thing_id, !is_on); },
-                           [&menu](const std::string &outcome) {
-                               if (!menu.open()) return;
-                               const std::string why = result::words(outcome);   // without its "ERROR: ", when it has one
-                               if (why != outcome) menu.problem("That did not work", why);
-                               else menu.refresh();
-                           });
+                background_on_page(menu, [network_id, device_id, thing_id, is_on] { return home::switch_thing(network_id, device_id, thing_id, !is_on); },
+                                   [&menu](const std::string &outcome) {
+                                       const std::string why = result::words(outcome);   // without its "ERROR: ", when it has one
+                                       if (why != outcome) menu.problem("That did not work", why);
+                                       else menu.refresh();
+                                   });
             }));
         }
         items.push_back(MenuItem::val("Part of", [d] { return d.title(); }, [&menu, network_id, device_id] { open_home_device(menu, network_id, device_id); }));
@@ -164,10 +169,36 @@ void open_home_thing(Menu &menu, const std::string &network_id, const std::strin
     menu.push(std::move(page));
 }
 
+// What a device's driver still needs before it can be used (home::pairing_step), for its page. Asking
+// looks at the network the device is on, which can mean the first full look (`iw`, seconds when the
+// router is slow to answer), so it is asked in the background each time the page is drawn: the page
+// shows the last answer meanwhile (none before the first), and is drawn again when it changed.
+struct PairingNeeds {
+    std::optional<home::PairStep> step;
+    bool asking = false;
+};
+
+const home::PairStep *pairing_needs(Menu &menu, const std::shared_ptr<PairingNeeds> &needs, const std::string &network_id,
+                                    const std::string &device_id) {
+    if (!needs->asking) {
+        needs->asking = true;
+        const unsigned long page = menu.on_top();   // the device's page, being drawn
+        background([network_id, device_id] { return home::pairing_step(network_id, device_id); },
+                   [&menu, needs, page](const home::PairStep &step) {
+                       needs->asking = false;
+                       const bool changed = !needs->step || needs->step->kind != step.kind || needs->step->prompt != step.prompt;
+                       needs->step = step;
+                       if (changed && menu.showing(page)) menu.refresh();
+                   });
+    }
+    return needs->step ? &*needs->step : nullptr;
+}
+
 void open_home_device(Menu &menu, const std::string &network_id, const std::string &device_id) {
+    auto needs = std::make_shared<PairingNeeds>();
     MenuPage page;
     page.title = "Home device";
-    page.build = [&menu, network_id, device_id]() {
+    page.build = [&menu, network_id, device_id, needs]() {
         std::vector<MenuItem> items;
         home::Saved d;
         if (!find_home_device(network_id, device_id, d)) { items.push_back(MenuItem::header("This device was removed")); return items; }
@@ -177,10 +208,14 @@ void open_home_device(Menu &menu, const std::string &network_id, const std::stri
         if (!d.controllable()) {
             Menu::add_paragraph(items, "Found on this network, but Zero Bot cannot control this kind of device yet.");
         } else {
-            const home::PairStep step = home::pairing_step(network_id, device_id);
-            if (step.kind != home::Pairing::None) {
-                Menu::add_paragraph(items, step.prompt.empty() ? "This device needs setting up first." : step.prompt);
-                items.push_back(MenuItem::action("Set up…", [&menu, network_id, device_id] { run_pairing(menu, network_id, device_id); }));
+            const home::PairStep *step = pairing_needs(menu, needs, network_id, device_id);
+            if (!step) {
+                Menu::add_paragraph(items, "Checking whether it needs setting up…");
+            } else if (step->kind != home::Pairing::None) {
+                Menu::add_paragraph(items, step->prompt.empty() ? "This device needs setting up first." : step->prompt);
+                items.push_back(MenuItem::action("Set up…", [&menu, network_id, device_id, now = *step] {
+                    run_pairing(menu, network_id, device_id, now);
+                }));
             } else if (!d.problem.empty()) {
                 Menu::add_paragraph(items, d.problem);
             }
@@ -196,25 +231,23 @@ void open_home_device(Menu &menu, const std::string &network_id, const std::stri
                 items.push_back(MenuItem::val(home::spoken(t), [d, t] { return thing_value(d, t); },
                                               [&menu, network_id, device_id, thing_id] { open_home_thing(menu, network_id, device_id, thing_id); }));
             }
-            if (step.kind == home::Pairing::None)
+            if (step && step->kind == home::Pairing::None)
                 items.push_back(MenuItem::action("Read it again", [&menu, network_id, device_id] {
                     menu.toast("Asking the device…");
-                    background([network_id, device_id] { return home::refresh(network_id, device_id); },
-                               [&menu](const std::string &summary) {
-                                   if (!menu.open()) return;
-                                   menu.toast(summary);
-                                   menu.refresh();
-                               });
+                    background_on_page(menu, [network_id, device_id] { return home::refresh(network_id, device_id); },
+                                       [&menu](const std::string &summary) {
+                                           menu.toast(summary);
+                                           menu.refresh();
+                                       });
                 }));
             if (!d.auth.empty())
                 items.push_back(MenuItem::action("Unpair", [&menu, network_id, device_id] {
                     menu.confirm("Unpair this device? It will need setting up again.", "Unpair", [&menu, network_id, device_id] {
-                        background([network_id, device_id] { return home::unpair(network_id, device_id); },
-                                   [&menu](const std::string &why) {
-                                       if (!menu.open()) return;
-                                       if (!why.empty()) menu.problem("Not unpaired", why);
-                                       menu.refresh();
-                                   });
+                        background_on_page(menu, [network_id, device_id] { return home::unpair(network_id, device_id); },
+                                           [&menu](const std::string &why) {
+                                               if (!why.empty()) menu.problem("Not unpaired", why);
+                                               menu.refresh();
+                                           });
                     });
                 }, true));
         }
@@ -264,8 +297,8 @@ void open_tapo_account(Menu &menu, const std::string &network_id) {
         items.push_back(MenuItem::action("Check the plugs", [&menu, network_id] {
             if (!home::tapo_account().set()) { menu.toast("Enter the e-mail and password first"); return; }
             menu.toast("Asking the plugs…");
-            background([network_id] { return home::refresh(network_id); },
-                       [&menu](const std::string &summary) { if (menu.open()) menu.problem("Tapo plugs", summary); });
+            background_on_page(menu, [network_id] { return home::refresh(network_id); },
+                               [&menu](const std::string &summary) { menu.problem("Tapo plugs", summary); });
         }));
         if (!home::tapo_account().email.empty())
             items.push_back(MenuItem::action("Forget the account", [&menu] {
@@ -283,7 +316,8 @@ void open_tapo_account(Menu &menu, const std::string &network_id) {
 // while it listened.
 void run_home_scan(Menu &menu, const discovery::Network &shown) {
     menu.toast("Looking for devices…");
-    background(
+    background_on_page(
+        menu,
         [shown] {
             std::vector<discovery::Device> found;
             std::string err;
@@ -300,7 +334,6 @@ void run_home_scan(Menu &menu, const discovery::Network &shown) {
             return summary + ". " + home::refresh(shown.id());
         },
         [&menu](const std::string &result) {
-            if (!menu.open()) return;
             if (!result.empty() && result[0] == '!') menu.problem("Nothing found", result.substr(1));
             else { menu.toast(result); menu.refresh(); }
         });
@@ -409,10 +442,11 @@ void open_smart_home(Menu &menu) {
         return items;
     };
     menu.push(std::move(page));
-    background([] { return home::network_now(); }, [&menu, shown](const discovery::Network &net) {
+    const unsigned long opened = menu.on_top();
+    background([] { return home::network_now(); }, [&menu, shown, opened](const discovery::Network &net) {
         shown->net = net;
         shown->known = true;
-        if (menu.open() && menu.title() == "Smart home") menu.refresh();
+        if (menu.showing(opened)) menu.refresh();
     });
 }
 

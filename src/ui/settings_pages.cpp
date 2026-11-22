@@ -29,8 +29,9 @@ namespace ui {
 void pick_model(Menu &menu, const std::string &title, const std::string &mode, std::string Settings::*field,
                 bool allow_default) {
     menu.toast("Loading models…");
-    models::fetch([&menu, title, mode, field, allow_default](const models::List &list, const std::string &err) {
-        if (!menu.open()) return;
+    const unsigned long page = menu.on_top();   // the list opens over this page only (Menu::showing)
+    models::fetch([&menu, page, title, mode, field, allow_default](const models::List &list, const std::string &err) {
+        if (!menu.showing(page)) return;
         if (!err.empty()) { menu.problem("Could not load models", err); return; }
         // The models labelled for this use, else those not labelled for another, else all of them
         // (models::offered: the user is choosing by hand here, and is never offered nothing).
@@ -51,7 +52,8 @@ namespace {
 // ---------------------------------------------------------------- about
 void open_status(Menu &menu) {
     menu.toast("Checking…");
-    background(
+    background_on_page(
+        menu,
         [] {
             std::string text = "Zero Bot " ZB_VERSION "\n";
             const net_status::WiFi wifi = net_status::wifi(5000);
@@ -65,7 +67,7 @@ void open_status(Menu &menu) {
             text += "\nMusic: " + std::to_string(MusicLibrary::get().size()) + " tracks";
             return text;
         },
-        [&menu](const std::string &text) { if (menu.open()) menu.message("Status", text); });
+        [&menu](const std::string &text) { menu.message("Status", text); });
 }
 
 // ---------------------------------------------------------------- Your data
@@ -78,11 +80,12 @@ std::string home_things(Menu &menu) {
     static bool counting = false;
     if (!counting) {
         counting = true;
-        background([] { return home::thing_count(); }, [&menu](size_t n) {
+        const unsigned long page = menu.on_top();   // Your data, being drawn
+        background([] { return home::thing_count(); }, [&menu, page](size_t n) {
             counting = false;
             if (known == n) return;
             known = n;
-            if (menu.open() && menu.title() == "Your data") menu.refresh();
+            if (menu.showing(page)) menu.refresh();
         });
     }
     if (!known) return "…";
@@ -163,11 +166,11 @@ void device_rows(Menu &menu, std::vector<MenuItem> &items) {
         return std::string(tether::via_phone() ? "Connected" : "ENTER to connect");
     }, [&menu] {
         if (tether::via_phone()) {
-            background([] { tether::disconnect(); return 0; }, [&menu](int) { menu.toast("Phone link closed"); menu.refresh(); });
+            background_on_page(menu, [] { tether::disconnect(); return 0; }, [&menu](int) { menu.toast("Phone link closed"); menu.refresh(); });
             return;
         }
         menu.toast("Connecting to your phone over Bluetooth…");
-        background([] { return tether::connect(); }, [&menu](const std::string &err) {
+        background_on_page(menu, [] { return tether::connect(); }, [&menu](const std::string &err) {
             menu.toast(err.empty() ? "Online through your phone" : "Could not connect: " + err);
             menu.refresh();
         });
@@ -202,8 +205,8 @@ void data_rows(Menu &menu, const SettingsHooks &hooks, std::vector<MenuItem> &it
     items.push_back(MenuItem::val("Smart home", [&menu] { return home_things(menu); }, [&menu] { open_smart_home(menu); }));
     items.push_back(MenuItem::val("Music library", [] { return std::to_string(MusicLibrary::get().size()) + " tracks"; }, [&menu] {
         menu.toast("Scanning " + S().eff_music_dir() + "…");
-        background([] { MusicLibrary::get().refresh(S().eff_music_dir(), true); return MusicLibrary::get().size(); },
-                   [&menu](size_t n) { menu.toast(std::to_string(n) + " tracks found"); menu.refresh(); });
+        background_on_page(menu, [] { MusicLibrary::get().refresh(S().eff_music_dir(), true); return MusicLibrary::get().size(); },
+                           [&menu](size_t n) { menu.toast(std::to_string(n) + " tracks found"); menu.refresh(); });
     }));
     items.push_back(MenuItem::val("Radio stations", [] {
         const size_t n = radio::stations().size();

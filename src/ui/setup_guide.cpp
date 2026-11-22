@@ -17,21 +17,19 @@ namespace ui {
 // Each step is a menu page pushed on top of the previous one, so ESC steps back naturally.
 namespace {
 
+// A reply that comes back after the user has left the page that asked for it (on to the next step,
+// back with ESC, out of the guide) is dropped (background_on_page, Menu::showing): run late, "Test and
+// continue" reopened a finished guide on the models page, whose Continue then used the self-reference
+// finish() had already let go.
 struct Setup {
     Menu &menu;
     std::function<void()> on_finish;
     size_t base_depth = 0;
-    // How many pages the guide has shown, and whether it has ended. A reply that comes back after the
-    // user has left the page that asked for it (on to the next step, back with ESC, out of the guide)
-    // is dropped: run late, "Test and continue" reopened a finished guide on the models page, whose
-    // Continue then used the self-reference finish() had already let go (still_on()).
-    unsigned shown = 0;
     bool finished = false;
 
     void finish() {
         if (finished) return;
         finished = true;
-        ++shown;
         change([](Settings &s) { s.setup_done = true; });
         while (menu.depth() > base_depth) menu.pop();
         if (on_finish) on_finish();
@@ -40,19 +38,8 @@ struct Setup {
     // Every page of the guide is marked as one: SPACE does not close it (Menu::in_guide).
     void show(MenuPage page) {
         page.guide = true;
-        ++shown;
         menu.push(std::move(page));
     }
-
-    // Where the user is when a slow request starts: the guide's page on top, at this depth.
-    struct Spot {
-        unsigned shown;
-        size_t depth;
-    };
-    Spot here() const { return {shown, menu.depth()}; }
-    // Whether that page is still the one on top: no page of the guide shown since, none closed or
-    // opened over it, and the guide not finished.
-    bool still_on(const Spot &at) const { return !finished && at.shown == shown && menu.depth() == at.depth; }
 
     MenuItem edit(const std::string &label, std::string Settings::*field, const std::string &help, bool secret = false) {
         Menu &m = menu;
@@ -151,9 +138,9 @@ struct Setup {
             items.push_back(MenuItem::action("Test and continue", [self, &m] {
                 if (!S().configured()) { m.toast("Enter both the address and the key first"); return; }
                 m.toast("Contacting the service…");
-                const Spot at = self->here();
-                models::fetch([self, &m, at](const models::List &list, const std::string &err) {
-                    if (!self->still_on(at)) return;   // the user skipped the step, went back or finished
+                const unsigned long page = m.on_top();
+                models::fetch([self, &m, page](const models::List &list, const std::string &err) {
+                    if (!m.showing(page)) return;   // the user skipped the step, went back or finished
                     if (!err.empty()) { m.problem("That did not work", err); return; }
                     change([&list](Settings &st) { models::choose(st, list); });
                     m.toast("Connected: " + std::to_string(list.size()) + " models available");
@@ -183,12 +170,12 @@ struct Setup {
             Menu::add_paragraph(items, "No internet yet. Join Wi-Fi in the device's own Settings app, or use a paired phone "
                                        "with Bluetooth tethering switched on.");
             items.push_back(MenuItem::action("Check again", [&m] { m.refresh(); }));
-            items.push_back(MenuItem::action("Use my phone over Bluetooth", [self, &m] {
+            items.push_back(MenuItem::action("Use my phone over Bluetooth", [&m] {
                 m.toast("Connecting to your phone…");
-                const Spot at = self->here();
-                background([] { return tether::connect(); }, [self, &m, at](const std::string &err) {
+                // Said on this page only: not over another, nor on the chat after the guide.
+                background_on_page(m, [] { return tether::connect(); }, [&m](const std::string &err) {
                     m.toast(err.empty() ? "Online through your phone" : "Could not connect: " + err);
-                    if (self->still_on(at)) m.refresh();   // not another page, nor the chat after the guide
+                    m.refresh();
                 });
             }));
             items.push_back(MenuItem::action("Continue without internet", [self] { self->step_service(); }));
@@ -219,7 +206,7 @@ struct Setup {
 }  // namespace
 
 void open_setup(Menu &menu, std::function<void()> on_finish) {
-    auto setup = std::make_shared<Setup>(Setup{menu, nullptr, menu.depth(), 0, false, nullptr});
+    auto setup = std::make_shared<Setup>(Setup{menu, nullptr, menu.depth(), false, nullptr});
     // Finishing drops the self-reference so the guide is freed once its pages are gone.
     std::weak_ptr<Setup> weak = setup;
     setup->on_finish = [weak, on_finish] {

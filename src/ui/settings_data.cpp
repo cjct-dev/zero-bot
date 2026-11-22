@@ -326,8 +326,8 @@ void open_remote(Menu &menu) {
         items.push_back(MenuItem::action("Test: send power", [&menu] {
             // With "Any" every brand's code goes out in turn, which takes about half a second.
             const std::string brand = S().tv_brand;
-            background([brand] { return ir::send(brand, "power", 1); },
-                       [&menu](const std::string &err) { menu.toast(err.empty() ? "Power sent" : err); });
+            background_on_page(menu, [brand] { return ir::send(brand, "power", 1); },
+                               [&menu](const std::string &err) { menu.toast(err.empty() ? "Power sent" : err); });
         }));
         items.push_back(MenuItem::header("Buttons learned from your remote"));
         const auto names = ir::learned();
@@ -339,11 +339,11 @@ void open_remote(Menu &menu) {
             menu.edit_text("Button name", "", false, [&menu](const std::string &name) {
                 if (util::trim(name).empty()) return;
                 menu.toast("Point the remote at the top edge and press the button");
-                background([name] { return ir::learn(name, 8000); },
-                           [&menu, name](const std::string &err) {
-                               menu.toast(err.empty() ? "Learned '" + name + "'" : err);
-                               menu.refresh();
-                           });
+                background_on_page(menu, [name] { return ir::learn(name, 8000); },
+                                   [&menu, name](const std::string &err) {
+                                       menu.toast(err.empty() ? "Learned '" + name + "'" : err);
+                                       menu.refresh();
+                                   });
             }, "Use a standard name (power, volume_up, mute, input…) to override the built-in code, or any name of your own.");
         }));
         if (!names.empty())
@@ -400,15 +400,16 @@ void open_radio(Menu &menu) {
                 // Checked first, as the assistant does: a playlist file is followed to its stream,
                 // and a station that will not play says why here rather than failing quietly.
                 menu.toast("Trying " + s.name + "…");
-                radio::check_async(s, [&menu, s](const radio::Check &c) {
+                const unsigned long page = menu.on_top();   // what is said goes on this page only (Menu::showing)
+                radio::check_async(s, [&menu, page, s](const radio::Check &c) {
                     if (!c.error.empty()) {
                         std::string why = c.error;   // "the station refused ...": a sentence of its own here
                         why[0] = static_cast<char>(toupper(static_cast<unsigned char>(why[0])));
-                        if (menu.open()) menu.problem(s.name + " did not play", why + ".");
+                        if (menu.showing(page)) menu.problem(s.name + " did not play", why + ".");
                         return;
                     }
                     audio::Music::get().play_live(c.url, s.name);
-                    if (menu.open()) { menu.toast("Playing " + s.name); menu.refresh(); }
+                    if (menu.showing(page)) { menu.toast("Playing " + s.name); menu.refresh(); }
                 });
             }));
         }
