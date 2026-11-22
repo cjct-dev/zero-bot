@@ -1,6 +1,6 @@
 // Unit tests for ui/models.h's two rules (ZB-088): what is chosen without the user (only a model
 // labelled "chat" becomes the language model) and what the settings page lists for the user to choose
-// from (everything when the service labels nothing). Header-only and pure: no screen, nothing linked.
+// from (the models labelled for it; else the unlabelled ones; else everything: never nothing). Header-only and pure: no screen, nothing linked.
 // Each check prints one line on failure; the exit status is non-zero when any fails.
 #include "ui/models.h"
 
@@ -46,7 +46,23 @@ int main() {
     ui::models::choose(no_llm, no_chat);
     check(no_llm.llm_model.empty(), "no chat model: no language model is picked (" + no_llm.llm_model + ")");
     check(no_llm.stt_model == "ears", "no chat model: speech to text is still picked");
-    check(ui::models::offered(no_chat, "chat").empty(), "no chat model: settings list none for the language model");
+    check(ui::models::offered(no_chat, "chat") == Ids{"embed"},
+          "no chat model: settings list the unlabelled model for the language model, not the speech one");
+
+    // A service that labels only its speech models and leaves its chat model unlabelled (ZB-088's
+    // review): nothing is picked for the language model without the user, and the settings page,
+    // where the setup guide sends them, lists that model rather than nothing.
+    const List speech_only = {{"talker", ""}, {"ears", "audio_transcription"}, {"voice", "audio_speech"}};
+    Settings partial;
+    ui::models::choose(partial, speech_only);
+    check(partial.llm_model.empty() && partial.stt_model == "ears" && partial.tts_model == "voice",
+          "speech labelled only: the speech models are picked, the language model is left to the user");
+    check(ui::models::offered(speech_only, "chat") == Ids{"talker"}, "speech labelled only: settings list the unlabelled model");
+    check(ui::models::offered(speech_only, "audio_speech") == Ids{"voice"}, "speech labelled only: the voice list is still by label");
+
+    // Every model labelled as another kind: the list for the language model is every model, not none.
+    const List others = {{"ears", "audio_transcription"}, {"voice", "audio_speech"}};
+    check(ui::models::offered(others, "chat") == Ids{"ears", "voice"}, "only other kinds: settings list every model");
 
     // A model already chosen is never replaced.
     Settings kept;

@@ -31,8 +31,8 @@ void pick_model(Menu &menu, const std::string &title, const std::string &mode, s
     models::fetch([&menu, title, mode, field, allow_default](const models::List &list, const std::string &err) {
         if (!menu.open()) return;
         if (!err.empty()) { menu.problem("Could not load models", err); return; }
-        // Services that label what each model is for get a filtered list; others show everything
-        // (models::offered: the user is choosing by hand here).
+        // The models labelled for this use, else those not labelled for another, else all of them
+        // (models::offered: the user is choosing by hand here, and is never offered nothing).
         std::vector<std::string> options;
         const std::string same = "(same as language model)";
         if (allow_default) options.push_back(same);

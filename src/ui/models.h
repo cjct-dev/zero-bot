@@ -33,15 +33,19 @@ inline void choose(Settings &s, const List &list) {
 }
 
 // The models the settings page offers for `mode` ("chat", "audio_transcription", "audio_speech"): those
-// labelled for it when the service labels any model, and every model when it labels none. That second
-// case is not the rule above: here the user is choosing by hand, and the list would otherwise be empty.
+// labelled for it when any is; else every model not labelled as another kind; else every model. This
+// is not the rule above: here the user is choosing by hand, and the list must not come out empty while
+// the service lists models. A service that labels only its speech models leaves its chat model
+// unlabelled: the automatic choice rightly skips it, and this list is where the user picks it.
 inline std::vector<std::string> offered(const List &list, const std::string &mode) {
-    bool labelled = false;
-    for (const llm::ModelInfo &m : list) labelled = labelled || !m.mode.empty();
-    std::vector<std::string> ids;
-    for (const llm::ModelInfo &m : list)
-        if (!labelled || m.mode == mode) ids.push_back(m.id);
-    return ids;
+    std::vector<std::string> labelled, unlabelled, all;
+    for (const llm::ModelInfo &m : list) {
+        if (m.mode == mode) labelled.push_back(m.id);
+        else if (m.mode.empty()) unlabelled.push_back(m.id);
+        all.push_back(m.id);
+    }
+    if (!labelled.empty()) return labelled;
+    return unlabelled.empty() ? all : unlabelled;
 }
 
 }  // namespace ui::models
