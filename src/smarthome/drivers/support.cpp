@@ -14,25 +14,6 @@
 namespace support {
 
 // ---------------------------------------------------------------- JSON from devices
-bool json_too_deep(const std::string &text, int max) {
-    int depth = 0;
-    bool in_string = false, escaped = false;
-    for (const char c : text) {
-        if (in_string) {
-            if (escaped) escaped = false;
-            else if (c == '\\') escaped = true;
-            else if (c == '"') in_string = false;
-        } else if (c == '"') {
-            in_string = true;
-        } else if (c == '[' || c == '{') {
-            if (++depth > max) return true;
-        } else if (c == ']' || c == '}') {
-            --depth;
-        }
-    }
-    return false;
-}
-
 bool parse_reply(const std::string &body, size_t max_bytes, int max_depth, json &out) {
     if (body.size() > max_bytes || json_too_deep(body, max_depth)) return false;
     out = json::parse(body, nullptr, false);

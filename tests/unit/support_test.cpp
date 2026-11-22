@@ -50,6 +50,20 @@ static void test_json() {
     check("parse_reply: deeper than the limit is refused", !support::parse_reply(nested(4), 100, 3, out) && out == json::array({1}));
     check("parse_reply: text that is not JSON", !support::parse_reply("{\"a\":", 100, 32, out));
     check("parse_reply: a reply within both limits", support::parse_reply(R"({"a":[1,2]})", 11, 2, out) && out["a"][1] == 2);
+
+    // The same scanner checks, then parses, everything else that came from another machine (core/util.h, ZB-093).
+    check("parse_untrusted_json: 32 levels, the shared limit, are read", util::parse_untrusted_json(nested(32)).is_array());
+    check("parse_untrusted_json: 33 are not, though they are JSON", util::parse_untrusted_json(nested(33)).is_discarded() &&
+                                                                       !json::parse(nested(33), nullptr, false).is_discarded());
+    check("parse_untrusted_json: a megabyte of brackets is refused unread",
+          util::parse_untrusted_json(std::string(1 << 20, '[') + std::string(1 << 20, ']')).is_discarded());
+    check("parse_untrusted_json: another limit", util::parse_untrusted_json(nested(4), 3).is_discarded() &&
+                                                     util::parse_untrusted_json(nested(3), 3).is_array());
+    check("parse_untrusted_json: text that is not JSON", util::parse_untrusted_json("{\"a\":").is_discarded());
+    check("parse_untrusted_json: brackets inside a string are not counted",
+          util::parse_untrusted_json("{\"a\":\"" + nested(100) + "\"}").value("a", "") == nested(100));
+    check("support::json_too_deep is that scanner", support::json_too_deep(nested(33), util::kMaxJsonDepth) &&
+                                                        !support::json_too_deep(nested(32), util::kMaxJsonDepth));
 }
 
 static void test_text() {

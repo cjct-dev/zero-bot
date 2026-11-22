@@ -112,7 +112,7 @@ std::string confirmation(const std::string &name, const std::string &raw_args, c
     const Tool *tool = find(name);
     if (!tool || !tool->say.taken) return "";
     if (failed(result)) return "";
-    const json args = json::parse(raw_args.empty() ? "{}" : raw_args, nullptr, false);
+    const json args = util::parse_untrusted_json(raw_args.empty() ? "{}" : raw_args);
     if (!args.is_object()) return "";
     if (tool->say.when && !tool->say.when(args, result)) return "";   // the tool's own exceptions (Say::when)
     return str_arg(args, "say");

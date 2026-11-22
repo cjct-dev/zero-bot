@@ -15,18 +15,19 @@
 #include <openssl/evp.h>
 #include <openssl/x509.h>
 
+#include "core/util.h"
 #include "nlohmann/json.hpp"
 
 namespace support {
 using json = nlohmann::json;
 
 // ---------------------------------------------------------------- JSON from devices
-// Whether a JSON text nests arrays and objects deeper than `max` (strings and their escapes are
-// skipped; a closing bracket with nothing open counts the depth below zero). Checked before parsing
-// anything a device sent, so that a hostile answer cannot make copying the tree recurse without end.
-// Each driver keeps its own limit (Hue 48, the others 32). HomeKit's json_depth_ok differs (a
-// stray closing bracket does not count below zero) and stays its own.
-bool json_too_deep(const std::string &text, int max);
+// Whether a JSON text nests arrays and objects deeper than `max`: util::json_too_deep (core/util.h),
+// the one scanner for everything that came from another machine. Checked before parsing anything a
+// device sent, so that a hostile answer cannot make copying the tree recurse without end. Each
+// driver keeps its own limit (Hue 48, the others 32, util::kMaxJsonDepth); util::parse_untrusted_json
+// checks and parses in one.
+using util::json_too_deep;
 // A reply parsed without throwing: false, with `out` untouched, when it is longer than `max_bytes`
 // or nests deeper than `max_depth`; otherwise `out` is the parse, and false when it is not JSON.
 bool parse_reply(const std::string &body, size_t max_bytes, int max_depth, json &out);

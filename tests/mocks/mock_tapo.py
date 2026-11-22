@@ -16,10 +16,12 @@ this file agreeing means two independent implementations agree. `--selftest` che
 against published vectors.
 
 Test hooks (never present on a real plug): GET /mock/stats, and POST /mock/reset with any of
-{"budget":[1,0], "lock_after":1, "no_energy_usage":true, "page":3, "refuse_set":true}, which also clears all
-state. The budget is how many requests each successive session serves before the plug forgets it;
-refuse_set answers every switch command with error -1001 (the plug says no), for tests of what the
-app does after a command fails.
+{"budget":[1,0], "lock_after":1, "no_energy_usage":true, "page":3, "refuse_set":true, "deep":"reply"}, which
+also clears all state. The budget is how many requests each successive session serves before the plug forgets
+it; refuse_set answers every switch command with error -1001 (the plug says no), for tests of what the
+app does after a command fails. deep adds a "pad" nested DEEP levels to otherwise right answers: "login" to
+every TPAP login step's, "reply" to every command's (inside the encryption, KLAP and TPAP), "lost" to the
+plain notice that a TPAP session is no longer known; for tests that the app reads none of them (ZB-093).
 
 It binds 127.0.0.1 only.
 """
@@ -301,6 +303,14 @@ def b64(text):
     return base64.b64encode(text.encode()).decode()
 
 
+DEEP = 40   # levels of the "pad" that reset's "deep" adds: more than the app reads (32), far less than Python's own limit
+
+
+def padded(text):
+    """A JSON object's text with "pad": [[[...]]] (DEEP levels) added as its last member."""
+    return text[:-1] + ',"pad":' + "[" * DEEP + "]" * DEEP + "}"
+
+
 class Mock:
     def __init__(self, args):
         self.args = args
@@ -318,6 +328,7 @@ class Mock:
         self.no_energy_usage = cfg.get("no_energy_usage", self.args.no_energy_usage)
         self.page = cfg.get("page", self.args.page)
         self.refuse_set = cfg.get("refuse_set", False)
+        self.deep = cfg.get("deep", "")
         self.sessions = {}       # cookie or token -> session dict
         self.pending = None      # TPAP: the handshake between pake_register and pake_share
         self.failed_logins = 0
@@ -430,7 +441,7 @@ class Mock:
         reply = {"error_code": code}
         if result is not None:
             reply["result"] = result
-        return json.dumps(reply)
+        return padded(json.dumps(reply)) if self.deep == "reply" else json.dumps(reply)
 
     # --- KLAP -------------------------------------------------------------------------------
 
@@ -581,7 +592,8 @@ class Mock:
         """Returns (content type, body). A plug that does not know the session says so in plain JSON."""
         s = self.spend(token)
         if s is None:
-            return "application/json", json.dumps({"error_code": -2402}).encode()
+            notice = json.dumps({"error_code": -2402})
+            return "application/json", (padded(notice) if self.deep == "lost" else notice).encode()
         if len(body) < 20 or struct.unpack(">i", body[:4])[0] != s["seq"]:
             self.bad.append("TPAP sequence number is not the expected %d" % s["seq"])
             return "application/json", json.dumps({"error_code": -1008}).encode()
@@ -630,7 +642,8 @@ class Handler(BaseHTTPRequestHandler):
                 m.reset(json.loads(body or b"{}"))
                 self.send(200, b"{}", "application/json")
             elif path == "/":
-                self.send(200, json.dumps(m.login(body)).encode(), "application/json")
+                answer = json.dumps(m.login(body))
+                self.send(200, (padded(answer) if m.deep == "login" else answer).encode(), "application/json")
             elif path.startswith("/app/"):
                 status, headers, out = m.klap(path, query, self.headers.get("Cookie"), body)
                 self.send(status, out, headers=headers)

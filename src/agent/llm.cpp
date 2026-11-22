@@ -27,7 +27,7 @@ std::string endpoint(const char *path) { return Settings::get().eff_api_base() +
 
 std::string api_error(const http::Response &res) {
     if (!res.error.empty()) return res.error;
-    const json j = json::parse(res.body, nullptr, false);
+    const json j = util::parse_untrusted_json(res.body);
     if (j.is_object() && j.contains("error")) {
         const json &e = j["error"];
         if (e.is_string()) return e.get<std::string>();
@@ -158,7 +158,7 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
         if (line.compare(0, 5, "data:") != 0) return;
         const std::string payload = util::trim(line.substr(5));
         if (payload.empty() || payload == "[DONE]") return;
-        const json ev = json::parse(payload, nullptr, false);
+        const json ev = util::parse_untrusted_json(payload);
         if (!ev.is_object()) return;
         if (ev.contains("error")) {
             const json &e = ev["error"];
@@ -298,7 +298,7 @@ std::string transcribe(const std::string &wav, std::string &err, std::atomic<boo
         res = http::send_retrying(req, service_retry(2, req.timeout_s));
     }
     if (!res.ok()) { err = api_error(res); return ""; }
-    const json j = json::parse(res.body, nullptr, false);
+    const json j = util::parse_untrusted_json(res.body);
     if (!j.is_object()) { err = "unexpected reply from the speech service"; return ""; }
     return util::trim(util::jget(j, "text", std::string()));
 }
@@ -385,7 +385,7 @@ std::vector<ModelInfo> list_models(std::string &err) {
     req.timeout_s = 20;
     const http::Response res = http::send(req);
     if (!res.ok()) { err = api_error(res); return out; }
-    const json j = json::parse(res.body, nullptr, false);
+    const json j = util::parse_untrusted_json(res.body);
     const json &data = j.is_object() && j.contains("data") ? j["data"] : j;
     if (!data.is_array()) { err = "unexpected model list"; return out; }
     for (const json &m : data) {

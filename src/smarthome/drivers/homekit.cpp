@@ -866,7 +866,7 @@ Bytes repair_surrogates(const Bytes &text) {
 bool parse_reply_json(const Bytes &body, size_t max_values, json &out) {
     out = json();
     const Bytes text = repair_surrogates(sanitize_utf8(body));
-    if (!json_depth_ok(text, kMaxJsonDepth) || !json_values_ok(text, max_values)) return false;
+    if (support::json_too_deep(text, kMaxJsonDepth) || !json_values_ok(text, max_values)) return false;
     out = json::parse(text, nullptr, false);
     return !out.is_discarded();
 }
@@ -893,27 +893,6 @@ bool json_values_ok(const Bytes &text, size_t max_values) {
         }
         if (c == '"') in_string = true;
         else if ((c == '[' || c == '{' || c == ',' || c == ':') && ++n > max_values) return false;
-    }
-    return true;
-}
-
-bool json_depth_ok(const Bytes &text, int max_depth) {
-    int depth = 0;
-    bool in_string = false, escaped = false;
-    for (const char c : text) {
-        if (in_string) {
-            if (escaped) escaped = false;
-            else if (c == '\\') escaped = true;
-            else if (c == '"') in_string = false;
-            continue;
-        }
-        if (c == '"') {
-            in_string = true;
-        } else if (c == '[' || c == '{') {
-            if (++depth > max_depth) return false;
-        } else if ((c == ']' || c == '}') && depth > 0) {
-            depth--;
-        }
     }
     return true;
 }

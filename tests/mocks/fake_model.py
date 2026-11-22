@@ -40,6 +40,8 @@ REPLY:
   "chunk_ms": N                         wait this long before each piece of text after the first, so the app
                                         has the first piece well before the next is sent
   "no_ids": true                        tool calls without ids (some services omit them)
+  "pad_depth": N                        every event of the stream gets "pad": [[...]] nested N levels as its last
+                                        member, so the event nests N + 1 deep (the app reads no more than 32)
 
 A request that asks for token counts gets them in a last event with no choices, as the services do:
 prompt_tokens about a quarter of the body's bytes, completion_tokens a quarter of the reply's, and
@@ -118,6 +120,12 @@ def decide(body):
             reply = reply[min(used, len(reply) - 1)]
         return i, reply
     return "default", SCRIPT.get("default", {"text": "OK."})
+
+
+def event_text(event, pad):
+    """An event's JSON text; with `pad`, "pad" nested that many levels is added as its last member."""
+    text = json.dumps(event, ensure_ascii=False)
+    return text[:-1] + ',"pad":' + "[" * pad + "]" * pad + "}" if pad else text
 
 
 def events(reply, body):
@@ -199,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(reply["status"])
             self.send_header("Content-Type", reply.get("content_type", "application/json"))
         else:
-            parts = [(("data: %s\n\n" % json.dumps(e, ensure_ascii=False)).encode(),
+            parts = [(("data: %s\n\n" % event_text(e, reply.get("pad_depth"))).encode(),
                       bool(e.get("choices") and e["choices"][0].get("delta", {}).get("content"))) for e in events(reply, body)]
             parts.append((b"data: [DONE]\n\n", False))
             raw = b"".join(p for p, _ in parts)

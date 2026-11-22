@@ -9,7 +9,8 @@ written outside the state folder. Tools that need the internet (weather, currenc
 search, a place looked up by name, the photo's description) are run only against the local stand-in
 (tests/mocks/fake_web.py), to check the experiments' guards: ZB_EXP_NO_HARDWARE keeps the camera and the
 infrared transmitter out of a test run, a bad ZB_EXP_WEB stops the run cleanly, and a request to the
-stand-in takes no proxy and follows no redirect. no_real_web runs one case through the live sets' own runner
+stand-in takes no proxy and follows no redirect. A tool call's arguments and a web service's answer nested
+deeper than 32 levels are not read (nested_too_deep, against a local server of its own). no_real_web runs one case through the live sets' own runner
 (tests/agent_eval.py run_case) against a scripted model (tests/mocks/fake_model.py) that calls every tool
 that reads the web, with every proxy variable pointing at a trap: no request leaves 127.x (the trap sees
 none), each service is answered by the stand-in, the search carries the dummy key and never the inherited
@@ -354,6 +355,7 @@ def run_all(root):
     error(s, "smart_home", {"action": "on", "target": "lamp"}, "no smart-home device")
 
     guards(root)
+    nested_too_deep(root)
     no_real_web(root)
     web_wraps()
     test_network_everywhere(root)
@@ -390,6 +392,62 @@ class Trap:
     def close(self):
         self.server.shutdown()
         self.server.server_close()
+
+
+class Answering:
+    """A local HTTP server that answers every request with `body` (JSON; settable between runs), for answers no
+    stand-in fixture holds."""
+    def __init__(self):
+        import http.server
+        import threading
+        owner = self
+        self.body = "{}"
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def answer(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                if n:
+                    self.rfile.read(n)
+                raw = owner.body.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+            do_GET = do_POST = answer
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = "http://127.0.0.1:%d" % self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def nested_too_deep(root):
+    """JSON nested deeper than util::kMaxJsonDepth (32) is not read (ZB-093): a tool call's arguments, and a web
+    service's answer, each otherwise right, at 32 levels in all and at 33. Before the guard both were taken."""
+    g = State(root, "nested")
+    pad = lambda levels: "[" * levels + "]" * levels
+    ok(g, "calculator", '{"expression": "2+2", "pad": %s}' % pad(31), "4")
+    error(g, "calculator", '{"expression": "2+2", "pad": %s}' % pad(32), "the arguments nest lists or objects more than 32 deep",
+          'e.g. {"expression": "..."}')
+    web = Answering()
+    try:
+        for levels, works in ((31, True), (32, False)):
+            web.body = '{"answer": "Words from a nested answer.", "results": [], "pad": %s}' % pad(levels)
+            env = dict(ZB_EXP_WEB=web.url + "/nested", ZB_SEARCH_KEY="stand-in")
+            if works:
+                ok(g, "web_search", {"query": "a nested answer"}, "Words from a nested answer.", **env)
+            else:
+                out = error(g, "web_search", {"query": "a nested answer"}, "unexpected reply from the service", **env)
+                check("a web answer nested 33 levels is not read", "Words from" not in out, out)
+    finally:
+        web.close()
 
 
 def guards(root):

@@ -751,6 +751,10 @@ key, real audio), say so plainly rather than implying it was.
   number as its digits. A number sent as text is read as a whole (`util::to_number`): `strtod`
   stops quietly at the first character it cannot read, so `"id": "12oops"` once cancelled reminder
   12. Nested brackets overflowed the calculator's stack: recursive parsers need a depth limit.
+  nlohmann's parser does not recurse, but copying, comparing and printing the tree do, a level a
+  call: JSON from another machine (a device, a web service, the AI service, a tool call's arguments)
+  is read with `util::parse_untrusted_json`, which refuses unread anything nested deeper than
+  `util::kMaxJsonDepth` (32), and the caller treats that as an answer it cannot read (ZB-093).
 - `mktime` makes 31 February into 3 March without a word, and the zone database holds folders
   named like countries ("Australia") that the C library reads as UTC: `parse_local` and
   `timezone_exists` refuse both. Check that a date, time or zone exists before using it.
@@ -1074,7 +1078,8 @@ other things in that command: the shared layer gives them the same answer); hono
 no threads, sockets or connections of its own between calls; errors are short sentences. Use
 the `http::Request` options (`local`, `timeout_ms`, `insecure`, `pinned_pubkey`, `want_peer_cert`,
 digest, client certificate), `color.h` and `drivers/support.h` (the JSON depth check and a
-guarded parse, UTF-8 repair and decoding, MAC digits, hex, digests and HMAC, the PEM certificate and
+guarded parse, `support::parse_reply` or `util::parse_untrusted_json`, before anything a device sent is
+parsed; UTF-8 repair and decoding, MAC digits, hex, digests and HMAC, the PEM certificate and
 its SHA-256 pin, an RAII socket) rather than private copies; where a family's rule differs (which
 characters a name keeps, how a wait ends at its deadline), it keeps its own and says why. Set `local` on every
 request to a device (the TLS and digest options imply it): it never uses a proxy from the
