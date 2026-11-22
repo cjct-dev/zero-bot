@@ -115,156 +115,222 @@ void trace_record(const ChatOptions &opt, const json &tools, const json &body, s
                             {"text_chars", static_cast<long>(out.content.size())}});
 }
 
-}  // namespace
+// Fields a service has turned down: not sent again while the program runs (ChatCall).
+std::atomic<bool> g_effort_rejected{false}, g_usage_rejected{false};
 
-ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt) {
-    ChatResult out;
-    if (!Settings::get().configured()) { out.error = "No AI service is configured. Open settings to add one."; return out; }
+// One streamed chat call (chat): the body sent, the reply read as it streams in (answer text clear of
+// thinking markers, tool calls pieced together), the sends it takes, and what the experiments' trace
+// records of it.
+class ChatCall {
+public:
+    ChatCall(const json &messages, const json &tools, const ChatOptions &opt);
+    ChatCall(const ChatCall &) = delete;   // its callbacks hold `this`
+    ChatResult run();
 
-    json body = {{"model", opt.model}, {"messages", messages}, {"stream", true},
-                 {"max_tokens", opt.max_tokens}, {"temperature", opt.temperature}};
+private:
+    void make_request();
+    http::Response send();
+    bool turned_down(const http::Response &res) const;
+    http::Response resend(http::Retry &retry);
+    void on_line(const std::string &line);
+    void on_delta(const json &delta);
+    void emit(const std::string &text);
+    void reset();
+    ChatResult finish(const http::Response &res);
+    long since() const;
+
+    const json &tools_;
+    const ChatOptions &opt_;
+    const bool tracing_ = experiment::tracing();
+    json body_;
+    bool sent_effort_ = false, sent_usage_ = false;
+    std::chrono::steady_clock::time_point started_;
+    CallTrace ct_;
+    ChatResult out_;
+    ThinkFilter think_;
+    LineSplitter lines_;   // the event stream's lines (llm_stream.h)
+    http::Request req_;
+    const std::function<void(const std::string &)> on_line_ = [this](const std::string &line) { on_line(line); };
+    const std::function<void(const std::string &)> emit_ = [this](const std::string &text) { emit(text); };
+};
+
+ChatCall::ChatCall(const json &messages, const json &tools, const ChatOptions &opt) : tools_(tools), opt_(opt) {
+    body_ = {{"model", opt.model}, {"messages", messages}, {"stream", true},
+             {"max_tokens", opt.max_tokens}, {"temperature", opt.temperature}};
     if (tools.is_array() && !tools.empty()) {
-        body["tools"] = tools;
-        body["tool_choice"] = "auto";
+        body_["tools"] = tools;
+        body_["tool_choice"] = "auto";
     }
     // Reasoning models think privately before answering, which costs a second or more per
     // call. Fast mode asks them not to. Servers that reject the field get one retry without it.
-    static std::atomic<bool> effort_rejected{false};
-    const bool sent_effort = opt.fast && !effort_rejected;
-    if (sent_effort) body["reasoning_effort"] = "none";
+    sent_effort_ = opt.fast && !g_effort_rejected;
+    if (sent_effort_) body_["reasoning_effort"] = "none";
 
     // Experiments only (ZB_EXP_TRACE): the call's timings and the token counts the service reports,
     // which it sends only when asked. Never asked for otherwise; dropped for good after a 400.
-    const bool tracing = experiment::tracing();
-    static std::atomic<bool> usage_rejected{false};
-    const bool sent_usage = tracing && !usage_rejected;
-    if (sent_usage) body["stream_options"] = {{"include_usage", true}};
-    const auto started = std::chrono::steady_clock::now();
-    CallTrace ct;
-    ct.t_send = tracing ? experiment::request_ms() : -1;
-    auto since = [&] {
-        return static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
-    };
+    sent_usage_ = tracing_ && !g_usage_rejected;
+    if (sent_usage_) body_["stream_options"] = {{"include_usage", true}};
+    started_ = std::chrono::steady_clock::now();
+    ct_.t_send = tracing_ ? experiment::request_ms() : -1;
+}
 
-    // Answer text reaches the caller only once it is clear of thinking markers (llm_stream.h).
-    ThinkFilter think;
-    const std::function<void(const std::string &)> emit = [&](const std::string &text) {
-        if (text.empty()) return;
-        out.content += text;
-        if (opt.on_text) opt.on_text(text);
-    };
-    LineSplitter lines;   // the event stream's lines (llm_stream.h)
-    const std::function<void(const std::string &)> handle_line = [&](const std::string &line) {
-        if (line.compare(0, 5, "data:") != 0) return;
-        const std::string payload = util::trim(line.substr(5));
-        if (payload.empty() || payload == "[DONE]") return;
-        const json ev = util::parse_untrusted_json(payload);
-        if (!ev.is_object()) return;
-        if (ev.contains("error")) {
-            const json &e = ev["error"];
-            out.error = e.is_string() ? e.get<std::string>() : util::jget(e, "message", std::string("service error"));
-            return;
-        }
-        // The token counts come in a last event of their own, with an empty list of choices.
-        if (tracing && ev.contains("usage") && ev["usage"].is_object()) ct.usage = experiment::numbers_only(ev["usage"]);
-        if (!ev.contains("choices") || !ev["choices"].is_array() || ev["choices"].empty()) return;
-        const json &choice = ev["choices"][0];
-        if (!choice.contains("delta") || !choice["delta"].is_object()) return;
-        const json &delta = choice["delta"];
-        if (delta.contains("content") && delta["content"].is_string()) {
-            const std::string piece = delta["content"].get<std::string>();
-            if (!piece.empty()) {
-                if (tracing && ct.first_text < 0) ct.first_text = since();
-                think.feed(piece, false, emit);
-            }
-        }
-        if (delta.contains("tool_calls") && delta["tool_calls"].is_array()) {
-            if (tracing && ct.first_call < 0) ct.first_call = since();
-            // Each piece to the call its index names (llm_stream.h); an index out of range is a fault in the
-            // stream, reported as an error event's message is.
-            for (const json &tc : delta["tool_calls"]) {
-                std::string bad;
-                if (!add_tool_delta(out.tool_calls, tc, bad)) {
-                    if (out.error.empty()) out.error = bad;
-                    return;
-                }
-            }
-        }
-    };
+// The call: sent (again without a field the service turned down), the stream read to its end, traced.
+ChatResult ChatCall::run() {
+    make_request();
+    const http::Response res = send();
+    lines_.finish(on_line_);
+    think_.feed("", true, emit_);
+    if (tracing_) trace_record(opt_, tools_, body_, req_.body.size(), ct_, since(), res, out_);
+    return finish(res);
+}
 
-    http::Request req;
-    req.method = "POST";
-    req.url = endpoint("/chat/completions");
-    req.headers = auth_headers(true);
-    req.headers.push_back("Accept: text/event-stream");
-    req.body = dump(body);
-    req.timeout_s = 180;
-    req.cancel = opt.cancel;
-    req.on_data = [&](const char *data, size_t n) {
-        if (tracing && ct.ttfb < 0) ct.ttfb = since();
-        lines.feed(data, n, handle_line);
+void ChatCall::make_request() {
+    req_.method = "POST";
+    req_.url = endpoint("/chat/completions");
+    req_.headers = auth_headers(true);
+    req_.headers.push_back("Accept: text/event-stream");
+    req_.body = dump(body_);
+    req_.timeout_s = 180;
+    req_.cancel = opt_.cancel;
+    req_.on_data = [this](const char *data, size_t n) {
+        if (tracing_ && ct_.ttfb < 0) ct_.ttfb = since();
+        lines_.feed(data, n, on_line_);
     };
-    auto reset = [&] {
-        lines.reset();
-        think.reset();
-        out = ChatResult();
-        ct.ttfb = ct.first_text = ct.first_call = -1;
-        ct.usage = nullptr;
+}
+
+// Upstream hiccups (5xx, dropped connections, a service that says it is overloaded) are common
+// on mobile links. As long as nothing has been passed on yet, the call is tried again, twice at
+// most and all within its own three minutes: a timeout once the request had gone out is not
+// repeated, since that would double the wait.
+http::Response ChatCall::send() {
+    http::Retry retry = service_retry(3, req_.timeout_s);
+    retry.again = [this](const http::Response &r) {
+        if (!out_.content.empty() || !out_.tool_calls.empty()) return false;
+        return r.ok() ? !out_.error.empty() && busy_message(out_.error) : http::transient(r);
     };
-    // Upstream hiccups (5xx, dropped connections, a service that says it is overloaded) are common
-    // on mobile links. As long as nothing has been passed on yet, the call is tried again, twice at
-    // most and all within its own three minutes: a timeout once the request had gone out is not
-    // repeated, since that would double the wait.
-    http::Retry retry = service_retry(3, req.timeout_s);
-    retry.again = [&](const http::Response &r) {
-        if (!out.content.empty() || !out.tool_calls.empty()) return false;
-        return r.ok() ? !out.error.empty() && busy_message(out.error) : http::transient(r);
-    };
-    retry.before_resend = [&] { reset(); ++ct.attempts; };
-    http::Response res = http::send_retrying(req, retry);
-    auto remaining_budget = [&] {
-        const long spent_s = static_cast<long>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count());
-        return std::max(1L, req.timeout_s - spent_s) * 1000;
-    };
-    if (sent_usage && res.status == 400 && out.content.empty() && out.tool_calls.empty()) {
+    retry.before_resend = [this] { reset(); ++ct_.attempts; };
+    http::Response res = http::send_retrying(req_, retry);
+    if (sent_usage_ && turned_down(res)) {
         // Experiments only: a service that turns down the request for token counts gets the call
         // without it. If that is refused too, the counts were not the reason; ask for them again.
         // Only an answer without them proves they were (a failure on the way proves nothing).
-        body.erase("stream_options");
-        req.body = dump(body);
-        reset();
-        ++ct.attempts;
-        retry.budget_ms = remaining_budget();
-        res = http::send_retrying(req, retry);
-        if (res.ok()) usage_rejected = true;
-        else if (res.status == 400) body["stream_options"] = {{"include_usage", true}};
+        body_.erase("stream_options");
+        res = resend(retry);
+        if (res.ok()) g_usage_rejected = true;
+        else if (res.status == 400) body_["stream_options"] = {{"include_usage", true}};
     }
-    if (sent_effort && res.status == 400 && out.content.empty() && out.tool_calls.empty()) {
-        effort_rejected = true;
-        body.erase("reasoning_effort");
-        req.body = dump(body);
-        reset();
-        ++ct.attempts;
-        retry.budget_ms = remaining_budget();
-        res = http::send_retrying(req, retry);
+    if (sent_effort_ && turned_down(res)) {
+        g_effort_rejected = true;
+        body_.erase("reasoning_effort");
+        res = resend(retry);
     }
-    lines.finish(handle_line);
-    think.feed("", true, emit);
+    return res;
+}
 
-    if (tracing) trace_record(opt, tools, body, req.body.size(), ct, since(), res, out);
+// Refused as a bad request before anything came back: perhaps for a field this service does not take.
+bool ChatCall::turned_down(const http::Response &res) const {
+    return res.status == 400 && out_.content.empty() && out_.tool_calls.empty();
+}
 
-    if (res.error == "cancelled") { out.cancelled = true; return out; }
-    if (!res.ok() && out.error.empty()) out.error = api_error(res);
+// The call sent again with the body as it now is, within what is left of its own time limit.
+http::Response ChatCall::resend(http::Retry &retry) {
+    req_.body = dump(body_);
+    reset();
+    ++ct_.attempts;
+    const long spent_s = static_cast<long>(
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started_).count());
+    retry.budget_ms = std::max(1L, req_.timeout_s - spent_s) * 1000;
+    return http::send_retrying(req_, retry);
+}
+
+// One line of the event stream: an error, the token counts, or a piece of the reply.
+void ChatCall::on_line(const std::string &line) {
+    if (line.compare(0, 5, "data:") != 0) return;
+    const std::string payload = util::trim(line.substr(5));
+    if (payload.empty() || payload == "[DONE]") return;
+    const json ev = util::parse_untrusted_json(payload);
+    if (!ev.is_object()) return;
+    if (ev.contains("error")) {
+        const json &e = ev["error"];
+        out_.error = e.is_string() ? e.get<std::string>() : util::jget(e, "message", std::string("service error"));
+        return;
+    }
+    // The token counts come in a last event of their own, with an empty list of choices.
+    if (tracing_ && ev.contains("usage") && ev["usage"].is_object()) ct_.usage = experiment::numbers_only(ev["usage"]);
+    if (!ev.contains("choices") || !ev["choices"].is_array() || ev["choices"].empty()) return;
+    const json &choice = ev["choices"][0];
+    if (!choice.contains("delta") || !choice["delta"].is_object()) return;
+    on_delta(choice["delta"]);
+}
+
+// A piece of the reply: answer text, or pieces of tool calls.
+void ChatCall::on_delta(const json &delta) {
+    if (delta.contains("content") && delta["content"].is_string()) {
+        const std::string piece = delta["content"].get<std::string>();
+        if (!piece.empty()) {
+            if (tracing_ && ct_.first_text < 0) ct_.first_text = since();
+            think_.feed(piece, false, emit_);
+        }
+    }
+    if (delta.contains("tool_calls") && delta["tool_calls"].is_array()) {
+        if (tracing_ && ct_.first_call < 0) ct_.first_call = since();
+        // Each piece to the call its index names (llm_stream.h); an index out of range is a fault in the
+        // stream, reported as an error event's message is.
+        for (const json &tc : delta["tool_calls"]) {
+            std::string bad;
+            if (!add_tool_delta(out_.tool_calls, tc, bad)) {
+                if (out_.error.empty()) out_.error = bad;
+                return;
+            }
+        }
+    }
+}
+
+// Answer text clear of thinking markers (llm_stream.h), passed on as it comes.
+void ChatCall::emit(const std::string &text) {
+    if (text.empty()) return;
+    out_.content += text;
+    if (opt_.on_text) opt_.on_text(text);
+}
+
+// Before the call is sent again: nothing of the last attempt's reply is kept.
+void ChatCall::reset() {
+    lines_.reset();
+    think_.reset();
+    out_ = ChatResult();
+    ct_.ttfb = ct_.first_text = ct_.first_call = -1;
+    ct_.usage = nullptr;
+}
+
+// The outcome: cancelled, failed (in the service's own words where it gave any), or the reply.
+ChatResult ChatCall::finish(const http::Response &res) {
+    if (res.error == "cancelled") { out_.cancelled = true; return std::move(out_); }
+    if (!res.ok() && out_.error.empty()) out_.error = api_error(res);
     // Drop empty slots and give every call an id (some servers omit them).
     std::vector<ToolCall> calls;
-    for (auto &c : out.tool_calls) {
+    for (auto &c : out_.tool_calls) {
         if (c.name.empty()) continue;
         if (c.id.empty()) c.id = "call_" + std::to_string(calls.size());
         if (util::trim(c.args).empty()) c.args = "{}";
         calls.push_back(c);
     }
-    out.tool_calls.swap(calls);
-    return out;
+    out_.tool_calls.swap(calls);
+    return std::move(out_);
+}
+
+long ChatCall::since() const {
+    return static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_).count());
+}
+
+}  // namespace
+
+ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt) {
+    if (!Settings::get().configured()) {
+        ChatResult out;
+        out.error = "No AI service is configured. Open settings to add one.";
+        return out;
+    }
+    return ChatCall(messages, tools, opt).run();
 }
 
 std::string transcribe(const std::string &wav, std::string &err, std::atomic<bool> *cancel) {
