@@ -1491,4 +1491,9 @@ void set_scan(bool (*scan)(std::vector<discovery::Device> &found)) {
 }
 }  // namespace testing
 
+ScanFn test_scan() {
+    std::lock_guard<std::mutex> lk(g_lookup_mtx);
+    return g_test_scan;
+}
+
 }  // namespace home

@@ -1762,9 +1762,55 @@ void test_stand_in() {
     CHECK(!home::may_contact(far, why) && has(why, "127.x"));
     CHECK(home::may_contact(near, why));
     std::vector<discovery::Device> found;
-    CHECK(!home::scan(found, why) && has(why, "test network"));
+    CHECK(!home::scan(net, found, why) && has(why, "test network"));
     unsetenv("ZB_TEST_NETWORK");
     home::testing::set_network(&g_net);
+}
+
+// ---------------------------------------------------------------- the scan's network
+// The settings page's scan is of the network the user agreed to have scanned, the one the page
+// showed (refactor review B2): refused once the device is on another, and nothing kept when the
+// network changes while it listens, so that one network's devices are never saved as another's.
+discovery::Network g_elsewhere;
+int g_bound_scans = 0;
+bool scan_one(std::vector<discovery::Device> &found) {
+    ++g_bound_scans;
+    discovery::Device d;
+    d.id = "fake:found";
+    d.kind = "fake";
+    d.ip = "127.0.0.9";
+    d.name = "Found";
+    found = {d};
+    return true;
+}
+bool scan_while_moving(std::vector<discovery::Device> &found) {
+    home::testing::set_network(&g_elsewhere);   // the Wi-Fi joins another network while the scan listens
+    return scan_one(found);
+}
+
+void test_scan_binding() {
+    Section s("scan: only of the network the user agreed to; nothing kept when the network changes during it");
+    g_elsewhere = g_net;
+    g_elsewhere.ssid = "Neighbour";
+    g_elsewhere.gateway_mac = "02:00:00:00:00:0a";
+    write_home({});
+    std::vector<discovery::Device> found;
+    std::string err;
+    g_bound_scans = 0;
+    home::testing::set_scan(scan_one);
+    CHECK_MSG(home::scan(g_net, found, err) && found.size() == 1 && g_bound_scans == 1, err);
+    // Already on another network when it would start: nothing is scanned.
+    home::testing::set_network(&g_elsewhere);
+    CHECK(!home::scan(g_net, found, err) && found.empty() && g_bound_scans == 1);
+    CHECK_MSG(has(err, "no longer on the network shown"), err);
+    // On another network by the end: what was heard is dropped.
+    home::testing::set_network(&g_net);
+    home::testing::set_scan(scan_while_moving);
+    CHECK(!home::scan(g_net, found, err) && found.empty() && g_bound_scans == 2);
+    CHECK_MSG(has(err, "changed during the scan"), err);
+    home::testing::set_network(&g_net);
+    home::testing::set_scan(nullptr);
+    CHECK(home::entry(g_net.id()).devices.empty() && !home::scanned(g_elsewhere.id()));
 }
 
 // ---------------------------------------------------------------- the network gate
@@ -3140,6 +3186,7 @@ int main(int argc, char **argv) {
     test_pairing();
     test_tapo_driver();
     test_stand_in();
+    test_scan_binding();
     test_network_gate();
     test_link_kinds();
     test_tv_keys();

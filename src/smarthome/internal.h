@@ -20,6 +20,10 @@ std::mutex &device_lock(const std::string &device_id);
 // Whether `network_id` is the network the device is on right now and may be used. Every path
 // that ends in a driver call checks this first.
 bool on_network(const std::string &network_id, std::string &why_not);
+// The stand-in for a discovery scan that the device-free tests set (testing::set_scan), or nullptr.
+using ScanFn = bool (*)(std::vector<discovery::Device> &found);
+ScanFn test_scan();
+
 // Whether this device's address may be contacted at all: on the stand-in test network only a
 // 127.x address may.
 bool may_contact(const Device &device, std::string &why_not);
@@ -72,7 +76,8 @@ void set_network_source(const NetworkSource *source);
 void set_clock(unsigned long (*clock_ms)());               // nullptr restores the real clock
 void reset_control();                                      // forgets pending questions, rate counts, turn counters, the last lookup
 // Stands in for the scan that looks for a device which stopped answering at its saved address
-// (relocate in control.cpp), on the stand-in network too; nullptr restores the real scan.
+// (relocate in control.cpp), and for the settings page's scan (scan() in store.cpp), on the
+// stand-in network too; nullptr restores the real scan.
 void set_scan(bool (*scan)(std::vector<discovery::Device> &found));
 void clear_drivers();                                      // empties the driver table (and stops the built-in list loading)
 }  // namespace testing

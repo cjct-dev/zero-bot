@@ -24,6 +24,7 @@
 #include "platform/display.h"
 #include "platform/sys.h"
 #include "smarthome/home.h"
+#include "smarthome/internal.h"   // testing::set_network_source: a slow first look at the network
 #include "ui/key_guide.h"
 #include "ui/models.h"
 #include "ui/settings_pages.h"
@@ -32,6 +33,22 @@
 namespace ui {
 
 namespace {
+
+// The stand-in test network as a slow first look at the real one would find it (the Smart home check
+// in shots_smart_home): the same network, after a second and a half.
+discovery::Route slow_route() { return {"test", "127.0.0.1"}; }
+std::string slow_router_mac(const std::string &) { return "02:00:00:00:00:00"; }
+discovery::Network slow_look() {
+    usleep(1500 * 1000);
+    discovery::Network net;
+    net.iface = "test";
+    net.ssid = "Test network";
+    net.address = net.gateway = "127.0.0.1";
+    net.broadcast = "127.255.255.255";
+    net.gateway_mac = "02:00:00:00:00:00";
+    net.usable = true;
+    return net;
+}
 
 // A made-up home for the screenshots, saved on the stand-in test network: none of its addresses
 // is ever contacted, and nothing is scanned.
@@ -824,7 +841,31 @@ void App::shots_smart_home(Shots &shots) {
     KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
     KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
     shots.menu_to("Smart home");
-    menu.key(enter);
+    {
+        // Opening Smart home never waits for the network on the UI thread: the first full look runs
+        // `iw` and can take seconds, in which keys, redraws and the alarm stood still. Here the look
+        // takes a second and a half: the page is up at once, says it is looking, and lists the home
+        // when the answer comes (as pictured).
+        static const home::testing::NetworkSource slow{slow_route, slow_router_mac, slow_look};
+        unsetenv("ZB_TEST_NETWORK");
+        home::testing::set_network_source(&slow);
+        const unsigned long t0 = sys::now_ms();
+        menu.key(enter);
+        const unsigned long took = sys::now_ms() - t0;
+        const bool looking = menu.title() == "Smart home" && menu.row_of("Bed heater") < 0;
+        for (int i = 0; i < 200 && menu.row_of("Bed heater") < 0; ++i) {   // up to 4 s
+            uiq::drain();
+            usleep(20 * 1000);
+        }
+        const bool listed = menu.row_of("Bed heater") >= 0;
+        home::testing::set_network_source(nullptr);
+        setenv("ZB_TEST_NETWORK", "1", 1);
+        if (took > 500 || !looking || !listed) {
+            fprintf(stderr, "opening Smart home waited for the network on the UI thread (%lu ms; looking %d, listed %d)\n", took,
+                    looking, listed);
+            shots.failed = true;
+        }
+    }
     snap("smart-home");
     shots.menu_to("Bed heater");                   // the first thing
     menu.key(enter);

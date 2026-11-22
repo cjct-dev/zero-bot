@@ -880,6 +880,10 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
     if (heard_self) *heard_self = false;
     const Network net = current_network();
     if (!net.usable) { err = net.why_not; return false; }
+    if (!opt.network_id.empty() && net.id() != opt.network_id) {
+        err = "This device is no longer on the network shown, so nothing was scanned.";
+        return false;
+    }
     in_addr local;
     inet_pton(AF_INET, net.address.c_str(), &local);
     Sockets sock;

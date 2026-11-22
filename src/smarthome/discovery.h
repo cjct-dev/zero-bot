@@ -54,6 +54,9 @@ struct Device {
 
 struct Options {
     int listen_ms = 6000;
+    // The network the user agreed to have scanned (Network::id()): when set, a scan finding the device
+    // on another one refuses to run.
+    std::string network_id;
     std::atomic<bool> *cancel = nullptr;
     std::function<void(const Device &)> on_device;   // called as each new device is first seen
 };

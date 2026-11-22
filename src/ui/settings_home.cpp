@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -258,24 +259,26 @@ void open_tapo_account(Menu &menu, const std::string &network_id) {
     menu.push(std::move(page));
 }
 
-// Starts a scan after the user has agreed to it on the warning page.
-void run_home_scan(Menu &menu) {
+// Starts a scan of `shown`, the network the page showed when the user agreed to it (the warning
+// page, or Scan again on a network scanned before). It is that network's scan or none: the home
+// layer refuses it once the device is elsewhere, and drops what it heard when the network changed
+// while it listened.
+void run_home_scan(Menu &menu, const discovery::Network &shown) {
     menu.toast("Looking for devices…");
     background(
-        [] {
-            const discovery::Network net = home::network_now(true);
+        [shown] {
             std::vector<discovery::Device> found;
             std::string err;
             bool heard = false;
-            if (!home::scan(found, err, &heard)) return std::string("!") + err;
+            if (!home::scan(shown, found, err, &heard)) return std::string("!") + err;
             if (found.empty())
                 return std::string("!") + (heard ? "Nothing answered. This network may keep devices from seeing each other, as guest networks do."
                                                  : "This device could not hear the network's announcements. A firewall may be blocking them.");
-            const int added = home::remember_scan(net, found);
+            const int added = home::remember_scan(shown, found);
             std::string summary = std::to_string(found.size()) + (found.size() == 1 ? " device found" : " devices found");
             if (added < static_cast<int>(found.size())) summary += ", " + std::to_string(added) + " new";
             // Devices that are already set up are read; the others only learn that they need it.
-            return summary + ". " + home::refresh(net.id());
+            return summary + ". " + home::refresh(shown.id());
         },
         [&menu](const std::string &result) {
             if (!menu.open()) return;
@@ -284,18 +287,19 @@ void run_home_scan(Menu &menu) {
         });
 }
 
-void open_home_warning(Menu &menu) {
+void open_home_warning(Menu &menu, const discovery::Network &shown) {
     MenuPage page;
     page.title = "Before you scan";
-    page.build = [&menu]() {
+    page.build = [&menu, shown]() {
         std::vector<MenuItem> items;
+        items.push_back(MenuItem::header("Network: " + shown.label()));
         Menu::add_paragraph(items, "Only do this on a network you own. On a hotel, office or shared network it would list other "
                                    "people's devices and may break the rules there.");
         Menu::add_paragraph(items, "The scan asks devices to identify themselves, the way a smart-home app does. It does not log in "
                                    "to anything or change anything.");
         Menu::add_paragraph(items, "What it finds is saved on this device for this network only. When you ask the assistant to "
                                    "control something, the device names are sent to your AI service.");
-        items.push_back(MenuItem::action("This is my network: scan it", [&menu] { menu.pop(); run_home_scan(menu); }));
+        items.push_back(MenuItem::action("This is my network: scan it", [&menu, shown] { menu.pop(); run_home_scan(menu, shown); }));
         items.push_back(MenuItem::action("Cancel", [&menu] { menu.pop(); }));
         return items;
     };
@@ -304,13 +308,24 @@ void open_home_warning(Menu &menu) {
 
 }  // namespace
 
-// The things the assistant can use, by room; then devices still to be set up; then the rest.
+// The things the assistant can use, by room; then devices still to be set up; then the rest. The
+// network is read off the UI thread when the page opens: the first full look runs `iw` and may wait
+// for the router's address, seconds in which keys, redraws and the alarm would stand still.
 void open_smart_home(Menu &menu) {
+    struct Shown {
+        bool known = false;
+        discovery::Network net;
+    };
+    auto shown = std::make_shared<Shown>();
     MenuPage page;
     page.title = "Smart home";
-    page.build = [&menu]() {
+    page.build = [&menu, shown]() {
         std::vector<MenuItem> items;
-        const discovery::Network net = home::network_now();
+        if (!shown->known) {
+            Menu::add_paragraph(items, "Looking at the network…");
+            return items;
+        }
+        const discovery::Network net = shown->net;
         if (!net.usable) {
             Menu::add_paragraph(items, net.why_not.empty() ? "There is no home network to look at right now." : net.why_not);
             return items;
@@ -320,7 +335,7 @@ void open_smart_home(Menu &menu) {
         if (!home::scanned(id)) {
             Menu::add_paragraph(items, "Nothing has been looked for on this network. A scan finds smart plugs, lights and "
                                        "similar devices so the assistant can switch them for you.");
-            items.push_back(MenuItem::action("Find devices on this network…", [&menu] { open_home_warning(menu); }));
+            items.push_back(MenuItem::action("Find devices on this network…", [&menu, net] { open_home_warning(menu, net); }));
             return items;
         }
         const home::NetworkEntry e = home::entry(id);
@@ -368,13 +383,18 @@ void open_smart_home(Menu &menu) {
                 const home::TapoAccount a = home::tapo_account();
                 return a.refused ? std::string("check password") : a.set() ? a.email : std::string("needed");
             }, [&menu, id] { open_tapo_account(menu, id); }));
-        items.push_back(MenuItem::action("Scan again", [&menu] { run_home_scan(menu); }));
+        items.push_back(MenuItem::action("Scan again", [&menu, net] { run_home_scan(menu, net); }));
         items.push_back(MenuItem::action("Forget this network", [&menu, id] {
             menu.confirm("Forget every device saved for this network?", "Forget", [id] { home::forget_network(id); });
         }, true));
         return items;
     };
     menu.push(std::move(page));
+    background([] { return home::network_now(); }, [&menu, shown](const discovery::Network &net) {
+        shown->net = net;
+        shown->known = true;
+        if (menu.open() && menu.title() == "Smart home") menu.refresh();
+    });
 }
 
 }  // namespace ui

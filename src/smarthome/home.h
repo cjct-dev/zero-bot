@@ -78,8 +78,12 @@ discovery::Network network_now(bool fresh = false);
 // ZB_TEST_NETWORK is set: network_now() is a stand-in ("Test network") instead of the real one.
 // On it only devices at a 127.x address are ever contacted, and nothing is scanned.
 bool test_network();
-// Runs a discovery scan of the current network, unless the stand-in network is in use.
-bool scan(std::vector<discovery::Device> &found, std::string &err, bool *heard_self = nullptr);
+// Runs a discovery scan of `consented`, the network the user agreed to have scanned on the page that
+// showed it, unless the stand-in network is in use. Refused when the device is on another network by
+// then, and what was heard is dropped (false, `found` empty) when the network changed while the scan
+// listened: one network's devices are never saved under another's name.
+bool scan(const discovery::Network &consented, std::vector<discovery::Device> &found, std::string &err,
+          bool *heard_self = nullptr);
 
 // ---- what is saved
 bool scanned(const std::string &network_id);
