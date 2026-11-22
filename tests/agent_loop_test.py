@@ -1332,6 +1332,19 @@ def control_names():
     check("and none when nothing is switched off", start and start[0].get("off") == "", start)
 
 
+@scenario
+def retired_variants():
+    # Variants dropped in November 2026 (ZB-033, ZB-035): an old command that sets one stops at once, rather than
+    # measuring the default under the variant's name.
+    for name, value in (("ZB_EXP_DECIDE", "required"), ("ZB_EXP_TOOLS", "lean"), ("ZB_EXP_CHECK_MODEL", "other")):
+        for args in (["--prompt"], ["--version"], ["--tool", "calculator", '{"expression": "1+1"}']):
+            code, out, err = cli_of(args, {name: value})
+            check("a retired variant, %s, stops %s at once, saying so" % (name, args[0]), code == 2 and name in err and "retired" in err
+                  and not out, (code, out[:200], err))
+    code, out, err = cli_of(["--prompt"], {"ZB_EXP_DECIDE": ""})
+    check("an empty retired variant changes nothing, as before", code == 0 and out, (code, err))
+
+
 def main():
     netguard.require_experiments(APP)   # a build without the experiments sends a search to the real service
     wanted = [w for w in ONLY.split(",") if w]

@@ -208,7 +208,7 @@ groups need first. Which to use:
   leaves out Fire TV's end-to-end test and the live sets). `--profile offline` includes Fire TV.
 - Named groups: `tests/run.py --groups unit,hue`; a live check:
   `tests/run.py --groups live-suite --tags timer --repeat 5`; a variant against a
-  baseline: `--exp ZB_EXP_TOOLS=lean --baseline B.json` (inherited `ZB_EXP_*` are never passed on).
+  baseline: `--exp ZB_EXP_OFF=second_look --baseline B.json` (inherited `ZB_EXP_*` are never passed on).
 - Before a release: `tests/run.py --profile release --baseline EVAL.json,SUITE.json` (or `--groups
   release`, the same mode) builds (unless `--no-build`: then a build older than any input stops it),
   runs every offline group, every case of both live sets once, then the gate of `tests/exp_compare.py`
@@ -475,10 +475,12 @@ What exists:
 - **Measurement switches** (`src/agent/experiment.h`; compiled into the `cli` build only, CMake option
   `ZB_EXPERIMENTS`, which CMake refuses outside the `cli` build): `ZB_EXP_TRACE=file` appends a JSON
   line per model call (purpose, timings, token counts the service reports, size sent) and per request
-  (first sentence, tools, guards, second look); no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`. Variants measured against
-  the default, none of them adopted: `ZB_EXP_TOOLS=say1|lean` (shorter tool text),
-  `ZB_EXP_DECIDE=parallel|required|required_held` (deciding without the second look); an unknown value
-  stops the run. `ZB_EXP_WEB` (the stand-in web) takes only plain decimal `http://127.a.b.c[:port][/path]`
+  (first sentence, tools, guards, second look); no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`.
+  `ZB_EXP_OFF=NAME[,NAME]` switches small-model controls off (`src/agent/controls.h`); an unknown name
+  stops the run. The variants once measured against the default (`ZB_EXP_TOOLS`, shorter tool text;
+  `ZB_EXP_DECIDE`, deciding without the second look; `ZB_EXP_CHECK_MODEL`) were retired, none adopted:
+  set, any of them stops the run at start, so an old command cannot measure the default under their
+  name. `ZB_EXP_WEB` (the stand-in web) takes only plain decimal `http://127.a.b.c[:port][/path]`
   and sends to the address it read, as `local`: no proxy, no redirect followed.
   **The hardware guard:** `ZB_EXP_NO_HARDWARE=1`, which the live sets' runners set for every case, makes
   the camera refuse unless `ZB_FAKE_CAMERA` names a picture, and the infrared transmitter refuse, so a
