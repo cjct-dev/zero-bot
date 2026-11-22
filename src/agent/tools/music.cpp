@@ -129,6 +129,13 @@ std::string t_music(const json &a, Context &ctx) {
                 {"queued_tracks", found.size()}}.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
+// The other actions return something the model has not seen yet (the track that started), so the answer
+// has to be written after the result.
+bool say_confirms(const json &args, const std::string &) {
+    const std::string action = util::lower(str_arg(args, "action"));
+    return action == "stop" || action == "next";
+}
+
 }  // namespace
 
 Tool make_music() {
@@ -144,7 +151,8 @@ Tool make_music() {
                  {"album", S("Album name or part of it")},
                  {"query", S("Loose words matched against title, artist, album and genre together")},
                  {"shuffle", B("Shuffle the matches (default true unless one specific song was asked for)")}},
-                {"action"}), t_music};
+                {"action"}), t_music,
+            takes_say("Only for stop and next; omit for the other actions.", say_confirms)};
 }
 
 }  // namespace tools

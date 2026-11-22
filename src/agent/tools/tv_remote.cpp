@@ -57,7 +57,7 @@ Tool make_tv_remote() {
                                                "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"})},
                  {"repeat", N("How many times to press (default 1)")},
                  {"brand", S("Optional TV brand: samsung, lg, sony, panasonic, philips, toshiba, vizio")}}, {"key"}),
-            t_tv_remote};
+            t_tv_remote, takes_say()};
 }
 
 }  // namespace tools

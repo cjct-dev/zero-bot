@@ -39,4 +39,10 @@ json N(const std::string &desc);
 json B(const std::string &desc);
 json E(const std::string &desc, std::vector<std::string> values);
 
+// The tool takes "say" (tools.h): `note` is added to the parameter's description, and `when`, if given,
+// picks the calls that worked which are confirmed with it. The parameter itself is added by the registry.
+inline Say takes_say(std::string note = "", std::function<bool(const json &args, const std::string &result)> when = nullptr) {
+    return {true, std::move(note), std::move(when)};
+}
+
 }  // namespace tools

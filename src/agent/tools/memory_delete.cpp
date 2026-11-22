@@ -24,7 +24,7 @@ std::string t_memory_delete(const json &a, Context &ctx) {
 
 Tool make_memory_delete() {
     return {"memory_delete", "Forgetting", "Delete a saved memory by id when the user asks you to forget it or it is wrong.",
-            obj({{"id", N("Memory id as listed in your instructions")}}, {"id"}), t_memory_delete};
+            obj({{"id", N("Memory id as listed in your instructions")}}, {"id"}), t_memory_delete, takes_say()};
 }
 
 }  // namespace tools

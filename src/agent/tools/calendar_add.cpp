@@ -63,7 +63,7 @@ Tool make_calendar_add() {
                  {"remind_minutes_before", N("Optional: alert this many minutes before the start (0 = at the start). "
                                              "All-day events count from 09:00 on the day, and yearly ones alert "
                                              "on the day unless told otherwise")}},
-                {"title", "start"}), t_calendar_add};
+                {"title", "start"}), t_calendar_add, takes_say()};
 }
 
 }  // namespace tools

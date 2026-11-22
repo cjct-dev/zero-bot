@@ -24,7 +24,7 @@ std::string t_calendar_delete(const json &a, Context &ctx) {
 
 Tool make_calendar_delete() {
     return {"calendar_delete", "Updating calendar", "Delete a calendar event by id (from calendar_list). A repeating event goes as a whole.",
-            obj({{"id", N("Event id")}}, {"id"}), t_calendar_delete};
+            obj({{"id", N("Event id")}}, {"id"}), t_calendar_delete, takes_say()};
 }
 
 }  // namespace tools

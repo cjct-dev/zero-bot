@@ -19,6 +19,12 @@ std::string t_timer(const json &a, Context &ctx) {
     return timers::run_tool(a);
 }
 
+// list: the time left is in the result, not known up front.
+bool say_confirms(const json &args, const std::string &) {
+    const std::string action = util::lower(str_arg(args, "action"));
+    return action == "start" || action == "cancel" || action == "add_time";
+}
+
 }  // namespace
 
 Tool make_timer() {
@@ -36,7 +42,8 @@ Tool make_timer() {
                              "oven\"; leave out if they gave none. For cancel and add_time: words from the label of the "
                              "timer meant")},
                  {"all", B("For cancel: true to cancel every timer")}},
-                {"action"}), t_timer};
+                {"action"}), t_timer,
+            takes_say("Only for start, cancel and add_time; omit for list.", say_confirms)};
 }
 
 }  // namespace tools

@@ -31,7 +31,7 @@ Tool make_breathe() {
                                "in for four, out for six. sigh: two breaths in and one long breath out, good for "
                                "winding down", {"box", "calm", "sigh"})},
                  {"minutes", N("Length in minutes, 1 to 20. Leave out for the usual five")}}),
-            t_breathe};
+            t_breathe, takes_say()};
 }
 
 }  // namespace tools

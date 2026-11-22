@@ -59,6 +59,13 @@ std::string t_device(const json &a, Context &) {
     return fail("setting must be status, volume, brightness or spoken_replies");
 }
 
+// The status returns something the model has not seen yet (the battery level), so the answer has to be
+// written after the result.
+bool say_confirms(const json &args, const std::string &) {
+    const std::string setting = util::lower(str_arg(args, "setting"));
+    return !setting.empty() && setting != "status";
+}
+
 }  // namespace
 
 Tool make_device() {
@@ -67,7 +74,7 @@ Tool make_device() {
             obj({{"setting", E("Which setting", {"status", "volume", "brightness", "spoken_replies"})},
                  {"value", N("For volume or brightness: 0 to 100")},
                  {"on", B("For spoken_replies: true to speak answers aloud, false for text only")}}, {"setting"}),
-            t_device};
+            t_device, takes_say("Omit for status.", say_confirms)};
 }
 
 }  // namespace tools

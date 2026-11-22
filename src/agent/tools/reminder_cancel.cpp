@@ -25,7 +25,7 @@ std::string t_reminder_cancel(const json &a, Context &ctx) {
 
 Tool make_reminder_cancel() {
     return {"reminder_cancel", "Cancelling a reminder", "Cancel a pending reminder by id (from reminder_list). Timers are "
-            "cancelled with timer.", obj({{"id", N("Reminder id")}}, {"id"}), t_reminder_cancel};
+            "cancelled with timer.", obj({{"id", N("Reminder id")}}, {"id"}), t_reminder_cancel, takes_say()};
 }
 
 }  // namespace tools

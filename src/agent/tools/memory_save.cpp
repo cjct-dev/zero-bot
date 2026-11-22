@@ -33,7 +33,7 @@ Tool make_memory_save() {
             "something is remembered; nothing is kept otherwise. One fact per call, written so it makes sense on its "
             "own. Use replace_id to correct an existing memory instead of adding a duplicate.",
             obj({{"text", S("The fact, e.g. \"Allergic to shellfish\"")},
-                 {"replace_id", N("Optional id of an existing memory to overwrite")}}, {"text"}), t_memory_save};
+                 {"replace_id", N("Optional id of an existing memory to overwrite")}}, {"text"}), t_memory_save, takes_say()};
 }
 
 }  // namespace tools

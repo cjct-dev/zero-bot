@@ -47,7 +47,7 @@ Tool make_reminder_set() {
             "an appointment that belongs in the calendar, use calendar_add with remind_minutes_before instead.",
             obj({{"text", S("What to say when it fires, e.g. \"Check the laundry\"")},
                  {"in_minutes", N("Fire this many minutes from now (fractions allowed)")},
-                 {"at", S("Or fire at this local time, YYYY-MM-DD HH:MM")}}, {"text"}), t_reminder_set};
+                 {"at", S("Or fire at this local time, YYYY-MM-DD HH:MM")}}, {"text"}), t_reminder_set, takes_say()};
 }
 
 }  // namespace tools

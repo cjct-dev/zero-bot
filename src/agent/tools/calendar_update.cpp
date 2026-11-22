@@ -48,7 +48,7 @@ Tool make_calendar_update() {
                  {"all_day", B("Whether it is a whole-day event")},
                  {"repeat", E("How often it repeats; none stops it repeating", {"none", "daily", "weekly", "monthly", "yearly"})},
                  {"remind_minutes_before", N("New alert lead time in minutes; -1 removes the alert")}}, {"id"}),
-            t_calendar_update};
+            t_calendar_update, takes_say()};
 }
 
 }  // namespace tools
