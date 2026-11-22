@@ -129,8 +129,8 @@ public:
 //
 // A refusal is also kept in memory for the rest of the run (refuse), so that one the file could not
 // take still stops this run: checked as refused(), forgiven when the user types a credential for the
-// slot again and the file has taken it. `slot` names where the credential is kept (a family's account
-// or key, one device's password); `print` tells that credential apart from others typed (a hash of it).
+// slot again. `slot` names where the credential is kept (a family's account or key, one device's
+// password); `print` tells that credential apart from others typed (a hash of it).
 namespace trial {
 void typed(json &holder);
 bool begin(json &holder);
