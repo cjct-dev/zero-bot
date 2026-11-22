@@ -1,6 +1,8 @@
 #!/bin/bash
 # Development deploy: copies a freshly cross-built binary, the launcher entry and the icon to a
 # CardputerZero attached over USB (ADB must be enabled in the device's Settings > Developer).
+# It runs none of the package's maintainer scripts, so it does not put Zero on the launcher's wake
+# screen: install a release with dpkg -i or apt install ./zero-bot_*.deb for that.
 #
 #   cmake --preset cp0 && cmake --build --preset cp0 && scripts/deploy.sh
 set -euo pipefail

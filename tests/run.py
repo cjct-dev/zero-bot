@@ -155,6 +155,9 @@ GROUPS = [
     dict(name="scorer", secs=5, needs=[], file="tests/scorer_test.py",
          cmds=[pyi("tests/scorer_test.py")],
          about="the live sets' scoring, checked offline on saved answers"),
+    dict(name="packaging", secs=2, needs=[], cmds=[pyi("tests/packaging_test.py")],
+         about="scripts/package-deb.sh's package, built from a stand-in binary and read back, and its maintainer "
+               "scripts (the wake screen's diversion) against a stand-in dpkg-divert"),
     dict(name="tools", secs=2, needs=["cli"], cmds=[pyi("tests/tools_cli.py", "build/cli/zero_bot")],
          about="the offline tools through the cli build: good, wrong and hostile arguments"),
     dict(name="loop", secs=30, needs=["cli"],
@@ -233,7 +236,9 @@ QUICK = "<quick>"
 PATH_RULES = [
     (r"^(docs/|licenses/|LICENSE$|[^/]*\.md$|.*/README[^/]*$|\.gitignore$)", [], "documentation"),
     (r"^(.*/)?__pycache__/|.*\.pyc$", [], "Python's bytecode cache"),
-    (r"^(scripts/|packaging/|extras/|\.github/)", [], "packaging and deployment: no offline test covers it"),
+    (r"^(scripts/package-deb\.sh$|packaging/|tests/packaging_test\.py$)", ["packaging"],
+     "the package and its maintainer scripts"),
+    (r"^(scripts/|extras/|\.github/)", [], "deployment: no offline test covers it"),
     (r"^tests/run\.py$", ["runner"], "this runner"),
     (r"^tests/netguard\.py$", ["runner", "tools", "loop", "scorer"], "the network boundary of every test process"),
     (r"^tests/(exp_compare|exp_report|web_contract)\.py$", ["runner"], "the gate and the reports (their self-test is in runner)"),
@@ -1283,6 +1288,9 @@ def self_test():
     check("a driver's unit test", groups("tests/unit/shelly_test.cpp") == ["unit", "shelly"])
     check("golden shots", groups("tests/golden/shots/01-chat.png") == ["screens"])
     check("this runner", groups("tests/run.py") == ["runner"])
+    check("the package", groups("scripts/package-deb.sh", "packaging/postrm", "tests/packaging_test.py") ==
+          ["packaging"], groups("scripts/package-deb.sh", "packaging/postrm", "tests/packaging_test.py"))
+    check("deployment: no offline test", groups("scripts/deploy.sh") == [], groups("scripts/deploy.sh"))
     check("the gate and the reports", groups("tests/exp_compare.py") == ["runner"] and groups("tests/exp_report.py") == ["runner"])
     check("the scorer, and the loop test that reads its parser", groups("tests/agent_eval.py") == ["cases", "scorer", "loop"],
           groups("tests/agent_eval.py"))

@@ -95,8 +95,10 @@ tests/              run.py, the entry point that runs the groups below by profil
                     agent_suite.py), the scorer's own test (scorer_test.py), the gate and
                     reports for live runs (exp_compare.py, exp_report.py), golden screenshots
                     (shots_compare.py, golden/shots/), simulated devices, chat service and web
-                    (mocks/)
+                    (mocks/), the package (packaging_test.py)
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
+packaging/          the launcher entry and icon, Zero's picture for the launcher's wake screen
+                    (lockscreen.png), and the package's maintainer scripts (preinst, postrm)
 ```
 
 Threads: the UI thread runs LVGL and the main loop in `ui/app.cpp`. The agent has one worker
@@ -612,6 +614,13 @@ What exists:
   scrolls with real time.
 - **A fresh state per test**: point `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` at
   a temporary folder. Do the same on the device so the user's calendar and data are untouched.
+- **The package**: `tests/packaging_test.py` (group `packaging`) runs `scripts/package-deb.sh` with
+  a stand-in binary in a temporary copy of what it reads, reads the package back with its own ar and
+  tar reader (files, owners, modes, control fields, maintainer scripts), checks the wake picture
+  (320x150, 8-bit RGB, no chunk but IHDR, IDAT and IEND) and runs `packaging/preinst` and `postrm` for
+  every action dpkg can pass them (an upgrade from 0.2.0 and 0.4.8, without the picture, among them)
+  against a stand-in `dpkg-divert` that records its arguments and a stand-in `dpkg --compare-versions`.
+  What dpkg itself then does with the diversion is not tested here (this PC has no dpkg).
 
 When a model-facing change is made (prompt, tool description, tool schema, loop), run the
 affected cases repeated, then the whole set once. When something cannot be tested (a physical
@@ -1145,6 +1154,21 @@ like `tests/tapo_e2e.py` on `ZB_TEST_NETWORK`, and add the family to the README.
 **Releasing.** Bump `project(... VERSION ...)` in `CMakeLists.txt`, build all three presets,
 run the full agent set, `scripts/package-deb.sh`, scan tracked files, the binary and the
 package for anything private, then commit, push and attach the `.deb` to a GitHub release.
+On the device a release is installed with `dpkg -i` or `apt install ./zero-bot_*.deb`, never with
+`scripts/deploy.sh`, which copies files without running the package's maintainer scripts: the wake
+screen's diversion would never be made.
+
+**The wake-screen picture** (`packaging/lockscreen.png`) replaces one of the launcher's files: the
+launcher decodes it once when it starts and draws it unscaled and centred in the 320x150 below its
+20 px top bar (its text stays in that bar), so it is exactly 320x150, opaque, with no metadata. The
+package's preinst moves the launcher's picture aside with `dpkg-divert --rename` (to
+`lockscreen.png.distrib`, where the launcher's updates then go) before ours is unpacked, and its postrm
+puts it back when Zero Bot is removed, the way Debian policy describes; never copy over the launcher's
+file, which its next update would undo. Either change shows from the launcher's next start (a restart
+of the device). `FIRST_WITH_PICTURE` in the postrm is the first version that carries the picture (0.4.9):
+a failed upgrade from an older version undoes the diversion. Going back to an older version means
+removing Zero Bot first (`sudo apt remove zero-bot`): otherwise the diversion stays and the launcher's
+own picture does not come back.
 
 ## 10. Planned work
 
