@@ -115,6 +115,12 @@ sudo apt install ./zero-bot_0.4.8_arm64.deb
 "Zero Bot" then appears in the launcher within a few seconds. To build the package yourself
 instead, see [Building](#building).
 
+The package also puts Zero, the app's 8-bit robot, on the picture the launcher shows when the device
+wakes from its lock screen, from the next restart of the device. It changes the launcher's picture the
+way Debian provides for (a diversion): the launcher's own picture is kept beside it and kept current by
+the launcher's updates, and removing Zero Bot (`sudo apt remove zero-bot`) puts it back, again from the
+next restart.
+
 ### 2. Follow the setup guide
 
 The first time you open Zero Bot it walks you through five short steps: checking the internet
@@ -657,7 +663,7 @@ src/smarthome/  device discovery, saved devices and their things, the smart_home
 scripts/        toolchain setup, packaging, deployment
 tests/          the test runner (run.py), unit tests, end-to-end tests with simulated devices and chat services, stored screenshots, scored agent test sets
 licenses/       third-party notices and the Apache-2.0 text
-packaging/      launcher entry and icon
+packaging/      launcher entry, icon, wake-screen picture and the package's maintainer scripts
 extras/         device-tree overlay for the Wi-Fi channel fix
 third_party/    nlohmann/json (MIT)
 ```

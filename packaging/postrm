@@ -1,0 +1,26 @@
+#!/bin/sh
+# zero-bot postrm: once dpkg has removed Zero's wake-screen picture, put the launcher's own picture
+# (lockscreen.png.distrib, kept current by the launcher's updates) back in its place and drop the
+# diversion the preinst made. As in Debian policy's example of a diversion, this is also done when a first
+# install, or an upgrade from a version without the picture, fails after the preinst had diverted.
+set -e
+
+IMAGE=/usr/share/APPLaunch/share/images/lockscreen.png
+FIRST_WITH_PICTURE=0.4.9
+
+restore_launcher_picture() {
+    dpkg-divert --package zero-bot --remove --rename --divert "$IMAGE.distrib" "$IMAGE"
+}
+
+case "$1" in
+    remove|purge|abort-install|disappear)
+        restore_launcher_picture
+        ;;
+    abort-upgrade)
+        if dpkg --compare-versions "$2" lt "$FIRST_WITH_PICTURE"; then
+            restore_launcher_picture
+        fi
+        ;;
+esac
+
+exit 0

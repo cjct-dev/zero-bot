@@ -1,0 +1,18 @@
+#!/bin/sh
+# zero-bot preinst: before Zero's picture is unpacked where the launcher reads its wake (lock) screen,
+# move the launcher's own picture aside with a dpkg diversion. The launcher's updates then install their
+# picture as lockscreen.png.distrib, and removing Zero Bot puts the newest one back (postrm). The same call
+# serves a first install, an upgrade from a version without the picture (0.4.8 and before, or files copied
+# in by scripts/deploy.sh) and an upgrade from one with it (dpkg-divert leaves an existing diversion as it
+# is). If the diversion cannot be made, the install stops here, before anything is unpacked.
+set -e
+
+IMAGE=/usr/share/APPLaunch/share/images/lockscreen.png
+
+case "$1" in
+    install|upgrade)
+        dpkg-divert --package zero-bot --add --rename --divert "$IMAGE.distrib" "$IMAGE"
+        ;;
+esac
+
+exit 0

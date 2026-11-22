@@ -17,13 +17,17 @@ install -D -m 0755 "$BIN" "$PKG/usr/bin/zero_bot"
 [ -x "$STRIP" ] && "$STRIP" "$PKG/usr/bin/zero_bot"
 install -D -m 0644 "$ROOT/packaging/zero_bot.desktop" "$PKG/usr/share/APPLaunch/applications/zero_bot.desktop"
 install -D -m 0644 "$ROOT/packaging/zero_bot.png" "$PKG/usr/share/APPLaunch/share/images/zero_bot.png"
+# Zero on the launcher's wake screen: unpacked over the launcher's own picture only after the preinst
+# has diverted that aside (packaging/preinst, packaging/postrm).
+install -D -m 0644 "$ROOT/packaging/lockscreen.png" "$PKG/usr/share/APPLaunch/share/images/lockscreen.png"
 install -D -m 0644 "$ROOT/README.md" "$PKG/usr/share/doc/zero-bot/README.md"
 install -D -m 0644 "$ROOT/LICENSE" "$PKG/usr/share/doc/zero-bot/copyright"
 install -D -m 0644 "$ROOT/licenses/THIRD-PARTY-NOTICES.md" "$PKG/usr/share/doc/zero-bot/THIRD-PARTY-NOTICES.md"
 install -D -m 0644 "$ROOT/licenses/Apache-2.0.txt" "$PKG/usr/share/doc/zero-bot/Apache-2.0.txt"
 
 SIZE=$(du -sk "$PKG" | cut -f1)
-mkdir -p "$WORK/control"
+install -D -m 0755 "$ROOT/packaging/preinst" "$WORK/control/preinst"
+install -D -m 0755 "$ROOT/packaging/postrm" "$WORK/control/postrm"
 cat > "$WORK/control/control" <<CONTROL
 Package: zero-bot
 Version: $VERSION
@@ -38,11 +42,15 @@ Description: Voice assistant with tools for the M5Stack CardputerZero
  Push-to-talk and typed conversations with any OpenAI-compatible service,
  with a calculator, sandboxed Python, camera, calendar, reminders, memory,
  web search, weather, currency, stock prices, music and a TV remote.
+ .
+ It also puts Zero, its 8-bit robot, on the launcher's wake screen. The
+ launcher's own picture is kept, by a dpkg diversion, as
+ lockscreen.png.distrib, and comes back when Zero Bot is removed.
 CONTROL
 
 mkdir -p "$ROOT/dist"
 OUT="$ROOT/dist/zero-bot_${VERSION}_arm64.deb"
-( cd "$WORK/control" && tar --owner=0 --group=0 -czf "$WORK/control.tar.gz" ./control )
+( cd "$WORK/control" && tar --owner=0 --group=0 -czf "$WORK/control.tar.gz" ./control ./preinst ./postrm )
 ( cd "$PKG" && tar --owner=0 --group=0 -czf "$WORK/data.tar.gz" . )
 printf '2.0\n' > "$WORK/debian-binary"
 rm -f "$OUT"
