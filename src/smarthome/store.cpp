@@ -56,18 +56,6 @@ bool env_test_network() {
     return v && *v && std::string(v) != "0";
 }
 
-// The twelve hex digits of a MAC address in any of the notations saved ("aa:bb:..", "AA-BB-..",
-// none), lower case; "" when it is not one, or is all zeros.
-std::string mac_key(const std::string &raw) {
-    std::string hex;
-    for (const char c : raw) {
-        if (c == ':' || c == '-') continue;
-        if (!isxdigit(static_cast<unsigned char>(c)) || hex.size() >= 12) return "";
-        hex += static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    }
-    return hex.size() == 12 && hex != "000000000000" ? hex : "";
-}
-
 // A plug or switch whose name sounds like a heater: the app asks before switching it on.
 bool sounds_like_heater(const Thing &t) { return (t.type == "plug" || t.type == "switch") && suggests_heat(t.name); }
 
@@ -261,6 +249,16 @@ void edit_thing(const std::string &network_id, const std::string &device_id, con
 
 }  // namespace
 
+std::string mac_key(const std::string &raw) {
+    std::string hex;
+    for (const char c : raw) {
+        if (c == ':' || c == '-') continue;
+        if (!isxdigit(static_cast<unsigned char>(c)) || hex.size() >= 12) return "";
+        hex += static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    }
+    return hex.size() == 12 && hex != "000000000000" ? hex : "";
+}
+
 bool allowed_type(const std::string &type) {
     return std::find_if(std::begin(kTypes), std::end(kTypes), [&](const char *t) { return type == t; }) != std::end(kTypes);
 }
@@ -447,6 +445,7 @@ int remember_scan(const discovery::Network &net, const std::vector<discovery::De
     e.last_scan = now;
     int added = 0;
     for (const auto &f : found) {
+        if (f.id.empty() || f.id.back() == ':') continue;   // no id of its own: a family's prefix alone would be shared
         Saved *known = nullptr;
         // The same device (its MAC) is already saved under another id, and something was decided
         // there: the assistant's use switched off, or things read, which carry the user's settings
@@ -459,6 +458,10 @@ int remember_scan(const discovery::Network &net, const std::vector<discovery::De
             if (d.id == f.id) known = &d;
             else twin = twin || (!mac.empty() && mac_key(d.mac) == mac && (!d.enabled || !d.things.empty()));
         }
+        // The same id from a device with another MAC than the one saved is another device (an id
+        // made from an address, or one a device made up): it is not folded into the saved record,
+        // which keeps its name, settings and MAC, and it is not saved by this scan.
+        if (known && !mac.empty() && !mac_key(known->mac).empty() && mac_key(known->mac) != mac) continue;
         if (!known) {
             e.devices.emplace_back();
             known = &e.devices.back();

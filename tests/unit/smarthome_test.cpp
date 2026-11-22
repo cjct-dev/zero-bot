@@ -2389,6 +2389,77 @@ void test_found_again() {
         if (d.id == "tplink:ac:15:a2:00:00:01") CHECK_MSG(d.enabled, "switched on by the user: stays on");
 }
 
+// A Tapo answer without its device_id (or with one that is not one) was saved as "tapo:", an id every
+// such plug shared: two of them matched one saved record, and a rescan moved the first's name,
+// settings and expected MAC to the second (refactor review B3).
+void test_device_ids() {
+    Section s("store: no id is a family's prefix alone; a Tapo plug is known by its id or MAC; other MACs are never merged");
+    g_fake->reset();
+    auto tapo = [](const std::string &fields) {
+        return tplink_answer(R"J({"error_code":0,"result":{"device_type":"SMART.TAPOPLUG","device_model":"P110","owner":"",)J" + fields +
+                             R"J(,"mgt_encrypt_schm":{"encrypt_type":"KLAP","http_port":80}}})J");
+    };
+    const std::string hap = "_hap._tcp.local";
+    const auto found = discovery::devices_from({
+        {"tapo", "192.0.2.80", tapo(R"J("mac":"AA-BB-CC-00-00-80")J")},
+        {"tapo", "192.0.2.81", tapo(R"J("mac":"AA-BB-CC-00-00-81","device_id":"")J")},
+        {"tapo", "192.0.2.82", tapo(R"J("mac":"AA-BB-CC-00-00-82","device_id":"\"}{ not an id")J")},
+        {"tapo", "192.0.2.83", tapo(R"J("device_id":"","mac":"not a mac")J")},   // and the system knows no MAC for it
+        {"tapo", "192.0.2.84", tapo(R"J("mac":"AA-BB-CC-00-00-84","device_id":"8022A1B2C3D4E5F6A7B8")J")},
+        {"mdns", "192.0.2.85", service_answer(hap, "Lamp", "lamp.local", std::string("\xC0\x00\x02\x55", 4), {"id=", "ci=5", "sf=1"})},
+    });
+    std::map<std::string, std::string> ids;   // address -> id
+    for (const auto &d : found) ids[d.ip] = d.id;
+    CHECK_MSG(ids["192.0.2.80"] == "tapo:aa:bb:cc:00:00:80" && ids["192.0.2.81"] == "tapo:aa:bb:cc:00:00:81" &&
+                  ids["192.0.2.82"] == "tapo:aa:bb:cc:00:00:82", "without a usable device_id, the MAC it gave");
+    CHECK_MSG(ids["192.0.2.84"] == "tapo:8022a1b2c3d4e5f6a7b8", ids["192.0.2.84"]);
+    CHECK_MSG(!ids.count("192.0.2.83"), "a Tapo plug with neither id nor MAC is not listed (an id of its address would follow the address)");
+    CHECK_MSG(ids.count("192.0.2.85") && ids["192.0.2.85"] != "homekit:", "an empty TXT id is no id: " + ids["192.0.2.85"]);
+    for (const auto &d : found) CHECK_MSG(!d.id.empty() && d.id.back() != ':', d.id);
+    // Two such plugs are two records, each with its own MAC.
+    write_home({});
+    CHECK(home::remember_scan(g_net, found) == static_cast<int>(found.size()));
+    std::set<std::string> macs;
+    for (const auto &d : home::entry(g_net.id()).devices)
+        if (d.kind == "tapo") macs.insert(home::mac_key(d.mac));
+    CHECK(macs.size() == 4);
+
+    // A record saved with its MAC and the user's decisions; a device found under the same id with
+    // another MAC (two such plugs once shared "tapo:") is not folded into it.
+    json plug = device("tapo:8022000090", {thing("main", "Bed heater", "plug", home::kPower, "Bedroom", json::object(), true)}, "tapo",
+                       "192.0.2.90");
+    plug["mac"] = "aa:bb:cc:00:00:90";
+    plug["enabled"] = false;
+    write_home({plug});
+    discovery::Device other;
+    other.id = "tapo:";   // a prefix alone is never saved, whatever hands it over
+    other.kind = "tapo";
+    other.ip = "192.0.2.93";
+    CHECK(home::remember_scan(g_net, {other}) == 0 && home::entry(g_net.id()).devices.size() == 1);
+    other.id = "tapo:8022000090";
+    other.kind = "tapo";
+    other.ip = "192.0.2.91";
+    other.mac = "AA-BB-CC-00-00-91";
+    other.name = "Tapo P110";
+    CHECK(home::remember_scan(g_net, {other}) == 0);
+    home::NetworkEntry e = home::entry(g_net.id());
+    CHECK_MSG(e.devices.size() == 1 && e.devices[0].ip == "192.0.2.90" && home::mac_key(e.devices[0].mac) == "aabbcc000090" &&
+                  !e.devices[0].enabled && e.devices[0].things.size() == 1 && e.devices[0].things[0].ask_first,
+              "the saved plug keeps its address, MAC and settings");
+    // The same device (its MAC) at a new address is followed, as before; one saved without a MAC
+    // learns it.
+    other.mac = "aa:bb:cc:00:00:90";
+    CHECK(home::remember_scan(g_net, {other}) == 0);
+    e = home::entry(g_net.id());
+    CHECK(e.devices.size() == 1 && e.devices[0].ip == "192.0.2.91" && !e.devices[0].enabled);
+    plug["mac"] = "";
+    write_home({plug});
+    other.mac = "AA:BB:CC:00:00:92";
+    CHECK(home::remember_scan(g_net, {other}) == 0);
+    e = home::entry(g_net.id());
+    CHECK(e.devices.size() == 1 && home::mac_key(e.devices[0].mac) == "aabbcc000092");
+}
+
 // WiZ: answers to its broadcast (the registration query) become devices of kind "wiz", which the
 // WiZ driver claims; nothing else heard on its port does.
 void test_wiz_discovery() {
@@ -3076,6 +3147,7 @@ int main(int argc, char **argv) {
     test_discovery_hue();
     test_tplink_discovery();
     test_found_again();
+    test_device_ids();
     test_wiz_discovery();
     test_discovery_shelly();
     test_discovery_every_family();

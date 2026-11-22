@@ -524,9 +524,16 @@ std::string g_found_on;
 unsigned long g_found_at = 0;
 bool (*g_test_scan)(std::vector<discovery::Device> &found) = nullptr;
 
+// A device found under the saved id but with another MAC than the saved one is another device (an id
+// made from an address, or one a device made up): the saved one is never moved to it.
+bool other_mac(const discovery::Device &f, const Device &d) {
+    const std::string found = mac_key(f.mac), saved = mac_key(d.mac);
+    return !found.empty() && !saved.empty() && found != saved;
+}
+
 // A port counts only when both are known: a saved port of 0 means the family's usual one.
 bool moved(const discovery::Device &f, const Device &d) {
-    return f.id == d.id && !f.ip.empty() && (f.ip != d.ip || (f.port > 0 && d.port > 0 && f.port != d.port));
+    return f.id == d.id && !other_mac(f, d) && !f.ip.empty() && (f.ip != d.ip || (f.port > 0 && d.port > 0 && f.port != d.port));
 }
 
 Lookup relocate(const std::string &network_id, Saved &device) {
@@ -553,7 +560,7 @@ Lookup relocate(const std::string &network_id, Saved &device) {
         });
     }
     for (const auto &f : g_found)
-        if (f.id == device.id) {
+        if (f.id == device.id && !other_mac(f, device)) {
             if (!moved(f, device)) return Lookup::StillThere;   // it answers the scan where it was, but not the command
             device.ip = f.ip;
             if (f.port > 0) device.port = f.port;
