@@ -91,6 +91,18 @@ std::string stand_in_base(const std::string &v) {
     return out;
 }
 
+// Variants dropped in November 2026 (ZB-033, ZB-035; the owner chose the default). A run that still sets
+// one would measure the default under the variant's name, so it stops instead, as a ZB_EXP_OFF name this
+// build does not know stops it: read as the program starts, whatever its mode, before anything is sent.
+void refuse_retired() {
+    for (const char *name : {"ZB_EXP_DECIDE", "ZB_EXP_TOOLS", "ZB_EXP_CHECK_MODEL"})
+        if (const char *v = getenv(name); v && *v) {
+            fprintf(stderr, "%s=%s: that variant was retired, and this build measures only the default; unset %s\n", name, v, name);
+            exit(2);
+        }
+}
+[[maybe_unused]] const bool g_retired_refused = (refuse_retired(), true);
+
 }  // namespace
 
 const Switches &get() {

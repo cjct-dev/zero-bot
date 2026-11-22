@@ -180,17 +180,13 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
         }
         if (delta.contains("tool_calls") && delta["tool_calls"].is_array()) {
             if (tracing && ct.first_call < 0) ct.first_call = since();
+            // Each piece to the call its index names (llm_stream.h); an index out of range is a fault in the
+            // stream, reported as an error event's message is.
             for (const json &tc : delta["tool_calls"]) {
-                const size_t idx = static_cast<size_t>(util::jget(tc, "index", 0));
-                if (out.tool_calls.size() <= idx) out.tool_calls.resize(idx + 1);
-                ToolCall &call = out.tool_calls[idx];
-                const std::string id = util::jget(tc, "id", std::string());
-                if (!id.empty()) call.id = id;
-                if (tc.contains("function") && tc["function"].is_object()) {
-                    const json &fn = tc["function"];
-                    const std::string name = util::jget(fn, "name", std::string());
-                    if (!name.empty()) call.name = name;
-                    if (fn.contains("arguments") && fn["arguments"].is_string()) call.args += fn["arguments"].get<std::string>();
+                std::string bad;
+                if (!add_tool_delta(out.tool_calls, tc, bad)) {
+                    if (out.error.empty()) out.error = bad;
+                    return;
                 }
             }
         }

@@ -1,13 +1,53 @@
-// The two pieces of reading a streamed chat reply that keep state from one network chunk to the
-// next (llm::chat): the event stream split into lines, and the answer's text cleared of thinking
-// markers. Header-only and pure, so tests/unit/llm_stream_test.cpp checks them without a service.
+// The pieces of reading a streamed chat reply that keep state from one network chunk to the next
+// (llm::chat): the event stream split into lines, the answer's text cleared of thinking markers, and
+// tool calls put together from their pieces. Header-only and pure, so tests/unit/llm_stream_test.cpp
+// checks them without a service.
 #pragma once
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <vector>
+
+#include "agent/llm.h"
 
 namespace llm {
+
+// The most tool calls one reply may carry. The stream numbers each call ("index") and a slot is kept
+// for every number up to it, so a number out of range is a fault in the stream, not a call: a negative
+// one once wrapped round to a slot far past the end, and a huge one would have asked for gigabytes.
+constexpr int kMaxToolCalls = 16;
+
+// One piece of a streamed tool call (an element of an event's "delta.tool_calls"), added to the call
+// its index names; a piece without one is the first call's. False, with `error` set to a sentence for
+// the user and nothing added, when the index is not a whole number from 0 to kMaxToolCalls - 1.
+inline bool add_tool_delta(std::vector<ToolCall> &calls, const json &tc, std::string &error) {
+    size_t idx = 0;
+    const auto it = tc.is_object() ? tc.find("index") : tc.end();
+    if (tc.is_object() && it != tc.end() && !it->is_null()) {
+        const double n = it->is_number() ? it->get<double>() : -1;
+        if (!(n >= 0 && n < kMaxToolCalls) || n != std::floor(n)) {
+            error = "The AI service sent a reply this app could not read (a tool call numbered " +
+                    it->dump(-1, ' ', true, json::error_handler_t::replace).substr(0, 24) + ").";
+            return false;
+        }
+        idx = static_cast<size_t>(n);
+    }
+    if (calls.size() <= idx) calls.resize(idx + 1);
+    if (!tc.is_object()) return true;
+    ToolCall &call = calls[idx];
+    const auto id = tc.find("id");
+    if (id != tc.end() && id->is_string() && !id->get<std::string>().empty()) call.id = id->get<std::string>();
+    const auto fn = tc.find("function");
+    if (fn != tc.end() && fn->is_object()) {
+        const auto name = fn->find("name");
+        if (name != fn->end() && name->is_string() && !name->get<std::string>().empty()) call.name = name->get<std::string>();
+        const auto args = fn->find("arguments");
+        if (args != fn->end() && args->is_string()) call.args += args->get<std::string>();
+    }
+    return true;
+}
 
 // Splits the event stream into its lines as the network hands it over: a line cut between chunks is
 // carried over to the next, and the "\r" before a "\n" is dropped.

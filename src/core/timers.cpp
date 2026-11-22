@@ -29,17 +29,13 @@ std::string reply(const json &j) { return j.dump(-1, ' ', false, json::error_han
 
 std::string str_arg(const json &a, const char *key) { return util::trim(jget(a, key, std::string())); }
 
-// Models sometimes send numbers as strings; accept both.
+// Models sometimes send numbers as strings; accept both, text only when it is a number as a whole
+// (util::to_number, as the tool runner reads one: an id of "1oops" is not timer 1).
 bool num_arg(const json &a, const char *key, double &out) {
     auto it = a.find(key);
     if (it == a.end() || it->is_null()) return false;
-    if (it->is_number()) { out = it->get<double>(); return true; }
-    if (it->is_string()) {
-        const std::string s = it->get<std::string>();
-        char *end = nullptr;
-        out = strtod(s.c_str(), &end);
-        return end != s.c_str();
-    }
+    if (it->is_number()) { out = it->get<double>(); return std::isfinite(out); }
+    if (it->is_string()) return util::to_number(it->get<std::string>(), out);
     return false;
 }
 
@@ -191,8 +187,8 @@ std::string none_running(time_t now) {
 bool pick(const json &a, const std::vector<Reminder> &running, time_t now, Reminder &out, std::string &err) {
     double idv = 0;
     if (num_arg(a, "id", idv)) {
-        for (auto &r : running)
-            if (r.id == static_cast<int>(idv)) { out = r; return true; }
+        for (auto &r : running)   // compared as numbers: 1e300 made into an int is undefined
+            if (r.id == idv) { out = r; return true; }
         err = running.empty() ? none_running(now) : "no running timer has that id. Running: " + summary(running, now);
         return false;
     }

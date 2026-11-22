@@ -31,6 +31,9 @@
 //                          transmitter refuse with an error instead of being used: the live test sets'
 //                          runners set it, so a test run never sends a real photo to the service or
 //                          an infrared code into the room, whatever the model does
+//   ZB_EXP_DECIDE, ZB_EXP_TOOLS, ZB_EXP_CHECK_MODEL   variants retired in November 2026: set to anything,
+//                          they stop the run at start, so that an old command does not measure the
+//                          default under their name
 #pragma once
 #include <chrono>
 #include <string>

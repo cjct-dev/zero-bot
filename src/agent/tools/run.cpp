@@ -28,9 +28,10 @@ std::string sent_text(const json &v) {
 // Each argument against the type the tool's schema gives it, before the tool runs, so that every
 // tool answers a wrong type the same way: which argument, what it must be, what was sent. A yes or
 // no sent as "true", "yes" or 1 is taken as meant, an enum value in other capitals becomes the
-// listed one, and empty text for a number counts as not given. Ranges, dates and which names
-// exist stay with each tool. Returns "" when the arguments may go to the tool; `unknown` collects
-// names the schema does not have.
+// listed one, and empty text for a number counts as not given; other text for a number must be one
+// as a whole (util::to_number: "20 minutes" is not 20). Ranges, dates and which names exist stay
+// with each tool. Returns "" when the arguments may go to the tool; `unknown` collects names the
+// schema does not have.
 std::string check_args(const json &props, json &args, std::vector<std::string> &unknown) {
     std::vector<std::string> drop;
     for (auto it = args.begin(); it != args.end(); ++it) {
@@ -57,11 +58,9 @@ std::string check_args(const json &props, json &args, std::vector<std::string> &
             const std::string must = id ? key + " must be a whole number such as 12, taken from an earlier result"
                                         : key + " must be a number, such as 5";
             if (v.is_string()) {
-                const std::string s = util::trim(v.get<std::string>());
-                if (s.empty()) { drop.push_back(key); continue; }
-                char *end = nullptr;
-                const double d = strtod(s.c_str(), &end);
-                if (end == s.c_str() || !std::isfinite(d)) return must + "; " + sent_text(v) + " is not one";
+                double d = 0;
+                if (util::trim(v.get<std::string>()).empty()) { drop.push_back(key); continue; }
+                if (!util::to_number(v.get<std::string>(), d)) return must + "; " + sent_text(v) + " is not one";
             } else if (v.is_number()) {
                 if (!std::isfinite(v.get<double>())) return must + "; " + sent_text(v) + " is not one";
             } else {
@@ -136,12 +135,16 @@ std::string no_such_tool(const std::string &name) {
 }
 
 // One shape for every failure: "ERROR: what was wrong. What to do." A tool that answered with a
-// JSON object holding "error" gets the same shape, its other fields kept after it.
+// JSON object holding "error", whatever its value, gets the same shape, its other fields kept after
+// it, and so does text that only begins like one. Done before anything is added to a result or it is
+// cut short, either of which would leave a JSON failure unreadable, and so a success (ZB-090).
 std::string one_shape(const std::string &result) {
-    if (result.empty() || result[0] != '{' || result.find("\"error\"") == std::string::npos) return result;
+    if (!result::failed(result) || result.compare(0, 5, "ERROR") == 0) return result;
     json j = json::parse(result, nullptr, false);
-    if (!j.is_object() || !j.contains("error") || !j["error"].is_string() || j["error"].get<std::string>().empty()) return result;
-    const std::string what = j["error"].get<std::string>();
+    if (!j.is_object() || !j.contains("error")) return fail(result);   // {"error"... that is not JSON: as it came
+    const json e = j["error"];
+    std::string what = e.is_string() ? e.get<std::string>() : e.is_null() ? "" : e.dump(-1, ' ', false, json::error_handler_t::replace);
+    if (what.empty()) what = "the tool failed without saying why";
     j.erase("error");
     return fail(what + (j.empty() ? "" : ". " + j.dump(-1, ' ', false, json::error_handler_t::replace)));
 }

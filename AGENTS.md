@@ -104,7 +104,14 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   confirmation sentence as a parameter, so success is spoken without a second model call.
 - **Steering**: input that arrives while a request is being worked on is added to the same
   request. While the microphone is open nothing new is spoken and no action runs
-  (`Agent::set_listening`).
+  (`Agent::set_listening`): a later call of a batch waits for it to close, and once the user has
+  said more, the calls not yet made are not made (each answered "this call was not made", not
+  counted as failed), so the model decides again with their words.
+- **Typed or spoken** (ZB-091): a request's answer is spoken only when something in it was said
+  aloud (and spoken replies are on); a typed one's is only shown. Its state says which: `Speaking`
+  (TAB stops it: `Agent::interrupt_speech`, and the conversation keeps "[the user interrupted
+  here]") or `Answering` (TAB does not stop it). Music waits only for an answer that is heard
+  (`tools::Context::in_conversation`), and each answer's end is signalled at its own request's end.
 - **Numeric dates** are spelt out by rule (`util::spell_numeric_dates`) before the model sees
   them, in the user's date order with the year filled in.
 - **Timestamps** ride on each user message, not in the system prompt, so the prompt stays
@@ -136,9 +143,12 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   - *What the model is told.* `tools::run` checks each argument against the tool's own schema
     before the tool runs: a wrong type names the argument, what it must be and what was sent;
     "yes", "true" or 1 for a boolean and an enum value in other capitals are taken as meant; empty
-    text for a number counts as not given. A call cut short or broken says where, with an example;
-    an unknown tool name gets the nearest one. Every failure has one shape, `ERROR: what was wrong.
-    What to do` (a tool's JSON `{"error": ...}` is turned into it); `tools::failed()` recognises it.
+    text for a number counts as not given, and other text must be a number as a whole
+    (`util::to_number`, which `num_arg` uses too: "20 minutes" is not 20, "12oops" not reminder 12).
+    A call cut short or broken says where, with an example; an unknown tool name gets the nearest
+    one. Every failure has one shape, `ERROR: what was wrong. What to do` (a tool's JSON
+    `{"error": ...}`, whatever "error" holds, is turned into it before anything is added to the
+    result or it is cut short); `tools::failed()` recognises it.
     Tools whose schema is made at run time (`smart_home`, `radio`: `obj({})` in `build()`) check
     their own arguments.
   - *Retries.* Only what is safe to repeat is sent again by itself: the AI service, transcription,
@@ -198,7 +208,7 @@ groups need first. Which to use:
   leaves out Fire TV's end-to-end test and the live sets). `--profile offline` includes Fire TV.
 - Named groups: `tests/run.py --groups unit,hue`; a live check:
   `tests/run.py --groups live-suite --tags timer --repeat 5`; a variant against a
-  baseline: `--exp ZB_EXP_TOOLS=lean --baseline B.json` (inherited `ZB_EXP_*` are never passed on).
+  baseline: `--exp ZB_EXP_OFF=second_look --baseline B.json` (inherited `ZB_EXP_*` are never passed on).
 - Before a release: `tests/run.py --profile release --baseline EVAL.json,SUITE.json` (or `--groups
   release`, the same mode) builds (unless `--no-build`: then a build older than any input stops it),
   runs every offline group, every case of both live sets once, then the gate of `tests/exp_compare.py`
@@ -361,7 +371,8 @@ What exists:
 
 - **Command-line modes** in `src/main.cpp` (work in the `cli` build):
   `--ask "text"`, `--chat`, `--tool NAME 'JSON'`, `--steer "text"` (inject input during the
-  first tool), `--talk-over MS[:text]` (hold the microphone open during a request),
+  first tool), `--talk-over MS[:text]` (hold the microphone open during a request; with
+  `--talk-at tool|answer`, from its first tool or once its answer has begun, as TAB does),
   `--follow-ups "a|b|c"` (chain requests inside one run), `--stt FILE.wav`, `--tts "text" OUT.raw`,
   `--discover` (smart-home scan), `--home-refresh` (read saved smart-home devices),
   `--prompt` / `--schema` (the system prompt and tools a request would get now),
@@ -464,10 +475,12 @@ What exists:
 - **Measurement switches** (`src/agent/experiment.h`; compiled into the `cli` build only, CMake option
   `ZB_EXPERIMENTS`, which CMake refuses outside the `cli` build): `ZB_EXP_TRACE=file` appends a JSON
   line per model call (purpose, timings, token counts the service reports, size sent) and per request
-  (first sentence, tools, guards, second look); no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`. Variants measured against
-  the default, none of them adopted: `ZB_EXP_TOOLS=say1|lean` (shorter tool text),
-  `ZB_EXP_DECIDE=parallel|required|required_held` (deciding without the second look); an unknown value
-  stops the run. `ZB_EXP_WEB` (the stand-in web) takes only plain decimal `http://127.a.b.c[:port][/path]`
+  (first sentence, tools, guards, second look); no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`.
+  `ZB_EXP_OFF=NAME[,NAME]` switches small-model controls off (`src/agent/controls.h`); an unknown name
+  stops the run. The variants once measured against the default (`ZB_EXP_TOOLS`, shorter tool text;
+  `ZB_EXP_DECIDE`, deciding without the second look; `ZB_EXP_CHECK_MODEL`) were retired, none adopted:
+  set, any of them stops the run at start, so an old command cannot measure the default under their
+  name. `ZB_EXP_WEB` (the stand-in web) takes only plain decimal `http://127.a.b.c[:port][/path]`
   and sends to the address it read, as `local`: no proxy, no redirect followed.
   **The hardware guard:** `ZB_EXP_NO_HARDWARE=1`, which the live sets' runners set for every case, makes
   the camera refuse unless `ZB_FAKE_CAMERA` names a picture, and the infrared transmitter refuse, so a
@@ -633,8 +646,9 @@ key, real audio), say so plainly rather than implying it was.
 - Models send `1e300`, `"nan"` and numbers where text was meant. Converting a double that is not
   finite or not in range to an int is undefined (it crashed `date_info`), so the tools' `num_arg`
   takes finite values only and `clamp_int` brings them into range first; text arguments accept a
-  number as its digits. Nested brackets overflowed the calculator's stack: recursive parsers need
-  a depth limit.
+  number as its digits. A number sent as text is read as a whole (`util::to_number`): `strtod`
+  stops quietly at the first character it cannot read, so `"id": "12oops"` once cancelled reminder
+  12. Nested brackets overflowed the calculator's stack: recursive parsers need a depth limit.
 - `mktime` makes 31 February into 3 March without a word, and the zone database holds folders
   named like countries ("Australia") that the C library reads as UTC: `parse_local` and
   `timezone_exists` refuse both. Check that a date, time or zone exists before using it.

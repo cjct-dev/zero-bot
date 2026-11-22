@@ -24,18 +24,14 @@ bool given(const json &a, const char *key) {
     return it != a.end() && !it->is_null();
 }
 
-// Models sometimes send numbers as strings; accept both. Only finite numbers count: "nan" and
-// "inf" parse as numbers, and converting them (or 1e300) to a whole number is undefined.
+// Models sometimes send numbers as strings; accept both, text only when it is a number as a whole
+// (util::to_number, as the runner's checks read it: "12oops" is not reminder 12). Only finite numbers
+// count: "nan" and "inf" parse as numbers, and converting them (or 1e300) to a whole number is undefined.
 bool num_arg(const json &a, const char *key, double &out) {
     auto it = a.find(key);
     if (it == a.end() || it->is_null()) return false;
     if (it->is_number()) { out = it->get<double>(); return std::isfinite(out); }
-    if (it->is_string()) {
-        char *end = nullptr;
-        const std::string s = it->get<std::string>();
-        out = strtod(s.c_str(), &end);
-        return end != s.c_str() && std::isfinite(out);
-    }
+    if (it->is_string()) return util::to_number(it->get<std::string>(), out);
     return false;
 }
 

@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -33,7 +34,7 @@ namespace {
 
 // What the command line asked for.
 struct Args {
-    std::string ask, ask_wav, steer, steer_wav, talk_over, follow_ups;
+    std::string ask, ask_wav, steer, steer_wav, talk_over, talk_at = "start", follow_ups;
     std::string tool_name, tool_args = "{}";
     std::string stt_file, tts_text, tts_out, bench_wav, bench_opus, shots;
     bool chat = false, keydump = false, discover = false, home_refresh = false, show_prompt = false, show_schema = false;
@@ -69,9 +70,14 @@ const Option kOptions[] = {
      [](Args &a, char **, int &, int) { a.home_refresh = true; }},
     {"--discover", "", 0, "look for smart-home devices on this network (discovery only) and list them",
      [](Args &a, char **, int &, int) { a.discover = true; }},
-    {"--talk-over", "MS[:text]", 1, "with --ask: hold the microphone open for MS ms from the start of the request,\n"
-                                    "then hand over `text` as what was said (or nothing, as if cancelled)",
+    {"--talk-over", "MS[:text]", 1, "with --ask: hold the microphone open for MS ms from the start of the request\n"
+                                    "(or the moment --talk-at names), then hand over `text` as what was said (or\n"
+                                    "nothing, as if cancelled)",
      [](Args &a, char **v, int &i, int) { a.talk_over = v[++i]; }},
+    {"--talk-at", "start|tool|answer", 1, "with --talk-over: open the microphone at the start of the request (the default),\n"
+                                          "as its first tool starts, or once its answer has begun; the last two press\n"
+                                          "the talk key as the device does, stopping any speech first",
+     [](Args &a, char **v, int &i, int) { a.talk_at = v[++i]; }},
     {"--follow-ups", "\"a|b|c\"", 1, "with --ask: send each of these as the previous answer begins, so that they\n"
                                      "are all handled inside one run",
      [](Args &a, char **v, int &i, int) { a.follow_ups = v[++i]; }},
@@ -130,6 +136,17 @@ int run_cli(const Args &a) {
     const std::string &ask = a.ask, &ask_wav = a.ask_wav, &steer_text = a.steer, &steer_wav = a.steer_wav;
     const std::string &talk_over = a.talk_over, &follow_ups = a.follow_ups;
     const bool chat = a.chat;
+    // --talk-at: when --talk-over's microphone opens. At the first tool it is opened by the tool event, at the
+    // answer by the talker's thread once the agent is giving one; either way once a request.
+    enum class TalkAt { Start, Tool, Answer };
+    static TalkAt talk_at;
+    if (a.talk_at == "start") talk_at = TalkAt::Start;
+    else if (a.talk_at == "tool") talk_at = TalkAt::Tool;
+    else if (a.talk_at == "answer") talk_at = TalkAt::Answer;
+    else { fprintf(stderr, "--talk-at takes start, tool or answer, not %s\n", a.talk_at.c_str()); return 2; }
+    static bool talking;
+    talking = !talk_over.empty();
+    static std::atomic<bool> mic_opened{false};
     MusicLibrary::get().refresh(Settings::get().eff_music_dir());
     setenv("ZB_NO_AUDIO", "1", 0);
     std::vector<int16_t> ask_pcm;
@@ -142,11 +159,27 @@ int run_cli(const Args &a) {
     static bool first_text;
     static double first_at;
     auto since = [] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
+    // With speech allowed (ZB_NO_AUDIO=0, which the tests use with a stand-in player): when each spoken answer
+    // has played out, so that it can be set beside when its request was answered.
+    if (const char *v = getenv("ZB_NO_AUDIO"); v && strcmp(v, "0") == 0)
+        std::thread([since] {
+            for (bool was = false;; usleep(10 * 1000)) {
+                const bool now = SpeechQueue::get().active();
+                if (was && !now) printf("[speech done +%.1fs]\n", since());
+                was = now;
+            }
+        }).detach();
     // Stands in for the user speaking again mid-request, so the steering path can be tested.
     static std::string steer;
     steer = steer_text;
     ev.tool = [since](const std::string &label) {
         printf("[tool +%.1fs] %s\n", since(), label.c_str());
+        // --talk-at tool: the talk key, pressed as the request's first tool starts.
+        if (talking && talk_at == TalkAt::Tool && !mic_opened.exchange(true)) {
+            Agent::get().interrupt_speech();
+            Agent::get().set_listening(true);
+            printf("[mic open +%.1fs]\n", since());
+        }
         if (!steer.empty()) { Agent::get().submit_text(steer); steer.clear(); }
         if (!steer_pcm.empty()) { Agent::get().submit_audio(std::move(steer_pcm)); steer_pcm.clear(); }
     };
@@ -269,18 +302,41 @@ int run_cli(const Args &a) {
         t0 = std::chrono::steady_clock::now();
         first_text = false;
         first_at = -1;
-        // Stands in for the user pressing the talk key while the request is being worked on.
+        // Stands in for the user pressing the talk key while the request is being worked on (--talk-over, at the
+        // moment --talk-at names).
         std::thread talker;
-        if (!talk_over.empty()) {
-            agent.set_listening(true);
-            puts("[mic open +0.0s]");
-            talker = std::thread([&, since] {
+        std::atomic<bool> over{false};   // the request has been answered: a key not pressed yet never is
+        if (talking) {
+            mic_opened = talk_at == TalkAt::Start;
+            if (mic_opened) {
+                agent.set_listening(true);
+                puts("[mic open +0.0s]");
+            }
+            // An answer being given: spoken (a spoken request's) or only shown (a typed one's).
+            auto giving = [&agent] {
+                const AgentState st = agent.state();
+                return st == AgentState::Speaking || st == AgentState::Answering;
+            };
+            talker = std::thread([&, since, giving] {
+                if (talk_at == TalkAt::Answer) {
+                    while (!over && !giving()) usleep(5 * 1000);
+                    if (over) return;
+                    const bool spoken = agent.state() == AgentState::Speaking;
+                    agent.interrupt_speech();
+                    agent.set_listening(true);
+                    mic_opened = true;
+                    printf("[mic open +%.1fs] (while %s)\n", since(), spoken ? "speaking" : "answering");
+                }
+                while (!mic_opened && !over) usleep(5 * 1000);
+                if (!mic_opened) return;
                 const size_t colon = talk_over.find(':');
                 const int ms = atoi(talk_over.substr(0, colon).c_str());
-                bool told = false;
+                // Nothing new is given (spoken, or shown as an answer) while the microphone is open; an answer
+                // already under way when the key was pressed is not news.
+                bool told = talk_at == TalkAt::Answer;
                 for (int waited = 0; waited < ms; waited += 20) {
                     usleep(20 * 1000);
-                    if (!told && agent.state() == AgentState::Speaking) { told = true; printf("[SPEAKING WHILE THE MIC IS OPEN +%.1fs]\n", since()); }
+                    if (!told && giving()) { told = true; printf("[SPEAKING WHILE THE MIC IS OPEN +%.1fs]\n", since()); }
                 }
                 if (colon != std::string::npos) agent.submit_text(talk_over.substr(colon + 1));
                 printf("[mic closed +%.1fs]%s\n", since(), colon != std::string::npos ? " (words handed over)" : " (cancelled)");
@@ -288,6 +344,7 @@ int run_cli(const Args &a) {
             });
         }
         const std::string answer = pcm.empty() ? agent.run_blocking(text) : agent.run_blocking(std::move(pcm));
+        over = true;
         if (talker.joinable()) talker.join();
         const double total = since();
         const json hist = agent.history_snapshot(&gone);

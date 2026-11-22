@@ -11,9 +11,9 @@ namespace result {
 inline std::string fail(const std::string &msg) { return "ERROR: " + msg; }
 
 // Whether a tool's result is a failure: it starts with "ERROR" (with or without the ": "), or it is a
-// JSON object holding "error", whatever its value (tools::run turns one with a text error into
-// "ERROR: ..." first, so this catches the rest: {"error": 5}, {"error": ""}). Text that begins
+// JSON object holding "error", whatever its value ({"error": 5}, {"error": ""}). Text that begins
 // {"error" counts too, JSON or not. Only text that begins with "{" and names "error" is parsed.
+// tools::run gives every failure a tool returns the "ERROR: ..." shape before passing it on.
 inline bool failed(const std::string &text) {
     if (text.compare(0, 5, "ERROR") == 0 || text.compare(0, 8, "{\"error\"") == 0) return true;
     if (text.empty() || text[0] != '{' || text.find("\"error\"") == std::string::npos) return false;
