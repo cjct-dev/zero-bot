@@ -669,12 +669,13 @@ static void test_driver() {
 
 // ---------------------------------------------------------------- refusals at the same moment
 // A responder on 127.0.0.1 that plays a Gen1 Shelly whose login refuses everything: /shelly
-// answers (it needs no password), everything else is 401. Each connection gets a thread, so that
-// many devices' refusals arrive together.
+// answers (it needs no password), everything else is 401, with `body_401` bytes of body. Each
+// connection gets a thread, so that many devices' refusals arrive together.
 struct Refuser {
     int fd = -1, port = 0;
     std::atomic<bool> stop{false};
     std::atomic<int> logins{0};
+    std::atomic<size_t> body_401{0};
     std::thread loop;
     Refuser() {
         fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -705,7 +706,8 @@ struct Refuser {
                                 std::to_string(body.size()) + "\r\n\r\n" + body;
                     } else {
                         if (req.find("Authorization: Basic ") != std::string::npos) ++logins;
-                        reply = "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"x\"\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+                        reply = "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"x\"\r\nConnection: close\r\nContent-Length: " +
+                                std::to_string(body_401.load()) + "\r\n\r\n" + std::string(body_401.load(), 'x');
                     }
                     send(c, reply.data(), reply.size(), MSG_NOSIGNAL);
                     close(c);
@@ -772,6 +774,7 @@ static void test_storage() {
     drv->attach(&full);
     std::string err;
     CHECK(!drv->apply(dev, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 1);
+    CHECK_MSG(err.find("could not be noted") != std::string::npos, err);   // said: a later run would try it once more
     CHECK_MSG(!drv->apply(dev, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 1,
               std::to_string(dev_side.logins) + " logins");
 
@@ -840,6 +843,44 @@ static void test_refused_while_pairing() {
     CHECK(!drv->apply(on_file, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 1);
 }
 
+// A 401 is a refusal however long the body that comes with it (fix round 3, D7): one over the 256 KiB a
+// reply may have, while pairing or while reading, is kept like any other, and the password is not sent again.
+static void test_long_refusal() {
+    Refuser dev_side;
+    dev_side.body_401 = 300 * 1024;
+    auto drv = make_shelly_driver();
+    MemSecrets sec;
+    drv->attach(&sec);
+    home::Thing relay = thing_of({{"gen", 1}, {"comp", "relay"}, {"id", 0}, {"dev", "a4cf12f45378"}}, home::kPower);
+    relay.id = "relay:0";
+    home::Device dev;
+    dev.id = "shelly:shelly1-long";
+    dev.kind = "shelly";
+    dev.ip = "127.0.0.1";
+    dev.port = dev_side.port;
+    dev.things = {relay};
+    dev.auth = {{"user", "admin"}};
+    sec.all = {{"shelly", {{"locked", {{dev.id, 1}}}}}};
+    home::Device on_file = dev;   // what the record holds until the outcome is written
+    on_file.auth["password"] = "pw";
+    std::string err;
+    CHECK(drv->next_step(dev).kind == home::Pairing::Password);
+    CHECK_MSG(!drv->pair(dev, "pw", err) && dev_side.logins == 1 && !dev.auth.contains("password") &&
+                  err.find("did not accept") != std::string::npos,
+              err);
+    home::Change on;
+    on.on = true;
+    CHECK_MSG(!drv->apply(on_file, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 1,
+              std::to_string(dev_side.logins) + " logins: " + err);
+    // A saved password refused so while reading.
+    home::Device saved = dev;
+    saved.id = "shelly:shelly1-long-saved";
+    saved.auth = {{"user", "admin"}, {"password", "pw2"}};
+    CHECK_MSG(!drv->apply(saved, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 2, err);
+    CHECK_MSG(!drv->apply(saved, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 2,
+              std::to_string(dev_side.logins) + " logins: " + err);
+}
+
 static void test_refusals_together() {
     Refuser dev_side;
     auto drv = make_shelly_driver();
@@ -891,6 +932,7 @@ int main() {
     test_refusals_together();
     test_storage();
     test_refused_while_pairing();
+    test_long_refusal();
     curl_global_cleanup();
     printf("shelly: %d checks, %d failed\n", g_run, g_failed);
     return g_failed ? 1 : 0;
