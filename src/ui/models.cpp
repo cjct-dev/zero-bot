@@ -6,18 +6,18 @@
 
 namespace ui::models {
 
-List list(std::string &err) { return llm::list_models(err); }
+List list(const llm::Service &service, std::string &err) { return llm::list_models(service, err); }
 
 void fetch(std::function<void(const List &list, const std::string &err)> done) {
-    const std::string asked = service(Settings::get());
+    const llm::Service asked = llm::Service::of(Settings::get());
     background(
-        [] {
+        [asked] {
             std::string err;
-            auto found = list(err);
+            auto found = list(asked, err);
             return std::make_pair(found, err);
         },
         [done, asked](const std::pair<List, std::string> &r) {
-            if (service(Settings::get()) == asked) done(r.first, r.second);
+            if (llm::Service::of(Settings::get()) == asked) done(r.first, r.second);
         });
 }
 

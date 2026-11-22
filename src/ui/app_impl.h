@@ -6,6 +6,7 @@
 #include <atomic>
 #include <ctime>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -92,7 +93,7 @@ struct App {
     // the service (address and key) whose list has been read, and whether the device was online when
     // update_indicators last looked (taken as yes at the start, which asks anyway).
     unsigned long model_retry_ms = kModelRetryMs;
-    std::string models_listed_for;
+    llm::Service models_listed_for;
     bool was_online = true;
     std::atomic<bool> selecting_models{false};
     bool warned_models = false;
@@ -103,8 +104,8 @@ struct App {
     // ------------------------------------------------------------ setup
     void wire_agent();
     void auto_select_models();
-    std::string models_wanted() const;
-    void models_answered(const models::List &list, const std::string &err, const std::string &service);
+    std::optional<llm::Service> models_wanted() const;
+    void models_answered(const models::List &list, const std::string &err, const llm::Service &service);
     void follow_connection(bool online);
     void welcome();
 

@@ -4,14 +4,23 @@
 #include "ui/app_impl.h"
 
 #include <algorithm>
+#include <arpa/inet.h>
+#include <atomic>
 #include <cstdio>
 #include <functional>
 #include <initializer_list>
+#include <memory>
+#include <mutex>
+#include <netinet/in.h>
+#include <poll.h>
 #include <string>
+#include <sys/socket.h>
+#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
 
+#include "agent/agent.h"
 #include "core/activity.h"
 #include "core/radio.h"
 #include "core/settings.h"
@@ -84,6 +93,85 @@ bool answer_waiting() {
     for (int i = 0; i < 150 && uiq::pending() == 0; ++i) usleep(20 * 1000);
     return uiq::pending() > 0;
 }
+
+// A stand-in AI service on 127.0.0.1, at a port the system picks, for as long as it lives: every request is
+// answered with a list of one chat model, and noted as the path it asked for and the key it carried
+// ("/a/v1/models key-a").
+class StandInService {
+public:
+    StandInService() {
+        fd_ = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        sockaddr_in at{};
+        at.sin_family = AF_INET;
+        at.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        socklen_t len = sizeof(at);
+        if (fd_ < 0 || bind(fd_, reinterpret_cast<sockaddr *>(&at), len) != 0 || listen(fd_, 4) != 0 ||
+            getsockname(fd_, reinterpret_cast<sockaddr *>(&at), &len) != 0)
+            return;
+        port_ = ntohs(at.sin_port);
+        thread_ = std::thread([this] { serve(); });
+    }
+    ~StandInService() {
+        stop_ = true;
+        if (thread_.joinable()) thread_.join();
+        if (fd_ >= 0) close(fd_);
+    }
+    std::string address(const std::string &path) const { return "http://127.0.0.1:" + std::to_string(port_) + path; }
+    // The requests heard, once there are `n` (waiting up to 3 s).
+    std::vector<std::string> heard(size_t n) {
+        for (int i = 0; i < 150 && heard_count() < n; ++i) usleep(20 * 1000);
+        std::lock_guard<std::mutex> lk(mtx_);
+        return heard_;
+    }
+
+private:
+    // What follows `start` in `text`, up to `end`; "" without `start`.
+    static std::string between(const std::string &text, const std::string &start, const std::string &end) {
+        const size_t at = text.find(start);
+        if (at == std::string::npos) return "";
+        const size_t from = at + start.size();
+        return text.substr(from, text.find(end, from) - from);
+    }
+    size_t heard_count() {
+        std::lock_guard<std::mutex> lk(mtx_);
+        return heard_.size();
+    }
+    void serve() {
+        while (!stop_) {
+            pollfd p{fd_, POLLIN, 0};
+            if (poll(&p, 1, 50) <= 0) continue;
+            const int peer = accept4(fd_, nullptr, nullptr, SOCK_CLOEXEC);
+            if (peer < 0) continue;
+            answer(peer);
+            close(peer);
+        }
+    }
+    void answer(int peer) {
+        std::string req;
+        char buf[1024];
+        while (req.find("\r\n\r\n") == std::string::npos && req.size() < 8192) {
+            pollfd p{peer, POLLIN, 0};
+            const ssize_t n = poll(&p, 1, 2000) > 0 ? read(peer, buf, sizeof(buf)) : -1;
+            if (n <= 0) break;
+            req.append(buf, static_cast<size_t>(n));
+        }
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            heard_.push_back(between(req, " ", " ") + " " + between(req, "\r\nAuthorization: Bearer ", "\r\n"));
+        }
+        const std::string body = R"({"data": [{"id": "chatty", "mode": "chat"}]})";
+        const std::string reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
+                                  std::to_string(body.size()) + "\r\n\r\n" + body;
+        send(peer, reply.data(), reply.size(), MSG_NOSIGNAL);
+    }
+
+    int fd_ = -1;
+    int port_ = 0;
+    std::atomic<bool> stop_{false};
+    std::thread thread_;
+    std::mutex mtx_;
+    std::vector<std::string> heard_;
+};
 
 // Presses ENTER on the row under the cursor while the network is found only after a slow first look
 // (`slow`): opening a page never waits for the network on the UI thread. True when the key came back
@@ -1266,7 +1354,7 @@ bool model_retries_ok(App &app) {
         s.api_key = "first";
         s.llm_model.clear(); s.stt_model.clear(); s.tts_model.clear();
     });
-    const std::string service = app.models_wanted();
+    const llm::Service service = app.models_wanted().value_or(llm::Service{});
     std::vector<unsigned long> waits;
     for (int i = 0; i < 6; ++i) {
         app.models_answered({}, "The service did not answer.", service);
@@ -1275,11 +1363,11 @@ bool model_retries_ok(App &app) {
     const bool backs_off = waits == std::vector<unsigned long>{30000, 60000, 120000, 240000, 300000, 300000};
     app.warned_models = true;   // no note in the chat
     app.models_answered({{"one", ""}, {"two", ""}}, "", service);
-    const bool read_once = app.model_retry_ms == kModelRetryMs && app.models_wanted().empty();
+    const bool read_once = app.model_retry_ms == kModelRetryMs && !app.models_wanted();
     set([](Settings &s) { s.api_key = "second"; });
-    const bool new_service = !app.models_wanted().empty();
+    const bool new_service = app.models_wanted().has_value();
     app.models_answered({{"chatty", "chat"}}, "", service);
-    const bool old_list_unused = Settings::get().llm_model.empty() && !app.models_wanted().empty();
+    const bool old_list_unused = Settings::get().llm_model.empty() && app.models_wanted().has_value();
     if (!backs_off || !read_once || !new_service || !old_list_unused)
         fprintf(stderr, "the service's model list was asked for at the wrong times, or used for another service (backs off %d, "
                         "read once %d, another service asked %d, the old one's list unused %d)\n", backs_off, read_once,
@@ -1287,13 +1375,71 @@ bool model_retries_ok(App &app) {
     return backs_off && read_once && new_service && old_list_unused;
 }
 
+// A lookup of the service's models goes to the service it was started for, with that service's key, whatever is
+// saved meanwhile (fix round 4, E6: the lookup read the settings again to build its request, so service A's key
+// could go to service B's address, saved before B's key). models::fetch (the setup guide's "Test and continue",
+// the model pages), then the choice made without the user, are each started for A at a stand-in service, and B's
+// address is saved at once, under the settings' lock held for a moment: a lookup that reads the settings then
+// waits for the save, and reads B's address. Neither answer is used for B.
+bool lookups_keep_their_service(App &app) {
+    StandInService service;
+    const Settings was = Settings::get();
+    const std::string a = service.address("/a/v1"), b = service.address("/b/v1");
+    auto use_a = [&a](Settings &s) {
+        s.api_base = a;
+        s.api_key = "key-a";
+        s.llm_model.clear(); s.stt_model.clear(); s.tts_model.clear();
+    };
+    auto save_b = [&b] { set([&b](Settings &s) { usleep(100 * 1000); s.api_base = b; }); };
+    uiq::drain();
+
+    set(use_a);
+    auto used = std::make_shared<bool>(false);   // held by the answer too, however late it comes
+    models::fetch([used](const models::List &, const std::string &) { *used = true; });
+    save_b();
+    const bool fetched = service.heard(1).size() == 1 && answer_waiting() && uiq::drain() > 0 && !*used;
+
+    set(use_a);
+    app.auto_select_models();
+    save_b();
+    const std::vector<std::string> heard = service.heard(2);
+    const bool chose = answer_waiting() && uiq::drain() > 0 && Settings::get().llm_model.empty();
+    const std::vector<std::string> only_a = {"/a/v1/models key-a", "/a/v1/models key-a"};
+    if (!fetched || !chose || heard != only_a) {
+        std::string where;
+        for (const std::string &h : heard) where += " [" + h + "]";
+        fprintf(stderr, "a lookup of the service's models went elsewhere than to the service it was started for, or its "
+                        "answer was used for another (models::fetch %d, the choice without the user %d; heard%s)\n",
+                fetched, chose, where.c_str());
+    }
+    set([&was](Settings &s) { s = was; });
+    return fetched && chose && heard == only_a;
+}
+
+// Stands for the agent's worker at the moment input waiting for the phone is dropped, just before the gate
+// opens (App::drop_waiting_input): notes whether the request under way had been cancelled by then. A request
+// handed to the agent stands for it, as the agent's cancel clears what was handed over.
+struct DropWatch {
+    bool &cancelled;
+    explicit DropWatch(bool &c) : cancelled(c) {}
+    ~DropWatch() { cancelled = !Agent::get().has_pending(); }
+};
+
 // Input that comes while the app tries the phone (App::when_online) waits, and is handed over in the order
 // it came once the phone has been tried; a request abandoned meanwhile (ESC, a new conversation) takes what
 // still waits with it (fix round 3, D6: a later input went ahead of the one waiting, and the one waiting was
-// handed over after a new conversation had begun). The phone itself is not tried: the check answers for it.
+// handed over after a new conversation had begun), and the agent is told to cancel before what waits is
+// dropped and its gate opened (fix round 4, E4: told after, a call waiting at the gate could find it open
+// with nothing queued and be made in between). The phone itself is not tried: the check answers for it.
 bool input_waits_for_phone(App &app) {
     std::vector<int> sent;
     auto input = [&sent](int n) { return [&sent, n] { sent.push_back(n); }; };
+    // An input for a request under way, which notes as it is dropped whether the request was cancelled first.
+    auto abandoned = [&sent](int n, bool &cancelled_first) {
+        Agent::get().submit_text("the request under way");
+        auto watch = std::make_shared<DropWatch>(cancelled_first);
+        return [&sent, n, watch] { sent.push_back(n); };
+    };
     app.menu.close();              // so that ESC below acts on the chat screen
     app.connecting_phone = true;   // as when_online leaves it while the phone is tried
     app.when_online(input(1));
@@ -1303,17 +1449,19 @@ bool input_waits_for_phone(App &app) {
     const bool in_order = sent == std::vector<int>{1, 2} && !app.connecting_phone;
     sent.clear();
     app.connecting_phone = true;
-    app.when_online(input(3));
+    bool esc_first = false, new_first = false;
+    app.when_online(abandoned(3, esc_first));
     app.short_escape();            // ESC: the request is abandoned
-    app.when_online(input(4));     // asked after it: waits in its turn
+    app.when_online(abandoned(4, new_first));   // asked after it: waits in its turn
     app.new_conversation();
     app.when_online(input(5));
     app.phone_tried();
     const bool dropped = sent == std::vector<int>{5};
-    if (!waited || !in_order || !dropped)
+    if (!waited || !in_order || !dropped || !esc_first || !new_first)
         fprintf(stderr, "input that came while the phone was tried was handed over at the wrong time (waited %d, in order %d, "
-                        "dropped with the request %d)\n", waited, in_order, dropped);
-    return waited && in_order && dropped;
+                        "dropped with the request %d; the request cancelled before it was dropped: on ESC %d, on a new "
+                        "conversation %d)\n", waited, in_order, dropped, esc_first, new_first);
+    return waited && in_order && dropped && esc_first && new_first;
 }
 
 // How long the main loop sleeps (sleep_ms), at made-up times well after anything the screenshots did:
@@ -1352,6 +1500,7 @@ bool loop_sleeps_ok(App &app) {
 
 // What the app does while nobody uses it. Checked, not pictured: last, since it changes the settings.
 void App::shots_idle(Shots &shots) {
+    if (!lookups_keep_their_service(*this)) shots.failed = true;
     if (!model_retries_ok(*this)) shots.failed = true;
     if (!input_waits_for_phone(*this)) shots.failed = true;
     if (!loop_sleeps_ok(*this)) shots.failed = true;

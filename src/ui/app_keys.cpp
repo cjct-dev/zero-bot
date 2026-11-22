@@ -49,8 +49,8 @@ void App::settle_keys(unsigned long now) {
 // Forgets what has been said so far, and what was still waiting for the phone. Calendar, reminders and
 // saved memories are untouched.
 void App::new_conversation() {
+    Agent::get().reset_conversation();   // cancels first (drop_waiting_input)
     drop_waiting_input();
-    Agent::get().reset_conversation();
     chat.clear();
     chat.add_note("New conversation. What was said before is forgotten.", theme::kDim);
     audio::chime(1);
@@ -322,8 +322,8 @@ void App::short_escape() {
     if (chat.typing()) { chat.typing_end(); return; }
     Agent &agent = Agent::get();
     if (agent.busy() || agent.state() != AgentState::Idle || !waiting_input.empty()) {
+        agent.cancel();   // first (drop_waiting_input)
         drop_waiting_input();
-        agent.cancel();
         return;
     }
     if (audio::Music::get().playing()) audio::Music::get().stop();

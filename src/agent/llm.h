@@ -8,7 +8,19 @@
 
 #include "core/util.h"
 
+struct Settings;   // core/settings.h
+
 namespace llm {
+
+// The AI service a request is sent to: its address and key, read together from one snapshot of the settings
+// (`of`) and not read again on the way, so a key never goes to an address saved after it was read (fix round
+// 4, E6). Compared, it tells an answer from another service's (models::fetch).
+struct Service {
+    std::string base, key;
+    static Service of(const Settings &s);
+    bool operator==(const Service &o) const { return base == o.base && key == o.key; }
+    bool operator!=(const Service &o) const { return !(*this == o); }
+};
 
 struct ToolCall {
     std::string id, name, args;   // args is the raw JSON text from the model
@@ -49,6 +61,7 @@ std::string describe_image(const std::string &jpeg, const std::string &question,
 struct ModelInfo {
     std::string id, mode;         // mode: "chat", "audio_transcription", "audio_speech" or ""
 };
-std::vector<ModelInfo> list_models(std::string &err);
+// The models of `service`, asked of it whatever the settings say by then.
+std::vector<ModelInfo> list_models(const Service &service, std::string &err);
 
 }  // namespace llm
