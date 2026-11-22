@@ -8,7 +8,7 @@
 //                License, Version 2.0"
 // Neither project has a NOTICE file. HAP-NodeJS (Apache-2.0) was only read, to check behaviour.
 // Distributing the app with this file means shipping the Apache-2.0 text and crediting both
-// projects (see STATUS.md, "Remaining").
+// projects: licenses/THIRD-PARTY-NOTICES.md and licenses/Apache-2.0.txt, which the package installs.
 //
 // Ported from (all Apache-2.0), re-written in C++ over libcrypto:
 //   Jc2k/aiohomekit       protocol/__init__.py: the pair-setup M1..M6 and pair-verify M1..M4

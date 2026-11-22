@@ -1,9 +1,11 @@
 // Local control of TP-Link Tapo smart plugs over KLAP v2 and TPAP. See tapo.h.
 //
-// Written from the protocol description in the project's research notes. The TPAP login follows
+// Written from public sources: KLAP and the commands as python-kasa (GPL-3.0, read for protocol
+// facts only) and the `tapo` crate use them, SPAKE2+ from RFC 9383. The TPAP login follows
 // the MIT-licensed `tapo` Rust crate (github.com/mihai-dinculescu/tapo, v0.13.0): the SPAKE2+
 // prover is a port of tapo/src/api/protocol/tpap_spake2p.rs, and the checks on the device's
-// answers follow tapo/src/api/protocol/tpap_protocol.rs. No code is taken from python-kasa.
+// answers follow tapo/src/api/protocol/tpap_protocol.rs (its notice is in
+// licenses/THIRD-PARTY-NOTICES.md). No code is taken from python-kasa.
 #include "smarthome/tapo.h"
 
 #include <cctype>

@@ -49,7 +49,7 @@
 //    caller puts after a thing's name. Only an error about the bridge not answering contains
 //    "answer" (the shared layer's cue to look for the bridge at a new address).
 //
-// Sources (see the sprint's STATUS.md for what was checked against each): Signify's public "Get
+// Sources (hue.cpp says what follows each): Signify's public "Get
 // started" page (POST /api, devicetype, error 101), the openhue-api description of CLIP v2
 // (Apache-2.0: paths, GET /clip/v2/resource, brightness 0 = lowest, mirek 153..500, 401/403/429),
 // aiohue (Apache-2.0) and its fixture recorded from a real bridge (resource shapes, bridge id

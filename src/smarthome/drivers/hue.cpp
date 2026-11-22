@@ -1,6 +1,6 @@
 // Philips Hue bridges over CLIP version 2. See hue.h for what callers need to know.
 //
-// What this follows (the sprint's STATUS.md says what was checked against each):
+// What this follows (the notices are in licenses/THIRD-PARTY-NOTICES.md):
 //  - Signify, "Get started" (public page): POST /api with {"devicetype":"<app>#<device>"}, refused
 //    until the link button is pressed, then answered with a "username" (the application key).
 //  - openhue-api (Apache-2.0, an OpenAPI description of CLIP v2): GET /clip/v2/resource lists

@@ -3,7 +3,7 @@
 // each scrambled byte is the key for the next) and preceded by its length as four big-endian
 // bytes. Discovery sends the same scrambled get_sysinfo request without the length to UDP 9999.
 // The protocol has no login: anyone on the home network can switch these devices, with or
-// without this app. TP-Link does not document it; what is used here is described in STATUS.md.
+// without this app. TP-Link does not document it; kasa.cpp names the public sources used.
 //
 // What a caller needs to know:
 //  - Device kind "tplink". Claimed when Device::info "device_type" is one of the two families
