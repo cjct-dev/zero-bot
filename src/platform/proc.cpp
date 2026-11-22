@@ -15,13 +15,22 @@
 
 namespace proc {
 
-// In the child, between fork and exec: close every descriptor from `lowest` up. Only system calls
-// here (the parent has other threads, so nothing that might take a lock).
-static void close_from(int lowest) {
+// How far the descriptor numbers can go: the process's limit on open files, read before fork (the
+// child may only make system calls). A descriptor above a fixed bound such as 4096 would otherwise
+// outlive the fallback below wherever close_range is missing or refused.
+static int descriptor_bound() {
+    const long most = sysconf(_SC_OPEN_MAX);
+    constexpr long kCeiling = 1L << 20;   // the kernel's own default ceiling (fs.nr_open)
+    return static_cast<int>(most > 0 && most < kCeiling ? most : kCeiling);
+}
+
+// In the child, between fork and exec: close every descriptor from `lowest` up to `bound`. Only
+// system calls here (the parent has other threads, so nothing that might take a lock).
+static void close_from(int lowest, int bound) {
 #ifdef SYS_close_range
     if (syscall(SYS_close_range, static_cast<unsigned>(lowest), ~0U, 0U) == 0) return;
 #endif
-    for (int fd = lowest; fd < 4096; ++fd) close(fd);
+    for (int fd = lowest; fd < bound; ++fd) close(fd);
 }
 
 Child spawn(const std::vector<std::string> &argv, bool pipe_in, bool pipe_out, bool merge_err, bool die_with_parent) {
@@ -37,6 +46,7 @@ Child spawn(const std::vector<std::string> &argv, bool pipe_in, bool pipe_out, b
     std::vector<char *> args;
     for (auto &a : argv) args.push_back(const_cast<char *>(a.c_str()));
     args.push_back(nullptr);
+    const int bound = descriptor_bound();
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -59,7 +69,7 @@ Child spawn(const std::vector<std::string> &argv, bool pipe_in, bool pipe_out, b
         // files read with streams, possibly sockets kept alive for the next request), and a
         // sandbox does not close what it inherits: the sandboxed Python could otherwise write to
         // the screen or to a device's open connection. The child gets its three standard streams.
-        close_from(3);
+        close_from(3, bound);
         signal(SIGPIPE, SIG_DFL);
         execvp(args[0], args.data());
         _exit(127);
