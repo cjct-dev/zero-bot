@@ -2322,6 +2322,14 @@ void test_pairing_not_handed_over() {
             g_fake->reset();
         }
     }
+    // Unpaired while an earlier run's mark stands: what was held goes with it.
+    json held_tv = device("fake:held", {thing("tv", "Lounge TV", "tv", home::kPower)});
+    held_tv["auth"] = firetv_pairing;
+    held_tv["trying"] = "run-of-an-earlier-start";
+    write_home({held_tv});
+    CHECK(home::unpair(g_net.id(), "fake:held").empty());
+    CHECK_MSG(auth_on_file("fake:held") == json::object() && home::entry(g_net.id()).devices[0].trying.empty(),
+              auth_on_file("fake:held").dump());
     // When the mark cannot be taken back, that is said.
     const std::string dir = util::data_dir();
     if (!read_only_holds(dir)) return;
