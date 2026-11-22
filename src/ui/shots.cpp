@@ -86,6 +86,25 @@ bool opens_at_once(Menu &menu, const home::testing::NetworkSource &slow, const s
     return took <= 500 && looking && listed;
 }
 
+// Decoded images are kept for redraws (LV_CACHE_DEF_SIZE), and one the cache cannot hold is not drawn
+// at all: a PNG the size of the screen, far larger than a photo's thumbnail, is still drawn.
+bool image_decodes() {
+    const std::string path = util::cache_dir() + "/shots-screen.png";
+    const bool saved = display::save_png(path);   // opaque everywhere
+    lv_obj_t *img = lv_image_create(lv_screen_active());
+    lv_image_set_src(img, ("A:" + path).c_str());
+    lv_draw_buf_t *snap = saved ? lv_snapshot_take(img, LV_COLOR_FORMAT_ARGB8888) : nullptr;
+    bool drawn = snap && snap->header.w == display::kWidth && snap->header.h == display::kHeight;
+    for (uint32_t y = 0; drawn && y < snap->header.h; ++y)
+        for (uint32_t x = 0; drawn && x < snap->header.w; ++x)
+            drawn = snap->data[y * snap->header.stride + x * 4 + 3] != 0;
+    if (snap) lv_draw_buf_destroy(snap);
+    lv_obj_delete(img);
+    unlink(path.c_str());
+    if (!drawn) fprintf(stderr, "an image the size of the screen was not drawn (saved %d)\n", saved);
+    return drawn;
+}
+
 // A made-up home for the screenshots, saved on the stand-in test network: none of its addresses
 // is ever contacted, and nothing is scanned.
 void sample_home() {
@@ -249,6 +268,7 @@ void App::shots_chat(Shots &shots) {
             failed = true;
         }
     }
+    if (!image_decodes()) failed = true;
     chat.add_note("Press TAB to talk, press it again when you have finished. Or press ENTER and type.", theme::kDim);
     snap("welcome");
     {
