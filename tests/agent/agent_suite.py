@@ -43,11 +43,12 @@ import shutil
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-sys.path.insert(1, os.path.join(os.path.dirname(HERE), "mocks"))   # fake_web: the stand-in web's fixtures, for event_time
+HERE = os.path.dirname(os.path.abspath(__file__))   # tests/agent: agent_eval, suite/
+TESTS = os.path.dirname(HERE)                         # tests/: lib/, mocks/
+sys.path[0:0] = [HERE, TESTS, os.path.join(TESTS, "mocks")]   # mocks: fake_web, the stand-in web's fixtures, for event_time
 sys.dont_write_bytecode = True   # importing agent_eval leaves no __pycache__ in tests/agent/
 import agent_eval as ev   # noqa: E402
+from lib.records import blank_turn   # noqa: E402
 
 HOMES = {"eval": ev.EVAL_HOME, "tv": ev.TV_HOME, "sockets": ev.SOCKETS_HOME, "tv_silent": ev.TV_SILENT_HOME,
          "tv_closed": ev.TV_CLOSED_HOME}
@@ -519,7 +520,7 @@ def check_fields(s):
 def dry_run_check(f, turns):
     """Runs a compiled check on a turn that has nothing in it, to find one that cannot run at all (a field it
     reads that its case lacks): an exception other than Unscorable is a problem."""
-    blank = ev._blank_turn(state={"now": int(ev.today().timestamp()), "reminders": [], "calendar": [], "memory": [], "home": []})
+    blank = blank_turn(state={"now": int(ev.today().timestamp()), "reminders": [], "calendar": [], "memory": [], "home": []})
     try: f([dict(blank) for _ in range(max(1, turns))] if getattr(f, "whole", False) else dict(blank))
     except ev.Unscorable: pass
     except Exception as e:   # noqa: BLE001

@@ -244,8 +244,10 @@ PATH_RULES = [
     (r"^tests/netguard\.py$", ["runner", "tools", "loop", "scorer"], "the network boundary of every test process"),
     (r"^tests/(agent/exp_compare|agent/exp_report|tools/web_contract)\.py$", ["runner"], "the gate and the reports (their self-test is in runner)"),
     (r"^tests/agent/scorer_test\.py$", ["scorer"], "the scorer's own test"),
-    (r"^tests/agent/agent_eval\.py$", ["scorer", "cases", "loop"],
-     "the scored set and the scoring both live sets use (agent_loop_test.py reads its parser)"),
+    (r"^tests/agent/agent_eval\.py$", ["scorer", "cases", "tools"],
+     "the scored set and the scoring both live sets use (tools_cli.py runs its runner against a scripted model)"),
+    (r"^tests/lib/", ["scorer", "cases", "tools", "loop"],
+     "code the test folders share: the cli's account of a run and the stand-in music library (agent_eval.py, agent_loop_test.py)"),
     (r"^tests/agent/agent_suite\.py$", ["scorer", "cases"], "the suite's runner"),
     (r"^tests/agent/suite/from_conversation\.py$", ["cases", "scorer", "loop"],
      "drafts a case from a saved conversation (agent_loop_test.py runs it)"),
@@ -1293,8 +1295,10 @@ def self_test():
           ["packaging"], groups("scripts/package-deb.sh", "packaging/postrm", "tests/sim/packaging_test.py"))
     check("deployment: no offline test", groups("scripts/deploy.sh") == [], groups("scripts/deploy.sh"))
     check("the gate and the reports", groups("tests/agent/exp_compare.py") == ["runner"] and groups("tests/agent/exp_report.py") == ["runner"])
-    check("the scorer, and the loop test that reads its parser", groups("tests/agent/agent_eval.py") == ["cases", "scorer", "loop"],
+    check("the scorer, and the tools test that runs its runner", groups("tests/agent/agent_eval.py") == ["cases", "scorer", "tools"],
           groups("tests/agent/agent_eval.py"))
+    check("the shared parser: the scorer and the loop test", groups("tests/lib/records.py") == ["cases", "scorer", "tools", "loop"],
+          groups("tests/lib/records.py"))
     check("the suite's runner", groups("tests/agent/agent_suite.py") == ["cases", "scorer"])
     for path, want in (("tests/unit/run_unit.sh", ["unit"]), ("tests/unit/snapshots/plugs_only.json", ["unit"]),
                        ("tests/sim/screens/fixclock.c", ["screens"]), ("tests/sim/tools_cli.py", ["tools"]),

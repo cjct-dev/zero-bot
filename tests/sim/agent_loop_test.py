@@ -41,7 +41,7 @@ import argparse
 import json
 import os
 import sys as _sys
-TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/, agent/
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, lib/, mocks/, agent/
 _sys.path.insert(0, TESTS)
 import netguard   # noqa: E402  the network boundary (tests/netguard.py)
 import re
@@ -50,9 +50,9 @@ import subprocess
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.join(TESTS, "agent"))
-sys.dont_write_bytecode = True   # importing agent_eval leaves no __pycache__ in tests/agent/
-from agent_eval import TURN_RE, parse_turn, turns_from_records   # noqa: E402  (the scored set's parsers)
+sys.dont_write_bytecode = True   # importing lib leaves no __pycache__ in tests/lib/
+from lib.music import make_music_library   # noqa: E402  the live sets' stand-in music library
+from lib.records import TURN_RE, parse_turn, turns_from_records   # noqa: E402  the live sets' parsers
 
 _ap = argparse.ArgumentParser(description="The request loop against a scripted chat service.")
 _ap.add_argument("app", nargs="?", default=os.path.join(TESTS, "..", "build", "cli", "zero_bot"))
@@ -1092,10 +1092,9 @@ def history_repeats():
 def dry_run_music_queue():
     # With ZB_DRY_RUN nothing plays, but the music tool keeps a pretend queue: "next" moves along it and
     # "now_playing" names its song, as with a player; past the last song, and after "stop", nothing plays.
-    import agent_eval
     library = tempfile.mkdtemp(prefix="zb-loop-music-")
     try:
-        agent_eval.make_music_library(library)
+        make_music_library(library)
         step = {"play abba": {"action": "play", "artist": "abba"}, "whats on": {"action": "now_playing"},
                 "skip": {"action": "next"}, "stop it": {"action": "stop"}}
         script = {"rules": [{"when": {"said": w, "last": "user"}, "reply": calls(("music", a))} for w, a in step.items()],
