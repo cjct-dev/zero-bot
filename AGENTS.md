@@ -233,7 +233,14 @@ Things in that loop that exist for a reason; do not remove them without re-runni
     a sentence that says no or asks: "Nothing is playing right now" is the honest answer to "skip"). An
     empty reply goes back to the model once, then an answer is made in code. When the service is
     lost after tools ran, the user hears the confirmations of the calls that worked and that the
-    rest could not be finished.
+    rest could not be finished. When it fails before any tool ran and before a word of the answer
+    was heard, or a recording cannot be transcribed or holds no words, a spoken request hears one
+    short sentence ("Sorry, that did not work. The details are on the screen.", or "I didn't catch
+    that."), and the reason is shown as before; a typed one stays silent (ZB-094). One place decides
+    it (`Agent::Turn::say_failed`): spoken replies on, the microphone closed, not cancelled. The
+    sentence is not kept in the conversation (the service failed, not the model, which is sent
+    nothing new), and it is only queued, never waited for: speech uses the same service, and when
+    it fails too the speech queue's own note follows the reason, which stays.
 
 ## 5. Building
 
@@ -439,13 +446,14 @@ What exists:
   against `tests/mocks/fake_model.py`, whose rules match the newest user message, tool results,
   the results since the user spoke, whether tools are offered and the reasoning field, and whose
   replies can be split, delayed, failed (any HTTP status, an error in the stream) or carry several
-  calls. It checks what the app printed and what it sent: the held draft and second look, the
-  claim guards (a table of phrasings that must and must not trip them), `say` confirmations, tool
-  errors, steering, talk-over, the round budget and its apology, retries and service errors, think
-  markers, spelt-out dates, history trimming, smart-home questions, a byte-identical system prompt
-  and the first request's size (a tripwire at 32,000 bytes, for a plain set-up and with every tool
-  offered: web search, ten radio stations, a home; raise it knowingly). Add a scenario
-  here with any change to `agent.cpp` or `llm.cpp`.
+  calls; its speech and transcription services can be made to fail too. It checks what the app
+  printed and what it sent: the held draft and second look, the claim guards (a table of phrasings
+  that must and must not trip them), `say` confirmations, tool errors, steering, talk-over, the
+  round budget and its apology, retries and service errors (and what a spoken request that comes to
+  nothing hears), think markers, spelt-out dates, history trimming, smart-home questions, a
+  byte-identical system prompt and the first request's size (a tripwire at 32,000 bytes, for a
+  plain set-up and with every tool offered: web search, ten radio stations, a home; raise it
+  knowingly). Add a scenario here with any change to `agent.cpp` or `llm.cpp`.
 
 - **Command-line modes** in `src/main.cpp` (work in the `cli` build):
   `--ask "text"`, `--ask-wav FILE.wav` (a spoken request, transcribed by the service), `--chat`,

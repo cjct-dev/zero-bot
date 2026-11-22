@@ -25,8 +25,11 @@ size of the first request; smart-home questions and answers on a stand-in home; 
 ("/save", what SPACE twice does on the device; diagnostics, temporary); typed and spoken requests
 (--ask-wav, --steer-wav: a typed one is answered on the screen only, one with anything said aloud is
 spoken too, counted at the stand-in speech service, with a stand-in player that plays nothing; a spoken
-answer's end signalled at its own request's end); JSON from the service nested deeper than 32 levels (an
-event, an error's body, a transcription, a tool call's arguments) not read; retired experiment variants.
+answer's end signalled at its own request's end); a spoken request that comes to nothing (the chat call or
+the transcription failed, or no words were heard): one short sentence said, not kept in the conversation,
+never said over an open microphone or waited for, its own failure noted after the first; JSON from the
+service nested deeper than 32 levels (an event, an error's body, a transcription, a tool call's arguments)
+not read; retired experiment variants.
 
 Not covered (no command-line hook): cancel, context notes from the timer's alarm, music held for a
 spoken answer (dry run plays nothing and takes no hold).
@@ -142,14 +145,15 @@ HOME = _home({"id": "1", "name": "Fan heater", "type": "plug", "caps": 1, "room"
 def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, photo=False, timeout=60, radio=None, search_key=None,
         inspect=None, trace=False, settings=None, speech=False, ask_wav=False, steer_wav=False):
     """Runs the app once against `script`: --chat with each of `said`, or --ask `ask` (with `extra`
-    arguments such as --steer). Returns a Run. `inspect(state_folder)` is called before the
-    temporary home is removed, to look at what the run left there. `trace`: the experiments' trace
-    (ZB_EXP_TRACE) is recorded, in Run.trace (events) and Run.trace_text. `settings` are added to
-    the app's settings file. `speech`: spoken replies on and audio allowed (ZB_NO_AUDIO=0), with speech
-    models and uncompressed audio (one request a sentence), and a stand-in pw-cat on PATH that only reads,
-    so nothing is heard. `ask_wav`: the request is a recording (--ask-wav, half a second of silence, which
-    the stand-in transcribes as the script's "heard"); `steer_wav`: the same recording is handed over as
-    spoken steering during the first tool (--steer-wav)."""
+    arguments such as --steer), or both (`ask` first, then --chat with `said`). Returns a Run.
+    `inspect(state_folder)` is called before the temporary home is removed, to look at what the run
+    left there. `trace`: the experiments' trace (ZB_EXP_TRACE) is recorded, in Run.trace (events) and
+    Run.trace_text. `settings` are added to the app's settings file. `speech`: spoken replies on and
+    audio allowed (ZB_NO_AUDIO=0), with speech models and uncompressed audio (one request a sentence),
+    and a stand-in pw-cat on PATH that only reads, so nothing is heard. `ask_wav`: the request is a
+    recording (--ask-wav, half a second of silence, which the stand-in transcribes as the script's
+    "heard"); `steer_wav`: the same recording is handed over as spoken steering during the first tool
+    (--steer-wav)."""
     state = tempfile.mkdtemp(prefix="zb-loop-")
     model = None
     try:
@@ -207,9 +211,10 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
         e.update(env or {})
         if ask_wav:
             ask = wav   # the records name the recording as the request's words
-        cmd = [APP] + (["--ask-wav" if ask_wav else "--ask", ask] if ask is not None else ["--chat"]) + list(extra)
+        chat = ask is None or bool(said)
+        cmd = [APP] + (["--ask-wav" if ask_wav else "--ask", ask] if ask is not None else []) + (["--chat"] if chat else []) + list(extra)
         cmd += ["--steer-wav", wav] if steer_wav else []
-        stdin = "" if ask is not None else "\n".join(said or []) + "\n"
+        stdin = "\n".join(said or []) + "\n" if chat else ""
         try:
             p = subprocess.run(cmd, input=stdin, env=e, capture_output=True, text=True, timeout=timeout)
             out, process = p.stdout, {"exit": p.returncode, "timeout": False}
@@ -218,7 +223,7 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
             process = {"exit": None, "timeout": True}
         requests = [json.loads(l) for l in open(log)] if os.path.exists(log) else []
         records = open(e["ZB_EVAL_RECORDS"], encoding="utf-8").read() if os.path.exists(e["ZB_EVAL_RECORDS"]) else None
-        r = Run(out, requests, records, [ask] if ask is not None else [x for x in said or [] if x.strip() and x != "/save"], process)
+        r = Run(out, requests, records, ([ask] if ask is not None else []) + [x for x in said or [] if x.strip() and x != "/save"], process)
         if r.record_problems or records is None:
             check("the run's records file is there and reads as the scorer reads it (%s)" % (ask or "chat"), False, r.record_problems or "no file")
         r.trace_text = open(state + "/trace.jsonl").read() if os.path.exists(state + "/trace.jsonl") else ""
@@ -664,6 +669,11 @@ def heard(r):
     return sum(q["rule"] == "transcription" for q in r.requests)
 
 
+def chat_bodies(r):
+    """What was sent to the chat service, in order (not to speech or transcription)."""
+    return [q["body"] for q in r.requests if q["rule"] not in ("speech", "transcription")]
+
+
 LISBON = {"rules": [{"when": {"said": "portugal"}, "reply": {"text": "Lisbon is the capital of Portugal."}},
                     {"when": {"said": "spain"}, "reply": {"text": "Madrid is the capital of Spain."}},
                     {"when": {"said": "thanks"}, "reply": {"text": "You are welcome, it is running."}},
@@ -684,7 +694,7 @@ def typed_answer_shown_only():
 def spoken_answer_spoken():
     r = run(dict(LISBON, heard="what is the capital of portugal"), ask_wav=True, speech=True)
     n = "a spoken request"
-    chat = [q["body"] for q in r.requests if q["rule"] not in ("speech", "transcription")]
+    chat = chat_bodies(r)
     check(n + ": transcribed once, and what was heard is the user's message", heard(r) == 1 and "[user] what is the capital of portugal" in r.out
           and len(chat) == 1 and text_of(chat[0]["messages"][-1]).endswith("] what is the capital of portugal"), r)
     check(n + ": answered on the screen and spoken, once", r.answer == "Lisbon is the capital of Portugal." and
@@ -722,6 +732,101 @@ def mixed_requests_spoken():
     total = r.turns[-1]["total"] if r.turns else None
     check(n + ": the first answer's speech ends before the second answer comes", done and total and float(done.group(1)) < total - 1.0 and
           r.answer == "Madrid is the capital of Spain.", (done and done.group(0), total, r))
+
+
+# ------------------------------------------------------------------ a spoken request that comes to nothing (ZB-094)
+FAILED_ALOUD = "Sorry, that did not work. The details are on the screen."
+NOT_CAUGHT = "I didn't catch that."
+BUSY = {"status": 503, "body": "busy"}
+DOWN = "The AI service is down or unreachable (HTTP 503)"
+LOST = "I lost the connection to the AI service before I could finish, so please ask again."
+
+
+def errors_shown(r):
+    return re.findall(r"^\[error\] (.*)$", r.out, re.M)
+
+
+@scenario
+def spoken_request_fails():
+    # The chat call fails before any tool has run: the error is shown as before, and a user who spoke also hears one
+    # short sentence, which the conversation does not keep (the model did not fail to answer; the service failed).
+    script = dict(LISBON, heard="what is the capital of portugal", rules=[{"when": {"said": "portugal"}, "reply": BUSY}] + LISBON["rules"])
+    r = run(script, ask_wav=True, speech=True, said=["what is the capital of spain"])
+    n = "a spoken request whose chat call fails (HTTP 503)"
+    check(n + ": the error is shown as before, and nothing answers", errors_shown(r)[:1] and errors_shown(r)[0].startswith(DOWN) and
+          r.turns and r.turns[0]["answer"] == "", (errors_shown(r), r))
+    check(n + ": one short sentence is said; the typed request after it is only shown", spoken_lines(r) == [FAILED_ALOUD] and
+          r.answer == "Madrid is the capital of Spain.", (spoken_lines(r), r))
+    later = chat_bodies(r)[-1]["messages"] if chat_bodies(r) else []
+    check(n + ": the conversation does not keep it", [m.get("role") for m in later] == ["system", "user", "user"] and
+          all(FAILED_ALOUD not in text_of(m) for m in later), [(m.get("role"), text_of(m)[:80]) for m in later])
+    r = run({"default": {"status": 401, "body": "nope"}, "heard": "hi"}, ask_wav=True, speech=True)
+    check("a spoken request the service refuses (HTTP 401): the refusal is shown and one short sentence said",
+          errors_shown(r) == ["The service refused the API key (HTTP 401)."] and spoken_lines(r) == [FAILED_ALOUD] and
+          len(chat_bodies(r)) == 1, (spoken_lines(r), r))
+
+
+@scenario
+def failure_otherwise_as_before():
+    r = run({"default": BUSY}, ask="what is the capital of portugal", speech=True)
+    check("a typed request whose chat call fails: the error is shown, nothing is said",
+          errors_shown(r)[:1] and errors_shown(r)[0].startswith(DOWN) and spoken_lines(r) == [], (spoken_lines(r), r))
+    r = run({"rules": [{"when": {"last": "tool"}, "reply": BUSY}], "default": calls(XMAS), "heard": "how many days until christmas"},
+            ask_wav=True, speech=True)
+    check("a spoken request whose chat call fails after a tool ran: what is known is said and kept, as before, and nothing more",
+          r.answer == LOST and spoken_lines(r) == [LOST], (spoken_lines(r), r))
+    r = run(dict(LISBON, heard="what is the capital of portugal", rules=[{"when": {"said": "portugal"}, "reply": BUSY}]),
+            ask_wav=True, speech=True, settings={"speak_replies": False})
+    check("spoken replies off: a failed spoken request says nothing", spoken_lines(r) == [] and errors_shown(r), (spoken_lines(r), r))
+
+
+@scenario
+def spoken_request_not_heard():
+    r = run(dict(LISBON, heard=""), ask_wav=True, speech=True)
+    n = "a recording with no words in it"
+    check(n + ": shown and said, and the model is not called", errors_shown(r) == [NOT_CAUGHT] and spoken_lines(r) == [NOT_CAUGHT] and
+          not chat_bodies(r), (spoken_lines(r), r))
+    r = run(dict(LISBON, transcription_error=BUSY), ask_wav=True, speech=True)
+    n = "a recording that cannot be transcribed"
+    check(n + ": the reason is shown and one short sentence said", len(errors_shown(r)) == 1 and
+          errors_shown(r)[0].startswith("Could not transcribe: " + DOWN) and spoken_lines(r) == [FAILED_ALOUD] and not chat_bodies(r),
+          (spoken_lines(r), r))
+    # Steering that gives no words is shown only: the request it would have joined goes on, and its answer is to come.
+    r = run(dict(LISBON, heard=""), ask="set a timer for 12 minutes", steer_wav=True, speech=True)
+    check("typed, then steering with no words: shown, not said", NOT_CAUGHT in errors_shown(r) and spoken_lines(r) == [] and
+          r.answer == "Your timer is set for 12 minutes.", (spoken_lines(r), r))
+
+
+@scenario
+def speech_fails_too():
+    # Speech uses the same service and may fail too: the first reason stays, the speech queue's own note follows it once,
+    # the sentence is tried no more than any answer's is, and the request does not wait for it.
+    r = run({"default": BUSY, "heard": "what is the capital of portugal", "speech_error": dict(BUSY, delay_ms=1500)},
+            ask_wav=True, speech=True)
+    n = "a spoken request whose chat call and speech both fail"
+    shown = errors_shown(r)
+    check(n + ": the chat error stays first, then one note that it could not be said", len(shown) == 2 and shown[0].startswith(DOWN) and
+          shown[1].startswith("Could not speak the answer: " + DOWN), shown)
+    check(n + ": the sentence is tried at most twice (the speech service's own retry)", 1 <= len(spoken_lines(r)) <= 2 and
+          set(spoken_lines(r)) == {FAILED_ALOUD}, spoken_lines(r))
+    done = re.search(r"\[speech done \+(\d+\.\d)s\]", r.out)
+    total = r.turns[0]["total"] if r.turns else None
+    check(n + ": the request ends without waiting for it", done and total is not None and total + 1.0 < float(done.group(1)),
+          (done and done.group(0), total, r))
+
+
+@scenario
+def failure_and_the_microphone():
+    # Nothing is said while the microphone is open: the sentence waits for it to close, as an answer does, and a recording
+    # that gave no words while the user is talking again is only shown (what they say now is the next request).
+    r = run({"default": {"status": 401, "body": "nope"}, "heard": "what is the capital of portugal"}, ask_wav=True, speech=True,
+            extra=["--talk-over", "500"])
+    n = "a spoken request that fails while the microphone is open"
+    check(n + ": the sentence is said once, after it closes", "[mic closed" in r.out and "SPEAKING WHILE THE MIC IS OPEN" not in r.out and
+          spoken_lines(r) == [FAILED_ALOUD], (spoken_lines(r), r))
+    r = run(dict(LISBON, heard=""), ask_wav=True, speech=True, extra=["--talk-over", "800"])
+    check("a recording with no words while the microphone is open again: shown, not said over the user",
+          errors_shown(r) == [NOT_CAUGHT] and spoken_lines(r) == [] and "SPEAKING WHILE THE MIC IS OPEN" not in r.out, (spoken_lines(r), r))
 
 
 # ------------------------------------------------------------------ the round budget

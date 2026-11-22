@@ -53,6 +53,8 @@ POST .../audio/transcriptions (speech to text) answers {"text": ...} with the sc
 (a string, or a list used one per recording in turn, the last repeating; default "hello"), logged with
 "rule": "transcription" and the size of what was sent in place of its body. The script's top-level
 "heard_pad_depth": N adds a "pad" nested N levels to that answer, as "pad_depth" does to a stream's events.
+The script's top-level "speech_error" and "transcription_error" ({"status": N, "body": "..."}, with
+"delay_ms" if wanted) make every request to that service fail so instead; each is still logged.
 
 LOG gets one JSON object per request: {"n": 1, "rule": index or "default", "body": {...}}.
 """
@@ -160,6 +162,27 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def send_whole(self, status, content_type, raw):
+        """Answers with `raw` in one piece, and closes the connection."""
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(raw)
+        self.close_connection = True
+
+    def speech_service(self, failure, content_type, raw):
+        """Answers a request to the speech or transcription service: with the script's `failure` ("speech_error",
+        "transcription_error") when it has one, else with `raw`."""
+        fail = SCRIPT.get(failure)
+        if not fail:
+            self.send_whole(200, content_type, raw)
+            return
+        if fail.get("delay_ms"):
+            time.sleep(fail["delay_ms"] / 1000.0)
+        self.send_whole(fail["status"], "application/json", fail.get("body", "").encode())
+
     def do_POST(self):
         raw_body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
         if self.path.endswith("/audio/transcriptions"):   # multipart: the recording is not read
@@ -171,14 +194,8 @@ class Handler(BaseHTTPRequestHandler):
                 HEARD[0] += 1
                 with open(LOG, "a") as f:
                     f.write(json.dumps({"n": COUNT[0], "rule": "transcription", "body": {"bytes": len(raw_body)}}) + "\n")
-            raw = json_text({"text": heard}, SCRIPT.get("heard_pad_depth")).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(raw)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(raw)
-            self.close_connection = True
+            self.speech_service("transcription_error", "application/json",
+                                json_text({"text": heard}, SCRIPT.get("heard_pad_depth")).encode())
             return
         body = json.loads(raw_body or b"{}")
         if self.path.endswith("/audio/speech"):
@@ -186,14 +203,7 @@ class Handler(BaseHTTPRequestHandler):
                 COUNT[0] += 1
                 with open(LOG, "a") as f:
                     f.write(json.dumps({"n": COUNT[0], "rule": "speech", "body": body}, ensure_ascii=False) + "\n")
-            raw = b"\0" * 4800
-            self.send_response(200)
-            self.send_header("Content-Type", "audio/pcm")
-            self.send_header("Content-Length", str(len(raw)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(raw)
-            self.close_connection = True
+            self.speech_service("speech_error", "audio/pcm", b"\0" * 4800)
             return
         with LOCK:
             COUNT[0] += 1

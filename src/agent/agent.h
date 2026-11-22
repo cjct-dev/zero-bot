@@ -81,7 +81,7 @@ private:
     void worker();
     void run_turn();
     std::string run_blocking(Input in);
-    int absorb_inputs(bool first, bool *spoken = nullptr);
+    int absorb_inputs(bool first, bool *spoken = nullptr, std::string *missed = nullptr);
     void trim_history();
     void set_state(AgentState s, const std::string &detail = "");
 
