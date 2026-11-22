@@ -1789,11 +1789,17 @@ void test_tapo_driver() {
     const home::NetworkEntry after = home::entry(g_net.id());
     CHECK(after.devices[0].needs_setup && has(after.devices[0].problem, "different Tapo account"));   // the first account's plug
     CHECK(after.devices[1].needs_setup && has(after.devices[1].problem, "password"));
-    // The settings page's e-mail row does the same: a new address keeps no password.
+    // The settings page's e-mail row does the same: a new address keeps no password, only the count of
+    // passwords typed (fix round 4, E2), so that the next one is a new generation.
     home::set_tapo_account("user@example.com", "first");
     CHECK(home::tapo_account().set());
+    const long long typed = home::secrets().get("tapo").value("generation", 0LL);
     home::set_tapo_account("third@example.com", "");
-    CHECK(!home::tapo_account().password_saved && home::secrets().get("tapo") == json({{"email", "third@example.com"}}));
+    CHECK_MSG(!home::tapo_account().password_saved && typed > 0 &&
+                  home::secrets().get("tapo") == json({{"email", "third@example.com"}, {"generation", typed}}),
+              home::secrets().get("tapo").dump());
+    home::set_tapo_account("third@example.com", "first");
+    CHECK(home::secrets().get("tapo").value("generation", 0LL) == typed + 1);
     home::set_tapo_account("", "");
 }
 
@@ -2011,14 +2017,16 @@ home::Device tapo_plug(const std::string &id, int port, const std::string &mac) 
 
 // A Tapo plug on 127.0.0.1 that takes one account over KLAP, as tests/mocks/mock_tapo.py does, from the
 // transport's own building blocks: it answers get_device_info (naming `mac`, which may be changed or emptied),
-// set_device_info and get_energy_usage (after `energy_ms`). One connection at a time; logins, switches and
-// energy questions are counted as they arrive.
+// set_device_info and get_energy_usage (after `energy_ms`). As a `strip` it has no switch of its own and lists
+// two sockets (after `sockets_ms`). With `changed_at_energy` its password is changed (in the Tapo app) as it is
+// asked for its energy readings: it forgets the session and takes the account no more. One connection at a
+// time; logins, switches, energy questions and socket lists are counted as they arrive.
 struct KlapPlug {
     int fd = -1, port = 0;
     std::mutex mtx;
     std::string mac;
-    std::atomic<int> logins{0}, switched{0}, energy_asked{0}, energy_ms{0};
-    std::atomic<bool> stop{false};
+    std::atomic<int> logins{0}, switched{0}, energy_asked{0}, energy_ms{0}, sockets_asked{0}, sockets_ms{0};
+    std::atomic<bool> stop{false}, strip{false}, changed_at_energy{false};
     std::string auth, local, remote = "remote-seed-0001";
     tapo::detail::KlapKeys keys;
     std::thread loop;
@@ -2051,8 +2059,9 @@ struct KlapPlug {
         const std::string method = req.value("method", "");
         if (method == "get_device_info") {
             std::lock_guard<std::mutex> lk(mtx);
-            return {{"error_code", 0}, {"result", {{"device_id", "80225a0b0001"}, {"mac", mac}, {"model", "P110"},
-                                                   {"type", "SMART.TAPOPLUG"}, {"device_on", false}}}};
+            json info = {{"device_id", "80225a0b0001"}, {"mac", mac}, {"model", strip ? "P304M" : "P110"}, {"type", "SMART.TAPOPLUG"}};
+            if (!strip) info["device_on"] = false;
+            return {{"error_code", 0}, {"result", info}};
         }
         if (method == "set_device_info") {
             ++switched;
@@ -2060,8 +2069,20 @@ struct KlapPlug {
         }
         if (method == "get_energy_usage") {
             ++energy_asked;
+            if (changed_at_energy) {
+                auth = std::string(32, 'x');                   // no longer the account's
+                return {{"error_code", 9999}};                  // the session is gone
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(energy_ms.load()));
             return {{"error_code", 0}, {"result", {{"today_energy", 12}, {"current_power", 5000}}}};
+        }
+        if (method == "get_child_device_list" && strip) {
+            ++sockets_asked;
+            std::this_thread::sleep_for(std::chrono::milliseconds(sockets_ms.load()));
+            json list = json::array();
+            for (const char *id : {"socket-1", "socket-2"})
+                list.push_back({{"device_id", id}, {"nickname", tapo::detail::b64(id)}, {"device_on", false}});
+            return {{"error_code", 0}, {"result", {{"child_device_list", list}, {"start_index", 0}, {"sum", 2}}}};
         }
         return {{"error_code", -1002}};
     }
@@ -2249,6 +2270,89 @@ void test_tapo_first_try_released() {
     tapo::forget_sessions();
 }
 
+// Nor while a strip's sockets are read (fix round 4, E8): the plug's first answer says whether it took the
+// password, and its sockets are read after that has been kept. They were read inside that first answer's call.
+void test_tapo_strip_first_try() {
+    Section s("tapo driver: a strip's sockets are read after the first try of a password has ended");
+    home::testing::new_run();
+    tapo::forget_sessions();
+    auto tapo = make_tapo_driver();
+    FillingSecrets store;
+    store.room = 100;
+    tapo->attach(&store);
+    store.all["tapo"] = {{"email", "user@example.com"}, {"password_sha1", tapo::sha1_hex("right")}, {"trial", "typed"}};
+    KlapPlug strip("AA-BB-CC-00-00-0A", "user@example.com", "right"), other("AA-BB-CC-00-00-0B", "user@example.com", "right");
+    strip.strip = true;
+    strip.sockets_ms = 1500;
+    home::Device a = tapo_plug("tapo:strip", strip.port, "aa:bb:cc:00:00:0a"), b = tapo_plug("tapo:b", other.port, "aa:bb:cc:00:00:0b");
+    std::vector<home::Thing> sockets;
+    std::string err_a, err_b;
+    std::thread listing([&] { tapo->enumerate(a, sockets, err_a); });
+    for (int i = 0; i < 400 && strip.sockets_asked == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    home::Change on;
+    on.on = true;
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool switched = tapo->apply(b, b.things[0], on, 2500, err_b);
+    const long long waited =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    listing.join();
+    CHECK_MSG(strip.sockets_asked >= 1 && switched && other.switched == 1 && waited < 1000 && sockets.size() == 2,
+              std::to_string(waited) + " ms; " + err_a + " / " + err_b);
+    CHECK(!store.get("tapo").contains("trial"));
+    tapo::forget_sessions();
+}
+
+// The same password typed again while a login with it is on its way (fix round 4, E2). Each typing is an entry
+// of its own (a generation): the late refusal of the earlier one is not the new one's, which gets the try it
+// was typed for. It was first refused with the earlier one, in memory and in the file, before any plug saw it.
+void test_tapo_typed_again() {
+    Section s("tapo driver: a refusal on its way for a password typed again is not the new entry's");
+    home::testing::new_run();
+    tapo::forget_sessions();
+    home::Driver *tapo = home::driver_for("tapo");
+    home::secrets().set("tapo", {{"email", "user@example.com"}, {"password_sha1", tapo::sha1_hex("pw")}});   // taken before
+    RefusingPlug side_a, side_b;
+    side_a.delay_ms = 400;
+    home::Device a = tapo_plug("tapo:a", side_a.port, "aa:bb:cc:00:00:0a"), b = tapo_plug("tapo:b", side_b.port, "aa:bb:cc:00:00:0b");
+    home::Change on;
+    on.on = true;
+    std::string err_a, err_b;
+    std::thread to_a([&] { tapo->apply(a, a.things[0], on, 2500, err_a); });
+    for (int i = 0; i < 200 && side_a.logins == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    CHECK(home::set_tapo_account("user@example.com", "pw"));   // Settings, Tapo account: the same password typed again
+    to_a.join();
+    CHECK_MSG(has(err_a, "does not accept") && !home::tapo_account().refused && !home::secrets().get("tapo").contains("refused"),
+              err_a + " " + home::secrets().get("tapo").dump());
+    // The new entry gets its try, at one plug, and that plug's refusal is its own.
+    CHECK_MSG(!tapo->apply(b, b.things[0], on, 2500, err_b) && side_b.logins == 1 && has(err_b, "does not accept"), err_b);
+    CHECK(home::tapo_account().refused);
+    home::set_tapo_account("", "");
+    tapo::forget_sessions();
+}
+
+// A plug that refuses the account during the energy readings that follow a read of its state (its password was
+// changed in the Tapo app meanwhile), with a store that takes nothing more (fix round 4, E7): the refusal is said,
+// with that it could not be noted, as for a switch, and the password goes to it no more. The read first gave the
+// state and dropped what the refusal's write had said.
+void test_tapo_energy_refusal() {
+    Section s("tapo driver: a refusal during the energy readings is said, also when it could not be noted");
+    home::testing::new_run();
+    tapo::forget_sessions();
+    auto tapo = make_tapo_driver();
+    FillingSecrets store;
+    tapo->attach(&store);
+    store.all["tapo"] = {{"email", "user@example.com"}, {"password_sha1", tapo::sha1_hex("right")}};   // taken before
+    KlapPlug metered("AA-BB-CC-00-00-0A", "user@example.com", "right");
+    metered.changed_at_energy = true;
+    home::Device a = tapo_plug("tapo:a", metered.port, "aa:bb:cc:00:00:0a");
+    a.model = "P110";
+    a.things[0].caps |= home::kSensor;
+    std::vector<home::Thing> things = {a.things[0]};
+    std::string err;
+    CHECK_MSG(!tapo->read(a, things, err) && metered.logins == 2 && has(err, "does not accept") && has(err, "could not be noted"), err);
+    CHECK_MSG(!tapo->read(a, things, err) && metered.logins == 2 && has(err, "did not accept the saved password"), err);
+    tapo::forget_sessions();
+}
 
 // What was typed for a device, and the outcome could not be written (fix round 2, C2): the file still
 // holds the device's pairing data from before, with the mark that something typed was being tried.
@@ -3973,6 +4077,9 @@ int main(int argc, char **argv) {
     test_tapo_refusal_during_save();
     test_tapo_identity();
     test_tapo_first_try_released();
+    test_tapo_strip_first_try();
+    test_tapo_typed_again();
+    test_tapo_energy_refusal();
     test_unconfirmed_pairing();
     test_pairing_not_handed_over();
     test_pairing_twice_at_once();

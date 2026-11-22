@@ -154,6 +154,23 @@ def nested_too_deep(app, plug, network):
           app.load()["secrets"]["tapo"].get("refused") is None, r)
 
 
+def locked_by_another(app, plug, strip):
+    """A plug another app has locked says so at its first login step, before any proof of the password (fix round 4,
+    E3). That is the plug's own state, not a refusal of the account: nothing is noted as refused, and the account's
+    other plug still logs in. It was first kept as the account's refusal, which stopped every plug."""
+    plug.reset({"locked": True})
+    r = app.tool({"action": "on", "target": PLUG})
+    st = plug.stats()
+    check("a plug that says it is locked before any proof is not switched, and is sent no proof",
+          isinstance(r, str) and "locked" in r and st["pake_register"] == 1 and st["pake_share"] == 0 and st["on"] is False, (r, st))
+    check("its lock is no refusal of the password", app.load()["secrets"]["tapo"].get("refused") is None, app.load()["secrets"]["tapo"])
+    logins = strip.stats()["login_ok"]
+    r = app.tool({"action": "off", "target": "Socket 3"})
+    check("the account's other plug still logs in and switches", r == {"now": "off", "target": "Socket 3"} and
+          strip.stats()["login_ok"] == logins + 1, (r, strip.stats()))
+    plug.reset({})
+
+
 def main():
     if not os.access(APP, os.X_OK):
         sys.exit("no app at %s (build the cli preset first)" % APP)
@@ -266,6 +283,7 @@ def main():
         check("the plugs that are where they were saved still switch", r == {"now": "on", "target": PLUG} and plug.stats()["on"] is True, r)
 
         nested_too_deep(app, plug, network)
+        locked_by_another(app, plug, strip)
 
         # A wrong password: tried once, by each plug's rules, and never again, even by a new run.
         before = (plug.stats()["pake_share"], strip.stats()["handshake1"])

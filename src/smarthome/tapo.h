@@ -54,9 +54,12 @@ bool owned_by(const Device &dev, const std::string &email);
 // or after the plug rejected these credentials, or while it reports itself locked.
 // With Device::mac set, a session is used only once the plug has named that MAC (one extra
 // request per login).
-// `refused` says whether this plug has rejected these credentials, or locked itself, in this call or
-// since forget_sessions() before it: the caller keeps that beyond the life of the program, so that
-// they are never tried again. It is said by the call itself, from the state the call used: saving the
+// `refused` says whether this plug has rejected these credentials, in this call or since
+// forget_sessions() before it: a wrong proof of the password, or a lock it answered the proof with.
+// The caller keeps that beyond the life of the program, so that they are never tried again. A lock the
+// plug reports before any proof (another app locked it, or it is still cooling down) is no refusal: it
+// is that plug's own state, and nothing is sent to it until the lock should be over (or
+// forget_sessions()). `refused` is said by the call itself, from the state the call used: saving the
 // account calls forget_sessions(), which may happen while a login is under way, and would drop the
 // plug's answer before the caller could ask for it.
 // Thread-safe; requests to one plug (one ip and port) are serialised and share one session.
@@ -67,10 +70,11 @@ bool request(const Device &dev, const Credentials &cred, const json &req, json &
 
 // Convenience wrappers built on request(), with its `refused`.
 
-// Fills {"name": the plug's name, "on": true/false, "model", "fw", "sockets": number of child
-// sockets (0 for a plain plug)}, followed by everything else get_device_info returned ("nickname"
-// and "ssid" decoded from base64). A strip has no switch of its own: "on" is true when any of its
-// sockets is, which costs a second request.
+// Fills {"name": the plug's name, "on": true/false, "model", "fw", "strip": whether it is a strip},
+// followed by everything else get_device_info returned ("nickname" and "ssid" decoded from base64).
+// A strip has no switch of its own ("on" is false): its sockets, each with its own, are read with
+// list_sockets. One request, so that a caller trying a password learns the outcome before anything
+// slower is asked.
 bool get_info(const Device &dev, const Credentials &cred, json &info, std::string &err, bool &refused);
 
 bool set_power(const Device &dev, const Credentials &cred, bool on, std::string &err, bool &refused);

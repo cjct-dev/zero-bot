@@ -604,13 +604,20 @@ key, real audio), say so plainly rather than implying it was.
   anyway (its trial stays), but one a device had accepted before is then held by the memory alone, and
   could be tried once more after a restart. A credential on trial goes to one device at a time (each
   family's `g_first_try`, taken before the account or key is read, let go once the outcome is kept, not
-  after the slow reads that follow, such as a plug's energy readings): a command that fans out sent a
-  wrong password to four plugs at once. It is also sent once: WiZ resends a datagram after 250 ms, which
+  after the slow reads that follow, such as a plug's energy readings or a strip's sockets, which
+  `tapo::get_info` read inside the first answer's call): a command that fans out sent a
+  wrong password to four plugs at once. A refusal on such a later read is said as any other, with
+  whether the file took it; the energy readings first dropped it, being extra. It is also sent once: WiZ resends a datagram after 250 ms, which
   sent a key on trial again while the device's first answer was on the way; on trial it goes out in
   one. A refusal is what the call that sent the credential said (`tapo::request`'s `refused`), not
   looked up afterwards: saving the Tapo account, even unchanged, drops the transport's sessions and
   what each plug said, and a refusal that arrived meanwhile was lost, so the next plug was sent the
-  same password.
+  same password. And it is the refusal of the entry that was sent: each password typed is a new
+  generation (`generation` in the account, kept over a change of e-mail), so the late refusal of a
+  login with the same password typed before no longer refuses the new entry before it is tried. Only
+  the credential's own rejection is a refusal: a TPAP plug locked by another app says so at
+  `pake_register`, before any proof of the password, and that lock is the plug's own (kept by the
+  transport for that plug), not the account's; it first stopped every plug of the account.
 - A scan is of the network the user agreed to: `home::scan` takes the network the settings page
   showed (`discovery::Options::network_id`), refuses once the device is on another, and drops what
   it heard when the network changed while it listened. So does the short scan for a device that
