@@ -26,7 +26,7 @@ size of the first request; smart-home questions and answers on a stand-in home; 
 (--ask-wav, --steer-wav: a typed one is answered on the screen only, one with anything said aloud is
 spoken too, counted at the stand-in speech service, with a stand-in player that plays nothing; a spoken
 answer's end signalled at its own request's end); JSON from the service nested deeper than 32 levels (an
-event, an error's body, a tool call's arguments) not read; retired experiment variants.
+event, an error's body, a transcription, a tool call's arguments) not read; retired experiment variants.
 
 Not covered (no command-line hook): cancel, context notes from the timer's alarm, music held for a
 spoken answer (dry run plays nothing and takes no hold).

@@ -10,7 +10,8 @@ search, a place looked up by name, the photo's description) are run only against
 (tests/mocks/fake_web.py), to check the experiments' guards: ZB_EXP_NO_HARDWARE keeps the camera and the
 infrared transmitter out of a test run, a bad ZB_EXP_WEB stops the run cleanly, and a request to the
 stand-in takes no proxy and follows no redirect. A tool call's arguments and a web service's answer nested
-deeper than 32 levels are not read (nested_too_deep, against a local server of its own). no_real_web runs one case through the live sets' own runner
+deeper than 32 levels are not read (nested_too_deep, against a local server of its own). no_real_web runs
+one case through the live sets' own runner
 (tests/agent_eval.py run_case) against a scripted model (tests/mocks/fake_model.py) that calls every tool
 that reads the web, with every proxy variable pointing at a trap: no request leaves 127.x (the trap sees
 none), each service is answered by the stand-in, the search carries the dummy key and never the inherited
@@ -362,12 +363,25 @@ def run_all(root):
     network_pin(root)
 
 
-class Trap:
+class LocalServer:
+    """An HTTP server on 127.0.0.1, on a port the system picks, served by a thread of its own."""
+    def __init__(self, handler):
+        import http.server
+        import threading
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.url = "http://127.0.0.1:%d" % self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class Trap(LocalServer):
     """A local HTTP server that records every request line and answers a redirect to itself; used as a
     proxy that must not be used and as a stand-in whose redirect must not be followed."""
     def __init__(self):
         import http.server
-        import threading
         seen = self.seen = []
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -385,21 +399,14 @@ class Trap:
                 self.end_headers()
             do_GET = do_POST = do_CONNECT = answer   # CONNECT: an https request sent through it as a proxy
 
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
-        self.url = "http://127.0.0.1:%d" % self.server.server_address[1]
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-
-    def close(self):
-        self.server.shutdown()
-        self.server.server_close()
+        super().__init__(H)
 
 
-class Answering:
+class Answering(LocalServer):
     """A local HTTP server that answers every request with `body` (JSON; settable between runs), for answers no
     stand-in fixture holds."""
     def __init__(self):
         import http.server
-        import threading
         owner = self
         self.body = "{}"
 
@@ -419,13 +426,7 @@ class Answering:
                 self.wfile.write(raw)
             do_GET = do_POST = answer
 
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
-        self.url = "http://127.0.0.1:%d" % self.server.server_address[1]
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-
-    def close(self):
-        self.server.shutdown()
-        self.server.server_close()
+        super().__init__(H)
 
 
 def nested_too_deep(root):
