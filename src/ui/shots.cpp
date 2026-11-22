@@ -445,6 +445,60 @@ bool station_name_still(ChatView &chat) {
     return still && moves;
 }
 
+// Every line of the key guide, and the hints on the bottom row, fit their room in the real fonts.
+bool key_words_fit() {
+    auto width = [](const std::string &text, const lv_font_t *font) {
+        lv_point_t size;
+        lv_text_get_size(&size, text.c_str(), font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        return static_cast<int>(size.x);
+    };
+    bool ok = true;
+    for (const keyguide::Section &sec : keyguide::sections())
+        for (const keyguide::Row &row : sec.rows)
+            if (width(row.keys, theme::bold()) > Menu::kPairKeyW - 4 || width(row.action, theme::body()) > Menu::pair_text_width()) {
+                fprintf(stderr, "the key guide's line for %s does not fit the screen (keys %d of %d px, words %d of %d px)\n",
+                        row.keys.c_str(), width(row.keys, theme::bold()), Menu::kPairKeyW - 4,
+                        width(row.action, theme::body()), Menu::pair_text_width());
+                ok = false;
+            }
+    for (const bool configured : {true, false})
+        if (width(keyguide::idle_hint(configured), theme::small()) > theme::kScreenW - 12) {
+            fprintf(stderr, "the hints on the bottom row do not fit: %s\n", keyguide::idle_hint(configured).c_str());
+            ok = false;
+        }
+    // DIAGNOSTICS (temporary): what SPACE twice says, on the same row.
+    activity::SaveResult nothing, saved, broken;
+    nothing.nothing = true;
+    saved.path = "x";
+    broken.error = "x";
+    for (const activity::SaveResult &r : {nothing, saved, broken})
+        if (width(activity::saved_toast(r), theme::small()) > theme::kScreenW - 12) {
+            fprintf(stderr, "the words after SPACE twice do not fit the bottom row: %s\n", activity::saved_toast(r).c_str());
+            ok = false;
+        }
+    return ok;
+}
+
+// A title that fits its whole room stays still when a countdown takes part of it: it
+// is cut short, not scrolled (a moving title redraws the status bar many times a
+// second for as long as the timer runs). Too long for its whole room, a title scrolls
+// again once the countdown has gone.
+bool title_still_beside_countdown(ChatView &chat, time_t t0) {
+    chat.set_timer("");
+    chat.set_now_playing("Round Midnight");
+    lv_refr_now(nullptr);
+    const bool fits = !chat.now_playing_moves();
+    chat.set_timer(timers::badge({t0 + 300}, t0 + 1));
+    lv_refr_now(nullptr);
+    const bool still = !chat.now_playing_moves();
+    chat.set_timer("");
+    chat.set_now_playing("Dancing Queen · ABBA");
+    lv_refr_now(nullptr);
+    const bool moves = chat.now_playing_moves();
+    if (!fits || !still || !moves) fprintf(stderr, "the now-playing text scrolled beside a countdown, or not when it needs to\n");
+    return fits && still && moves;
+}
+
 }  // namespace
 
 // ------------------------------------------------------------ screenshots
@@ -681,35 +735,7 @@ void App::shots_keys(Shots &shots) {
             fprintf(stderr, "SPACE or H did not open and close settings or the key guide as they should\n");
             failed = true;
         }
-        // Every line of the guide, and the hints on the bottom row, fit their room in the real fonts.
-        auto width = [](const std::string &text, const lv_font_t *font) {
-            lv_point_t size;
-            lv_text_get_size(&size, text.c_str(), font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-            return static_cast<int>(size.x);
-        };
-        for (const keyguide::Section &sec : keyguide::sections())
-            for (const keyguide::Row &row : sec.rows)
-                if (width(row.keys, theme::bold()) > Menu::kPairKeyW - 4 || width(row.action, theme::body()) > Menu::pair_text_width()) {
-                    fprintf(stderr, "the key guide's line for %s does not fit the screen (keys %d of %d px, words %d of %d px)\n",
-                            row.keys.c_str(), width(row.keys, theme::bold()), Menu::kPairKeyW - 4,
-                            width(row.action, theme::body()), Menu::pair_text_width());
-                    failed = true;
-                }
-        for (const bool configured : {true, false})
-            if (width(keyguide::idle_hint(configured), theme::small()) > theme::kScreenW - 12) {
-                fprintf(stderr, "the hints on the bottom row do not fit: %s\n", keyguide::idle_hint(configured).c_str());
-                failed = true;
-            }
-        // DIAGNOSTICS (temporary): what SPACE twice says, on the same row.
-        activity::SaveResult nothing, saved, broken;
-        nothing.nothing = true;
-        saved.path = "x";
-        broken.error = "x";
-        for (const activity::SaveResult &r : {nothing, saved, broken})
-            if (width(activity::saved_toast(r), theme::small()) > theme::kScreenW - 12) {
-                fprintf(stderr, "the words after SPACE twice do not fit the bottom row: %s\n", activity::saved_toast(r).c_str());
-                failed = true;
-            }
+        if (!key_words_fit()) failed = true;
     }
 }
 
@@ -753,27 +779,7 @@ void App::shots_timers(Shots &shots) {
         chat.set_now_playing("So What");                       // short enough not to scroll
         chat.set_timer(timers::badge({t0 + 300}, t0 + 1));
         snap("timer-one");
-        {
-            // A title that fits its whole room stays still when a countdown takes part of it: it
-            // is cut short, not scrolled (a moving title redraws the status bar many times a
-            // second for as long as the timer runs). Too long for its whole room, a title scrolls
-            // again once the countdown has gone.
-            chat.set_timer("");
-            chat.set_now_playing("Round Midnight");
-            lv_refr_now(nullptr);
-            const bool fits = !chat.now_playing_moves();
-            chat.set_timer(timers::badge({t0 + 300}, t0 + 1));
-            lv_refr_now(nullptr);
-            const bool still = !chat.now_playing_moves();
-            chat.set_timer("");
-            chat.set_now_playing("Dancing Queen · ABBA");
-            lv_refr_now(nullptr);
-            const bool moves = chat.now_playing_moves();
-            if (!fits || !still || !moves) {
-                fprintf(stderr, "the now-playing text scrolled beside a countdown, or not when it needs to\n");
-                failed = true;
-            }
-        }
+        if (!title_still_beside_countdown(chat, t0)) failed = true;
         chat.add_user("I want to study for an hour, can you set a timer", false);
         chat.add_tool("Timers");
         chat.begin_answer();
