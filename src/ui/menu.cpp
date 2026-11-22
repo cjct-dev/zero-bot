@@ -141,7 +141,7 @@ void Menu::build_items() {
 void Menu::push(MenuPage page) {
     Frame frame;
     frame.page = std::move(page);
-    frame.id = ++pushed_;
+    frame.id = frame.shown = ++numbered_;
     stack_.push_back(std::move(frame));
     lv_obj_remove_flag(root_, LV_OBJ_FLAG_HIDDEN);
     build_items();
@@ -162,7 +162,12 @@ void Menu::pop() {
     if (stack_.empty()) return;
     stack_.pop_back();
     if (stack_.empty()) { lv_obj_add_flag(root_, LV_OBJ_FLAG_HIDDEN); return; }
+    stack_.back().shown = ++numbered_;   // shown afresh: what was asked from it before is not acted on (on_top)
     refresh();
+}
+
+void Menu::refresh_page(unsigned long page) {
+    if (page != 0 && page == page_on_top() && !editing_) refresh();
 }
 
 void Menu::close() {

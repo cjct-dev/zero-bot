@@ -95,8 +95,10 @@ struct App {
     std::string models_listed_for;
     bool was_online = true;
     std::atomic<bool> selecting_models{false};
-    std::atomic<bool> connecting_phone{false};
     bool warned_models = false;
+    // While the app tries the phone (when_online): input that waits to be handed over, in the order it came.
+    bool connecting_phone = false;
+    std::vector<std::function<void()>> waiting_input;
 
     // ------------------------------------------------------------ setup
     void wire_agent();
@@ -110,6 +112,9 @@ struct App {
     void start_recording();
     void finish_recording(bool submit);
     void when_online(std::function<void()> send);
+    void wait_for_phone(std::function<void()> send);
+    void phone_tried();
+    void drop_waiting_input();
     void run_setup();
 
     // ------------------------------------------------------------ keys (app_keys.cpp)

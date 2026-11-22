@@ -59,9 +59,10 @@ void background(Work work, Done done) {
 }
 
 // As background(), for slow work started from the page on top of `menu`: the work is done whatever
-// happens, but `done` runs only while that page is still the one on top, with no text field open
-// over it (Menu::showing). Run late, an answer would otherwise open over the page the user has gone
-// on to (a list of models over the setup guide's next step), or act on the chat after settings closed.
+// happens, but `done` runs only while that page is still the one on top, not left and come back to,
+// with no text field open over it (Menu::showing). Run late, an answer would otherwise open over the
+// page the user has gone on to (a list of models over the setup guide's next step), act again on a
+// step they have gone back to, or act on the chat after settings closed.
 template <typename Work, typename Done>
 void background_on_page(Menu &menu, Work work, Done done) {
     const unsigned long page = menu.on_top();

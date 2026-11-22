@@ -173,7 +173,8 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   more by the time a call would be made, while the microphone was open or before, stops it: a reply
   nothing of which has been shown or said is withdrawn, as one without a call is, and otherwise the
   calls not yet made, the first included, are not made (each answered "this call was not made", not
-  counted as failed), so the model decides again with their words.
+  counted as failed), so the model decides again with their words. Input that waits for the phone
+  is handed over in the order it came, and is dropped with the request on ESC or a new conversation.
 - **Typed or spoken** (ZB-091): a request's answer is spoken only when something in it was said
   aloud (and spoken replies are on); a typed one's is only shown. Its state says which, by whether
   it is heard (`Turn::heard`): `Speaking` (TAB stops it: `Agent::interrupt_speech`, and the
@@ -1103,15 +1104,20 @@ second late; `--shots` checks the sleep (`loop_sleeps_ok`).
 A settings page that needs something slow (a subprocess, the network, the first full look at the
 network) reads it with `background()` and refreshes itself when the answer comes, showing a
 placeholder meanwhile. A late answer acts only while the page that asked is still the one on top,
-with no text field open over it (`background_on_page`, or `Menu::on_top` and `showing`, a number
-each page pushed gets): a check of `menu.open()` let a list of models fetched on the setup guide
-open over its next step. So does a row's value, which is read at every redraw of its page: the
-Smart home row on Your data shows the last count while it counts again (`home_things`); counting at
-each key press ran `iw` on the UI thread. A device's page asks what its driver still needs
-(`home::pairing_step`, which looks at the network) the same way, and "Set up…" is handed the answer.
+not left and gone back to, with no text field open over it (`background_on_page`, or `Menu::on_top`
+and `showing`, a number each showing of a page gets: pushed, or gone back to with ESC): a check of
+`menu.open()` let a list of models fetched on the setup guide open over its next step, and a number
+for each page pushed let a "Test and continue" answered after Skip and ESC move the user on again.
+So does a row's value, which is read at every redraw of its page: the Smart home row on Your data
+shows the last count while it counts again (`home_things`); counting at each key press ran `iw` on
+the UI thread. A device's page asks what its driver still needs (`home::pairing_step`, which looks
+at the network) the same way, and "Set up…" is handed the answer. An answer that only redraws the
+page that asked (these two, the Smart home page's look at the network) redraws it on a page gone
+back to as well (`Menu::page_on_top` and `refresh_page`). A list of models is used only while the
+service's address and key are the ones it was asked of (`models::fetch`, `App::models_answered`).
 `--shots` opens these pages with a network that answers only after 1.5 s (`opens_at_once`), and
 holds the setup guide's late answers in the UI queue until the user has moved on, then delivers
-them (`late_setup_answers_ignored`).
+them (`late_setup_answers_ignored`, `returned_setup_answers_ignored`).
 
 **Something shown over every screen** (the timer's alarm banner, `AlarmView`): make it a child
 of the screen, created after the other views, and `raise()` it again whenever another view

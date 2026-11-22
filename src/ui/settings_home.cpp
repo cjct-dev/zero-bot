@@ -182,13 +182,13 @@ const home::PairStep *pairing_needs(Menu &menu, const std::shared_ptr<PairingNee
                                     const std::string &device_id) {
     if (!needs->asking) {
         needs->asking = true;
-        const unsigned long page = menu.on_top();   // the device's page, being drawn
+        const unsigned long page = menu.page_on_top();   // the device's page, being drawn
         background([network_id, device_id] { return home::pairing_step(network_id, device_id); },
                    [&menu, needs, page](const home::PairStep &step) {
                        needs->asking = false;
                        const bool changed = !needs->step || needs->step->kind != step.kind || needs->step->prompt != step.prompt;
                        needs->step = step;
-                       if (changed && menu.showing(page)) menu.refresh();
+                       if (changed) menu.refresh_page(page);
                    });
     }
     return needs->step ? &*needs->step : nullptr;
@@ -457,11 +457,11 @@ void open_smart_home(Menu &menu) {
         return items;
     };
     menu.push(std::move(page));
-    const unsigned long opened = menu.on_top();
+    const unsigned long opened = menu.page_on_top();
     background([] { return home::network_now(); }, [&menu, shown, opened](const discovery::Network &net) {
         shown->net = net;
         shown->known = true;
-        if (menu.showing(opened)) menu.refresh();
+        menu.refresh_page(opened);
     });
 }
 
