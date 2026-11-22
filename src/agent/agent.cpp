@@ -44,6 +44,10 @@ std::string call_key(const std::string &name, const std::string &raw_args) {
     return name + "\n" + a.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
+// Said aloud when a spoken request comes to nothing (Agent::Turn::say_failed): the reason is on the screen.
+constexpr const char *kFailedAloud = "Sorry, that did not work. The details are on the screen.";
+constexpr const char *kNotCaught = "I didn't catch that.";   // shown, and said, for a recording with no words in it
+
 // A failure's words without the "ERROR: " in front, short enough to quote.
 std::string error_words(const std::string &text) { return util::truncate_utf8(result::words(text), 200, "..."); }
 
@@ -238,8 +242,14 @@ std::string Agent::run_blocking(Input in) {
 }
 
 // Moves queued input into the conversation. Returns how many user messages were added; `spoken` is
-// set when one of them was said aloud (it is left alone otherwise).
-int Agent::absorb_inputs(bool first, bool *spoken) {
+// set when one of them was said aloud, and `missed` to the sentence to say when a recording gave
+// none (it could not be transcribed, or held no words); both are left alone otherwise.
+int Agent::absorb_inputs(bool first, bool *spoken, std::string *missed) {
+    // The recording is lost: the reason is shown, and the caller told what to say if nothing else comes of it.
+    auto lost = [&](const std::string &shown, const char *aloud) {
+        if (ev_.error) ev_.error(shown);
+        if (missed) *missed = aloud;
+    };
     int added = 0;
     for (;;) {
         Input in;
@@ -255,8 +265,8 @@ int Agent::absorb_inputs(bool first, bool *spoken) {
             std::string err;
             text = llm::transcribe(audio::wav_from_pcm(in.pcm, audio::kMicRate), err, &cancel_);
             if (cancel_) break;
-            if (!err.empty()) { if (ev_.error) ev_.error("Could not transcribe: " + err); continue; }
-            if (text.empty()) { if (ev_.error) ev_.error("I didn't catch that."); continue; }
+            if (!err.empty()) { lost("Could not transcribe: " + err, kFailedAloud); continue; }
+            if (text.empty()) { lost(kNotCaught, kNotCaught); continue; }
         }
         const bool steering = !first || added > 0;
         if (ev_.user_message) ev_.user_message(text, steering);
@@ -387,10 +397,12 @@ private:
     Then finish_answer(Round &r);
 
     Then next_request();
+    int take_request(bool first, bool *spoken);
     void new_request();
     void set_spoken(bool spoken);
     bool heard() const { return speak_ && spoken_; }   // the request's answer is spoken, not only shown
     void answering();
+    void say_failed(const std::string &sentence);
     int steer_in();
     void wait_while_listening();
     void to_speech(const std::string &sentence);
@@ -413,9 +425,10 @@ void Agent::run_turn() { Turn(*this).run(); }
 void Agent::Turn::run() {
     a_.cancel_ = false;
     a_.interrupted_ = false;
+    speak_ = Settings::get().speak_replies && !audio_off();
     rt_.absorbing();
     bool spoken = false;
-    if (a_.absorb_inputs(true, &spoken) == 0) return;
+    if (take_request(true, &spoken) == 0) return;
     rt_.begin();
     a_.trim_history();
     activity::request();   // DIAGNOSTICS (temporary): the activity log
@@ -424,7 +437,6 @@ void Agent::Turn::run() {
     req_.tool_ctx.cancel = &a_.cancel_;
     req_.tool_ctx.on_image = a_.ev_.image;
     req_.tool_ctx.on_breathe = a_.ev_.breathe;
-    speak_ = Settings::get().speak_replies && !audio_off();
     set_spoken(spoken);
 
     Budget budget;
@@ -563,8 +575,8 @@ std::optional<Agent::Turn::Then> Agent::Turn::cut_short(Round &r) {
     return std::nullopt;
 }
 
-// The service failed: the error is shown, and once tools have run, what is known is said. True when
-// the call failed.
+// The service failed: the error is shown, and once tools have run, what is known is said; before that, a
+// spoken request with nothing of its answer heard yet is told that it failed. True when the call failed.
 bool Agent::Turn::on_error(Round &r) {
     if (r.res.error.empty()) return false;
     if (r.began && a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, true);
@@ -577,6 +589,8 @@ bool Agent::Turn::on_error(Round &r) {
                 : req_.done_said + (req_.failures ? "Something I tried did not work, and I lost the connection to the AI "
                                                     "service before I could say what. Please ask again."
                                                   : lost));
+    } else if (heard() && !r.speech_started) {
+        say_failed(kFailedAloud);
     }
     return true;
 }
@@ -776,9 +790,19 @@ Agent::Turn::Then Agent::Turn::next_request() {
     // not when the turn ends: the next request, typed while it was spoken, may take a while.
     speech_.end_of_answer();
     bool spoken = false;
-    if (a_.absorb_inputs(false, &spoken) == 0) return Then::Finish;
+    if (take_request(false, &spoken) == 0) return Then::Finish;
     set_spoken(spoken);
     return Then::NewRequest;
+}
+
+// Input for a request of its own (the turn's first, or one typed or said while the last answer was given): how many
+// user messages it added. A recording that gave no words, and so leaves nothing to answer, is told so aloud. (Steering
+// is taken by steer_in: the request it joins goes on, and its answer is still to come.)
+int Agent::Turn::take_request(bool first, bool *spoken) {
+    std::string missed;
+    const int added = a_.absorb_inputs(first, spoken, &missed);
+    if (added == 0 && !missed.empty()) say_failed(missed);
+    return added;
 }
 
 // A request typed while the last answer was spoken: it starts afresh.
@@ -799,6 +823,16 @@ void Agent::Turn::set_spoken(bool spoken) {
 // it. A typed request's is only shown (ZB-091), so nothing about it acts as if it could be heard: talking
 // over it neither stops it nor marks it as interrupted (Answering).
 void Agent::Turn::answering() { a_.set_state(spoken_ ? AgentState::Speaking : AgentState::Answering); }
+
+// A spoken request that came to nothing (the service failed before a word of its answer was heard, or the recording
+// gave no words) is not left in silence for a user who is not looking: one short sentence is said, and the reason
+// stays on the screen. It is the app's notice, not an answer, so the conversation does not keep it and the model is
+// told nothing new. Not while the microphone is open (what the user says then is the next request) nor after a cancel.
+// It is only queued, never waited for: speech uses the same service and may fail too, and then the speech queue adds
+// its own note below the reason, which stays.
+void Agent::Turn::say_failed(const std::string &sentence) {
+    if (speak_ && !a_.listening_ && !a_.cancel_) a_.say(sentence);
+}
 
 // Input that arrived meanwhile joins this request. It may be "try that again", so the calls
 // that failed may be made once more. Said aloud, it makes the rest of the answer spoken.

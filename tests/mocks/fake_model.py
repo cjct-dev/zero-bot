@@ -50,6 +50,8 @@ with "rule": "speech".
 POST .../audio/transcriptions (speech to text) answers {"text": ...} with the script's top-level "heard"
 (a string, or a list used one per recording in turn, the last repeating; default "hello"), logged with
 "rule": "transcription" and the size of what was sent in place of its body.
+The script's top-level "speech_error" and "transcription_error" ({"status": N, "body": "..."}, with
+"delay_ms" if wanted) make every request to that service fail so instead; each is still logged.
 
 LOG gets one JSON object per request: {"n": 1, "rule": index or "default", "body": {...}}.
 """
@@ -151,6 +153,23 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def scripted_failure(self, key):
+        """Answers with the script's failure for a speech service ("speech_error", "transcription_error"), if it has one."""
+        fail = SCRIPT.get(key)
+        if not fail:
+            return False
+        if fail.get("delay_ms"):
+            time.sleep(fail["delay_ms"] / 1000.0)
+        raw = fail.get("body", "").encode()
+        self.send_response(fail["status"])
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(raw)
+        self.close_connection = True
+        return True
+
     def do_POST(self):
         raw_body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
         if self.path.endswith("/audio/transcriptions"):   # multipart: the recording is not read
@@ -162,6 +181,8 @@ class Handler(BaseHTTPRequestHandler):
                 HEARD[0] += 1
                 with open(LOG, "a") as f:
                     f.write(json.dumps({"n": COUNT[0], "rule": "transcription", "body": {"bytes": len(raw_body)}}) + "\n")
+            if self.scripted_failure("transcription_error"):
+                return
             raw = json.dumps({"text": heard}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -177,6 +198,8 @@ class Handler(BaseHTTPRequestHandler):
                 COUNT[0] += 1
                 with open(LOG, "a") as f:
                     f.write(json.dumps({"n": COUNT[0], "rule": "speech", "body": body}, ensure_ascii=False) + "\n")
+            if self.scripted_failure("speech_error"):
+                return
             raw = b"\0" * 4800
             self.send_response(200)
             self.send_header("Content-Type", "audio/pcm")
