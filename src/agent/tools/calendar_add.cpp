@@ -21,7 +21,7 @@ std::string t_calendar_add(const json &a, Context &ctx) {
     if (!util::parse_local(start, e.start)) return fail(bad_time("start", start));
     if (!repeat_arg(a, e.repeat, err)) return fail(err);
     e.all_day = bool_arg(a, "all_day", false);
-    if (e.all_day) e.start = day_start(e.start);
+    if (e.all_day) e.start = util::start_of_day(e.start);
     double since;
     if (e.repeat == "yearly" && num_arg(a, "since_year", since) && since >= 1900 && since <= util::local_fields(e.start).year) {
         // The year it all began (a birth year): the series starts there, which is what lets a

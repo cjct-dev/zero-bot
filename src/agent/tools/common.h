@@ -9,10 +9,12 @@
 #include <vector>
 
 #include "agent/tools.h"
+#include "core/result.h"
 
 namespace tools {
 
 using util::jget;
+using result::fail;   // "ERROR: " + msg, phrased as what to do next (core/result.h)
 
 // ---- the environment
 bool dry_run();   // ZB_DRY_RUN: nothing is played, sent or switched
@@ -28,9 +30,6 @@ bool bool_arg(const json &a, const char *key, bool fallback);
 std::string clean_text(const std::string &raw);         // control characters as single spaces, trimmed
 // The error for a date or time that is malformed or not real, with what was sent.
 std::string bad_time(const std::string &field, const std::string &sent, bool date_only = false);
-
-// ---- results
-std::string fail(const std::string &msg);   // "ERROR: " + msg, phrased as what to do next
 
 // ---- the schema: an object of named properties, and a property of each type
 json obj(std::initializer_list<std::pair<const std::string, json>> props, std::vector<std::string> required = {});

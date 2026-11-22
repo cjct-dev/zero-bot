@@ -28,11 +28,6 @@ bool repeat_arg(const json &a, std::string &out, std::string &err) {
     return false;
 }
 
-time_t day_start(time_t t) {
-    const util::LocalTime f = util::local_fields(t);
-    return util::make_local(f.year, f.month, f.day, 0, 0);
-}
-
 // `e` is either a stored event (start = its first time) or one occurrence from events_between.
 json event_json(const CalEvent &e) {
     const char *fmt = e.all_day ? "%A %Y-%m-%d" : "%A %Y-%m-%d %H:%M";
@@ -43,7 +38,7 @@ json event_json(const CalEvent &e) {
         if (!e.first) {
             // A stored series: say when it next happens, which is what the user wants to hear.
             j["first"] = util::format_time(e.start, fmt);
-            shown = next_occurrence(e, day_start(time(nullptr)));
+            shown = next_occurrence(e, util::start_of_day(time(nullptr)));
             if (!shown) shown = e.start;
         }
         // The age, for a birthday entered with its year.
@@ -89,7 +84,7 @@ bool event_text_args(const json &a, CalEvent &e, std::string &err) {
 // this year is the commonest slip. A repeating event may start in the past: a birthday is entered
 // with its birth year.
 bool in_the_past(const CalEvent &e) {
-    return e.repeat.empty() && e.start < (e.all_day ? day_start(time(nullptr)) : time(nullptr) - 12 * 3600);
+    return e.repeat.empty() && e.start < (e.all_day ? util::start_of_day(time(nullptr)) : time(nullptr) - 12 * 3600);
 }
 
 std::string past_error() {

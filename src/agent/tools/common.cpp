@@ -89,8 +89,6 @@ bool bool_arg(const json &a, const char *key, bool fallback) {
     return fallback;
 }
 
-std::string fail(const std::string &msg) { return "ERROR: " + msg; }
-
 json obj(std::initializer_list<std::pair<const std::string, json>> props, std::vector<std::string> required) {
     json p = json::object();
     for (auto &kv : props) p[kv.first] = kv.second;

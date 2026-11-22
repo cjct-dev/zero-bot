@@ -25,7 +25,7 @@ std::string t_calendar_update(const json &a, Context &ctx) {
         if (!end.empty() && !util::parse_local(end, e.end)) return fail(bad_time("end", end));
         if (!repeat_arg(a, e.repeat, err)) return fail(err);
         if (a.contains("all_day")) e.all_day = bool_arg(a, "all_day", e.all_day);
-        if (e.all_day) { e.start = day_start(e.start); e.end = 0; }
+        if (e.all_day) { e.start = util::start_of_day(e.start); e.end = 0; }
         if (e.end && e.end < e.start) return fail("end is before start");
         if (!start.empty())
             if (const std::string slip = weekday_slip(a, ctx, e.start, "start"); !slip.empty()) return fail(slip);

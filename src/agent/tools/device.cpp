@@ -2,22 +2,16 @@
 #include "agent/tools/common.h"
 
 #include <algorithm>
-#include <fstream>
 
 #include "core/settings.h"
 #include "platform/audio.h"
 #include "platform/display.h"
-#include "platform/proc.h"
+#include "platform/net_status.h"
+#include "platform/power.h"
 
 namespace tools {
 
 namespace {
-
-int read_int_file(const char *path, int fallback) {
-    std::ifstream f(path);
-    int v;
-    return f >> v ? v : fallback;
-}
 
 std::string t_device(const json &a, Context &) {
     const std::string setting = util::lower(str_arg(a, "setting"));
@@ -25,13 +19,12 @@ std::string t_device(const json &a, Context &) {
     if (setting.empty() || setting == "status") {
         json out = {{"volume_percent", s.volume}, {"brightness_percent", s.brightness},
                     {"spoken_replies", s.speak_replies}, {"timezone", s.timezone.empty() ? util::system_timezone() : s.timezone}};
-        const int batt = read_int_file("/sys/class/power_supply/bq27220-0/capacity", -1);
+        const int batt = power::battery().percent;
         if (batt >= 0) out["battery_percent"] = batt;
         // The list Network Manager already has: asking it to scan again takes seconds, and on this
         // radio a scan also interrupts Bluetooth audio.
-        const proc::Result wifi = proc::run({"nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL", "dev", "wifi", "list", "--rescan", "no"}, "", 4000);
-        for (auto &line : util::split(wifi.out, '\n'))
-            if (line.compare(0, 4, "yes:") == 0) out["wifi"] = line.substr(4);
+        const net_status::WiFi wifi = net_status::wifi(4000);
+        if (wifi.connected) out["wifi"] = wifi.entry;
         return out.dump(-1, ' ', false, json::error_handler_t::replace);
     }
     double value = 0;
