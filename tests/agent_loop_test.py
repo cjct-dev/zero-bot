@@ -16,17 +16,19 @@ look (released on OK, or turned into the tool call it asks for); the unbacked-cl
 English and other languages, and phrases it must leave alone; the "not saved" guard; "say"
 confirmations spoken without a second call, and when they are not; tool errors, unknown tools and
 bad arguments returned to the model; steering during a tool and during a draft; talk-over (nothing
-spoken or done while the microphone is open); the round budget, its last tool-free round and the
+spoken or done while the microphone is open, a later call of a batch included; talking over a spoken
+answer stops it, over a typed one does not); the round budget, its last tool-free round and the
 spoken apology; a fresh budget for a follow-up; retries on 5xx, the reasoning-field fallback,
 refused keys, an outage page, an error inside the stream, an empty answer; think markers; time
 stamps and spelt-out dates; a byte-identical system prompt between calls; history trimming; the
 size of the first request; smart-home questions and answers on a stand-in home; a saved conversation
 ("/save", what SPACE twice does on the device; diagnostics, temporary); typed and spoken requests
 (--ask-wav, --steer-wav: a typed one is answered on the screen only, one with anything said aloud is
-spoken too, counted at the stand-in speech service, with a stand-in player that plays nothing).
+spoken too, counted at the stand-in speech service, with a stand-in player that plays nothing; a spoken
+answer's end signalled at its own request's end); retired experiment variants.
 
-Not covered (no command-line hook): cancel, interrupting a spoken answer, context notes from the
-timer's alarm.
+Not covered (no command-line hook): cancel, context notes from the timer's alarm, music held for a
+spoken answer (dry run plays nothing and takes no hold).
 """
 import argparse
 import json
@@ -598,6 +600,59 @@ def talk_over_holds_action():
           r.answer == "Your timer is set for 15 minutes.", r)
 
 
+@scenario
+def talk_over_batch():
+    # The talk key pressed as the first of two calls starts (--talk-at tool). No action runs while the microphone is
+    # open (AGENTS.md section 4): the second call waits for it to close, and is not made at all once the user has
+    # said more; the model is told so and decides again with their words. The first call runs as before.
+    script = {"rules": [{"when": {"said": "leave the timer"}, "reply": {"text": "All right, no timer."}},
+                        {"when": {"results": 2}, "reply": {"text": "Christmas is in 37 days, and your timer is running."}}],
+              "default": calls(XMAS, TIMER_12)}
+    ask = "how long until christmas, and set a timer for 12 minutes"
+    r = run(script, ask=ask, extra=["--talk-over", "1000", "--talk-at", "tool"])
+    n = "talk-over during a batch of calls"
+    lines = r.out.splitlines()
+    closed = next((i for i, l in enumerate(lines) if l.startswith("[mic closed")), -1)
+    tools = [i for i, l in enumerate(lines) if l.startswith("[tool ")]
+    check(n + ": the second call waits for the microphone to close", len(tools) == 2 and tools[0] < closed < tools[1] and
+          '"started"' in "".join(r.results()) and r.answer == "Christmas is in 37 days, and your timer is running.", r)
+    r = run(script, ask=ask, extra=["--talk-over", "1000:no, leave the timer", "--talk-at", "tool"])
+    res = r.results()
+    check(n + ": once the user has said more, the second call is not made, and the model is told why",
+          len(res) == 2 and res[0].startswith("{") and res[1].startswith("ERROR: this call was not made, because the user said more first") and
+          sum(l.startswith("[tool ") for l in r.out.splitlines()) == 1, r)
+    tool_msgs = [text_of(m) for m in r.messages(2) if m.get("role") == "tool"] if len(r.requests) > 1 else []
+    check(n + ": the model decides again with their words", len(r.requests) == 2 and tool_msgs == res and
+          text_of(r.messages(2)[-1]).endswith("no, leave the timer") and r.answer == "All right, no timer.", r)
+
+
+# The talk key pressed once the answer has begun (--talk-at answer: as TAB does on the device, the speech is stopped
+# and the microphone opened), with the answer's second sentence still to come.
+SLOW_XMAS = ["Christmas is thirty seven days away from today. ", "It falls on a Friday."]
+
+
+@scenario
+def talk_over_answer():
+    # A typed request's answer is shown, not spoken (ZB-091): talking over it does not cut it short or mark it as
+    # interrupted, and it is never in the speaking state.
+    script = {"rules": [{"when": {"said": "thanks"}, "reply": {"text": "You're welcome."}}],
+              "default": {"chunks": SLOW_XMAS, "chunk_ms": 1500}}
+    r = run(script, said=["how many days until christmas", "thanks"], speech=True, extra=["--talk-over", "300", "--talk-at", "answer"])
+    n = "talk-over while a typed answer is shown"
+    check(n + ": the key was pressed while it was shown, not spoken", "] (while answering)" in r.out and "(while speaking)" not in r.out, r)
+    check(n + ": the answer is whole", r.turns and r.turns[0]["answer"] == "".join(SLOW_XMAS), r)
+    kept = [text_of(m) for m in r.messages(2) if m.get("role") == "assistant"] if len(r.requests) > 1 else []
+    check(n + ": the conversation keeps it whole, not marked as interrupted", kept == ["".join(SLOW_XMAS)], kept)
+    check(n + ": nothing is spoken", spoken_lines(r) == [], spoken_lines(r))
+    # A spoken request's answer is as before: talking over it stops it, and the rest is neither shown nor spoken.
+    r = run(dict(script, heard="how many days until christmas"), ask_wav=True, speech=True,
+            extra=["--talk-over", "300", "--talk-at", "answer"])
+    n = "talk-over while a spoken answer is spoken"
+    check(n + ": the key was pressed while it was spoken", "] (while speaking)" in r.out, r)
+    check(n + ": the answer stops where the user spoke", r.answer.strip() == SLOW_XMAS[0].strip() and
+          all(SLOW_XMAS[1] not in (x or "") for x in spoken_lines(r)), (spoken_lines(r), r))
+
+
 # ------------------------------------------------------------------ spoken and typed requests (ZB-091)
 def spoken_lines(r):
     """What the app asked the speech service to say, in order."""
@@ -657,6 +712,15 @@ def mixed_requests_spoken():
     n = "spoken, then a typed request while its answer is given"
     check(n + ": both answered; only the spoken one is spoken", r.answer == "Madrid is the capital of Spain." and
           "Your timer is set for 12 minutes." in r.out and spoken_lines(r) == ["Your timer is set for 12 minutes."], (spoken_lines(r), r))
+    # The spoken answer is over when its request is, not when the turn is: with the typed request's answer slow to come,
+    # the speech of the first ends (and lets go of the speaker and the music) while the second is worked on.
+    slow = dict(LISBON, heard="set a timer for 12 minutes",
+                rules=[{"when": {"said": "spain"}, "reply": {"text": "Madrid is the capital of Spain.", "delay_ms": 2000}}] + LISBON["rules"])
+    r = run(slow, ask_wav=True, speech=True, extra=["--follow-ups", "what is the capital of spain"])
+    done = re.search(r"\[speech done \+(\d+\.\d)s\]", r.out)
+    total = r.turns[-1]["total"] if r.turns else None
+    check(n + ": the first answer's speech ends before the second answer comes", done and total and float(done.group(1)) < total - 1.0 and
+          r.answer == "Madrid is the capital of Spain.", (done and done.group(0), total, r))
 
 
 # ------------------------------------------------------------------ the round budget
@@ -920,6 +984,16 @@ def home_question_then_yes():
             ask="turn on the bed heater", home=HOME)
     check(n + ": a thing without the question is switched and confirmed at once", r.answer == "The bed heater is on." and
           len(r.requests) == 1 and any('"now":"on"' in x for x in r.results()), r)
+    # An answer made in code is a reply like the model's own: a question put in a say confirmation counts as put.
+    ask_in_say = ("timer", {"action": "start", "minutes": 12, "say": "Your timer is set. Shall I turn on the fan heater?"})
+    script = {"rules": [{"when": {"result": "CONFIRM"}, "reply": calls(ask_in_say)},
+                        {"when": {"said": "yes"}, "reply": calls(on)},
+                        {"when": {"said": "fan heater"}, "reply": calls(on)}]}
+    r = run(script, said=["turn on the fan heater and set a timer for 12 minutes", "yes"], home=HOME)
+    second = r.turns[1]["results"] if len(r.turns) > 1 else []
+    check(n + ": a question put in a say confirmation, then a plain yes, switches it", len(r.turns) == 2 and
+          r.turns[0]["answer"] == "Your timer is set. Shall I turn on the fan heater?" and bool(second) and
+          '"now":"on"' in second[0] and r.turns[1]["answer"] == "The fan heater is on.", r)
 
 
 @scenario

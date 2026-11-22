@@ -45,7 +45,7 @@ needs a [Tavily](https://tavily.com) key.
 
 | Key | What it does |
 |---|---|
-| **TAB** | Start talking. Press **TAB** again when you have finished. The answer is spoken and shown on the screen. |
+| **TAB** | Start talking. Press **TAB** again when you have finished. The answer is spoken and shown on the screen. Pressed while an answer is being spoken, it stops the answer and listens; the answer to a typed message is not stopped. |
 | **SPACE** | Open settings (**TAB** twice quickly does the same). **SPACE** or **TAB** closes them again. |
 | **SPACE** twice quickly | Save this conversation, to help diagnose and improve the assistant (see [Diagnostics (temporary)](#diagnostics-temporary)). Because of this, one **SPACE** opens settings a moment later, once no second press has come (at once if another key follows it). |
 | **ENTER** | Start typing a message; **ENTER** again sends it. A typed message is answered on the screen only, without speaking (anything you say while it is worked on makes the answer spoken too). |

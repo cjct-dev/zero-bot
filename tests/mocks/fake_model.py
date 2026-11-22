@@ -37,6 +37,8 @@ REPLY:
   {"status": 500, "body": "..."}        an HTTP error instead of a stream
   {"stream_error": "message"}           an error event inside a 200 stream
   "delay_ms": N                         wait this long before answering (any reply)
+  "chunk_ms": N                         wait this long before each piece of text after the first, so the app
+                                        has the first piece well before the next is sent
   "no_ids": true                        tool calls without ids (some services omit them)
 
 A request that asks for token counts gets them in a last event with no choices, as the services do:
@@ -191,18 +193,32 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(json.dumps({"n": COUNT[0], "rule": rule, "body": body}, ensure_ascii=False) + "\n")
         if reply.get("delay_ms"):
             time.sleep(reply["delay_ms"] / 1000.0)
+        parts = []   # the stream's events, each with whether it carries text
         if reply.get("status"):
             raw = reply.get("body", "").encode()
             self.send_response(reply["status"])
             self.send_header("Content-Type", reply.get("content_type", "application/json"))
         else:
-            raw = ("".join("data: %s\n\n" % json.dumps(e, ensure_ascii=False) for e in events(reply, body)) + "data: [DONE]\n\n").encode()
+            parts = [(("data: %s\n\n" % json.dumps(e, ensure_ascii=False)).encode(),
+                      bool(e.get("choices") and e["choices"][0].get("delta", {}).get("content"))) for e in events(reply, body)]
+            parts.append((b"data: [DONE]\n\n", False))
+            raw = b"".join(p for p, _ in parts)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Connection", "close")
         self.end_headers()
-        self.wfile.write(raw)
+        if reply.get("chunk_ms") and parts:
+            texts = 0
+            for piece, text in parts:
+                if text:
+                    if texts:
+                        time.sleep(reply["chunk_ms"] / 1000.0)
+                    texts += 1
+                self.wfile.write(piece)
+                self.wfile.flush()
+        else:
+            self.wfile.write(raw)
         self.close_connection = True
 
 

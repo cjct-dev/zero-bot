@@ -104,7 +104,14 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   confirmation sentence as a parameter, so success is spoken without a second model call.
 - **Steering**: input that arrives while a request is being worked on is added to the same
   request. While the microphone is open nothing new is spoken and no action runs
-  (`Agent::set_listening`).
+  (`Agent::set_listening`): a later call of a batch waits for it to close, and once the user has
+  said more, the calls not yet made are not made (each answered "this call was not made", not
+  counted as failed), so the model decides again with their words.
+- **Typed or spoken** (ZB-091): a request's answer is spoken only when something in it was said
+  aloud (and spoken replies are on); a typed one's is only shown. Its state says which: `Speaking`
+  (TAB stops it: `Agent::interrupt_speech`, and the conversation keeps "[the user interrupted
+  here]") or `Answering` (TAB does not stop it). Music waits only for an answer that is heard
+  (`tools::Context::in_conversation`), and each answer's end is signalled at its own request's end.
 - **Numeric dates** are spelt out by rule (`util::spell_numeric_dates`) before the model sees
   them, in the user's date order with the year filled in.
 - **Timestamps** ride on each user message, not in the system prompt, so the prompt stays
@@ -361,7 +368,8 @@ What exists:
 
 - **Command-line modes** in `src/main.cpp` (work in the `cli` build):
   `--ask "text"`, `--chat`, `--tool NAME 'JSON'`, `--steer "text"` (inject input during the
-  first tool), `--talk-over MS[:text]` (hold the microphone open during a request),
+  first tool), `--talk-over MS[:text]` (hold the microphone open during a request; with
+  `--talk-at tool|answer`, from its first tool or once its answer has begun, as TAB does),
   `--follow-ups "a|b|c"` (chain requests inside one run), `--stt FILE.wav`, `--tts "text" OUT.raw`,
   `--discover` (smart-home scan), `--home-refresh` (read saved smart-home devices),
   `--prompt` / `--schema` (the system prompt and tools a request would get now),

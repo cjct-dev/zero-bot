@@ -13,7 +13,10 @@
 
 #include "core/util.h"
 
-enum class AgentState { Idle, Transcribing, Thinking, Working, Speaking };
+// Speaking: a spoken request's answer is being given; talking over it stops it (interrupt_speech).
+// Answering: a typed request's answer is being shown, and only shown (ZB-091): talking over it does not
+// stop it.
+enum class AgentState { Idle, Transcribing, Thinking, Working, Speaking, Answering };
 
 struct AgentEvents {   // called from worker threads
     std::function<void(const std::string &text, bool steering)> user_message;
