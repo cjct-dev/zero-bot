@@ -25,6 +25,7 @@
 #include <string>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
 #include "agent/calc.h"
 #include "core/util.h"
@@ -180,48 +181,76 @@ void test_processes(const std::string &tmp) {
     CHECK(r.code == 3 && !r.timed_out);
 }
 
-// Where close_range is missing (an older kernel) or refused (a sandbox's filter), the loop that
-// stands in for it must reach every descriptor the process may hold, not stop at 4096. A child of
-// the test refuses close_range to itself with a seccomp filter, as such a sandbox would, holds a
-// descriptor at 5000, and runs a helper program.
+#ifdef SYS_close_range
+constexpr int kHigh = 5000;
+
+// A child of the test holds descriptor kHigh, refuses itself the system calls `refused` with a
+// seccomp filter (ENOSYS, as a sandbox or an older kernel would), lowers its soft limit on open files
+// to `soft` (below kHigh, as a program may after opening it), and runs a helper program. What the
+// helper saw: 0 not kHigh, 1 kHigh, 2 the test could not be set up here, 3 the helper did not run.
+int helper_sees_high(const std::string &tmp, const std::vector<long> &refused, rlim_t soft) {
+    const pid_t pid = fork();
+    if (pid == 0) {
+        rlimit lim{};
+        if (getrlimit(RLIMIT_NOFILE, &lim) != 0) _exit(2);
+        lim.rlim_cur = lim.rlim_max == RLIM_INFINITY ? 8192 : std::min<rlim_t>(lim.rlim_max, 8192);
+        if (setrlimit(RLIMIT_NOFILE, &lim) != 0) _exit(2);
+        const int fd = open((tmp + "/held-high").c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+        if (fd < 0 || dup2(fd, kHigh) != kHigh) _exit(2);   // dup2 leaves kHigh without close-on-exec
+        close(fd);
+        lim.rlim_cur = soft;
+        if (setrlimit(RLIMIT_NOFILE, &lim) != 0) _exit(2);
+        std::vector<sock_filter> filter{BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr))};
+        for (const long call : refused) {
+            filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<unsigned>(call), 0, 1));
+            filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA)));
+        }
+        filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+        sock_fprog prog{static_cast<unsigned short>(filter.size()), filter.data()};
+        if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 || prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) != 0) _exit(2);
+        if (syscall(SYS_close_range, 4000U, 4001U, 0U) == 0 || errno != ENOSYS) _exit(2);
+        // Asked by name, not by listing the folder: the helper inherits the filter too.
+        const proc::Result r = proc::run({"sh", "-c", "test -e /proc/self/fd/" + std::to_string(kHigh) + " && echo held"}, "", 5000);
+        if (r.timed_out || (r.code != 0 && r.code != 1)) _exit(3);
+        _exit(r.out.find("held") == std::string::npos ? 0 : 1);
+    }
+    int status = 0;
+    if (pid <= 0 || waitpid(pid, &status, 0) != pid) return 3;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 3;
+}
+#endif
+
+// Where close_range is missing (an older kernel) or refused (a sandbox's filter), the fallback that
+// stands in for it must reach every descriptor the process holds: not stop at 4096, nor at the soft
+// limit on open files, which may have been lowered below a descriptor already open (fix round 2, C7).
+// It closes what /proc/self/fd lists, or, where that cannot be read, every number up to the hard limit.
 void test_descriptors_without_close_range(const std::string &tmp) {
     g_test = "helper programs without close_range";
 #ifdef SYS_close_range
-    constexpr int kHigh = 5000;
     rlimit lim{};
     if (getrlimit(RLIMIT_NOFILE, &lim) != 0 || (lim.rlim_max != RLIM_INFINITY && lim.rlim_max <= kHigh)) {
         printf("tools: note: the open-file limit is too low here to hold descriptor %d; that check was skipped\n", kHigh);
         return;
     }
-    const pid_t pid = fork();
-    if (pid == 0) {
-        // The child: exit 0 when the helper saw no descriptor 5000, 1 when it did, 2 when the
-        // test could not be set up, 3 when the helper did not run.
-        lim.rlim_cur = lim.rlim_max == RLIM_INFINITY ? 8192 : std::min<rlim_t>(lim.rlim_max, 8192);
-        if (setrlimit(RLIMIT_NOFILE, &lim) != 0) _exit(2);
-        const int fd = open((tmp + "/held-high").c_str(), O_CREAT | O_WRONLY, 0600);
-        if (fd < 0 || dup2(fd, kHigh) != kHigh) _exit(2);
-        sock_filter refuse[] = {
-            BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)),
-            BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_close_range, 0, 1),
-            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA)),
-            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
-        };
-        sock_fprog prog{static_cast<unsigned short>(sizeof(refuse) / sizeof(refuse[0])), refuse};
-        if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 || prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) != 0) _exit(2);
-        if (syscall(SYS_close_range, 4000U, 4001U, 0U) == 0 || errno != ENOSYS) _exit(2);
-        const proc::Result r = proc::run({"sh", "-c", "ls /proc/self/fd"}, "", 5000);
-        if (!r.ok()) _exit(3);
-        _exit(r.out.find("\n" + std::to_string(kHigh) + "\n") == std::string::npos ? 0 : 1);
+    struct Case {
+        const char *what;
+        std::vector<long> refused;
+        rlim_t soft;
+    };
+    const Case cases[] = {
+        {"close_range refused", {SYS_close_range}, 8192},
+        {"close_range refused, the soft limit lowered below the descriptor", {SYS_close_range}, 1024},
+        {"close_range and the listing of /proc/self/fd refused, the soft limit lowered", {SYS_close_range, SYS_getdents64}, 1024},
+    };
+    for (const Case &c : cases) {
+        const int code = helper_sees_high(tmp, c.refused, c.soft);
+        if (code == 2) {
+            printf("tools: note: system calls could not be refused here (no seccomp); the check \"%s\" was skipped\n", c.what);
+            continue;
+        }
+        g_test = c.what;
+        check(code == 0, code == 1 ? "descriptor 5000 reached the helper program" : "the helper program did not run", __LINE__);
     }
-    int status = 0;
-    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid);
-    const int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    if (code == 2) {
-        printf("tools: note: close_range could not be refused here (no seccomp); that check was skipped\n");
-        return;
-    }
-    check(code == 0, code == 1 ? "descriptor 5000 reached the helper program" : "the helper program did not run", __LINE__);
 #else
     printf("tools: note: this system's headers have no close_range; that check was skipped\n");
 #endif

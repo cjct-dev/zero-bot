@@ -2,12 +2,15 @@
 
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -15,21 +18,72 @@
 
 namespace proc {
 
-// How far the descriptor numbers can go: the process's limit on open files, read before fork (the
-// child may only make system calls). A descriptor above a fixed bound such as 4096 would otherwise
-// outlive the fallback below wherever close_range is missing or refused.
+// How far the descriptor numbers can go when the open ones cannot be listed: the hard limit on open
+// files, read before fork (the child may only make system calls). Not the soft limit, which may have
+// been lowered below a descriptor already open, nor a fixed bound such as 4096.
 static int descriptor_bound() {
-    const long most = sysconf(_SC_OPEN_MAX);
-    constexpr long kCeiling = 1L << 20;   // the kernel's own default ceiling (fs.nr_open)
-    return static_cast<int>(most > 0 && most < kCeiling ? most : kCeiling);
+    constexpr rlim_t kCeiling = 1 << 20;   // the kernel's own default ceiling (fs.nr_open)
+    rlimit lim{};
+    if (getrlimit(RLIMIT_NOFILE, &lim) != 0 || lim.rlim_max == RLIM_INFINITY || lim.rlim_max > kCeiling)
+        return static_cast<int>(kCeiling);
+    return static_cast<int>(lim.rlim_max);
 }
 
-// In the child, between fork and exec: close every descriptor from `lowest` up to `bound`. Only
-// system calls here (the parent has other threads, so nothing that might take a lock).
+// A descriptor's number from its name in /proc/self/fd; -1 for anything else ("." and "..").
+static int fd_number(const char *name) {
+    int n = 0;
+    if (!*name) return -1;
+    for (; *name; ++name) {
+        if (*name < '0' || *name > '9' || n > (INT_MAX - 9) / 10) return -1;
+        n = n * 10 + (*name - '0');
+    }
+    return n;
+}
+
+#ifdef SYS_getdents64
+// One pass over /proc/self/fd (open as `dir`), read with getdents64 into a buffer on the stack:
+// closes each descriptor it lists from `lowest` up, but `dir`. How many it closed; -1 when the
+// listing could not be read.
+static int close_pass(int dir, int lowest) {
+    alignas(dirent64) char buf[4096];
+    if (lseek(dir, 0, SEEK_SET) != 0) return -1;
+    int closed = 0;
+    long n;
+    while ((n = syscall(SYS_getdents64, dir, buf, sizeof buf)) > 0)
+        for (long at = 0; at < n;) {
+            const auto *entry = reinterpret_cast<const dirent64 *>(buf + at);
+            at += entry->d_reclen;
+            const int fd = fd_number(entry->d_name);
+            if (fd >= lowest && fd != dir && close(fd) == 0) ++closed;
+        }
+    return n < 0 ? -1 : closed;
+}
+#endif
+
+// In the child: closes every descriptor from `lowest` up that /proc/self/fd lists (system calls
+// only). Closing changes the listing, so it is read again until a pass closes nothing. False when
+// it cannot be read (no /proc, or the call refused): the caller then goes through every number.
+static bool close_listed(int lowest) {
+#ifdef SYS_getdents64
+    const int dir = open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir < 0) return false;
+    int closed;
+    while ((closed = close_pass(dir, lowest)) > 0) {}
+    close(dir);
+    return closed == 0;
+#else
+    (void)lowest;
+    return false;
+#endif
+}
+
+// In the child, between fork and exec: close every descriptor from `lowest` up. Only system calls
+// here (the parent has other threads, so nothing that might take a lock).
 static void close_from(int lowest, int bound) {
 #ifdef SYS_close_range
     if (syscall(SYS_close_range, static_cast<unsigned>(lowest), ~0U, 0U) == 0) return;
 #endif
+    if (close_listed(lowest)) return;
     for (int fd = lowest; fd < bound; ++fd) close(fd);
 }
 

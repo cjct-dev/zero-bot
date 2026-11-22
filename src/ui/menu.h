@@ -70,6 +70,11 @@ public:
     void problem(const std::string &title, const std::string &text);   // wrapped text that stays until ESC
     size_t depth() const { return stack_.size(); }
     bool editing() const { return editing_; }   // a text field is open: every key types
+    // The page on top, as a number no other page shown has had (0 with none). Slow work started from a
+    // page acts on its answer only while showing() that page: not over a page the user has gone on to
+    // or back to, nor under a text field opened over it, nor on the chat after settings closed.
+    unsigned long on_top() const { return stack_.empty() ? 0 : stack_.back().id; }
+    bool showing(unsigned long page) const { return page != 0 && page == on_top() && !editing_; }
     bool in_guide() const;          // a page of the setup guide is open, on top or under the one shown
     std::string title() const;      // the top page's title, and the label of the row the cursor
     std::string selected() const;   // is on ("" with no page): for the checks in --shots
@@ -90,10 +95,11 @@ public:
 private:
     void render();
     void show_editor(bool on);
-    struct Frame { MenuPage page; int selected = 0; int scroll = 0; int revision = 0; };
+    struct Frame { MenuPage page; int selected = 0; int scroll = 0; int revision = 0; unsigned long id = 0; };
     void build_items();             // runs the top page's build, noting its revision
     void settle();                  // after a rebuild: the cursor on a row that exists and can be selected
     std::vector<Frame> stack_;
+    unsigned long pushed_ = 0;      // pages pushed so far: each gets the next number (on_top)
     std::vector<MenuItem> items_;
     lv_obj_t *root_ = nullptr, *title_ = nullptr, *list_ = nullptr, *hint_ = nullptr, *toast_ = nullptr;
     lv_obj_t *editor_ = nullptr, *edit_title_ = nullptr, *edit_field_ = nullptr, *edit_help_ = nullptr;

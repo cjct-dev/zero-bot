@@ -60,6 +60,31 @@ discovery::Network slow_look_data() {
     return net;
 }
 
+// And through a third, for the check of a device's page, which comes after the Smart home page's.
+discovery::Route slow_route_device() { return {"test-device", "127.0.0.1"}; }
+discovery::Network slow_look_device() {
+    discovery::Network net = slow_look();
+    net.iface = "test-device";
+    return net;
+}
+
+// Delivers what slow work posts to the UI queue, which --shots drains itself, until `shown` holds
+// (up to 4 s); whether it does.
+bool arrives(const std::function<bool()> &shown) {
+    for (int i = 0; i < 200 && !shown(); ++i) {
+        uiq::drain();
+        usleep(20 * 1000);
+    }
+    return shown();
+}
+
+// Waits (up to 3 s) until an answer from slow work waits in the UI queue, undelivered: a check can
+// then move on in the menu first, and deliver it after with uiq::drain().
+bool answer_waiting() {
+    for (int i = 0; i < 150 && uiq::pending() == 0; ++i) usleep(20 * 1000);
+    return uiq::pending() > 0;
+}
+
 // Presses ENTER on the row under the cursor while the network is found only after a slow first look
 // (`slow`): opening a page never waits for the network on the UI thread. True when the key came back
 // at once with the page `title` up and still without what `shown` looks for, which then came with
@@ -73,11 +98,7 @@ bool opens_at_once(Menu &menu, const home::testing::NetworkSource &slow, const s
     menu.key(enter);
     const unsigned long took = sys::now_ms() - t0;
     const bool looking = menu.title() == title && !shown();
-    for (int i = 0; i < 200 && !shown(); ++i) {
-        uiq::drain();
-        usleep(20 * 1000);
-    }
-    const bool listed = shown();
+    const bool listed = arrives(shown);
     home::testing::set_network_source(nullptr);
     setenv("ZB_TEST_NETWORK", "1", 1);
     if (took > 500 || !looking || !listed)
@@ -205,7 +226,106 @@ struct Shots {
         fprintf(stderr, "the page \"%s\" has no row \"%s\" to move to\n", app.menu.title().c_str(), label.c_str());
         failed = true;
     }
+
+    // menu_to, then ENTER.
+    void press(const std::string &label) {
+        menu_to(label);
+        KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
+        app.menu.key(enter);
+    }
 };
+
+namespace {
+
+// Only chat models are chosen without the user (ZB-088; ui/models.h): from a service that labels its
+// models, the one labelled "chat", even with an unlabelled one listed first; from one that labels none,
+// nothing (while settings list every model, for the user to choose); from one with no chat model, no
+// language model (settings list the unlabelled ones). A model already chosen stays. Checked, not pictured.
+bool models_chosen_by_rule() {
+    const models::List labelled = {{"embed", ""}, {"chatty", "chat"}, {"ears", "audio_transcription"}, {"voice", "audio_speech"}};
+    const models::List unlabelled = {{"one", ""}, {"two", ""}};
+    const models::List no_chat = {{"embed", ""}, {"ears", "audio_transcription"}};
+    // Only the speech models labelled: the chat model, unlabelled, is not taken without the user,
+    // but settings list it for them to choose (else the list for the language model was empty).
+    const models::List speech_only = {{"talker", ""}, {"ears", "audio_transcription"}, {"voice", "audio_speech"}};
+    Settings picked, none, no_llm, kept, partial;
+    kept.llm_model = "mine";
+    models::choose(picked, labelled);
+    models::choose(none, unlabelled);
+    models::choose(no_llm, no_chat);
+    models::choose(kept, labelled);
+    models::choose(partial, speech_only);
+    const bool automatic = picked.llm_model == "chatty" && picked.stt_model == "ears" && picked.tts_model == "voice" &&
+                           none.llm_model.empty() && none.stt_model.empty() && none.tts_model.empty() &&
+                           no_llm.llm_model.empty() && no_llm.stt_model == "ears" && kept.llm_model == "mine" &&
+                           partial.llm_model.empty() && partial.tts_model == "voice";
+    const bool by_hand = models::offered(labelled, "chat") == std::vector<std::string>{"chatty"} &&
+                         models::offered(unlabelled, "chat") == std::vector<std::string>{"one", "two"} &&
+                         models::offered(unlabelled, "audio_speech") == std::vector<std::string>{"one", "two"} &&
+                         models::offered(no_chat, "chat") == std::vector<std::string>{"embed"} &&
+                         models::offered(speech_only, "chat") == std::vector<std::string>{"talker"};
+    if (!automatic || !by_hand)
+        fprintf(stderr, "a model was chosen from the service's list by the wrong rule (automatic %d, settings list %d)\n",
+                automatic, by_hand);
+    return automatic && by_hand;
+}
+
+// A setup guide opened afresh and walked to its AI service page, past the internet step (with a
+// connection or without).
+void setup_at_service(Shots &shots, std::function<void()> on_finish) {
+    open_setup(shots.app.menu, std::move(on_finish));
+    shots.press("Start setup");
+    shots.press(shots.app.menu.row_of("Continue") >= 0 ? "Continue" : "Continue without internet");
+}
+
+// Answers to the setup guide's slow requests that come back after the user has left the page that
+// asked: each is held in the UI queue until the user has moved on, then delivered, and the check fails
+// unless it was delivered and changed nothing on screen. Nothing listens at the service's address
+// here, so each answer is a quick failure. Checked, not pictured.
+// - "Test and continue", answered after Skip and Finish (refactor review B5): it reopened the
+//   finished guide on its models page, whose Continue then used a self-reference already let go (a
+//   crash), or showed "That did not work" over the chat.
+// - The list of models asked for on the models page, answered after Continue (fix round 2, C8): it
+//   opened the picker, or "Could not load models", over the page about the user.
+bool late_setup_answers_ignored(Shots &shots) {
+    Menu &menu = shots.app.menu;
+    const Settings was = Settings::get();
+    set([](Settings &s) { s.api_base = "http://127.0.0.1:9/v1"; s.api_key = "unused"; });
+    uiq::drain();   // nothing else waits to be delivered
+
+    bool ended = false;
+    setup_at_service(shots, [&ended] { ended = true; });
+    shots.press("Test and continue");
+    const bool tested = answer_waiting();
+    for (const char *row : {"Skip this step", "Continue", "Continue", "Finish"}) shots.press(row);
+    const bool finished = ended && !menu.open();
+    const size_t test_answers = uiq::drain();
+    const bool test_ok = tested && test_answers > 0 && finished && !menu.open();
+    if (!test_ok)
+        fprintf(stderr, "a late answer to the setup guide's service test was not held and delivered after the guide finished, or "
+                        "reopened it (held %d, delivered %zu, finished %d, reopened on \"%s\")\n",
+                tested, test_answers, finished, menu.title().c_str());
+
+    setup_at_service(shots, nullptr);
+    shots.press("Skip this step");
+    shots.press("Language model");
+    const bool listed = answer_waiting();
+    shots.press("Continue");
+    const std::string next = menu.title();
+    const size_t list_answers = uiq::drain();
+    const bool models_ok = listed && list_answers > 0 && next == "Setup 4 of 5: about you" && menu.title() == next;
+    if (!models_ok)
+        fprintf(stderr, "a list of models asked for on the setup guide's models page, answered on the next page, was not held and "
+                        "delivered, or opened over it (held %d, delivered %zu, \"%s\" became \"%s\")\n",
+                listed, list_answers, next.c_str(), menu.title().c_str());
+
+    menu.close();
+    for (int i = 0; i < Menu::kToastTicks; ++i) menu.tick();   // the toasts go, for the screens to come
+    set([&was](Settings &s) { s = was; });
+    return test_ok && models_ok;
+}
+
+}  // namespace
 
 // ------------------------------------------------------------ screenshots
 int App::render_shots(const std::string &dir) {
@@ -672,40 +792,7 @@ void App::shots_sample_data(Shots &shots) {
 void App::shots_setup(Shots &shots) {
     auto snap = [&shots](const char *name) { shots.snap(name); };
     bool &failed = shots.failed;
-    {
-        // Only chat models are chosen without the user (ZB-088; ui/models.h): from a service that labels
-        // its models, the one labelled "chat", even with an unlabelled one listed first; from one that
-        // labels none, nothing (while settings list every model, for the user to choose); from one with no
-        // chat model, no language model (settings list the unlabelled ones). A model already chosen stays.
-        // Checked, not pictured.
-        const models::List labelled = {{"embed", ""}, {"chatty", "chat"}, {"ears", "audio_transcription"}, {"voice", "audio_speech"}};
-        const models::List unlabelled = {{"one", ""}, {"two", ""}};
-        const models::List no_chat = {{"embed", ""}, {"ears", "audio_transcription"}};
-        // Only the speech models labelled: the chat model, unlabelled, is not taken without the user,
-        // but settings list it for them to choose (else the list for the language model was empty).
-        const models::List speech_only = {{"talker", ""}, {"ears", "audio_transcription"}, {"voice", "audio_speech"}};
-        Settings picked, none, no_llm, kept, partial;
-        kept.llm_model = "mine";
-        models::choose(picked, labelled);
-        models::choose(none, unlabelled);
-        models::choose(no_llm, no_chat);
-        models::choose(kept, labelled);
-        models::choose(partial, speech_only);
-        const bool automatic = picked.llm_model == "chatty" && picked.stt_model == "ears" && picked.tts_model == "voice" &&
-                               none.llm_model.empty() && none.stt_model.empty() && none.tts_model.empty() &&
-                               no_llm.llm_model.empty() && no_llm.stt_model == "ears" && kept.llm_model == "mine" &&
-                               partial.llm_model.empty() && partial.tts_model == "voice";
-        const bool by_hand = models::offered(labelled, "chat") == std::vector<std::string>{"chatty"} &&
-                             models::offered(unlabelled, "chat") == std::vector<std::string>{"one", "two"} &&
-                             models::offered(unlabelled, "audio_speech") == std::vector<std::string>{"one", "two"} &&
-                             models::offered(no_chat, "chat") == std::vector<std::string>{"embed"} &&
-                             models::offered(speech_only, "chat") == std::vector<std::string>{"talker"};
-        if (!automatic || !by_hand) {
-            fprintf(stderr, "a model was chosen from the service's list by the wrong rule (automatic %d, settings list %d)\n",
-                    automatic, by_hand);
-            failed = true;
-        }
-    }
+    if (!models_chosen_by_rule()) failed = true;
     run_setup();
     snap("setup-welcome");
     {
@@ -751,43 +838,7 @@ void App::shots_setup(Shots &shots) {
         if (!without_power_on(menu, "setup guide's extras", {"Speak replies", "Finish"})) failed = true;
         menu.close();
     }
-    {
-        // The answer to "Test and continue" comes back after the user skipped the step and finished the
-        // guide: it changes nothing on screen. It used to reopen the finished guide on its models page,
-        // whose Continue then used a self-reference already let go (a crash), or here, where nothing
-        // listens at the address and the answer is a quick failure, to show "That did not work" over
-        // the chat. Checked, not pictured.
-        const Settings was = Settings::get();
-        set([](Settings &s) { s.api_base = "http://127.0.0.1:9/v1"; s.api_key = "unused"; });
-        KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
-        bool ended = false;
-        open_setup(menu, [&ended] { ended = true; });
-        shots.menu_to("Start setup");
-        menu.key(enter);
-        if (!move_to(menu, "Continue")) shots.menu_to("Continue without internet");
-        menu.key(enter);
-        shots.menu_to("Test and continue");
-        menu.key(enter);                       // asks the service; its answer waits in the UI queue
-        for (const char *row : {"Skip this step", "Continue", "Continue", "Finish"}) {
-            shots.menu_to(row);
-            menu.key(enter);
-        }
-        const bool finished = ended && !menu.open();
-        bool reopened = false;
-        for (int i = 0; i < 75 && !reopened; ++i) {   // up to 1.5 s for the answer (a refused connection)
-            uiq::drain();
-            reopened = menu.open();
-            usleep(20 * 1000);
-        }
-        if (!finished || reopened) {
-            fprintf(stderr, "a late answer to the setup guide's service test reopened it after it had finished (finished %d, "
-                            "reopened on \"%s\")\n", finished, menu.title().c_str());
-            failed = true;
-        }
-        menu.close();
-        for (int i = 0; i < Menu::kToastTicks; ++i) menu.tick();   // its toast goes, for the screens to come
-        set([&was](Settings &s) { s = was; });
-    }
+    if (!late_setup_answers_ignored(shots)) failed = true;
 }
 
 void App::shots_settings(Shots &shots) {
@@ -916,12 +967,20 @@ void App::shots_smart_home(Shots &shots) {
     menu.key(enter);
     shots.menu_to("Part of");
     menu.key(enter);
+    // What a device still needs is asked in the background (it looks at the network): pictured once known.
+    if (!arrives([this] { return menu.row_of("Read it again") >= 0; })) {
+        fprintf(stderr, "the device's page never learnt that it needs no setting up\n");
+        shots.failed = true;
+    }
     snap("home-device");
     menu.key(esc); menu.key(esc);
     shots.menu_to("Garden strip");                 // the strip that listed nothing, under "To set up"
     snap("home-to-set-up");
     shots.menu_to("Tapo P110");                    // the plug still to be set up
-    menu.key(enter);
+    // A device's page never waits for the network on the UI thread either (fix round 2, C9): what the
+    // plug still needs takes the first full look at the network, here a second and a half.
+    static const home::testing::NetworkSource slow_device{slow_route_device, slow_router_mac, slow_look_device};
+    if (!opens_at_once(menu, slow_device, "Home device", [this] { return menu.row_of("Set up…") >= 0; })) shots.failed = true;
     snap("home-setup");
     shots.menu_to("Set up…");
     menu.key(enter);

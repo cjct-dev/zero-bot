@@ -27,6 +27,7 @@
 #include <curl/curl.h>
 
 #include "smarthome/home.h"
+#include "smarthome/internal.h"   // testing::new_run: a later run
 
 using namespace shelly::detail;
 using home::json;
@@ -808,6 +809,37 @@ static void test_storage() {
     CHECK(later->next_step(old).kind == home::Pairing::None);
 }
 
+// A password typed again and refused while pairing stays refused (fix round 2, C2). The shared layer
+// drops it from the device's record only with its write of the outcome, and when that write fails
+// the record still holds the password: nothing is sent with it, in this run or a later one.
+static void test_refused_while_pairing() {
+    Refuser dev_side;
+    auto drv = make_shelly_driver();
+    MemSecrets sec;
+    drv->attach(&sec);
+    home::Thing relay = thing_of({{"gen", 1}, {"comp", "relay"}, {"id", 0}, {"dev", "a4cf12f45378"}}, home::kPower);
+    relay.id = "relay:0";
+    home::Device dev;
+    dev.id = "shelly:shelly1-pairing";
+    dev.kind = "shelly";
+    dev.ip = "127.0.0.1";
+    dev.port = dev_side.port;
+    dev.things = {relay};
+    dev.auth = {{"user", "admin"}, {"password", "pw"}};
+    sec.all = {{"shelly", {{"locked", {{dev.id, 1}}}, {"refused", {{dev.id, fingerprint("admin", "pw")}}}}}};
+    const home::Device on_file = dev;   // what the record holds until the outcome is written
+    std::string err;
+    CHECK(drv->next_step(dev).kind == home::Pairing::EnterCode && drv->pair(dev, "admin", err));
+    CHECK(drv->next_step(dev).kind == home::Pairing::Password);
+    CHECK_MSG(!drv->pair(dev, "pw", err) && dev_side.logins == 1 && !dev.auth.contains("password"), err);
+    home::Change on;
+    on.on = true;
+    CHECK_MSG(!drv->apply(on_file, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 1,
+              std::to_string(dev_side.logins) + " logins: " + err);
+    home::testing::new_run();
+    CHECK(!drv->apply(on_file, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 1);
+}
+
 static void test_refusals_together() {
     Refuser dev_side;
     auto drv = make_shelly_driver();
@@ -858,6 +890,7 @@ int main() {
     test_driver();
     test_refusals_together();
     test_storage();
+    test_refused_while_pairing();
     curl_global_cleanup();
     printf("shelly: %d checks, %d failed\n", g_run, g_failed);
     return g_failed ? 1 : 0;

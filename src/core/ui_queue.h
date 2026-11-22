@@ -39,6 +39,13 @@ inline void wait(unsigned long ms) {
     wake_due() = false;
 }
 
+// How many closures wait to be run: for the checks in --shots, which hold an answer back while they
+// move on in the menu, then deliver it with drain().
+inline size_t pending() {
+    std::lock_guard<std::mutex> lk(mtx());
+    return items().size();
+}
+
 // Runs what has been posted; how many there were.
 inline size_t drain() {
     std::vector<std::function<void()>> batch;

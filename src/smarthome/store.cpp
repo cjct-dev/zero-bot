@@ -14,6 +14,7 @@
 #include <set>
 
 #include "platform/sys.h"
+#include "smarthome/drivers/support.h"
 #include "smarthome/internal.h"
 
 namespace home {
@@ -128,7 +129,11 @@ Saved from_json(const json &j) {
     if (j.contains("found_by") && j["found_by"].is_array())
         for (const auto &m : j["found_by"])
             if (m.is_string()) d.found_by.push_back(m.get<std::string>());
-    if (j.contains("auth") && j["auth"].is_object()) d.auth = j["auth"];
+    // Something typed for it was handed to its driver and the outcome never reached the file (the app
+    // stopped, or the file could not take it): its pairing data may hold a password the device refused
+    // since, with that refusal lost. They are not used, until something typed for it is written with
+    // its outcome (pairing_submit, which takes the mark back in the same write).
+    if (d.trying.empty() && j.contains("auth") && j["auth"].is_object()) d.auth = j["auth"];
     if (j.contains("things") && j["things"].is_array())
         for (const auto &tj : j["things"]) {
             Thing t;
@@ -260,16 +265,6 @@ bool edit_thing(const std::string &network_id, const std::string &device_id, con
 
 }  // namespace
 
-std::string mac_key(const std::string &raw) {
-    std::string hex;
-    for (const char c : raw) {
-        if (c == ':' || c == '-') continue;
-        if (!isxdigit(static_cast<unsigned char>(c)) || hex.size() >= 12) return "";
-        hex += static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    }
-    return hex.size() == 12 && hex != "000000000000" ? hex : "";
-}
-
 bool allowed_type(const std::string &type) {
     return std::find_if(std::begin(kTypes), std::end(kTypes), [&](const char *t) { return type == t; }) != std::end(kTypes);
 }
@@ -335,6 +330,15 @@ namespace {
 const char *const kKey = "trial";
 const char *const kTyped = "typed";
 std::string state(const json &holder) { return holder.is_object() ? util::jget(holder, kKey, std::string()) : std::string(); }
+
+std::mutex g_refused_mtx;
+std::map<std::string, std::set<std::string>> g_refused;   // slot -> prints refused in this run
+
+// The memory of refusals is this run's: another run starts without it (testing::new_run).
+void forget_refusals() {
+    std::lock_guard<std::mutex> lk(g_refused_mtx);
+    g_refused.clear();
+}
 }  // namespace
 
 void typed(json &holder) {
@@ -357,6 +361,22 @@ bool end(json &holder) {
     if (!holder.is_object() || !holder.contains(kKey)) return false;
     holder.erase(kKey);
     return true;
+}
+
+void refuse(const std::string &slot, const std::string &print) {
+    std::lock_guard<std::mutex> lk(g_refused_mtx);
+    g_refused[slot].insert(print);
+}
+
+bool refused(const std::string &slot, const std::string &print) {
+    std::lock_guard<std::mutex> lk(g_refused_mtx);
+    const auto it = g_refused.find(slot);
+    return it != g_refused.end() && it->second.count(print) > 0;
+}
+
+void forgive(const std::string &slot) {
+    std::lock_guard<std::mutex> lk(g_refused_mtx);
+    g_refused.erase(slot);
 }
 }  // namespace trial
 
@@ -437,24 +457,21 @@ discovery::Network network_now(bool fresh) {
     return cached;
 }
 
-bool scan(const discovery::Network &consented, std::vector<discovery::Device> &found, std::string &err, bool *heard_self) {
+bool scan_on(const discovery::Options &opt, ScanFn stand_in, std::vector<discovery::Device> &found, std::string &err,
+             bool *heard_self) {
     found.clear();
     if (heard_self) *heard_self = false;
-    const ScanFn stand_in_scan = test_scan();
-    if (!stand_in_scan && test_network()) { err = "Nothing is scanned while the test network is in use."; return false; }
     // Asked afresh before and after: a cached answer could still describe the network left a moment ago.
-    auto still_on = [&consented] {
+    auto still_on = [&opt] {
         const discovery::Network now = network_now(true);
-        return now.usable && now.id() == consented.id();
+        return now.usable && now.id() == opt.network_id;
     };
     if (!still_on()) {
         err = "This device is no longer on the network shown, so nothing was scanned. Open Smart home again to see the "
               "network it is on now.";
         return false;
     }
-    discovery::Options opt;
-    opt.network_id = consented.id();
-    if (!(stand_in_scan ? stand_in_scan(found) : discovery::scan(opt, found, err, heard_self))) return false;
+    if (!(stand_in ? stand_in(found) : discovery::scan(opt, found, err, heard_self))) return false;
     if (!still_on()) {
         found.clear();
         err = "The network changed during the scan, so nothing it found was saved. Open Smart home again to see the "
@@ -462,6 +479,18 @@ bool scan(const discovery::Network &consented, std::vector<discovery::Device> &f
         return false;
     }
     return true;
+}
+
+bool scan(const discovery::Network &consented, std::vector<discovery::Device> &found, std::string &err, bool *heard_self) {
+    const ScanFn stand_in_scan = test_scan();
+    if (!stand_in_scan && test_network()) {
+        found.clear();
+        err = "Nothing is scanned while the test network is in use.";
+        return false;
+    }
+    discovery::Options opt;
+    opt.network_id = consented.id();
+    return scan_on(opt, stand_in_scan, found, err, heard_self);
 }
 
 bool on_network(const std::string &network_id, std::string &why_not) {
@@ -524,15 +553,16 @@ int remember_scan(const discovery::Network &net, const std::vector<discovery::De
         // Bridge heard only as HomeKit, which no driver claims; a device never set up) holds no
         // decision, and must not leave the record that can control it switched off.
         bool twin = false;
-        const std::string mac = mac_key(f.mac);
+        const std::string mac = support::mac_digits(f.mac);
         for (auto &d : e.devices) {
             if (d.id == f.id) known = &d;
-            else twin = twin || (!mac.empty() && mac_key(d.mac) == mac && (!d.enabled || !d.things.empty()));
+            else twin = twin || (!mac.empty() && support::mac_digits(d.mac) == mac && (!d.enabled || !d.things.empty()));
         }
         // The same id from a device with another MAC than the one saved is another device (an id
         // made from an address, or one a device made up): it is not folded into the saved record,
         // which keeps its name, settings and MAC, and it is not saved by this scan.
-        if (known && !mac.empty() && !mac_key(known->mac).empty() && mac_key(known->mac) != mac) continue;
+        const std::string saved_mac = known ? support::mac_digits(known->mac) : std::string();
+        if (!mac.empty() && !saved_mac.empty() && saved_mac != mac) continue;
         if (!known) {
             e.devices.emplace_back();
             known = &e.devices.back();
@@ -548,7 +578,7 @@ int remember_scan(const discovery::Network &net, const std::vector<discovery::De
         known->kind = f.kind; known->model = f.model;
         if (known->things.empty() || known->name.empty()) known->name = f.name;
         known->ip = f.ip; known->port = f.port; known->info = f.info; known->found_by = f.found_by;
-        if (!f.mac.empty()) known->mac = f.mac;
+        if (!mac.empty()) known->mac = f.mac;   // an empty, unreadable or all-zero MAC never replaces the one saved
         known->last_seen = now;
     }
     store_entry(root, e);
@@ -677,8 +707,11 @@ void set_network_source(const NetworkSource *source) {
 void set_clock(unsigned long (*clock_ms)()) { g_test_clock = clock_ms; }
 
 void new_run() {
-    std::lock_guard<std::mutex> lk(g_run_mtx);
-    g_run.clear();
+    {
+        std::lock_guard<std::mutex> lk(g_run_mtx);
+        g_run.clear();
+    }
+    trial::forget_refusals();
 }
 
 void clear_drivers() {

@@ -27,6 +27,13 @@ bool on_network(const std::string &network_id, std::string &why_not);
 // The stand-in for a discovery scan that the device-free tests set (testing::set_scan), or nullptr.
 using ScanFn = bool (*)(std::vector<discovery::Device> &found);
 ScanFn test_scan();
+// A discovery scan bound to the network `opt.network_id` names (through `stand_in` when a test set
+// one): refused when the device is not on it as the scan starts, and what was heard is dropped (false,
+// `found` empty) when the network changed while it listened. The settings page's scan (home::scan) and
+// the short search for a device that stopped answering (relocate) both go through it, so that neither
+// saves one network's devices or addresses under another's name.
+bool scan_on(const discovery::Options &opt, ScanFn stand_in, std::vector<discovery::Device> &found, std::string &err,
+             bool *heard_self = nullptr);
 
 // Whether this device's address may be contacted at all: on the stand-in test network only a
 // 127.x address may.
@@ -34,10 +41,6 @@ bool may_contact(const Device &device, std::string &why_not);
 
 // Only these types of thing are ever kept or offered (survey 6.5: an allow-list).
 bool allowed_type(const std::string &type);
-
-// The twelve hex digits of a MAC address in any of the notations saved ("aa:bb:..", "AA-BB-..",
-// none), lower case; "" when it is not one, or is all zeros.
-std::string mac_key(const std::string &raw);
 
 // Folds a fresh list of things from a driver into what is saved for the device.
 void merge_things(Saved &device, std::vector<Thing> fresh, time_t now);

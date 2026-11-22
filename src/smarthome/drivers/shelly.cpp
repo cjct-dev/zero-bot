@@ -990,84 +990,8 @@ public:
         err.clear();
         if (!dev.auth.is_object()) dev.auth = json::object();
         const home::PairStep step = next_step(dev);
-        const std::string key = device_key(dev);
-        if (step.kind == home::Pairing::EnterCode) {
-            const std::string user = util::trim(input);
-            if (user.empty() || user.size() > 64 || user.find(':') != std::string::npos ||
-                std::any_of(user.begin(), user.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; })) {
-                err = "That cannot be a Shelly user name (no colons, at most 64 characters).";
-                return false;
-            }
-            // A new user name starts afresh: its password is asked for next. The device the login
-            // is for stays the same.
-            const std::string paired = text(member(dev.auth, "dev"));
-            dev.auth = {{"user", user}};
-            if (!paired.empty()) dev.auth["dev"] = paired;
-            forget(key, false);
-            return true;
-        }
-        if (step.kind != home::Pairing::Password) return true;
-        if (input.empty() || input.size() > 256) { err = "Type the password."; return false; }
-        Target t;
-        if (!target_of(dev, t, err)) return false;
-        const Deadline dl(kListMs);
-        // What was typed is kept (a password typed again is no longer refused), but it goes only to
-        // the device it is for: after a change of address another Shelly would be sent it (in the
-        // clear, for Gen1), and its refusal would be taken for this one's.
-        dev.auth["password"] = input;
-        if (locked_gen(key) >= 2) dev.auth["user"] = "admin";
-        forget(key, false);
-        // On trial from now (driver.h home::trial), kept in the family's secrets: read() and apply()
-        // cannot change Device::auth. A password whose trial cannot be written is not kept.
-        if (!note_trial(key, login_of(dev, locked_gen(key)), [](json &e) { home::trial::typed(e); return true; })) {
-            dev.auth.erase("password");
-            err = "The password could not be saved on this device (its storage may be full), so it was not sent.";
-            return false;
-        }
-        Identity who;
-        if (!identify(t, dl, who, err)) {
-            err += " The password is kept, and is tried when the device is next read.";
-            return false;
-        }
-        if (!same_device(dev.things, dev.auth, who, dev.things.empty() ? 0 : ref_int(dev.things[0], "gen", 1, 9, 0), err)) {
-            err += " The password typed is kept.";
-            return false;
-        }
-        const int gen = who.gen;
-        if (gen >= 2) dev.auth["user"] = "admin";
-        // One request to check it. A refusal is not kept as the device's password at all.
-        const Login login = login_of(dev, gen);
-        if (!begin_trial(key, login, err)) {
-            dev.auth.erase("password");
-            return false;
-        }
-        const Reply r = exchange(t, "GET", gen >= 2 ? detail::rpc_path("Shelly.GetStatus", json()) : std::string("/status"), "", gen,
-                                 &login, dl);
-        if (r.answered && !r.too_long && r.status == 401) {
-            dev.auth.erase("password");
-            note_trial(key, login, [](json &e) { return home::trial::end(e); });
-            if (gen == 1) dev.auth.erase("user");
-            err = gen == 1 ? "The Shelly did not accept this user name and password. Type them again; capitals count."
-                           : "The Shelly did not accept this password. Capitals count; type it again.";
-            return false;
-        }
-        // From now on the password belongs to the device that answered, and goes to no other, even
-        // before its things are read (one with nothing to offer never has any to tell it apart).
-        dev.auth["dev"] = who.who();
-        if (r.answered && r.status == 429) {
-            err = std::string(kThrottled) + " after wrong passwords. The password is saved and will be tried when the "
-                                            "device is next read; wait a few minutes first.";
-            return false;
-        }
-        if (!r.answered) {
-            err = std::string("The password is saved, but the Shelly did not answer.");
-            return false;
-        }
-        if (r.status < 200 || r.status >= 300) {
-            err = "The password is saved, but the Shelly reported an error when asked with it.";
-            return false;
-        }
-        note_trial(key, login, [](json &e) { return home::trial::end(e); });
+        if (step.kind == home::Pairing::EnterCode) return pair_user(dev, input, err);
+        if (step.kind == home::Pairing::Password) return pair_password(dev, input, err);
         return true;
     }
 
@@ -1205,6 +1129,94 @@ public:
     }
 
 private:
+    // The user name step (Gen1). A new user name starts afresh: its password is asked for next. The
+    // device the login is for stays the same.
+    bool pair_user(home::Device &dev, const std::string &input, std::string &err) {
+        const std::string user = util::trim(input);
+        if (user.empty() || user.size() > 64 || user.find(':') != std::string::npos ||
+            std::any_of(user.begin(), user.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; })) {
+            err = "That cannot be a Shelly user name (no colons, at most 64 characters).";
+            return false;
+        }
+        const std::string paired = text(member(dev.auth, "dev"));
+        dev.auth = {{"user", user}};
+        if (!paired.empty()) dev.auth["dev"] = paired;
+        forget(device_key(dev), false);
+        return true;
+    }
+
+    // The password step. What was typed is kept (a password typed again is no longer refused), but it
+    // goes only to the device it is for: after a change of address another Shelly would be sent it (in
+    // the clear, for Gen1), and its refusal would be taken for this one's.
+    bool pair_password(home::Device &dev, const std::string &input, std::string &err) {
+        if (input.empty() || input.size() > 256) { err = "Type the password."; return false; }
+        Target t;
+        if (!target_of(dev, t, err)) return false;
+        const Deadline dl(kListMs);
+        dev.auth["password"] = input;
+        if (locked_gen(t.key) >= 2) dev.auth["user"] = "admin";
+        forget(t.key, false);
+        // On trial from now (driver.h home::trial), kept in the family's secrets: read() and apply()
+        // cannot change Device::auth. A password whose trial cannot be written is not kept.
+        if (!note_trial(t.key, login_of(dev, locked_gen(t.key)), [](json &e) { home::trial::typed(e); return true; })) {
+            dev.auth.erase("password");
+            err = "The password could not be saved on this device (its storage may be full), so it was not sent.";
+            return false;
+        }
+        Identity who;
+        if (!identify(t, dl, who, err)) {
+            err += " The password is kept, and is tried when the device is next read.";
+            return false;
+        }
+        if (!same_device(dev.things, dev.auth, who, dev.things.empty() ? 0 : ref_int(dev.things[0], "gen", 1, 9, 0), err)) {
+            err += " The password typed is kept.";
+            return false;
+        }
+        if (who.gen >= 2) dev.auth["user"] = "admin";
+        return check_password(dev, t, who, dl, err);
+    }
+
+    // One request with the password just typed, to the device that answered as this one (`who`), and
+    // its outcome kept. A refused password is not kept as the device's password at all.
+    bool check_password(home::Device &dev, const Target &t, const Identity &who, const Deadline &dl, std::string &err) {
+        const int gen = who.gen;
+        const Login login = login_of(dev, gen);
+        if (!begin_trial(t.key, login, err)) {
+            dev.auth.erase("password");
+            return false;
+        }
+        const Reply r = exchange(t, "GET", gen >= 2 ? detail::rpc_path("Shelly.GetStatus", json()) : std::string("/status"), "", gen,
+                                 &login, dl);
+        if (r.answered && !r.too_long && r.status == 401) {
+            // Kept refused (its trial stays too) until the same write that drops it from the device's
+            // record reaches the file: should that write fail, the record still holds it.
+            keep_refusal(t.key, login);
+            dev.auth.erase("password");
+            if (gen == 1) dev.auth.erase("user");
+            err = gen == 1 ? "The Shelly did not accept this user name and password. Type them again; capitals count."
+                           : "The Shelly did not accept this password. Capitals count; type it again.";
+            return false;
+        }
+        // From now on the password belongs to the device that answered, and goes to no other, even
+        // before its things are read (one with nothing to offer never has any to tell it apart).
+        dev.auth["dev"] = who.who();
+        if (r.answered && r.status == 429) {
+            err = std::string(kThrottled) + " after wrong passwords. The password is saved and will be tried when the "
+                                            "device is next read; wait a few minutes first.";
+            return false;
+        }
+        if (!r.answered) {
+            err = std::string("The password is saved, but the Shelly did not answer.");
+            return false;
+        }
+        if (r.status < 200 || r.status >= 300) {
+            err = "The password is saved, but the Shelly reported an error when asked with it.";
+            return false;
+        }
+        note_trial(t.key, login, [](json &e) { return home::trial::end(e); });
+        return true;
+    }
+
     // ---- the family's secrets: {"locked": {device: generation}, "refused": {device: fingerprint}}
     json family() const { return secrets_ ? secrets_->get(kFamily) : json::object(); }
 
@@ -1266,14 +1278,10 @@ private:
         return false;
     }
 
-    // Whether this login's refusal was kept: in the file, or in memory when the file could not take it.
+    // Whether this login's refusal was kept: in this run's memory, or in the file.
     bool refusal_kept(const std::string &key, const Login &login) const {
         const std::string print = detail::fingerprint(login.user, login.password);
-        {
-            std::lock_guard<std::mutex> lk(secrets_mtx_);
-            const auto kept = refused_here_.find(key);
-            if (kept != refused_here_.end() && kept->second == print) return true;
-        }
+        if (home::trial::refused(slot_of(key), print)) return true;
         const json f = family();
         const json *refused = member_obj(f, "refused");
         return refused && text(member(*refused, key.c_str())) == print;
@@ -1293,10 +1301,21 @@ private:
         return secrets_->put(kFamily, f);
     }
 
+    // Where this device's password is kept, in this run's memory of refusals (driver.h home::trial).
+    static std::string slot_of(const std::string &key) { return std::string(kFamily) + "\n" + key; }
+
+    // A login the Shelly refused: kept in this run's memory, so that it is not sent again even when the
+    // file cannot take it, and in the file for later runs.
+    void keep_refusal(const std::string &key, const Login &login) {
+        const std::string print = detail::fingerprint(login.user, login.password);
+        home::trial::refuse(slot_of(key), print);
+        note("refused", key, print);
+    }
+
     void forget(const std::string &key, bool locked_too) {
         if (!secrets_) return;
+        home::trial::forgive(slot_of(key));
         std::lock_guard<std::mutex> lk(secrets_mtx_);
-        refused_here_.erase(key);
         json f = secrets_->get(kFamily);
         if (!f.is_object()) return;
         bool changed = false;
@@ -1388,12 +1407,7 @@ private:
         if (!r.answered) { err = kNoAnswer; return false; }
         if (r.status == 401) {
             if (r.sent_login) {
-                const std::string print = detail::fingerprint(login.user, login.password);
-                // Kept in memory as well when the file cannot take it: not sent again in this run at least.
-                if (!note("refused", t.key, print)) {
-                    std::lock_guard<std::mutex> lk(secrets_mtx_);
-                    refused_here_[t.key] = print;
-                }
+                keep_refusal(t.key, login);
                 note("locked", t.key, gen);
                 return refused_error(err);
             }
@@ -1443,7 +1457,6 @@ private:
     }
 
     mutable std::mutex secrets_mtx_;
-    std::map<std::string, std::string> refused_here_;   // refusals the file could not take, by device key
 };
 
 }  // namespace

@@ -73,6 +73,10 @@ std::string new_login_error() {
            " (the one Tapo plugs use) with a firmware update, and Zero Bot cannot use that login with Kasa devices";
 }
 
+// The MAC the device was saved under: discovery names a Kasa device "tplink:<its MAC>", and a record
+// an earlier version saved with an empty "mac" still has it there.
+std::string saved_mac(const home::Device &dev) { return support::saved_mac(dev, "tplink:"); }
+
 std::string upper(std::string s) {
     for (char &c : s) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
     return s;
@@ -353,7 +357,7 @@ private:
             err = new_login_error();
             return false;
         }
-        if (detail::mac_digits(dev.mac).empty()) {
+        if (saved_mac(dev).empty()) {
             err = kNoIdentity;
             return false;
         }
@@ -385,10 +389,9 @@ private:
             // The answer may be from another Kasa device that moved to the newer login and now has
             // this one's address: then this one has not moved, and is looked for again.
             std::string mac;
+            const std::string saved = saved_mac(dev);
             if (!probe_says_new_login(dev.ip, until, mac)) err = kRefused;
-            else if (!detail::mac_digits(dev.mac).empty() && !detail::mac_digits(mac).empty() &&
-                     detail::mac_digits(dev.mac) != detail::mac_digits(mac))
-                err = kOtherDevice;
+            else if (!saved.empty() && !detail::mac_digits(mac).empty() && saved != detail::mac_digits(mac)) err = kOtherDevice;
             else err = new_login_error();
             return false;
         }
@@ -417,7 +420,8 @@ private:
             err = kCommandRefused;
             return false;
         }
-        if (!detail::mac_digits(dev.mac).empty() && !detail::same_device(dev.mac, s)) {
+        const std::string saved = saved_mac(dev);
+        if (!saved.empty() && !detail::same_device(saved, s)) {
             const bool named = !detail::mac_digits(text(s, "mac")).empty() || !detail::mac_digits(text(s, "mic_mac")).empty();
             err = named ? kOtherDevice : kNoMac;
             return false;

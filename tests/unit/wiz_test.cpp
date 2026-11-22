@@ -33,6 +33,8 @@
 #include <thread>
 #include <vector>
 
+#include "smarthome/internal.h"   // testing::new_run: a later run
+
 using namespace wiz;
 using namespace wiz::detail;
 
@@ -724,6 +726,20 @@ static void test_driver() {
                   !reads_as_unreachable(err), err);
         std::vector<home::Thing> readable = {light};
         check("saved without a MAC: it can still be read", driver->read(unknown, readable, err), err);
+        // Twelve zeros name no device (fix round 2, C5): saved under zeros, it is as one saved without
+        // a MAC, even when the device at the address reports zeros too.
+        pilot_mac = system_mac = "000000000000";
+        for (const char *id : {"wiz:000000000000", "wiz:zeros"}) {
+            home::Device zeros = dev;
+            zeros.id = id;
+            zeros.mac = "00:00:00:00:00:00";
+            const int before_zeros = static_cast<int>(quiet.received().size());
+            check(std::string("saved under zeros (") + id + "): the change is refused before anything is sent",
+                  !driver->apply(zeros, light, c, 2500, err) && err == kNoIdentity && static_cast<int>(quiet.received().size()) == before_zeros,
+                  err);
+        }
+        pilot_mac = "none";
+        system_mac = "a8bb5006033d";
     }
 
     {
@@ -865,6 +881,92 @@ static void test_driver() {
     check("a device saved without a MAC is not looked for (nothing to know it by)", !reads_as_unreachable(kNoIdentity));
 }
 
+// A store that takes `room` more writes and then no more (a disk that fills up).
+struct FillingSecrets : home::Secrets {
+    mutable std::mutex mtx;
+    json all = json::object();
+    int room = 0;
+    json get(const std::string &family) const override {
+        std::lock_guard<std::mutex> lock(mtx);
+        return all.contains(family) ? all[family] : json::object();
+    }
+    void set(const std::string &family, const json &value) override { put(family, value); }
+    bool put(const std::string &family, const json &value) override {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (room <= 0) return false;
+        --room;
+        all[family] = value;
+        return true;
+    }
+};
+
+// A bulb with signing firmware at `mac` that turns down every key, `delay_ms` after a setPilot comes.
+static Peer::Handler key_refuser(const std::string &mac, int delay_ms) {
+    return [mac, delay_ms](const json &req, const std::string &) -> std::vector<std::string> {
+        const std::string m = req.is_object() ? req.value("method", "") : "";
+        auto signed_reply = [&](const char *field, json body) {
+            body["sigTs"] = 1790441723;
+            return json{{"method", m}, {"env", "pro"}, {field, body}, {"hmac", "AAAA"}}.dump();
+        };
+        if (m == "getSystemConfig") return {signed_reply("result", {{"mac", mac}, {"moduleName", "ESP25_SHORGB_01"}})};
+        if (m == "getPilot") return {signed_reply("result", {{"mac", mac}, {"state", false}, {"dimming", 10}})};
+        if (m != "setPilot") return {signed_reply("error", {{"code", -32601}, {"message", "Method not found"}})};
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        return {signed_reply("error", {{"code", -32605}, {"message", "Security error"}})};
+    };
+}
+
+// A key one device refused is sent to no other device in this run, also when the file could not take
+// the refusal, which is said; and a key on trial goes to one device at a time, the others waiting for
+// the outcome (fix round 2, C1).
+static void test_key_refusals() {
+    home::testing::new_run();
+    auto driver = make_wiz_driver();
+    FillingSecrets store;
+    driver->attach(&store);
+    Peer one(key_refuser("a8bb50000001", 0)), two(key_refuser("a8bb50000002", 0));
+    home::Device first = at(one.port()), second = at(two.port());
+    first.id = "wiz:a8bb50000001";
+    second.id = "wiz:a8bb50000002";
+    std::vector<home::Thing> listed;
+    std::string err;
+    check("refusals: the devices are listed", driver->enumerate(first, listed, err) && driver->enumerate(second, listed, err), err);
+    const home::Thing light = thing_of(listed, "light");   // signed; the same model on both
+    first.things = second.things = listed;
+    home::Change c;
+    c.on = true;
+    // The key typed (the store takes it), its first use noted (the store takes that), and then nothing more.
+    store.room = 2;
+    check("refusals: a key typed", driver->pair(first, "00112233445566778899aabbccddeeff", err), err);
+    check("refused by the first device, and said that the refusal could not be noted",
+          !driver->apply(first, light, c, 1500, err) && err.find("could not be noted") != std::string::npos && one.count("setPilot") == 1, err);
+    check("the file did not take the refusal", !store.get("wiz").contains("refused"));
+    check("not sent to the second device in this run", !driver->apply(second, light, c, 1500, err) && err == kKeyRefused &&
+                                                           two.count("setPilot") == 0, err);
+    check("nor again to the first", !driver->apply(first, light, c, 1500, err) && one.count("setPilot") == 1, err);
+    check("and the key is asked for again", driver->next_step(second).kind == home::Pairing::Token);
+    home::testing::new_run();
+    check("a later run: the key counts as unconfirmed, and is not sent", !driver->apply(second, light, c, 1500, err) &&
+                                                                            err == kKeyUnconfirmed && two.count("setPilot") == 0, err);
+
+    // Another key typed: both devices refuse it a moment after it comes. It goes to one of them; the
+    // other waits for that outcome and sends nothing.
+    Peer slow_one(key_refuser("a8bb50000001", 200)), slow_two(key_refuser("a8bb50000002", 200));
+    first.port = slow_one.port();
+    second.port = slow_two.port();
+    store.room = 100;
+    check("refusals: another key typed", driver->pair(first, "ffeeddccbbaa99887766554433221100", err), err);
+    std::string err_one, err_two;
+    std::thread to_one([&] { driver->apply(first, light, c, 1500, err_one); });
+    std::thread to_two([&] { driver->apply(second, light, c, 1500, err_two); });
+    to_one.join();
+    to_two.join();
+    const bool sent_one = slow_one.count("setPilot") > 0, sent_two = slow_two.count("setPilot") > 0;
+    check("a key on trial goes to one device at a time", sent_one != sent_two,
+          std::string("sent to the first ") + (sent_one ? "yes" : "no") + ", to the second " + (sent_two ? "yes" : "no"));
+    check("and both say it was not accepted", err_one == kKeyRefused && err_two == kKeyRefused, err_one + " / " + err_two);
+}
+
 int main() {
     test_signing();
     test_models();
@@ -872,6 +974,7 @@ int main() {
     test_things_and_state();
     test_pilots();
     test_driver();
+    test_key_refusals();
     printf("%d checks, %d failed\n", g_run, g_failed);
     return g_failed ? 1 : 0;
 }

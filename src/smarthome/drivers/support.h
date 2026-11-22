@@ -17,6 +17,7 @@
 
 #include "core/util.h"
 #include "nlohmann/json.hpp"
+#include "smarthome/driver.h"
 
 namespace support {
 using json = nlohmann::json;
@@ -53,9 +54,15 @@ std::string utf8_prefix(const std::string &text, size_t max);
 
 // ---------------------------------------------------------------- MAC addresses
 // The twelve hex digits of a MAC address written with ':', '-' or nothing between them, lower
-// case; "" for anything else. What counts as the same device (a side with no MAC, a reply with an
-// unreadable one) differs between drivers and stays beside each comparison.
+// case; "" for anything else, and for twelve zeros, which name no device: the one check of a MAC for
+// what is saved, compared and controlled (a zero MAC saved over a real one let another device take
+// over its record). What counts as the same device (a side with no MAC, a reply with an unreadable
+// one) differs between drivers and stays beside each comparison.
 std::string mac_digits(const std::string &raw);
+// The MAC a device was saved under, as mac_digits gives it: the record's own, else the one in its
+// id, for a family whose ids are made from the MAC ("wiz:<MAC>", "tplink:<MAC>"; an earlier version
+// saved some records with the MAC in the id alone). "" when neither holds one.
+std::string saved_mac(const home::Device &dev, const std::string &id_prefix);
 
 // ---------------------------------------------------------------- bytes
 int hex_digit(char c);   // 0 to 15, -1 for a character that is not a hex digit

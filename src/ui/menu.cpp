@@ -141,6 +141,7 @@ void Menu::build_items() {
 void Menu::push(MenuPage page) {
     Frame frame;
     frame.page = std::move(page);
+    frame.id = ++pushed_;
     stack_.push_back(std::move(frame));
     lv_obj_remove_flag(root_, LV_OBJ_FLAG_HIDDEN);
     build_items();

@@ -843,10 +843,22 @@ key, real audio), say so plainly rather than implying it was.
   and a trial an earlier run left behind counts as refused until the user types it again (the app
   may have stopped before the device answered, and a Tapo plug locks after a few refusals).
   `pairing_submit` writes a "trying" mark on the device record before it hands anything typed to a
-  driver. Every failed write of `smarthome.json` is reported (`home::kNotSaved`), not lost.
+  driver, and takes it back in the write of the outcome; while it stands, the record's pairing data
+  are not read (`from_json`). Shelly ended a password's trial when a pairing was refused, before
+  that write: when the write failed, the record kept the old password with neither its refusal nor
+  a trial, and it was sent again. Every failed write of `smarthome.json` is reported
+  (`home::kNotSaved`), not lost.
+- A refusal is kept in memory for the rest of the run as well as in the file (`home::trial::refuse`,
+  per credential): the file can fail to take it, and Tapo's transport remembers a refusal per plug
+  only, so the account's other plugs, or another WiZ device, were sent the refused password or key
+  again in the same run. A credential on trial goes to one device at a time (each family's
+  `g_first_try`, taken before the account or key is read): a command that fans out sent a wrong
+  password to four plugs at once. A refusal the file could not take is said.
 - A scan is of the network the user agreed to: `home::scan` takes the network the settings page
   showed (`discovery::Options::network_id`), refuses once the device is on another, and drops what
-  it heard when the network changed while it listened.
+  it heard when the network changed while it listened. So does the short scan for a device that
+  stopped answering (`relocate`), through the same `scan_on`: it first scanned whatever network the
+  device was on by then, and saved the addresses it heard under the network the command was for.
 - An address is not an identity. Routers hand a device's address to another one (a router that
   loses its leases when it restarts, a bulb switched off at the wall for a week), and a device
   with no key of its own (WiZ, and any family whose protocol has no login) answers whoever asks.
@@ -856,7 +868,12 @@ key, real audio), say so plainly rather than implying it was.
   Only a positive match counts: an answer with no MAC, or an empty one, is not the saved device
   (Kasa's get_sysinfo; WiZ's getPilot, where firmware that leaves the MAC out is asked
   getSystemConfig within the same time), and a record saved without a MAC is never changed. The
-  first versions took "no MAC" for "nothing to compare" and switched whatever answered.
+  first versions took "no MAC" for "nothing to compare" and switched whatever answered. Twelve zeros
+  are no MAC either: one check (`support::mac_digits`) serves what is saved, compared and
+  controlled, after a scan that reported zeros replaced a real saved MAC and a later scan with
+  another real MAC took over the record and its settings. A record whose `mac` is empty but whose
+  id was made from the MAC (Kasa's "tplink:<MAC>", WiZ's "wiz:<MAC>") is checked against that MAC
+  (`support::saved_mac`); Kasa first refused such records from earlier versions outright.
   A login is no identity either: every plug of one Tapo account accepts the same password, and
   until the integration review a command for a desk lamp switched on the heater plug that had
   been given the lamp's address, with no question. The Tapo transport now asks each new session's
@@ -1004,7 +1021,10 @@ key, real audio), say so plainly rather than implying it was.
   a separate function.
 - A sandbox does not close what it inherits: `bwrap` handed the app's open descriptors (the
   framebuffer among them, which LVGL opens without close-on-exec) to the sandboxed Python.
-  `proc::spawn` closes everything above stderr in the child; keep it. Anything slow that a tool
+  `proc::spawn` closes everything above stderr in the child; keep it. Where close_range is missing
+  or refused it closes what /proc/self/fd lists, else every number up to the hard limit: its
+  fallback first stopped at 4096, then at the soft limit, which a process can lower below a
+  descriptor it already holds. Anything slow that a tool
   starts takes `ctx.cancel` (`proc::run`'s last argument), so ESC stops it.
 
 ## 9. Adding things
@@ -1069,11 +1089,16 @@ state), must be added to `App::lively` or to `App::sleep_ms`'s deadlines, or it 
 second late; `--shots` checks the sleep (`loop_sleeps_ok`).
 A settings page that needs something slow (a subprocess, the network, the first full look at the
 network) reads it with `background()` and refreshes itself when the answer comes, showing a
-placeholder meanwhile; a late answer acts only while its page is still the one on top (the Smart
-home page checks its title, the setup guide its `still_on`). So does a row's value, which is read at
-every redraw of its page: the Smart home row on Your data shows the last count while it counts again
-(`home_things`); counting at each key press ran `iw` on the UI thread. `--shots` opens both pages
-with a network that answers only after 1.5 s (`opens_at_once`).
+placeholder meanwhile. A late answer acts only while the page that asked is still the one on top,
+with no text field open over it (`background_on_page`, or `Menu::on_top` and `showing`, a number
+each page pushed gets): a check of `menu.open()` let a list of models fetched on the setup guide
+open over its next step. So does a row's value, which is read at every redraw of its page: the
+Smart home row on Your data shows the last count while it counts again (`home_things`); counting at
+each key press ran `iw` on the UI thread. A device's page asks what its driver still needs
+(`home::pairing_step`, which looks at the network) the same way, and "Set up…" is handed the answer.
+`--shots` opens these pages with a network that answers only after 1.5 s (`opens_at_once`), and
+holds the setup guide's late answers in the UI queue until the user has moved on, then delivers
+them (`late_setup_answers_ignored`).
 
 **Something shown over every screen** (the timer's alarm banner, `AlarmView`): make it a child
 of the screen, created after the other views, and `raise()` it again whenever another view
@@ -1131,7 +1156,9 @@ driver keeps: map only allow-listed types (lights, plugs, switches, thermostats,
 speakers, TVs, scenes, read-only sensors; never locks, garage doors, alarms, cameras, valves or
 cooking appliances); state in the units and keys documented in `home.h`; secrets only in
 `Device::auth` or `secrets()`, never in errors; never retry a rejected code or password, even in
-a later run, and keep a typed one on trial (`home::trial`) until a device accepts it; an id that
+a later run, and keep a typed one on trial (`home::trial`) until a device accepts it, a refusal in
+this run's memory too (`trial::refuse`), and, for one credential that serves several devices, its
+first try to one device at a time; an id that
 is never a family's prefix alone, and, where the protocol has no login, a change only to a device
 that positively names the MAC it was saved under (section 8); no retries of its own of a change
 (the shared layer resends one only at a device's new address, and only when it comes out the same if made twice; `http::send_retrying` is for

@@ -31,6 +31,7 @@
 #include "smarthome/drivers/hue.h"
 #include "smarthome/drivers/kasa.h"
 #include "smarthome/drivers/shelly.h"
+#include "smarthome/drivers/support.h"
 #include "smarthome/drivers/tapo_driver.h"
 #include "smarthome/drivers/wiz.h"
 #include "smarthome/home.h"
@@ -110,6 +111,8 @@ struct FakeDriver : home::Driver {
     int slow_ms = 0;
     std::atomic<int> active{0}, most{0};
     std::atomic<int> pairs{0};                                 // calls of pair(), with anything typed
+    std::function<void()> on_pair;                             // called while pair() checks what was typed
+    std::map<std::string, json> seen_auth;                     // the pairing data each device's last change carried
     std::map<std::string, int> device_active;
     int device_most = 0;
     // Called as each request reaches a device (enumerate, read, apply), before it is answered;
@@ -138,6 +141,7 @@ struct FakeDriver : home::Driver {
     }
     bool pair(home::Device &d, const std::string &input, std::string &err) override {
         ++pairs;
+        if (on_pair) on_pair();
         if (input == reject) { err = "The device did not accept that code."; return false; }
         if (account_pairing) secrets_->set("fake", {{"key", "secret-" + input}});
         else d.auth["key"] = "secret-" + input;
@@ -199,6 +203,7 @@ struct FakeDriver : home::Driver {
         contact("apply", d.id);
         busy(d.id);
         std::lock_guard<std::mutex> lk(mtx);
+        seen_auth[d.id] = d.auth;
         if (broken.count(d.id)) { err = "it did not answer"; return false; }
         if (refusing.count(d.id)) { err = refusing[d.id]; return false; }
         if (deadline_ms <= 0 || deadline_ms > 2500) { err = "bad deadline"; return false; }
@@ -224,7 +229,7 @@ struct FakeDriver : home::Driver {
         slow_device.clear(); slow_ms = 0;
         active = 0; most = 0; device_active.clear(); device_most = 0;
         on_contact = nullptr; call_ms = 0; calls.clear();
-        pairs = 0;
+        pairs = 0; on_pair = nullptr; seen_auth.clear();
     }
     size_t applied() {
         std::lock_guard<std::mutex> lk(mtx);
@@ -1801,6 +1806,16 @@ struct Listener {
     }
 };
 
+// Whether a folder made read-only refuses writes here: not for a user who may write anywhere, for
+// whom the checks of a store that cannot be written are skipped. The folder is left writable.
+bool read_only_holds(const std::string &dir) {
+    chmod(dir.c_str(), 0500);
+    const bool held = !util::write_file_atomic(dir + "/probe", "x");
+    if (!held) unlink((dir + "/probe").c_str());
+    chmod(dir.c_str(), 0700);
+    return held;
+}
+
 // The smart-home file cannot be written (a full or read-only store): every change says so, and no
 // code or password typed is sent, by the shared layer or by the Tapo driver itself. And a password
 // on trial (driver.h home::trial): tried by a run that stopped before it knew whether a plug took it,
@@ -1817,12 +1832,10 @@ void test_storage() {
     write_home({device("fake:tv", {thing("tv", "Lounge TV", "tv", home::kPower)}), plug},
                {{"tapo", {{"email", "user@example.com"}}}});
     const std::string dir = util::data_dir();
-    chmod(dir.c_str(), 0500);
-    if (util::write_file_atomic(dir + "/probe", "x")) {   // a user who may write anywhere: nothing to test here
+    if (!read_only_holds(dir)) {
         printf("note: this user can write to a read-only folder; the checks of a store that cannot be written were skipped\n");
-        unlink((dir + "/probe").c_str());
-        chmod(dir.c_str(), 0700);
     } else {
+        chmod(dir.c_str(), 0500);
         std::string err;
         CHECK(!home::pairing_submit(g_net.id(), "fake:tv", "1234", err) && g_fake->pairs == 0);
         CHECK_MSG(has(err, "Nothing was sent") && has(err, "could not be saved"), err);
@@ -1887,6 +1900,175 @@ void test_storage() {
     // Typed again: a fresh trial, tried again.
     CHECK(home::set_tapo_account("user@example.com", "second") && !home::tapo_account().refused);
     home::set_tapo_account("", "");
+}
+
+// A Tapo plug on 127.0.0.1 that refuses every account: it answers the KLAP login's first step with a
+// proof made from another account, which the app takes as a refusal before it proves anything
+// itself. One connection at a time, each answered `delay_ms` after it came; first steps are counted.
+struct RefusingPlug {
+    int fd = -1, port = 0;
+    std::atomic<int> delay_ms{0}, logins{0};
+    std::atomic<bool> stop{false};
+    std::thread loop;
+    RefusingPlug() {
+        fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        socklen_t len = sizeof(a);
+        bind(fd, reinterpret_cast<sockaddr *>(&a), sizeof(a));
+        listen(fd, 8);
+        getsockname(fd, reinterpret_cast<sockaddr *>(&a), &len);
+        port = ntohs(a.sin_port);
+        loop = std::thread([this] {
+            while (!stop) {
+                pollfd p{fd, POLLIN, 0};
+                if (poll(&p, 1, 20) <= 0) continue;
+                const int c = accept(fd, nullptr, nullptr);
+                if (c >= 0) answer(c);
+            }
+        });
+    }
+    void answer(int c) {
+        std::string req;
+        char buf[2048];
+        size_t body_at = std::string::npos, length = 0;
+        while (body_at == std::string::npos || req.size() < body_at + length) {
+            const ssize_t n = recv(c, buf, sizeof(buf), 0);
+            if (n <= 0) break;
+            req.append(buf, static_cast<size_t>(n));
+            const size_t end = req.find("\r\n\r\n");
+            if (body_at == std::string::npos && end != std::string::npos) {
+                body_at = end + 4;
+                const size_t cl = util::lower(req).find("content-length:");
+                length = cl == std::string::npos ? 0 : static_cast<size_t>(atoi(req.c_str() + cl + 15));
+            }
+        }
+        if (req.find("/app/handshake1") != std::string::npos) ++logins;
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms.load()));
+        const std::string reply = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n"
+                                  "Content-Length: 48\r\n\r\n" + std::string(48, 'Z');
+        send(c, reply.data(), reply.size(), MSG_NOSIGNAL);
+        close(c);
+    }
+    ~RefusingPlug() {
+        stop = true;
+        loop.join();
+        close(fd);
+    }
+};
+
+// A store that takes `room` more writes and then no more (a disk that fills up).
+struct FillingSecrets : home::Secrets {
+    mutable std::mutex mtx;
+    json all = json::object();
+    int room = 0;
+    json get(const std::string &family) const override {
+        std::lock_guard<std::mutex> lk(mtx);
+        return all.contains(family) ? all[family] : json::object();
+    }
+    void set(const std::string &family, const json &value) override { put(family, value); }
+    bool put(const std::string &family, const json &value) override {
+        std::lock_guard<std::mutex> lk(mtx);
+        if (room <= 0) return false;
+        --room;
+        all[family] = value;
+        return true;
+    }
+};
+
+// A Tapo password one plug refused is sent to no other plug of the account in this run, also when the
+// file could not take the refusal, which is said; and a password on trial goes to one plug at a time,
+// the others waiting for the outcome (fix round 2, C1).
+void test_tapo_refusals() {
+    Section s("tapo driver: a refused password goes to no other plug, noted or not; one on trial goes to one plug at a time");
+    home::testing::new_run();
+    auto tapo = make_tapo_driver();
+    FillingSecrets store;
+    tapo->attach(&store);
+    RefusingPlug side_a, side_b;
+    auto plug = [](const char *id, int port) {
+        home::Device d;
+        d.id = id;
+        d.kind = "tapo";
+        d.ip = "127.0.0.1";
+        d.port = port;
+        d.info = {{"scheme", "KLAP"}, {"device_type", "SMART.TAPOPLUG"}};
+        home::Thing t;
+        t.id = "main";
+        t.type = "plug";
+        t.caps = home::kPower;
+        t.ref = {{"child", ""}};
+        d.things = {t};
+        return d;
+    };
+    home::Device a = plug("tapo:a", side_a.port), b = plug("tapo:b", side_b.port);
+    home::Change on;
+    on.on = true;
+    std::string err;
+    // Typed on the settings page; the store takes the trial its first login writes, and then nothing more.
+    store.all["tapo"] = {{"email", "user@example.com"}, {"password_sha1", tapo::sha1_hex("wrong")}, {"trial", "typed"}};
+    store.room = 1;
+    CHECK_MSG(!tapo->apply(a, a.things[0], on, 2500, err) && side_a.logins == 1 && has(err, "could not be noted"), err);
+    CHECK(!store.get("tapo").contains("refused"));   // the file did not take it
+    CHECK_MSG(!tapo->apply(b, b.things[0], on, 2500, err) && side_b.logins == 0 && has(err, "did not accept"), err);
+    std::vector<home::Thing> things;
+    CHECK(!tapo->enumerate(b, things, err) && !tapo->read(a, things, err) && side_a.logins == 1 && side_b.logins == 0);
+    CHECK(tapo->next_step(b).kind == home::Pairing::Password);
+    // A later run: the trial its first login wrote counts as refused, and nothing is sent.
+    home::testing::new_run();
+    CHECK_MSG(!tapo->apply(b, b.things[0], on, 2500, err) && side_b.logins == 0 && has(err, "confirmed"), err);
+
+    // Another password typed: its first login goes to one plug while the other waits, and then sees the refusal.
+    store.all["tapo"] = {{"email", "user@example.com"}, {"password_sha1", tapo::sha1_hex("also wrong")}, {"trial", "typed"}};
+    store.room = 100;
+    side_a.delay_ms = side_b.delay_ms = 300;
+    std::string err_a, err_b;
+    std::thread to_a([&] { tapo->apply(a, a.things[0], on, 2500, err_a); });
+    std::thread to_b([&] { tapo->apply(b, b.things[0], on, 2500, err_b); });
+    to_a.join();
+    to_b.join();
+    const int sent = side_a.logins + side_b.logins - 1;
+    CHECK_MSG(sent == 1, std::to_string(sent) + " plugs were sent the password on trial");
+    CHECK_MSG(has(err_a + err_b, "does not accept") && has(err_a + err_b, "did not accept the saved password"), err_a + " / " + err_b);
+    tapo::forget_sessions();
+}
+
+// What was typed for a device, and the outcome could not be written (fix round 2, C2): the file still
+// holds the device's pairing data from before, with the mark that something typed was being tried.
+// Those data are not used, in this run or a later one, until something typed for the device is written
+// with its outcome: they may hold a password the device has refused since, its refusal lost with the
+// write that failed.
+void test_unconfirmed_pairing() {
+    Section s("pairing: data kept from before a pairing whose outcome could not be written are not used until typed again");
+    g_fake->reset();
+    const std::string dir = util::data_dir();
+    if (!read_only_holds(dir)) {
+        printf("note: this user can write to a read-only folder; the check of a pairing that could not be written was skipped\n");
+        return;
+    }
+    g_fake->wants_pairing = true;
+    g_fake->reject = "0000";
+    json tv = device("fake:tv", {thing("tv", "Lounge TV", "tv", home::kPower)});
+    tv["auth"] = {{"key", "secret-old"}};
+    write_home({tv});
+    std::string err;
+    g_fake->on_pair = [&dir] { chmod(dir.c_str(), 0500); };   // the store fills up while the device checks the code
+    CHECK(!home::pairing_submit(g_net.id(), "fake:tv", "0000", err));
+    chmod(dir.c_str(), 0700);
+    g_fake->on_pair = nullptr;
+    CHECK_MSG(has(err, "could not be saved"), err);
+    CHECK(home::entry(g_net.id()).devices[0].auth.empty());
+    CHECK(home::pairing_step(g_net.id(), "fake:tv").kind == home::Pairing::EnterCode);
+    const std::string r = run({{"action", "on"}, {"target", "Lounge TV"}});
+    CHECK_MSG(!has(g_fake->seen_auth["fake:tv"].dump(), "secret-old"), r + " " + g_fake->seen_auth["fake:tv"].dump());
+    home::testing::new_run();
+    CHECK(home::entry(g_net.id()).devices[0].auth.empty());
+    // Typed again, and written with its outcome: used from then on.
+    CHECK_MSG(home::pairing_submit(g_net.id(), "fake:tv", "1234", err), err);
+    const home::NetworkEntry e = home::entry(g_net.id());
+    CHECK(e.devices[0].auth.value("key", "") == "secret-1234" && e.devices[0].trying.empty());
+    g_fake->reset();
 }
 
 // ---------------------------------------------------------------- the stand-in test network
@@ -2610,7 +2792,7 @@ void test_device_ids() {
     CHECK(home::remember_scan(g_net, found) == static_cast<int>(found.size()));
     std::set<std::string> macs;
     for (const auto &d : home::entry(g_net.id()).devices)
-        if (d.kind == "tapo") macs.insert(home::mac_key(d.mac));
+        if (d.kind == "tapo") macs.insert(support::mac_digits(d.mac));
     CHECK(macs.size() == 4);
 
     // A record saved with its MAC and the user's decisions; a device found under the same id with
@@ -2632,7 +2814,7 @@ void test_device_ids() {
     other.name = "Tapo P110";
     CHECK(home::remember_scan(g_net, {other}) == 0);
     home::NetworkEntry e = home::entry(g_net.id());
-    CHECK_MSG(e.devices.size() == 1 && e.devices[0].ip == "192.0.2.90" && home::mac_key(e.devices[0].mac) == "aabbcc000090" &&
+    CHECK_MSG(e.devices.size() == 1 && e.devices[0].ip == "192.0.2.90" && support::mac_digits(e.devices[0].mac) == "aabbcc000090" &&
                   !e.devices[0].enabled && e.devices[0].things.size() == 1 && e.devices[0].things[0].ask_first,
               "the saved plug keeps its address, MAC and settings");
     // The same device (its MAC) at a new address is followed, as before; one saved without a MAC
@@ -2646,7 +2828,34 @@ void test_device_ids() {
     other.mac = "AA:BB:CC:00:00:92";
     CHECK(home::remember_scan(g_net, {other}) == 0);
     e = home::entry(g_net.id());
-    CHECK(e.devices.size() == 1 && home::mac_key(e.devices[0].mac) == "aabbcc000092");
+    CHECK(e.devices.size() == 1 && support::mac_digits(e.devices[0].mac) == "aabbcc000092");
+
+    // An all-zero MAC names no device (fix round 2, C5): it never replaces the one saved, so a later
+    // scan with another real MAC is still another device, not one that inherits this one's settings.
+    plug["mac"] = "aa:bb:cc:00:00:90";
+    write_home({plug});
+    other.ip = "192.0.2.90";
+    other.mac = "aa:bb:cc:00:00:90";
+    CHECK(home::remember_scan(g_net, {other}) == 0);
+    other.ip = "192.0.2.94";
+    other.mac = "00:00:00:00:00:00";
+    CHECK(home::remember_scan(g_net, {other}) == 0);
+    e = home::entry(g_net.id());
+    CHECK_MSG(e.devices.size() == 1 && support::mac_digits(e.devices[0].mac) == "aabbcc000090", e.devices[0].mac);
+    other.ip = "192.0.2.95";
+    other.mac = "AA:BB:CC:00:00:99";
+    CHECK(home::remember_scan(g_net, {other}) == 0);
+    e = home::entry(g_net.id());
+    CHECK_MSG(e.devices.size() == 1 && support::mac_digits(e.devices[0].mac) == "aabbcc000090" && e.devices[0].ip != "192.0.2.95" &&
+                  !e.devices[0].enabled && e.devices[0].things[0].ask_first,
+              "a device with another MAC took over the saved one's record: " + e.devices[0].mac + " at " + e.devices[0].ip);
+    // A new device that reports zeros is saved without a MAC.
+    discovery::Device zeros = other;
+    zeros.id = "tapo:8022000096";
+    zeros.mac = "00-00-00-00-00-00";
+    CHECK(home::remember_scan(g_net, {zeros}) == 1);
+    for (const auto &d : home::entry(g_net.id()).devices)
+        if (d.id == zeros.id) CHECK_MSG(d.mac.empty(), d.mac);
 }
 
 // WiZ: answers to its broadcast (the registration query) become devices of kind "wiz", which the
@@ -3000,6 +3209,12 @@ bool stand_in_scan(std::vector<discovery::Device> &found) {
     return true;
 }
 
+// The same, while the Wi-Fi joins another network.
+bool roaming_scan(std::vector<discovery::Device> &found) {
+    home::testing::set_network(&g_elsewhere);
+    return stand_in_scan(found);
+}
+
 discovery::Device found_at(const std::string &id, const std::string &ip, int port = 9) {
     discovery::Device d;
     d.id = id;
@@ -3148,6 +3363,21 @@ void test_moved_devices() {
     g_scan_answer = {found_at("fake:tv", "127.0.0.2")};
     r = run({{"action", "status"}, {"target", "Bedroom TV"}});
     CHECK_MSG(starts(r, R"({"state":)") && g_scans == 1, r);
+
+    // The Wi-Fi joins another network while the short scan listens (fix round 2, C3): what it heard
+    // is another network's, so no address is saved from it and nothing is sent again.
+    g_elsewhere = g_net;
+    g_elsewhere.ssid = "Neighbour";
+    g_elsewhere.gateway_mac = "02:00:00:00:00:0a";
+    home::testing::set_scan(roaming_scan);
+    home_with_tv();
+    g_fake->broken = {"fake:tv"};
+    g_scan_answer = {found_at("fake:tv", "127.0.0.2")};
+    r = run({{"action", "on"}, {"target", "Bedroom TV"}});
+    home::testing::set_network(&g_net);
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": it did not answer. Tell the user" + std::string(kNoInfrared), r);
+    CHECK_MSG(applies() == 1 && g_scans == 1 && saved("fake:tv")->ip == "127.0.0.1", saved("fake:tv")->ip);
+    home::testing::set_scan(stand_in_scan);
 
     // On the stand-in test network with no stand-in scan, nothing is ever scanned for.
     home::testing::set_scan(nullptr);
@@ -3372,6 +3602,8 @@ int main(int argc, char **argv) {
     test_pairing();
     test_tapo_driver();
     test_storage();
+    test_tapo_refusals();
+    test_unconfirmed_pairing();
     test_stand_in();
     test_scan_binding();
     test_network_gate();

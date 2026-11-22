@@ -16,6 +16,7 @@
 
 #include "core/result.h"
 #include "smarthome/color.h"
+#include "smarthome/drivers/support.h"
 #include "smarthome/internal.h"
 
 namespace home {
@@ -527,7 +528,7 @@ bool (*g_test_scan)(std::vector<discovery::Device> &found) = nullptr;
 // A device found under the saved id but with another MAC than the saved one is another device (an id
 // made from an address, or one a device made up): the saved one is never moved to it.
 bool other_mac(const discovery::Device &f, const Device &d) {
-    const std::string found = mac_key(f.mac), saved = mac_key(d.mac);
+    const std::string found = support::mac_digits(f.mac), saved = support::mac_digits(d.mac);
     return !found.empty() && !saved.empty() && found != saved;
 }
 
@@ -536,28 +537,39 @@ bool moved(const discovery::Device &f, const Device &d) {
     return f.id == d.id && !other_mac(f, d) && !f.ip.empty() && (f.ip != d.ip || (f.port > 0 && d.port > 0 && f.port != d.port));
 }
 
+// The short scan (the caller holds g_lookup_mtx), of `network_id` only, as the settings page's is
+// (scan_on): the Wi-Fi can join another network while it listens, and that network's addresses must
+// not be saved as these devices'. The saved devices heard at a new address are moved there.
+bool look_again(const std::string &network_id) {
+    discovery::Options opt;
+    opt.listen_ms = 2500;
+    opt.network_id = network_id;
+    std::vector<discovery::Device> fresh;
+    std::string err;
+    if (!scan_on(opt, g_test_scan, fresh, err)) return false;
+    g_found = fresh;
+    g_found_on = network_id;
+    g_found_at = now_ms() ? now_ms() : 1;
+    modify_entry(network_id, [&](NetworkEntry &e) {
+        for (auto &d : e.devices)
+            for (const auto &f : g_found)
+                if (moved(f, d)) {
+                    d.ip = f.ip;
+                    if (f.port > 0) d.port = f.port;
+                }
+    });
+    return true;
+}
+
 Lookup relocate(const std::string &network_id, Saved &device) {
     std::lock_guard<std::mutex> lk(g_lookup_mtx);
     if (!g_test_scan && test_network()) return Lookup::NotTried;
-    const discovery::Network net = network_now(true);
-    if (!net.usable || net.id() != network_id) return Lookup::NotTried;
-    if (g_found_on != network_id || g_found_at == 0 || now_ms() - g_found_at > 20000) {
-        std::vector<discovery::Device> fresh;
-        std::string err;
-        discovery::Options opt;
-        opt.listen_ms = 2500;
-        if (!(g_test_scan ? g_test_scan(fresh) : discovery::scan(opt, fresh, err))) return Lookup::NotTried;
-        g_found = fresh;
-        g_found_on = network_id;
-        g_found_at = now_ms() ? now_ms() : 1;
-        modify_entry(network_id, [&](NetworkEntry &e) {
-            for (auto &d : e.devices)
-                for (const auto &f : g_found)
-                    if (moved(f, d)) {
-                        d.ip = f.ip;
-                        if (f.port > 0) d.port = f.port;
-                    }
-        });
+    const bool recent = g_found_on == network_id && g_found_at != 0 && now_ms() - g_found_at <= 20000;
+    if (recent) {
+        const discovery::Network net = network_now(true);
+        if (!net.usable || net.id() != network_id) return Lookup::NotTried;
+    } else if (!look_again(network_id)) {
+        return Lookup::NotTried;
     }
     for (const auto &f : g_found)
         if (f.id == device.id && !other_mac(f, device)) {
@@ -1380,41 +1392,40 @@ PairStep pairing_step(const std::string &network_id, const std::string &device_i
     }
 }
 
-bool pairing_submit(const std::string &network_id, const std::string &device_id, const std::string &input, std::string &err) {
-    Saved saved;
-    if (!on_network(network_id, err)) return false;
-    if (!find_saved(network_id, device_id, saved)) { err = "That device is no longer saved."; return false; }
-    Driver *drv = driver_for(saved);
-    if (!drv) { err = "This kind of device cannot be set up here."; return false; }
-    if (!may_contact(saved, err)) return false;
-    // What was typed goes to the driver only once the file has taken a note that it is being tried:
-    // the driver keeps its refusal there, and one it could not keep would be sent again by a later
-    // run (a Tapo plug locks itself after a few). The note goes with the write of the outcome.
-    if (!input.empty() && !modify_entry(network_id, [&](NetworkEntry &e) {
-            for (auto &d : e.devices)
-                if (d.id == device_id) d.trying = run_id();
-        })) {
-        err = std::string("Nothing was sent to the device. ") + kNotSaved;
+namespace {
+
+// What was typed goes to the driver only once the file has taken a note that it is being tried
+// (`trying`): the driver keeps its refusal there, and one it could not keep would be sent again by a
+// later run (a Tapo plug locks itself after a few). While the note stands the device's pairing data
+// are not used (store.cpp from_json). The note goes with the write of the outcome (record_pairing),
+// or is taken back here (`on` false) when nothing was handed over after all.
+bool mark_trying(const std::string &network_id, const std::string &device_id, bool on) {
+    return modify_entry(network_id, [&](NetworkEntry &e) {
+        for (auto &d : e.devices)
+            if (d.id == device_id) d.trying = on ? run_id() : std::string();
+    });
+}
+
+// Hands what was typed to the driver under the device's lock, if the device is still on the
+// network by then (`handed`); `next` is what the driver needs after it. Whether the driver took it.
+bool hand_over(Driver *drv, const std::string &network_id, Device &dev, const std::string &input, PairStep &next,
+               bool &handed, std::string &err) {
+    std::lock_guard<std::mutex> lk(device_lock(dev.id));
+    handed = still_on(network_id, err);
+    if (!handed) return false;
+    try {
+        const bool ok = drv->pair(dev, input, err);
+        next = drv->next_step(dev);
+        return ok;
+    } catch (const std::exception &) {
+        err = "The device's answer could not be understood.";
         return false;
     }
-    Device dev = saved;
-    bool ok = false;
-    PairStep next;
-    {
-        std::lock_guard<std::mutex> lk(device_lock(dev.id));
-        if (!still_on(network_id, err)) return false;
-        try {
-            ok = drv->pair(dev, input, err);
-            next = drv->next_step(dev);
-        } catch (const std::exception &) {
-            ok = false;
-            err = "The device's answer could not be understood.";
-        }
-    }
-    if (!ok && err.empty()) err = "That did not work.";
-    // What was typed may be the whole family's (an account every Tapo plug obeys): the family's
-    // other devices are asked again what they need, so that one account readies them all, and a
-    // refused one shows on each of them at once.
+}
+
+// What the family's other devices need now. What was typed may be the whole family's (an account
+// every Tapo plug obeys): one account readies them all, and a refused one shows on each at once.
+std::map<std::string, PairStep> family_needs(const std::string &network_id, const std::string &device_id, Driver *drv) {
     std::map<std::string, PairStep> others;
     for (const auto &d : entry(network_id).devices) {
         if (d.id == device_id || driver_for(d) != drv) continue;
@@ -1423,9 +1434,16 @@ bool pairing_submit(const std::string &network_id, const std::string &device_id,
         } catch (...) {
         }
     }
-    const bool kept = modify_entry(network_id, [&](NetworkEntry &e) {
+    return others;
+}
+
+// The outcome, in one write that also takes back the trying mark: the device's pairing data and
+// whether it still needs setting up, and the family's other devices as they now are.
+bool record_pairing(const std::string &network_id, const Device &dev, bool ok, const PairStep &next,
+                    const std::map<std::string, PairStep> &others) {
+    return modify_entry(network_id, [&](NetworkEntry &e) {
         for (auto &d : e.devices) {
-            if (d.id == device_id) {
+            if (d.id == dev.id) {
                 d.auth = dev.auth.is_object() ? dev.auth : json::object();
                 d.needs_setup = next.kind != Pairing::None;
                 d.trying.clear();
@@ -1443,7 +1461,32 @@ bool pairing_submit(const std::string &network_id, const std::string &device_id,
             }
         }
     });
-    if (!kept) {
+}
+
+}  // namespace
+
+bool pairing_submit(const std::string &network_id, const std::string &device_id, const std::string &input, std::string &err) {
+    Saved saved;
+    if (!on_network(network_id, err)) return false;
+    if (!find_saved(network_id, device_id, saved)) { err = "That device is no longer saved."; return false; }
+    Driver *drv = driver_for(saved);
+    if (!drv) { err = "This kind of device cannot be set up here."; return false; }
+    if (!may_contact(saved, err)) return false;
+    const bool typed = !input.empty();
+    if (typed && !mark_trying(network_id, device_id, true)) {
+        err = std::string("Nothing was sent to the device. ") + kNotSaved;
+        return false;
+    }
+    Device dev = saved;
+    PairStep next;
+    bool handed = false;
+    const bool ok = hand_over(drv, network_id, dev, input, next, handed, err);
+    if (!handed) {
+        if (typed) mark_trying(network_id, device_id, false);
+        return false;
+    }
+    if (!ok && err.empty()) err = "That did not work.";
+    if (!record_pairing(network_id, dev, ok, next, family_needs(network_id, device_id, drv))) {
         err = (ok ? std::string("It was set up, but ") : clause(err) + ", and ") +
               "that could not be saved on this device (its storage may be full); it will need setting up again.";
         return false;

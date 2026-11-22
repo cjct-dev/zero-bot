@@ -126,11 +126,19 @@ public:
 //              a refusal): it counts as refused until it is typed again
 //   end(h)     accepted (or dropped): true when `h` changed and should be written
 // A holder without a trial (saved before trials existed, or accepted) is not on trial.
+//
+// A refusal is also kept in memory for the rest of the run (refuse), so that one the file could not
+// take still stops this run: checked as refused(), forgiven when the user types a credential for the
+// slot again. `slot` names where the credential is kept (a family's account or key, one device's
+// password); `print` tells that credential apart from others typed (a hash of it).
 namespace trial {
 void typed(json &holder);
 bool begin(json &holder);
 bool stale(const json &holder);
 bool end(json &holder);
+void refuse(const std::string &slot, const std::string &print);
+bool refused(const std::string &slot, const std::string &print);
+void forgive(const std::string &slot);
 }  // namespace trial
 
 class Driver {
