@@ -130,7 +130,11 @@ public:
 // A refusal is also kept in memory for the rest of the run (refuse), so that one the file could not
 // take still stops this run: checked as refused(), forgiven when the user types a credential for the
 // slot again. `slot` names where the credential is kept (a family's account or key, one device's
-// password); `print` tells that credential apart from others typed (a hash of it).
+// password); `print` tells that credential apart from others typed (a hash of it). The memory is the
+// protection within a run, and cannot fail; the file is the one across runs, and a write can. A driver
+// says when the file could not take a refusal: one still on trial counts as refused in a later run
+// anyway (stale), but one a device had accepted before is then held by the memory alone, and could be
+// tried once more after a restart.
 namespace trial {
 void typed(json &holder);
 bool begin(json &holder);
