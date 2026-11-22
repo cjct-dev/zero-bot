@@ -70,8 +70,9 @@ const Option kOptions[] = {
      [](Args &a, char **, int &, int) { a.home_refresh = true; }},
     {"--discover", "", 0, "look for smart-home devices on this network (discovery only) and list them",
      [](Args &a, char **, int &, int) { a.discover = true; }},
-    {"--talk-over", "MS[:text]", 1, "with --ask: hold the microphone open for MS ms from the start of the request,\n"
-                                    "then hand over `text` as what was said (or nothing, as if cancelled)",
+    {"--talk-over", "MS[:text]", 1, "with --ask: hold the microphone open for MS ms from the start of the request\n"
+                                    "(or the moment --talk-at names), then hand over `text` as what was said (or\n"
+                                    "nothing, as if cancelled)",
      [](Args &a, char **v, int &i, int) { a.talk_over = v[++i]; }},
     {"--talk-at", "start|tool|answer", 1, "with --talk-over: open the microphone at the start of the request (the default),\n"
                                           "as its first tool starts, or once its answer has begun; the last two press\n"
