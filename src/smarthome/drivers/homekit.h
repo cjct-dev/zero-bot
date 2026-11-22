@@ -201,6 +201,11 @@ public:
 private:
     enum class St { kStatus, kHeader, kBody, kChunkSize, kChunkData, kChunkEnd, kTrailer, kDone };
     int line(const Bytes &buf, size_t &pos, std::string &out);
+    // feed's steps, each false when the message is malformed or larger than allowed.
+    bool status_line(const std::string &l);
+    bool header_line(const std::string &l);
+    bool body_framing();
+    bool chunk_size(const std::string &l);
     St st_ = St::kStatus;
     size_t max_body_, line_bytes_ = 0, want_ = 0;
     int headers_ = 0;
