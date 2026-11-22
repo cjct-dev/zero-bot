@@ -49,6 +49,7 @@ public:
     std::string typing_text() const;
 
     void tick();                             // call ~15 times a second
+    bool needs_tick() const { return answer_dirty_ || mode_ == Mode::Busy; }   // tick() has something to show
 
 private:
     enum class Mode { Hints, Busy, Listening, Typing };

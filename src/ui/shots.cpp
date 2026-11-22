@@ -50,6 +50,61 @@ discovery::Network slow_look() {
     return net;
 }
 
+// The same through another interface, for the check of the Your data page, which comes first: the
+// look it leaves in home::network_now's memory does not answer the Smart home page's check (another
+// route is another network, looked at afresh).
+discovery::Route slow_route_data() { return {"test-data", "127.0.0.1"}; }
+discovery::Network slow_look_data() {
+    discovery::Network net = slow_look();
+    net.iface = "test-data";
+    return net;
+}
+
+// Presses ENTER on the row under the cursor while the network is found only after a slow first look
+// (`slow`): opening a page never waits for the network on the UI thread. True when the key came back
+// at once with the page `title` up and still without what `shown` looks for, which then came with
+// the answer (up to 4 s).
+bool opens_at_once(Menu &menu, const home::testing::NetworkSource &slow, const std::string &title,
+                   const std::function<bool()> &shown) {
+    unsetenv("ZB_TEST_NETWORK");
+    home::testing::set_network_source(&slow);
+    KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
+    const unsigned long t0 = sys::now_ms();
+    menu.key(enter);
+    const unsigned long took = sys::now_ms() - t0;
+    const bool looking = menu.title() == title && !shown();
+    for (int i = 0; i < 200 && !shown(); ++i) {
+        uiq::drain();
+        usleep(20 * 1000);
+    }
+    const bool listed = shown();
+    home::testing::set_network_source(nullptr);
+    setenv("ZB_TEST_NETWORK", "1", 1);
+    if (took > 500 || !looking || !listed)
+        fprintf(stderr, "opening %s waited for the network on the UI thread (%lu ms; looking %d, listed %d)\n", title.c_str(),
+                took, looking, listed);
+    return took <= 500 && looking && listed;
+}
+
+// Decoded images are kept for redraws (LV_CACHE_DEF_SIZE), and one the cache cannot hold is not drawn
+// at all: a PNG the size of the screen, far larger than a photo's thumbnail, is still drawn.
+bool image_decodes() {
+    const std::string path = util::cache_dir() + "/shots-screen.png";
+    const bool saved = display::save_png(path);   // opaque everywhere
+    lv_obj_t *img = lv_image_create(lv_screen_active());
+    lv_image_set_src(img, ("A:" + path).c_str());
+    lv_draw_buf_t *snap = saved ? lv_snapshot_take(img, LV_COLOR_FORMAT_ARGB8888) : nullptr;
+    bool drawn = snap && snap->header.w == display::kWidth && snap->header.h == display::kHeight;
+    for (uint32_t y = 0; drawn && y < snap->header.h; ++y)
+        for (uint32_t x = 0; drawn && x < snap->header.w; ++x)
+            drawn = snap->data[y * snap->header.stride + x * 4 + 3] != 0;
+    if (snap) lv_draw_buf_destroy(snap);
+    lv_obj_delete(img);
+    unlink(path.c_str());
+    if (!drawn) fprintf(stderr, "an image the size of the screen was not drawn (saved %d)\n", saved);
+    return drawn;
+}
+
 // A made-up home for the screenshots, saved on the stand-in test network: none of its addresses
 // is ever contacted, and nothing is scanned.
 void sample_home() {
@@ -157,6 +212,7 @@ int App::render_shots(const std::string &dir) {
     util::make_dirs(dir);
     Shots shots{*this, dir};
     shots_chat(shots);
+    if (!image_decodes()) shots.failed = true;
     shots_dark_chat(shots);
     shots_keys(shots);
     shots_volume(shots);
@@ -167,6 +223,7 @@ int App::render_shots(const std::string &dir) {
     shots_settings(shots);
     shots_dark_settings(shots);
     shots.failed = diagnostics_shots(shots) || shots.failed;   // DIAGNOSTICS (temporary)
+    shots_idle(shots);
     timers::fix_clock(0);
     return shots.failed ? 1 : 0;
 }
@@ -758,7 +815,10 @@ void App::shots_settings(Shots &shots) {
     if (!without_power_on(menu, "Device", {"Time zone", "Internet via phone"})) failed = true;
     menu.key(esc);
     shots.menu_to("Your data");                    // whose first row is "Calendar"
-    menu.key(enter);
+    // Its Smart home row counts the things on the network the device is on, in the background: the
+    // page is up at once, and the count comes with the answer (as pictured).
+    static const home::testing::NetworkSource slow{slow_route_data, slow_router_mac, slow_look_data};
+    if (!opens_at_once(menu, slow, "Your data", [this] { return menu.value_of("Smart home") == "5 devices"; })) failed = true;
     shots_data(shots);
     shots_smart_home(shots);
     shots_radio(shots);
@@ -841,31 +901,12 @@ void App::shots_smart_home(Shots &shots) {
     KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
     KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
     shots.menu_to("Smart home");
-    {
-        // Opening Smart home never waits for the network on the UI thread: the first full look runs
-        // `iw` and can take seconds, in which keys, redraws and the alarm stood still. Here the look
-        // takes a second and a half: the page is up at once, says it is looking, and lists the home
-        // when the answer comes (as pictured).
-        static const home::testing::NetworkSource slow{slow_route, slow_router_mac, slow_look};
-        unsetenv("ZB_TEST_NETWORK");
-        home::testing::set_network_source(&slow);
-        const unsigned long t0 = sys::now_ms();
-        menu.key(enter);
-        const unsigned long took = sys::now_ms() - t0;
-        const bool looking = menu.title() == "Smart home" && menu.row_of("Bed heater") < 0;
-        for (int i = 0; i < 200 && menu.row_of("Bed heater") < 0; ++i) {   // up to 4 s
-            uiq::drain();
-            usleep(20 * 1000);
-        }
-        const bool listed = menu.row_of("Bed heater") >= 0;
-        home::testing::set_network_source(nullptr);
-        setenv("ZB_TEST_NETWORK", "1", 1);
-        if (took > 500 || !looking || !listed) {
-            fprintf(stderr, "opening Smart home waited for the network on the UI thread (%lu ms; looking %d, listed %d)\n", took,
-                    looking, listed);
-            shots.failed = true;
-        }
-    }
+    // Opening Smart home never waits for the network on the UI thread: the first full look runs `iw`
+    // and can take seconds, in which keys, redraws and the alarm stood still. Here the look takes a
+    // second and a half: the page is up at once, says it is looking, and lists the home when the
+    // answer comes (as pictured).
+    static const home::testing::NetworkSource slow{slow_route, slow_router_mac, slow_look};
+    if (!opens_at_once(menu, slow, "Smart home", [this] { return menu.row_of("Bed heater") >= 0; })) shots.failed = true;
     snap("smart-home");
     shots.menu_to("Bed heater");                   // the first thing
     menu.key(enter);
@@ -1088,6 +1129,76 @@ bool App::diagnostics_shots(Shots &shots) {
     }
     menu.close();
     return failed;
+}
+
+namespace {
+
+// The service's model list: one that cannot be reached is asked again after 30 s, then twice as long
+// each time up to five minutes; once a list has been read, the same service is not asked again
+// whatever it held (since ZB-088 one that labels none of its models gets nothing chosen, and it was
+// asked every 15 s for ever), but one with another key is.
+bool model_retries_ok(App &app) {
+    set([](Settings &s) {
+        s.api_base = "http://127.0.0.1:9/v1";
+        s.api_key = "first";
+        s.llm_model.clear(); s.stt_model.clear(); s.tts_model.clear();
+    });
+    const std::string service = app.models_wanted();
+    std::vector<unsigned long> waits;
+    for (int i = 0; i < 6; ++i) {
+        app.models_answered({}, "The service did not answer.", service);
+        waits.push_back(app.model_retry_ms);
+    }
+    const bool backs_off = waits == std::vector<unsigned long>{30000, 60000, 120000, 240000, 300000, 300000};
+    app.warned_models = true;   // no note in the chat
+    app.models_answered({{"one", ""}, {"two", ""}}, "", service);
+    const bool read_once = app.model_retry_ms == kModelRetryMs && app.models_wanted().empty();
+    set([](Settings &s) { s.api_key = "second"; });
+    const bool new_service = !app.models_wanted().empty();
+    if (!backs_off || !read_once || !new_service)
+        fprintf(stderr, "the service's model list was asked for at the wrong times (backs off %d, read once %d, "
+                        "another service asked %d)\n", backs_off, read_once, new_service);
+    return backs_off && read_once && new_service;
+}
+
+// How long the main loop sleeps (sleep_ms), at made-up times well after anything the screenshots did:
+// a tick after something happens, and every tick while it settles; then until the next
+// once-a-second work; a tick again while a level is shown; while a timer runs, no longer than to
+// the wall clock's next second.
+bool loop_sleeps_ok(App &app) {
+    app.menu.close();
+    for (int i = 0; i < Menu::kToastTicks; ++i) { app.menu.tick(); app.chat.tick(); }
+    app.level_until = app.settings_dirty_at = 0;
+    app.esc_armed = false;
+    app.space_tap.cancel();
+    Store::get().clear_timers();
+    const unsigned long t = sys::now_ms() + 60 * kSecondMs;
+    app.last_tick = t;
+    app.note_activity();
+    const unsigned long settling = app.sleep_ms(t);
+    app.last_tick = app.last_second = app.last_indicators = app.last_model_try = t + kSettleMs;
+    const unsigned long quiet = app.sleep_ms(t + kSettleMs);
+    app.show_level("Volume");
+    const unsigned long level = app.sleep_ms(t + kSettleMs);
+    app.level_until = 0;
+    app.sleep_ms(t + kSettleMs);                               // quiet again from here
+    app.last_second = app.last_indicators = app.last_model_try = t + 8 * kSettleMs;
+    Store::get().add_timer("Tea", 300, time(nullptr));
+    const unsigned long timer = app.sleep_ms(t + 2 * kSettleMs);
+    Store::get().clear_timers();
+    const bool ok = settling == kTickMs && quiet == kSecondMs && level == kTickMs && timer >= 1 && timer <= kSecondMs;
+    if (!ok)
+        fprintf(stderr, "the main loop sleeps for the wrong time (%lu ms settling, %lu quiet, %lu with a level shown, %lu "
+                        "with a timer running)\n", settling, quiet, level, timer);
+    return ok;
+}
+
+}  // namespace
+
+// What the app does while nobody uses it. Checked, not pictured: last, since it changes the settings.
+void App::shots_idle(Shots &shots) {
+    if (!model_retries_ok(*this)) shots.failed = true;
+    if (!loop_sleeps_ok(*this)) shots.failed = true;
 }
 
 }  // namespace ui

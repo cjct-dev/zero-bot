@@ -64,7 +64,7 @@ void Store::save_calendar() {
                        {"remind_min", e.remind_min}, {"repeat", e.repeat}, {"all_day", e.all_day},
                        {"alerted_for", static_cast<long long>(e.alerted_for)},
                        {"created", static_cast<long long>(e.created)}});
-    util::save_json(path_of("calendar.json"), arr);
+    queue("calendar.json", std::move(arr));
 }
 
 void Store::save_reminders() {
@@ -78,7 +78,7 @@ void Store::save_reminders() {
         }
         arr.push_back(j);
     }
-    util::save_json(path_of("reminders.json"), arr);
+    queue("reminders.json", std::move(arr));
     timers_unsaved_ = false;
 }
 
@@ -86,7 +86,46 @@ void Store::save_memory() {
     json arr = json::array();
     for (auto &m : memories_)
         arr.push_back({{"id", m.id}, {"text", m.text}, {"created", static_cast<long long>(m.created)}});
-    util::save_json(path_of("memory.json"), arr);
+    queue("memory.json", std::move(arr));
+}
+
+namespace {
+thread_local unsigned long t_queued = 0;   // how many files this thread has queued (Store::queue), ever
+}  // namespace
+
+// Declared before a function's lock, so that it acts once the lock has been let go: writes the files
+// the function queued. Only this thread's queuing counts: a read that waited for another thread's
+// change to let go of the lock does not then wait for that change's file as well.
+class Store::WriteAfter {
+public:
+    explicit WriteAfter(Store &store) : store_(store), queued_before_(t_queued) {}
+    ~WriteAfter() {
+        if (t_queued != queued_before_) store_.write_queued();
+    }
+    WriteAfter(const WriteAfter &) = delete;
+    WriteAfter &operator=(const WriteAfter &) = delete;
+
+private:
+    Store &store_;
+    const unsigned long queued_before_;
+};
+
+void Store::queue(const char *file, json contents) {
+    queued_[file] = std::move(contents);
+    ++t_queued;
+}
+
+// Writers take turns, and each takes what is queued only when its turn comes: a file is never written
+// with older contents after newer ones, and a writer that finds its file already taken has waited
+// for the one that took it to finish.
+void Store::write_queued() {
+    std::lock_guard<std::mutex> turn(write_mtx_);
+    std::map<std::string, json> files;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        files.swap(queued_);
+    }
+    for (const auto &f : files) util::save_json(path_of(f.first.c_str()), f.second);
 }
 
 // ---------------------------------------------------------------- calendar
@@ -164,6 +203,7 @@ std::vector<CalEvent> Store::events_between(time_t from, time_t to) {
 }
 
 int Store::add_event(CalEvent ev) {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     ev.id = next_id_++;
     ev.alerted_for = 0;
@@ -174,6 +214,7 @@ int Store::add_event(CalEvent ev) {
 }
 
 bool Store::update_event(const CalEvent &ev) {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     for (auto &e : events_)
         if (e.id == ev.id) {
@@ -190,6 +231,7 @@ bool Store::update_event(const CalEvent &ev) {
 }
 
 bool Store::delete_event(int id) {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     const auto n = events_.size();
     events_.erase(std::remove_if(events_.begin(), events_.end(), [&](const CalEvent &e) { return e.id == id; }),
@@ -200,6 +242,7 @@ bool Store::delete_event(int id) {
 }
 
 void Store::clear_events() {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     events_.clear();
     save_calendar();
@@ -216,6 +259,7 @@ std::vector<Reminder> Store::reminders() {
 }
 
 int Store::add_reminder(const std::string &text, time_t due) {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     Reminder r;
     r.id = next_id_++; r.text = text; r.due = due;
@@ -225,6 +269,7 @@ int Store::add_reminder(const std::string &text, time_t due) {
 }
 
 bool Store::delete_reminder(int id) {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     const auto n = reminders_.size();
     reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [&](const Reminder &r) { return r.id == id && !r.timer(); }),
@@ -235,6 +280,7 @@ bool Store::delete_reminder(int id) {
 }
 
 void Store::clear_reminders() {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [](const Reminder &r) { return !r.timer(); }),
                      reminders_.end());
@@ -270,6 +316,7 @@ void Store::follow_clock(long long wall_ms, long long steady_ms) {
     // The wall clock has been set, or this is the first reading. The offset changes together with
     // the timers, under the lock: a timer being started on another thread meanwhile (see reckon) is
     // reckoned either by the old clock and moved with the rest, or by the new one and left alone.
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     const long long step = offset - clock_offset_.exchange(offset);
     if (!clock_known_.exchange(true) || (step > -kClockStepMs && step < kClockStepMs)) return;
@@ -320,6 +367,7 @@ std::vector<Reminder> Store::timers() {
 }
 
 int Store::add_timer(const std::string &label, long seconds, time_t now, long long offset_ms) {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     if (std::count_if(reminders_.begin(), reminders_.end(), [](const Reminder &r) { return r.timer(); }) >= kMaxTimers)
         return 0;
@@ -338,6 +386,7 @@ int Store::add_timer(const std::string &label, long seconds, time_t now, long lo
 }
 
 bool Store::extend_timer(int id, long seconds) {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     for (auto &r : reminders_)
         if (r.id == id && r.timer()) {
@@ -351,6 +400,7 @@ bool Store::extend_timer(int id, long seconds) {
 }
 
 bool Store::delete_timer(int id) {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     const auto n = reminders_.size();
     reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [&](const Reminder &r) { return r.id == id && r.timer(); }),
@@ -362,6 +412,7 @@ bool Store::delete_timer(int id) {
 }
 
 int Store::clear_timers() {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     const auto n = reminders_.size();
     reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [](const Reminder &r) { return r.timer(); }),
@@ -393,6 +444,7 @@ std::vector<Reminder> Store::take_ended_timers(time_t now) {
 }
 
 void Store::save_timers() {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     if (timers_unsaved_) save_reminders();
 }
@@ -406,6 +458,7 @@ std::vector<Reminder> Store::recent_timers(time_t now) {
 }
 
 int Store::restart_timer(int id, long seconds, time_t now, long long offset_ms) {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = std::find_if(ended_.begin(), ended_.end(), [id](const Reminder &r) { return r.id == id; });
     if (it == ended_.end() ||
@@ -432,6 +485,7 @@ std::vector<Memory> Store::memories() {
 }
 
 int Store::add_memory(const std::string &text) {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     Memory m;
     m.id = next_id_++; m.text = text; m.created = time(nullptr);
@@ -441,6 +495,7 @@ int Store::add_memory(const std::string &text) {
 }
 
 bool Store::update_memory(int id, const std::string &text) {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     for (auto &m : memories_)
         if (m.id == id) { m.text = text; save_memory(); return true; }
@@ -448,6 +503,7 @@ bool Store::update_memory(int id, const std::string &text) {
 }
 
 bool Store::delete_memory(int id) {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     const auto n = memories_.size();
     memories_.erase(std::remove_if(memories_.begin(), memories_.end(), [&](const Memory &m) { return m.id == id; }),
@@ -458,6 +514,7 @@ bool Store::delete_memory(int id) {
 }
 
 void Store::clear_memories() {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     memories_.clear();
     save_memory();
@@ -465,6 +522,7 @@ void Store::clear_memories() {
 
 // ---------------------------------------------------------------- alerts
 std::vector<std::string> Store::take_due_alerts(time_t now) {
+    WriteAfter write(*this);
     std::lock_guard<std::mutex> lk(mtx_);
     std::vector<std::string> out;
     bool cal_dirty = false, rem_dirty = false;

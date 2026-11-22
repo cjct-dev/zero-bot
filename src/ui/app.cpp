@@ -1,6 +1,7 @@
 #include "ui/app.h"
 #include "ui/app_impl.h"
 
+#include <algorithm>
 #include <atomic>
 #include <csignal>
 #include <cstring>
@@ -90,22 +91,51 @@ void App::wire_agent() {
 
 // Picks sensible models the first time, so the app works before settings are touched.
 void App::auto_select_models() {
-    const Settings s = Settings::get();
-    if (!s.configured() || (!s.stt_model.empty() && !s.tts_model.empty() && !s.eff_llm_model().empty())) return;
-    if (selecting_models.exchange(true)) return;
-    std::thread([this] {
+    const std::string service = models_wanted();
+    if (service.empty() || selecting_models.exchange(true)) return;
+    std::thread([this, service] {
         std::string err;
         const models::List list = models::list(err);
         selecting_models = false;
-        if (!err.empty()) return;   // offline, most likely; periodic() tries again later
-        uiq::post([this, list] {
-            const Settings st = Settings::update([&list](Settings &s) { models::choose(s, list); });
-            if ((st.stt_model.empty() || st.tts_model.empty()) && !warned_models) {
-                warned_models = true;
-                chat.add_note("Choose speech models in settings (SPACE) to use voice.", theme::kThink);
-            }
-        });
+        uiq::post([this, list, err, service] { models_answered(list, err, service); });
     }).detach();
+}
+
+// The service (address and key) to ask for its models, or "" when there is nothing to ask. A
+// service's list is read once: what it lacks (since ZB-088 a service that labels none of its models
+// gets no chat model chosen) the user picks in settings, and asking again would only wake the Wi-Fi.
+// Only a service with another address or key is asked again (periodic() looks every model_retry_ms).
+std::string App::models_wanted() const {
+    const Settings s = Settings::get();
+    if (!s.configured() || (!s.stt_model.empty() && !s.tts_model.empty() && !s.eff_llm_model().empty())) return "";
+    const std::string service = s.eff_api_base() + '\n' + s.eff_api_key();
+    return service == models_listed_for ? "" : service;
+}
+
+// The service's answer, on the UI thread. One that could not be reached (offline, most likely) is
+// asked again after twice as long each time, up to kModelRetryMaxMs, and at once when the
+// connection comes back (follow_connection).
+void App::models_answered(const models::List &list, const std::string &err, const std::string &service) {
+    if (!err.empty()) {
+        model_retry_ms = std::min(model_retry_ms * 2, kModelRetryMaxMs);
+        return;
+    }
+    models_listed_for = service;
+    model_retry_ms = kModelRetryMs;
+    const Settings st = Settings::update([&list](Settings &s) { models::choose(s, list); });
+    if ((st.stt_model.empty() || st.tts_model.empty()) && !warned_models) {
+        warned_models = true;
+        chat.add_note("Choose speech models in settings (SPACE) to use voice.", theme::kThink);
+    }
+}
+
+// A connection that comes back asks at once for the models still to be chosen (auto_select_models).
+void App::follow_connection(bool online) {
+    if (online && !was_online) {
+        model_retry_ms = kModelRetryMs;
+        last_model_try = 0;
+    }
+    was_online = online;
 }
 
 void App::welcome() {
@@ -189,6 +219,28 @@ void App::run_setup() {
     });
 }
 
+namespace {
+
+// The main loop: keys, what the worker threads posted, the periodic work and LVGL; then asleep until
+// LVGL's next timer (an animation, a redraw) or the app's next periodic work, whichever is sooner,
+// unless a key or something posted wakes it first. SIGTERM's g_exit is seen at the next wake, within
+// a second.
+void run_until_exit(App &app) {
+    while (!g_exit) {
+        KeyEvent ev;
+        while (input::poll(ev)) {
+            app.handle_key(ev);
+            app.note_activity();
+        }
+        if (uiq::drain()) app.note_activity();
+        app.periodic();
+        const unsigned long lvgl = lv_timer_handler();
+        uiq::wait(std::max(2ul, std::min(lvgl, app.sleep_ms(sys::now_ms()))));
+    }
+}
+
+}  // namespace
+
 int run_app(const std::string &shots_dir, bool keydump) {
     const bool shots = !shots_dir.empty();
 #if ZB_DESKTOP
@@ -225,17 +277,10 @@ int run_app(const std::string &shots_dir, bool keydump) {
     app.auto_select_models();
     if (!s.setup_done) app.run_setup();
     input::set_dump(keydump);
-    input::start();
+    input::start(uiq::wake);
     app.idle.use(sys::now_ms());
 
-    while (!g_exit) {
-        KeyEvent ev;
-        while (input::poll(ev)) app.handle_key(ev);
-        uiq::drain();
-        app.periodic();
-        const uint32_t wait = lv_timer_handler();
-        usleep((wait > 16 ? 16 : (wait < 2 ? 2 : wait)) * 1000);
-    }
+    run_until_exit(app);
 
     app.alarm.stop();                              // lets go of the music
     audio::AlarmSound::get().stop_and_wait();      // a player left running would ring on after the app

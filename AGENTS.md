@@ -109,7 +109,7 @@ through `Settings::update([](Settings &s) { ... })`, which makes it under that l
 
 | Thread | Started in | What to know |
 |---|---|---|
-| UI (main) | `ui::run_app` (app.cpp) | LVGL, keys from the reader's queue, `App::periodic` (app_status.cpp), whatever `uiq::post` queued. Never waits on the network or a child process. |
+| UI (main) | `ui::run_app` (app.cpp) | LVGL, keys from the reader's queue, `App::periodic` (app_status.cpp), whatever `uiq::post` queued. Between passes it sleeps in `uiq::wait` until LVGL's next timer or the app's next periodic work (`App::sleep_ms`); a key or a post wakes it at once. Never waits on the network or a child process. |
 | Agent worker | `Agent::start` (`Agent::worker`) | One request at a time (`Agent::Turn`); `Agent::mtx_` guards its inputs, history and state. |
 | Speech | `SpeechQueue::run` | Synthesises and plays sentence by sentence; a watcher per sentence lets `stop()` cut a synthesis short. |
 | Key reader | `input::start` (device only) | Reads the keypad and makes the auto-repeat; its queue is drained by the UI thread. |
@@ -125,9 +125,11 @@ them every tick and tools change them), the smart-home file (`store.cpp`: `g_mtx
 and the rate limit, `g_locks_mtx` and then one lock per device), the time zone (`g_tz_mtx` in
 util.cpp, under which `TZ` is switched), `uiq::mtx()` and curl's share locks (http.cpp). A
 descriptor or pointer read under a lock must not be used after it is let go if another thread may
-close or free it meanwhile (section 8, Audio). Still open: `Store` writes its files under the lock
-the UI takes every second (ZB-036), and `TZ` is switched with `setenv` while other threads may read
-it.
+close or free it meanwhile (section 8, Audio). `Store` writes no file with `Store::mtx_` held, which
+the UI thread takes every second: it queues a file's new contents under it and writes them once it is
+let go, before the change returns (a `WriteAfter` declared before the lock in every function that
+saves; `write_mtx_` makes writers take turns). Still open: `TZ` is switched with `setenv` while other
+threads may read it.
 
 State on disk (all under the user's home, mode 0600 where they hold secrets):
 `~/.config/zero-bot/settings.json`, `~/.config/zero-bot/radio.json` (the user's own stations,
@@ -258,7 +260,10 @@ The three builds share all the sources except that `cli` leaves out `src/ui/` an
 and input code. Libraries: libcurl, libcrypto (OpenSSL 3.5 on the device, possibly newer on a
 PC: use only non-deprecated interfaces), FreeType and libpng for the UI. MP3 encoding (libmp3lame),
 MP3 decoding for music (libmpg123) and Opus decoding (libopusfile) are loaded at run time with
-`dlopen` and are optional.
+`dlopen` and are optional. The device build (`cp0`) is `-O2` with every function in a section of its
+own and `--gc-sections`, LVGL included (a quarter smaller than `-O3` without them); `scripts/deploy.sh`
+and `scripts/package-deb.sh` install it stripped, and `build/cp0/zero_bot` keeps the symbols for
+reading a crash.
 
 ## 6. Testing
 
@@ -384,7 +389,9 @@ What exists:
   mode against a stand-in `ffplay`), `tests/unit/tools_test.cpp` (the calculator, dates and
   zones that do not exist, helper programs: cancelling, time limits, no inherited descriptors),
   `tests/unit/core_test.cpp` (what every thread shares: one file saved by two threads, the settings
-  read and changed on several threads, all-day alerts when the clocks change; what an older version
+  read and changed on several threads, all-day alerts when the clocks change, the store read at once
+  while a slow write of its file is under way (fsync wrapped), the main loop's sleep and what wakes it
+  (`uiq::wait`); what an older version
   left behind; and the shared helpers: failure shape, battery, Wi-Fi list, default route, monotonic
   count, start of a day), `tests/unit/speaker_test.cpp` (the speaker written on one thread and
   stopped or killed on another: nothing reaches a file opened after `stop()`, a stuck write is
@@ -592,7 +599,8 @@ What exists:
   the screens that show its page; renaming a row the script walks to fails the run until the
   script is given the new label. It also checks what needs the real screen code (a key on a dark
   screen only wakes it, labels fit, the status bar redraws only what changed, the two
-  model-choosing rules of `ui/models.h`). `tests/shots_compare.py` renders them into a temporary
+  model-choosing rules of `ui/models.h`, when the service is asked for its models and how long the
+  main loop sleeps: `shots_idle`). `tests/shots_compare.py` renders them into a temporary
   folder
   and compares each with `tests/golden/shots/` (small tolerance; differences drawn to
   `build/shots-diff/`), with the wall clock pinned (`tests/shots/fixclock.c`, built with `cc` and
@@ -925,6 +933,19 @@ key, real audio), say so plainly rather than implying it was.
   user would, and the pictures came out identical, pixel for pixel.
 
 **Power**
+- The main loop slept 16 ms at a time whatever happened: 62 wake-ups a second for as long as the app
+  ran (measured on the device, 2026-11-17). It now sleeps in `uiq::wait` until LVGL's next timer or
+  the app's next work (`App::sleep_ms`), woken at once by a key or a post: 1.3 wake-ups a second on a
+  quiet chat screen and 2.4 with a timer counting down, against 61.9 before, measured on the device
+  build under qemu. The sim cannot show it (its SDL driver polls every 5 ms). The device build runs on
+  a PC under `qemu-aarch64 -L <sysroot>`, with an `LD_PRELOAD` shim that answers the fbdev ioctls for
+  a regular file (`APPLAUNCH_LINUX_FBDEV_DEVICE`) and its keyboard at a FIFO of `input_event`
+  records (`APPLAUNCH_LINUX_KEYBOARD_DEVICE`): its frames can be read back and keys pressed, which
+  checked the alarm, its banner, keys, reminders and dimming against the new loop (ZB-036; the
+  scripts are in the maintainer's notes).
+- A file written with a lock held makes every thread waiting for the lock wait for the card too: a
+  tool's save of the calendar or memory held `Store::mtx_` through its fsync, and the UI thread takes
+  that lock every second (299 ms of a 300 ms write in `core_test`). Queue under the lock, write after.
 - The fuel gauge (`/sys/class/power_supply/bq27220-0/`) reports `current_now` in µA: positive
   while charging on USB, negative on battery, 0 only when full on USB. To measure the app, log it
   every 10 s from a detached process (`setsid nohup ... &`), unplug, use the device, plug back in
@@ -1030,10 +1051,18 @@ bottom row's hint short: it names only the keys wanted most.
 **A screen.** Follow `breath_view` or `chat_view`: create objects once, update only what
 changed, drive it from `App::periodic` (`app_status.cpp`), route keys in `App::handle_key`
 (`app_keys.cpp`), and add a `--shots` frame in the function of `shots.cpp` for its group of screens.
+The main loop ticks only while something needs it (`App::lively`, and a view's `needs_tick`) and for
+a second after anything happens; otherwise it sleeps to the next second's work. Whatever changes on
+screen by itself, without an LVGL animation or timer, a key or a `uiq::post` (a countdown, a polled
+state), must be added to `App::lively` or to `App::sleep_ms`'s deadlines, or it is drawn up to a
+second late; `--shots` checks the sleep (`loop_sleeps_ok`).
 A settings page that needs something slow (a subprocess, the network, the first full look at the
 network) reads it with `background()` and refreshes itself when the answer comes, showing a
 placeholder meanwhile; a late answer acts only while its page is still the one on top (the Smart
-home page checks its title, the setup guide its `still_on`).
+home page checks its title, the setup guide its `still_on`). So does a row's value, which is read at
+every redraw of its page: the Smart home row on Your data shows the last count while it counts again
+(`home_things`); counting at each key press ran `iw` on the UI thread. `--shots` opens both pages
+with a network that answers only after 1.5 s (`opens_at_once`).
 
 **Something shown over every screen** (the timer's alarm banner, `AlarmView`): make it a child
 of the screen, created after the other views, and `raise()` it again whenever another view
@@ -1044,7 +1073,8 @@ screen only, so it would be missing from the screenshots.
 value it already has. `ChatView`'s setters compare with what is shown and return early; keep
 that for anything added there (the timer countdown changes once a second, not every tick). A
 label that scrolls redraws the bar on every screen refresh (about 40 times a second, measured in
-the simulator), so nothing there should scroll for long: the now-playing text scrolls only when
+the simulator when LVGL refreshed every 16 ms; at most 30 since `LV_DEF_REFR_PERIOD` is 33), so
+nothing there should scroll for long: the now-playing text scrolls only when
 it has all of its room, and beside the countdown it is cut short with dots instead. A radio
 station's name, there for hours, never scrolls (`set_now_playing(text, true)`).
 

@@ -148,7 +148,9 @@ model from the service's list, by what the list labels each model for (its `mode
 model only from those labelled `chat`, never an unlabelled one (that could be a model for
 something else, such as embeddings). A service that labels none of its models gets nothing picked:
 choose each model under *Assistant* in settings, which lists the models labelled for that use or,
-where there are none, the unlabelled ones. You can change every model there.
+where there are none, the unlabelled ones. You can change every model there. The list is read once
+per service (address and key); while the service cannot be reached, the app asks again after a
+while, less often each time, and at once when the connection comes back.
 
 ### 4. Optional extras
 

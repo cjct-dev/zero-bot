@@ -203,6 +203,13 @@ int Menu::row_of(const std::string &label) const {
     return -1;
 }
 
+std::string Menu::value_of(const std::string &label) const {
+    const int at = row_of(label);
+    if (at < 0) return "";
+    const MenuItem &it = items_[static_cast<size_t>(at)];
+    return it.value ? it.value() : "";
+}
+
 std::string Menu::selected() const {
     if (stack_.empty()) return "";
     const int at = stack_.back().selected;

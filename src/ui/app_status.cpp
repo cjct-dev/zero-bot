@@ -1,7 +1,9 @@
 // The app's periodic work: the footer and the status bar, timers and their alarm, reminders, the
-// screen's light (dimmed, off, lit), and the main loop's tick (periodic).
+// screen's light (dimmed, off, lit), the main loop's tick (periodic) and how long the loop sleeps
+// between ticks (sleep_ms).
 #include "ui/app_impl.h"
 
+#include <algorithm>
 #include <ctime>
 #include <string>
 #include <vector>
@@ -67,6 +69,7 @@ void App::update_footer() {
 void App::update_indicators() {
     const std::string link = tether::default_link();
     bool online = !link.empty(), charging = false;
+    follow_connection(online);
     const bool phone = link.compare(0, 4, "bnep") == 0;
     int battery = -1;
 #if !ZB_DESKTOP
@@ -208,7 +211,7 @@ void App::periodic() {
         settings_dirty_at = 0;
         Settings::save();
     }
-    if (now - last_second >= 1000) {
+    if (now - last_second >= kSecondMs) {
         last_second = now;
         check_alerts();
         const bool active = recorder.active() || Agent::get().state() != AgentState::Idle;
@@ -218,14 +221,42 @@ void App::periodic() {
             audio::Music::get().hold(audio::Music::kExchange | audio::Music::kSpeech, false);
         tick_screen(now, active || Agent::get().busy() || Agent::get().has_pending() || SpeechQueue::get().active());
     }
-    if (now - last_model_try >= 15000) {   // covers starting up before Wi-Fi has connected
+    if (now - last_model_try >= model_retry_ms) {   // covers starting up before Wi-Fi has connected
         last_model_try = now;
         auto_select_models();
     }
-    if (now - last_indicators >= 5000 || last_indicators == 0) {
+    if (now - last_indicators >= kIndicatorsMs || last_indicators == 0) {
         last_indicators = now ? now : 1;
         update_indicators();
     }
+}
+
+// ------------------------------------------------------------ how long the main loop sleeps
+// Something on screen moves or is awaited, so periodic() has work every tick: a request, its speech,
+// the microphone, the chat's or a menu's own ticks, the breathing exercise, a timer's alarm, a level
+// shown for a moment, settings waiting to be saved, ESC held, a SPACE that may be the first of two.
+bool App::lively() {
+    Agent &agent = Agent::get();
+    return recorder.active() || agent.state() != AgentState::Idle || agent.busy() || agent.has_pending() ||
+           SpeechQueue::get().active() || connecting_phone || chat.needs_tick() || menu.needs_tick() ||
+           breath.active() || breath_minutes > 0 || alarm.ringing() || banner.visible() || level_until != 0 ||
+           settings_dirty_at != 0 || esc_armed || space_tap.pending();
+}
+
+// How long the main loop may sleep before periodic() has work; a key or anything posted wakes it
+// sooner (uiq::wait). While something is lively, and for kSettleMs after (what has just ended still
+// shows: the footer goes back to its hints), until the next tick. Else until the next of the
+// once-a-second, indicator and model work, and while a timer runs, the wall clock's next second (its
+// countdown changes then, and its alarm rings on one). On the device that is one or two wake-ups a
+// second instead of sixty-two (ZB-036).
+unsigned long App::sleep_ms(unsigned long now) {
+    if (lively()) quiet_since = 0;
+    else if (!quiet_since) quiet_since = now;
+    auto until = [now](unsigned long at) { return at > now ? at - now : 0; };
+    if (!quiet_since || now - quiet_since < kSettleMs) return until(last_tick + kTickMs);
+    const unsigned long work = until(std::min({last_second + kSecondMs, last_indicators + kIndicatorsMs,
+                                               last_model_try + model_retry_ms}));
+    return Store::get().next_timer_end() ? std::min(work, timers::ms_to_next_second()) : work;
 }
 
 }  // namespace ui

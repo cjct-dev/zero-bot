@@ -462,6 +462,12 @@ time_t follow_clock() {
     return static_cast<time_t>(wall / 1000);
 }
 
+unsigned long ms_to_next_second() {
+    long long wall = 0, steady = 0;
+    read_clocks(wall, steady);
+    return static_cast<unsigned long>(1000 - wall % 1000);
+}
+
 // ---------------------------------------------------------------- the alarm
 Alarm::Alarm(Sound sound) : sound_(std::move(sound)) {}
 

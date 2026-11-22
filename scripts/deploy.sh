@@ -24,7 +24,15 @@ push_checked() {
   return 1
 }
 
-push_checked "$BIN" /tmp/zero_bot.new
+# The device gets the binary without its symbols, a quarter smaller (as the package does);
+# build/cp0 keeps them for reading a crash.
+STRIP="$ROOT/.cache/toolchain/bin/aarch64-none-linux-gnu-strip"
+SHIPPED=$(mktemp)
+trap 'rm -f "$SHIPPED"' EXIT
+cp "$BIN" "$SHIPPED"
+[ -x "$STRIP" ] && "$STRIP" "$SHIPPED"
+
+push_checked "$SHIPPED" /tmp/zero_bot.new
 push_checked "$ROOT/packaging/zero_bot.desktop" /tmp/zero_bot.desktop
 push_checked "$ROOT/packaging/zero_bot.png" /tmp/zero_bot.png
 "$ADB" shell '

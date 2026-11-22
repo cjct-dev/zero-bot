@@ -9,7 +9,10 @@
 #define LV_USE_STDLIB_SPRINTF LV_STDLIB_CLIB
 
 #define LV_USE_OS LV_OS_NONE
-#define LV_DEF_REFR_PERIOD 16
+/* LVGL's redraw and animation timers: 30 a second at most. The panel is fed over SPI by the kernel,
+ * which costs about five times what drawing does, so an animation (a scroll, a long title moving in the
+ * status bar while music plays) costs what it sends: half at 33 ms of what it was at 16. */
+#define LV_DEF_REFR_PERIOD 33
 #define LV_DPI_DEF 130
 
 #define LV_USE_LOG 1
@@ -42,6 +45,11 @@
 
 /* Images: PNG only (a photo reaches the screen as a PNG thumbnail: App::wire_agent) */
 #define LV_USE_LIBPNG 1
+/* Decoded images kept for redraws, in bytes (LVGL's default 0 decoded a thumbnail's PNG again at every
+ * redraw of its area: every frame of a scroll, every tick of an answer streaming below it). A camera
+ * thumbnail is 128x96, 48 kB decoded. An image that does not fit is not drawn at all, so this holds a
+ * screenful of the tallest (--shots checks one the size of the screen). */
+#define LV_CACHE_DEF_SIZE (1024 * 1024)
 #define LV_USE_FS_STDIO 1
 #define LV_FS_STDIO_LETTER 'A'
 #define LV_FS_STDIO_PATH ""

@@ -57,6 +57,8 @@ public:
     void toast(const std::string &text);
     void key(const KeyEvent &ev);   // returns to the app automatically when the last page closes
     void tick();
+    // tick() has something to do: a toast to take away, or values on screen that change by themselves.
+    bool needs_tick() const { return toast_ticks_ > 0 || (!stack_.empty() && !editing_ && stack_.back().page.live); }
 
     // Asks for a line of text. on_done receives the result when the user confirms.
     void edit_text(const std::string &title, const std::string &initial, bool secret,
@@ -76,6 +78,7 @@ public:
     // this label that the cursor can stop on (-1 when there is none). Rows count as in the page's build.
     int cursor() const;
     int row_of(const std::string &label) const;
+    std::string value_of(const std::string &label) const;   // that row's value as shown ("" with no such row)
     // The width a Pair row gives its key (the rest is for what it does): for the checks in --shots.
     static constexpr int kPairKeyW = 96;   // DIAGNOSTICS (temporary): 84 without the guide's "SPACE SPACE" line
     static int pair_text_width();

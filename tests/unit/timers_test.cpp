@@ -159,6 +159,25 @@ void test_countdown_text() {
 }
 
 // ---------------------------------------------------------------- the tool
+// While a timer runs and nothing else moves, the main loop sleeps until the wall clock's next second
+// (ZB-036): the countdown has changed by then, and not before.
+void test_next_second() {
+    // Read between two readings of the wall clock in the same second, so where in it the answer was
+    // taken is known to within their gap.
+    for (int tries = 0; tries < 5; ++tries) {
+        timespec before{}, after{};
+        clock_gettime(CLOCK_REALTIME, &before);
+        const unsigned long ms = timers::ms_to_next_second();
+        clock_gettime(CLOCK_REALTIME, &after);
+        if (before.tv_sec != after.tv_sec) continue;
+        CHECK(ms >= 1 && ms <= 1000);
+        CHECK(before.tv_nsec / 1000000 + static_cast<long>(ms) <= 1000);   // not past the next second
+        CHECK(after.tv_nsec / 1000000 + static_cast<long>(ms) >= 1000);    // nor short of it
+        return;
+    }
+    CHECK(!"five readings each fell across a second");
+}
+
 void test_start_list_cancel_add_time() {
     reset_store();
     std::string r = tool(R"({"action":"start","minutes":5,"label":"food out of the oven"})", T0);
@@ -1133,6 +1152,7 @@ int main() {
     tzset();
     util::make_dirs(util::data_dir());
     run("countdown text", test_countdown_text);
+    run("the next second of the countdown", test_next_second);
     run("start, list, cancel, add_time", test_start_list_cancel_add_time);
     run("tool errors", test_tool_errors);
     run("label matching", test_label_matching);
