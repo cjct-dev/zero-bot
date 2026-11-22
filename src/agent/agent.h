@@ -13,9 +13,9 @@
 
 #include "core/util.h"
 
-// Speaking: a spoken request's answer is being given; talking over it stops it (interrupt_speech).
-// Answering: a typed request's answer is being shown, and only shown (ZB-091): talking over it does not
-// stop it.
+// Speaking: an answer that is heard (a spoken request's, with spoken replies on) is being given; talking over
+// it stops it (interrupt_speech). Answering: an answer that is only shown (a typed request's, or any with
+// spoken replies off: ZB-091) is being given: talking over it does not stop it.
 enum class AgentState { Idle, Transcribing, Thinking, Working, Speaking, Answering };
 
 struct AgentEvents {   // called from worker threads
@@ -43,9 +43,13 @@ public:
     void submit_text(const std::string &text);
     void submit_audio(std::vector<int16_t> pcm);     // 16 kHz mono
     void interrupt_speech();    // user started talking: stop speaking and stop composing the spoken answer
-    // The microphone is open. Until it closes nothing new is spoken: an answer that becomes ready
-    // meanwhile waits, and is withdrawn if what the user said is then handed over as steering.
+    // The microphone is open. Until it closes nothing new is spoken and no action runs: an answer that
+    // becomes ready meanwhile waits, and is withdrawn if what the user said is then handed over as steering.
     void set_listening(bool on) { listening_ = on; }
+    // What the user said or typed is on its way but not handed over yet (the app connects to the phone
+    // first: App::when_online). Until it is, a request under way waits as it does for the microphone, so
+    // a correction stops the rest of a batch however late it arrives.
+    void set_input_coming(bool on) { input_coming_ = on; }
     void cancel();              // abandon the current run entirely
     void reset_conversation();
     void say(const std::string &text);               // speak a notice (reminders) without involving the model
@@ -84,6 +88,8 @@ private:
     int absorb_inputs(bool first, bool *spoken = nullptr, std::string *missed = nullptr);
     void trim_history();
     void set_state(AgentState s, const std::string &detail = "");
+    // The steering gate: the user is talking, or what they said is on its way (set_listening, set_input_coming).
+    bool listening() const { return listening_ || input_coming_; }
 
     AgentEvents ev_;
     std::thread thread_;
@@ -97,6 +103,7 @@ private:
     std::atomic<bool> round_cancel_{false}; // current model call
     std::atomic<bool> interrupted_{false};
     std::atomic<bool> listening_{false};
+    std::atomic<bool> input_coming_{false};
     AgentState state_ = AgentState::Idle;
     std::string detail_;
     std::string last_answer_;

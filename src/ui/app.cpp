@@ -181,26 +181,34 @@ void App::finish_recording(bool submit) {
     audio::normalize(pcm);
     auto shared = std::make_shared<std::vector<int16_t>>(std::move(pcm));
     when_online([shared] { Agent::get().submit_audio(std::move(*shared)); });
-    // Cleared only after the recording has been handed over, so a request that was waiting for
-    // the user to finish sees what they said and treats it as steering.
+    // Cleared only after the recording has been handed over, or is on its way (when_online), so a
+    // request that was waiting for the user to finish sees what they said and treats it as steering.
     Agent::get().set_listening(false);
 }
 
-// Runs `send` straight away when there is a connection. With none, and a paired phone, it
-// first tries the phone's Bluetooth tethering, then sends whether or not that worked (the
-// request then reports the missing connection itself).
+// Runs `send` (which hands the user's input to the agent) straight away when there is a connection.
+// With none, and a paired phone, it first tries the phone's Bluetooth tethering, then sends whether or
+// not that worked (the request then reports the missing connection itself). Until then the input is on
+// its way (Agent::set_input_coming): a request under way speaks nothing new and makes no call. One input
+// waits at a time; another, while it does, is sent straight away.
 void App::when_online(std::function<void()> send) {
     if (tether::online() || !Settings::get().phone_fallback || connecting_phone) { send(); return; }
     connecting_phone = true;
-    std::thread([this, send] {
-        if (!tether::available()) { connecting_phone = false; uiq::post(send); return; }
+    Agent::get().set_input_coming(true);
+    // On the UI thread, as `send` always is: the input reaches the agent before its gate opens.
+    auto hand_over = [this, send] {
+        send();
+        Agent::get().set_input_coming(false);
+        connecting_phone = false;
+    };
+    std::thread([this, hand_over] {
+        if (!tether::available()) { uiq::post(hand_over); return; }
         uiq::post([this] { chat.add_note("No connection. Trying your phone over Bluetooth…", theme::kDim); });
         const std::string err = tether::connect();
-        connecting_phone = false;
-        uiq::post([this, err, send] {
+        uiq::post([this, err, hand_over] {
             if (err.empty()) chat.add_note("Online through your phone.", theme::kDim);
             last_indicators = 0;
-            send();
+            hand_over();
         });
     }).detach();
 }

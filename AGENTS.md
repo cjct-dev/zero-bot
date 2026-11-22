@@ -165,15 +165,20 @@ Things in that loop that exist for a reason; do not remove them without re-runni
 - **`say`**: tools whose effect is fully known up front (timer, calendar, switch) take the
   confirmation sentence as a parameter, so success is spoken without a second model call.
 - **Steering**: input that arrives while a request is being worked on is added to the same
-  request. While the microphone is open nothing new is spoken and no action runs
-  (`Agent::set_listening`): a later call of a batch waits for it to close, and once the user has
-  said more, the calls not yet made are not made (each answered "this call was not made", not
-  counted as failed), so the model decides again with their words.
+  request. While the microphone is open (`Agent::set_listening`), or what the user said is still
+  on its way (the app connects to the phone first: `App::when_online`, `Agent::set_input_coming`),
+  nothing new is spoken and no action runs: every call of a batch waits, the first too once an
+  answer has begun, and once the user has said more, the calls not yet made are not made (each
+  answered "this call was not made", not counted as failed), so the model decides again with their
+  words.
 - **Typed or spoken** (ZB-091): a request's answer is spoken only when something in it was said
-  aloud (and spoken replies are on); a typed one's is only shown. Its state says which: `Speaking`
-  (TAB stops it: `Agent::interrupt_speech`, and the conversation keeps "[the user interrupted
-  here]") or `Answering` (TAB does not stop it). Music waits only for an answer that is heard
-  (`tools::Context::in_conversation`), and each answer's end is signalled at its own request's end.
+  aloud (and spoken replies are on); a typed one's is only shown. Its state says which, by whether
+  it is heard (`Turn::heard`): `Speaking` (TAB stops it: `Agent::interrupt_speech`, and the
+  conversation keeps "[the user interrupted here]") or `Answering` (only shown, a spoken request's
+  too with spoken replies off: TAB does not stop it). Music waits only for an answer that is heard
+  (`tools::Context::in_conversation`; music the question held comes back as soon as the answer is
+  known to be only shown: `Turn::set_spoken`), and each answer's end is signalled at its own
+  request's end.
 - **Numeric dates** are spelt out by rule (`util::spell_numeric_dates`) before the model sees
   them, in the user's date order with the year filled in (the same rule as a date typed in the
   calendar editor: `year_meant` in `util.cpp`).
@@ -468,8 +473,9 @@ What exists:
 - **Command-line modes** in `src/main.cpp` (work in the `cli` build):
   `--ask "text"`, `--ask-wav FILE.wav` (a spoken request, transcribed by the service), `--chat`,
   `--tool NAME 'JSON'`, `--steer "text"` / `--steer-wav FILE.wav` (inject input during the
-  first tool), `--talk-over MS[:text]` (hold the microphone open during a request; with
-  `--talk-at tool|answer`, from its first tool or once its answer has begun, as TAB does),
+  first tool), `--talk-over MS[+LATE][:text]` (hold the microphone open during a request; with
+  `--talk-at tool|answer`, from its first tool or once its answer has begun, as TAB does; with
+  `+LATE`, the words arrive that long after it closes, as when the app connects to the phone),
   `--follow-ups "a|b|c"` (chain requests inside one run), `--stt FILE.wav`, `--tts "text" OUT.raw`,
   `--codec-bench FILE.wav FILE.opus` (time the MP3 and Opus codecs on this machine),
   `--discover` (smart-home scan), `--home-refresh` (read saved smart-home devices),

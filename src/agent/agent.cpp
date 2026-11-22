@@ -394,6 +394,7 @@ private:
     std::optional<Then> judge_draft(Round &r, const Budget &budget);
     void release_held(Round &r);
     Then run_tools(Round &r);
+    void not_made(const llm::ToolCall &c);
     Then finish_answer(Round &r);
 
     Then next_request();
@@ -532,7 +533,7 @@ void Agent::Turn::stream(Round &r, const std::string &piece) {
                     return;
                 }
         // The user has started talking: keep the words back until they have finished.
-        if (a_.listening_ || !r.unsaid.empty()) { r.unsaid.push_back(sentence); continue; }
+        if (a_.listening() || !r.unsaid.empty()) { r.unsaid.push_back(sentence); continue; }
         r.speech_started = true;
         answering();
         to_speech(sentence);
@@ -544,7 +545,7 @@ void Agent::Turn::stream(Round &r, const std::string &piece) {
 bool Agent::Turn::withdraw_if_steered(Round &r) {
     // The user was talking when this step was decided. Nothing has been said or done yet, so
     // what they add is taken into account first: a correction should land before the action.
-    const bool talked_over = !r.speech_started && a_.listening_;
+    const bool talked_over = !r.speech_started && a_.listening();
     if (!r.speech_started) wait_while_listening();
 
     if (r.steered || (!r.speech_started && !r.res.cancelled && r.res.error.empty() && a_.has_pending() &&
@@ -679,8 +680,8 @@ void Agent::Turn::release_held(Round &r) {
 }
 
 // The round's tool calls, run in order and their results put in the conversation. A call that failed
-// in this request is not made again unchanged, and none after the first is made while the user is
-// talking, or once they have said more. When every call worked and came with its own
+// in this request is not made again unchanged, none is made while the user is talking, and once they
+// have said more the rest are not made (not_made). When every call worked and came with its own
 // confirmation ("say"), that is spoken without another model call; otherwise the model is called again.
 Agent::Turn::Then Agent::Turn::run_tools(Round &r) {
     json calls = json::array();
@@ -692,7 +693,7 @@ Agent::Turn::Then Agent::Turn::run_tools(Round &r) {
     }
     if (r.began) {
         const std::string rest = r.chunker.flush();
-        if (!rest.empty() && !a_.listening_ && r.unsaid.empty()) to_speech(rest);
+        if (!rest.empty() && !a_.listening() && r.unsaid.empty()) to_speech(rest);
         if (a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, false);
     }
     std::string confirm;
@@ -700,24 +701,17 @@ Agent::Turn::Then Agent::Turn::run_tools(Round &r) {
     bool said_more = false;   // the user said more while the calls were made: the rest are not made
     for (size_t i = 0; i < r.res.tool_calls.size(); ++i) {
         const llm::ToolCall &c = r.res.tool_calls[i];
-        // No action runs while the microphone is open (AGENTS.md section 4). The first call was decided with
-        // it closed (withdraw_if_steered); a later one waits for the user to finish, and once they have said
-        // more, it and the rest are not made. Each still gets its result, so the model decides again with
-        // their words. Not made is not failed: nothing was tried.
-        if (i > 0 && !said_more && !a_.cancel_) {
+        // No action runs while the microphone is open, or what the user said is on its way (AGENTS.md
+        // section 4): each call waits for them to finish, and once they have said more, it and the rest are
+        // not made. The first call is held only by the gate: input that came while the model was deciding,
+        // the microphone closed, was already weighed (withdraw_if_steered).
+        if (!said_more && !a_.cancel_ && (i > 0 || a_.listening())) {
             wait_while_listening();
             said_more = a_.has_pending();
         }
         if (said_more && !a_.cancel_) {
-            const std::string result = "ERROR: this call was not made, because the user said more first. Read what they "
-                                       "added, and make it again only if it is still wanted";
             all_confirmed = false;
-            activity::tool(c.name, c.args, result, 0);   // DIAGNOSTICS (temporary): the activity log
-#if ZB_EXPERIMENTS
-            if (a_.ev_.tool_done) a_.ev_.tool_done(c.id, c.name, c.args, result);
-#endif
-            std::lock_guard<std::mutex> lk(a_.mtx_);
-            a_.history_.push_back({{"role", "tool"}, {"tool_call_id", c.id}, {"content", result}});
+            not_made(c);
             continue;
         }
         const tools::Tool *tool = tools::find(c.name);
@@ -767,6 +761,19 @@ Agent::Turn::Then Agent::Turn::run_tools(Round &r) {
     return next_request();
 }
 
+// A call of the batch not made because the user said more first. It still gets its result, so the model decides
+// again with their words; not made is not failed (nothing was tried), and nothing is shown as running.
+void Agent::Turn::not_made(const llm::ToolCall &c) {
+    const std::string result = "ERROR: this call was not made, because the user said more first. Read what they "
+                               "added, and make it again only if it is still wanted";
+    activity::tool(c.name, c.args, result, 0);   // DIAGNOSTICS (temporary): the activity log
+#if ZB_EXPERIMENTS
+    if (a_.ev_.tool_done) a_.ev_.tool_done(c.id, c.name, c.args, result);
+#endif
+    std::lock_guard<std::mutex> lk(a_.mtx_);
+    a_.history_.push_back({{"role", "tool"}, {"tool_call_id", c.id}, {"content", result}});
+}
+
 // The model's final answer for this request: the rest of it spoken, kept in the conversation, and
 // reported to the smart-home layer, which may be waiting on a question it puts.
 Agent::Turn::Then Agent::Turn::finish_answer(Round &r) {
@@ -812,17 +819,21 @@ void Agent::Turn::new_request() {
 }
 
 // Whether the request's answer is spoken: a typed request is answered on the screen only, and one with
-// anything said aloud is spoken too (with spoken replies on). Music a tool starts waits for an answer that
-// is heard, never for one that is only shown.
+// anything said aloud is spoken too (with spoken replies on). Music waits for an answer that is heard, never
+// for one that is only shown: music a tool starts, and music already playing, which the question held
+// (App::finish_recording) until this was known. That comes back now, unless an earlier answer is still being
+// spoken (the speech queue lets go when it ends), rather than when the turn ends.
 void Agent::Turn::set_spoken(bool spoken) {
     spoken_ = spoken;
     req_.tool_ctx.in_conversation = heard();
+    if (heard()) audio::Music::get().hold(audio::Music::kExchange, true);
+    else release_music();
 }
 
-// The answer is being given. A spoken request's is Speaking, as it has always been: talking over it stops
-// it. A typed request's is only shown (ZB-091), so nothing about it acts as if it could be heard: talking
-// over it neither stops it nor marks it as interrupted (Answering).
-void Agent::Turn::answering() { a_.set_state(spoken_ ? AgentState::Speaking : AgentState::Answering); }
+// The answer is being given. One that is heard is Speaking: talking over it stops it. One that is only shown
+// (a typed request's, or any with spoken replies off: ZB-091) is Answering, and nothing about it acts as if it
+// could be heard: talking over it neither stops it nor marks it as interrupted.
+void Agent::Turn::answering() { a_.set_state(heard() ? AgentState::Speaking : AgentState::Answering); }
 
 // A spoken request that came to nothing (the service failed before a word of its answer was heard, or the recording
 // gave no words) is not left in silence for a user who is not looking: one short sentence is said, and the reason
@@ -831,7 +842,7 @@ void Agent::Turn::answering() { a_.set_state(spoken_ ? AgentState::Speaking : Ag
 // It is only queued, never waited for: speech uses the same service and may fail too, and then the speech queue adds
 // its own note below the reason, which stays.
 void Agent::Turn::say_failed(const std::string &sentence) {
-    if (speak_ && !a_.listening_ && !a_.cancel_) a_.say(sentence);
+    if (speak_ && !a_.listening() && !a_.cancel_) a_.say(sentence);
 }
 
 // Input that arrived meanwhile joins this request. It may be "try that again", so the calls
@@ -847,7 +858,7 @@ int Agent::Turn::steer_in() {
 // While the microphone is open, what the user is saying will steer this request, so a reply
 // that is ready must not be spoken over them. Returns once they have finished (or cancelled).
 void Agent::Turn::wait_while_listening() {
-    while (a_.listening_ && !a_.cancel_) usleep(50 * 1000);
+    while (a_.listening() && !a_.cancel_) usleep(50 * 1000);
 }
 
 // Every sentence handed to speech goes through here (traced whether or not it is spoken): spoken when

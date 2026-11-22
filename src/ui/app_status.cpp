@@ -49,10 +49,10 @@ void App::update_footer() {
             chat.set_status(s.agent_name, theme::kThink);
             break;
         }
-        // What the answer is doing: a spoken request's is spoken (only shown with spoken replies off), and
-        // TAB stops it; a typed request's is only shown (ZB-091), and TAB does not stop it.
+        // What the answer is doing: one that is heard is spoken, and TAB stops it; one that is only shown (a
+        // typed request's, or any with spoken replies off: ZB-091) is Answering, and TAB does not stop it.
         case AgentState::Speaking:
-            chat.footer_busy(s.speak_replies ? "Speaking   ·   TAB to interrupt" : "Answering", theme::kAccent);
+            chat.footer_busy("Speaking   ·   TAB to interrupt", theme::kAccent);
             chat.set_status(s.agent_name, theme::kAccent);
             break;
         case AgentState::Answering:
