@@ -17,7 +17,8 @@ English and other languages, and phrases it must leave alone; the "not saved" gu
 confirmations spoken without a second call, and when they are not; tool errors, unknown tools and
 bad arguments returned to the model; steering during a tool and during a draft; talk-over (nothing
 spoken or done while the microphone is open, or the words are on their way after it, every call of a
-batch included, the first after an answer has begun; talking over an answer that is heard stops it,
+batch included, the first after an answer has begun; a correction finished before the calls stops them
+too, the draft withdrawn when none of it was shown; talking over an answer that is heard stops it,
 over one only shown, typed or with spoken replies off, does not); the round budget, its last tool-free
 round and the spoken apology; a fresh budget for a follow-up; retries on 5xx, the reasoning-field fallback,
 refused keys, an outage page, an error inside the stream, an empty answer; think markers; time
@@ -26,8 +27,9 @@ size of the first request; smart-home questions and answers on a stand-in home; 
 ("/save", what SPACE twice does on the device; diagnostics, temporary); typed and spoken requests
 (--ask-wav, --steer-wav: a typed one is answered on the screen only, one with anything said aloud is
 spoken too, counted at the stand-in speech service, with a stand-in player that plays nothing; a spoken
-answer's end signalled at its own request's end, and timed from it; music held with a spoken question
-until its answer has been heard, and not for an answer only shown); a spoken request that comes to
+answer's end signalled at its own request's end, and timed from it, each of two said back to back
+included; music held with a spoken question until its answer has been heard, and not at all with spoken
+replies off); a spoken request that comes to
 nothing (the chat call or the transcription failed, or no words were heard): one short sentence said, not
 kept in the conversation, never said over an open microphone or waited for, its own failure noted after
 the first; JSON from the service nested deeper than 32 levels (an event, an error's body, a
@@ -156,7 +158,7 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
     and a stand-in pw-cat on PATH that only reads, so nothing is heard. `ask_wav`: the request is a
     recording (--ask-wav, half a second of silence, which the stand-in transcribes as the script's
     "heard"); `steer_wav`: the same recording is handed over as spoken steering during the first tool
-    (--steer-wav)."""
+    (--steer-wav). A line "/wav" in `said` is a request said aloud in the chat: the same recording."""
     state = tempfile.mkdtemp(prefix="zb-loop-")
     model = None
     try:
@@ -170,7 +172,8 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
         app_settings.update(settings or {})
         json.dump(app_settings, open(state + "/config/zero-bot/settings.json", "w"))
         wav = state + "/said.wav"
-        if ask_wav or steer_wav:
+        said = [wav if x == "/wav" else x for x in said] if said else said   # the records name it by its recording
+        if ask_wav or steer_wav or wav in (said or []):
             with open(wav, "wb") as f:
                 f.write(b"RIFF" + (36 + 16000).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "little") +
                         (1).to_bytes(2, "little") + (1).to_bytes(2, "little") + (16000).to_bytes(4, "little") +
@@ -217,7 +220,7 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
         chat = ask is None or bool(said)
         cmd = [APP] + (["--ask-wav" if ask_wav else "--ask", ask] if ask is not None else []) + (["--chat"] if chat else []) + list(extra)
         cmd += ["--steer-wav", wav] if steer_wav else []
-        stdin = "\n".join(said or []) + "\n" if chat else ""
+        stdin = "\n".join("/wav " + x if x == wav else x for x in said or []) + "\n" if chat else ""
         try:
             p = subprocess.run(cmd, input=stdin, env=e, capture_output=True, text=True, timeout=timeout)
             out, process = p.stdout, {"exit": p.returncode, "timeout": False}
@@ -668,6 +671,32 @@ def talk_over_streamed_then_call():
           sum(l.startswith("[tool ") for l in r.out.splitlines()) == 1 and r.answer == "Your timer is set for 15 minutes.", r)
 
 
+@scenario
+def talk_over_finished_before_the_calls():
+    # A correction the user has finished saying before the reply with the call is complete stops that call too, though
+    # the microphone is closed by the time the call would be made: whether the reply had begun on screen (the call is
+    # not made, and the model decides again with their words) or not (the draft is withdrawn, as one without a call is).
+    make_15 = {"when": {"said": "make it 15"}, "reply": calls(("timer", {"action": "start", "minutes": 15,
+                                                                           "say": "Your timer is set for 15 minutes."}))}
+    script = {"rules": [make_15], "default": dict(calls(TIMER_12), chunks=["One moment while I look into that for you. ", "Here we go."],
+                                                  chunk_ms=1500)}
+    r = run(script, ask="set a timer for 12 minutes", extra=["--talk-over", "300:no, make it 15", "--talk-at", "answer"])
+    n = "a correction finished while a reply with a call was coming in"
+    res = r.results()
+    check(n + ": the key was pressed while the reply was shown, and let go before it was complete",
+          "] (while answering)" in r.out and "(words handed over)" in r.out, r)
+    check(n + ": the call is not made, and the model decides again with their words",
+          len(res) == 2 and res[0].startswith("ERROR: this call was not made, because the user said more first") and
+          '"started"' in res[1] and [a.get("minutes") for t, a in r.tools()] == [12, 15] and
+          sum(l.startswith("[tool ") for l in r.out.splitlines()) == 1 and r.answer == "Your timer is set for 15 minutes.", r)
+    script = {"rules": [make_15], "default": dict(calls(TIMER_12), delay_ms=1000)}
+    r = run(script, ask="set a timer for 12 minutes", extra=["--talk-over", "300:no, make it 15"])
+    n = "a correction finished before a reply with a call came"
+    check(n + ": the draft is withdrawn, and only the corrected call is made",
+          [a.get("minutes") for t, a in r.tools()] == [15] and len(r.requests) == 2 and
+          [m["role"] for m in r.messages(2)[1:]] == ["user", "user"] and r.answer == "Your timer is set for 15 minutes.", r)
+
+
 # The talk key pressed once the answer has begun (--talk-at answer: as TAB does on the device, the speech is stopped
 # and the microphone opened), with the answer's second sentence still to come.
 SLOW_XMAS = ["Christmas is thirty seven days away from today. ", "It falls on a Friday."]
@@ -786,16 +815,14 @@ def mixed_requests_spoken():
 
 @scenario
 def music_not_held_for_an_answer_shown():
-    # A spoken request whose answer is only shown (spoken replies off) holds no music for it: what the recording held
-    # is let go as soon as that is known, not when the request ends.
+    # A spoken request whose answer is only shown (spoken replies off) holds no music for it: the recording takes no
+    # hold as the microphone closes (the command line decides as App::finish_recording does), so the music plays on
+    # through the transcription and the request, rather than stopping until the agent knows.
     slow = dict(LISBON, heard="what is the capital of portugal",
                 rules=[{"when": {"said": "portugal"}, "reply": {"text": "Lisbon is the capital of Portugal.", "delay_ms": 2000}}])
     r = run(slow, ask_wav=True, speech=True, settings={"speak_replies": False})
-    held, free = re.search(r"\[music held \+(\d+\.\d)s\]", r.out), re.search(r"\[music free \+(\d+\.\d)s\]", r.out)
-    total = r.turns[0]["total"] if r.turns else None
-    check("a spoken request answered on the screen only: the music comes back before the answer", held and free and total and
-          float(free.group(1)) < total - 1.0 and r.answer == "Lisbon is the capital of Portugal." and spoken_lines(r) == [],
-          (held and held.group(0), free and free.group(0), total, r))
+    check("a spoken request answered on the screen only: the music is never held for it", "[music held" not in r.out and
+          "[music free" not in r.out and r.answer == "Lisbon is the capital of Portugal." and spoken_lines(r) == [], r)
 
 
 @scenario
@@ -811,6 +838,27 @@ def speech_done_timed_from_its_request():
     check("the speech of an answer that ends while the next request is worked on is timed from its own request",
           done and first and float(done.group(1)) >= first + 1.0 and r.answer == "Madrid is the capital of Spain.",
           (done and done.group(0), first, r))
+
+
+@scenario
+def speech_done_per_answer():
+    # Two spoken answers, the second queued while the first is still being said: each is done once it has played out, and
+    # timed from its own request (the speech was once timed as one stretch, from the first request to the end of both).
+    script = dict(LISBON, heard=["what is the capital of portugal", "what is the capital of spain"], speech_delay_ms=1500,
+                  rules=[{"when": {"said": "portugal"}, "reply": {"text": "Lisbon is the capital of Portugal.", "delay_ms": 2000}},
+                         {"when": {"said": "spain"}, "reply": {"text": "Madrid is the capital of Spain.", "delay_ms": 300}}])
+    r = run(script, ask_wav=True, speech=True, said=["/wav"])
+    done = [float(x) for x in re.findall(r"\[speech done \+(\d+\.\d)s\]", r.out)]
+    first = r.turns[0]["total"] if r.turns else None
+    n = "two spoken answers back to back"
+    check(n + ": both are spoken, and each is said to be done", spoken_lines(r) == ["Lisbon is the capital of Portugal.",
+          "Madrid is the capital of Spain."] and len(done) == 2 and r.answer == "Madrid is the capital of Spain.", (done, r))
+    if len(done) != 2 or first is None: return
+    # The first is synthesized once its request has ended (1.5 s); the second, after it, takes as long again. Timed from the
+    # first request, the second would end a whole first request later than that.
+    check(n + ": the first is timed from its own request, when it has played out", first + 1.0 <= done[0] <= first + 2.5, (done, first))
+    check(n + ": the second is timed from its own request, once the first and then it have played out",
+          done[0] + 1.0 <= done[1] + first <= done[0] + 2.5, (done, first))
 
 
 # ------------------------------------------------------------------ a spoken request that comes to nothing (ZB-094)

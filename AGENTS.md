@@ -113,7 +113,7 @@ through `Settings::update([](Settings &s) { ... })`, which makes it under that l
 |---|---|---|
 | UI (main) | `ui::run_app` (app.cpp) | LVGL, keys from the reader's queue, `App::periodic` (app_status.cpp), whatever `uiq::post` queued. Between passes it sleeps in `uiq::wait` until LVGL's next timer or the app's next periodic work (`App::sleep_ms`); a key or a post wakes it at once. Never waits on the network or a child process. |
 | Agent worker | `Agent::start` (`Agent::worker`) | One request at a time (`Agent::Turn`); `Agent::mtx_` guards its inputs, history and state. |
-| Speech | `SpeechQueue::run` | Synthesises and plays sentence by sentence; a watcher per sentence lets `stop()` cut a synthesis short. |
+| Speech | `SpeechQueue::run` | Synthesises and plays sentence by sentence, each answer in a stream of its own (the next waits for it to play out); a watcher per sentence lets `stop()` cut a synthesis short. |
 | Key reader | `input::start` (device only) | Reads the keypad and makes the auto-repeat; its queue is drained by the UI thread. |
 | Recorder, music | `audio::Recorder`, `audio::Music` (and a feeder per MP3, `run_live` for the radio) | `Music::ctl_` serialises `play`, `play_live` and `stop`, which the UI and the agent call at once. |
 | Short helpers, detached | alarm rings (`AlarmSound`, one per ring), chimes, `set_volume_async`, the microphone lookup and the jack's put-back (audio.cpp), `radio::check_async`, `background()`, the app's thumbnail, model choice and phone link (app.cpp), `upgrade`'s reload | Each hands its result to the UI through `uiq::post`, or touches nothing shared. |
@@ -169,26 +169,29 @@ Things in that loop that exist for a reason; do not remove them without re-runni
 - **Steering**: input that arrives while a request is being worked on is added to the same
   request. While the microphone is open (`Agent::set_listening`), or what the user said is still
   on its way (the app connects to the phone first: `App::when_online`, `Agent::set_input_coming`),
-  nothing new is spoken and no action runs: every call of a batch waits, the first too once an
-  answer has begun, and once the user has said more, the calls not yet made are not made (each
-  answered "this call was not made", not counted as failed), so the model decides again with their
-  words.
+  nothing new is spoken and no action runs: every call of a batch waits. Whatever the user has said
+  more by the time a call would be made, while the microphone was open or before, stops it: a reply
+  nothing of which has been shown or said is withdrawn, as one without a call is, and otherwise the
+  calls not yet made, the first included, are not made (each answered "this call was not made", not
+  counted as failed), so the model decides again with their words.
 - **Typed or spoken** (ZB-091): a request's answer is spoken only when something in it was said
   aloud (and spoken replies are on); a typed one's is only shown. Its state says which, by whether
   it is heard (`Turn::heard`): `Speaking` (TAB stops it: `Agent::interrupt_speech`, and the
   conversation keeps "[the user interrupted here]") or `Answering` (only shown, a spoken request's
   too with spoken replies off: TAB does not stop it). Music waits only for an answer that is heard
-  (`tools::Context::in_conversation`; music the question held comes back as soon as the answer is
-  known to be only shown: `Turn::set_spoken`), and each answer's end is signalled at its own
-  request's end.
+  (`tools::Context::in_conversation`; a recording holds music as the microphone closes only when
+  replies are spoken, `Agent::replies_spoken`, and music held for an answer that turns out to be
+  only shown comes back as soon as that is known: `Turn::set_spoken`), and each answer's end is
+  signalled at its own request's end.
 - **Numeric dates** are spelt out by rule (`util::spell_numeric_dates`) before the model sees
   them, in the user's date order with the year filled in (the same rule as a date typed in the
   calendar editor: `year_meant` in `util.cpp`).
 - **Timestamps** ride on each user message, not in the system prompt, so the prompt stays
   byte-identical between calls and the service can reuse its cached prefix.
 - **Music holds** (`audio::Music::hold`): music waits for the spoken reply to finish, and stays
-  quiet from a spoken question to the end of its answer. A typed request holds nothing
-  (`tools::Context::in_conversation` is false for it).
+  quiet from a spoken question to the end of its answer when that is spoken. A typed request, and
+  one said aloud with spoken replies off, holds nothing (`tools::Context::in_conversation` is false
+  for it).
 - **Smart-home questions**: a change that needs the user's yes (a thing with *Ask before
   switching on*, heating outside 10 to 25 degrees, more than eight things, loud volume, after a
   web page or photo) makes `home::execute` answer `CONFIRM: ...` and remember the change. The loop
@@ -473,7 +476,8 @@ What exists:
   knowingly). Add a scenario here with any change to `agent.cpp` or `llm.cpp`.
 
 - **Command-line modes** in `src/main.cpp` (work in the `cli` build):
-  `--ask "text"`, `--ask-wav FILE.wav` (a spoken request, transcribed by the service), `--chat`,
+  `--ask "text"`, `--ask-wav FILE.wav` (a spoken request, transcribed by the service), `--chat`
+  (`/wav FILE.wav` in it is a spoken request too),
   `--tool NAME 'JSON'`, `--steer "text"` / `--steer-wav FILE.wav` (inject input during the
   first tool), `--talk-over MS[+LATE][:text]` (hold the microphone open during a request; with
   `--talk-at tool|answer`, from its first tool or once its answer has begun, as TAB does; with

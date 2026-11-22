@@ -170,8 +170,9 @@ void App::finish_recording(bool submit) {
     audio::Music &music = audio::Music::get();
     const bool sending = submit && seconds >= kMinSpeechSeconds;
     // Music that was playing stays quiet from the question to the end of the spoken answer,
-    // rather than coming back for the few seconds in between.
-    if (sending) music.hold(audio::Music::kExchange, true);
+    // rather than coming back for the few seconds in between. With spoken replies off nothing
+    // will be said, and it plays on.
+    if (sending && Agent::replies_spoken()) music.hold(audio::Music::kExchange, true);
     music.hold(audio::Music::kMic, false);
     if (!sending) {
         Agent::get().set_listening(false);
