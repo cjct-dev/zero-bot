@@ -16,21 +16,6 @@
 //                          service cannot answer from a cached prefix of an earlier run
 //   ZB_EXP_TTS_PROBE=1     synthesise (never play) each request's first sentence on a thread of its
 //                          own and trace how long that took (needs a speech model in settings)
-//   ZB_EXP_TOOLS=V         E2, the tool text sent: full (default, as the app has it), say1 (the
-//                          confirmation parameter "say" described once, in the system prompt, and in
-//                          one short line per tool), lean (say1 plus shorter tool and parameter
-//                          descriptions). Names, types, enums and required fields never change.
-//   ZB_EXP_DECIDE=V        E3, how a reply drafted without a tool is judged in fast mode:
-//                          second_look (default, as the app has it), parallel (a short check call
-//                          started beside the deciding call; when it says no tool is needed the draft
-//                          is spoken as it streams, otherwise the second look runs as before),
-//                          required (a "reply" tool in every round; deciding rounds send tool_choice
-//                          "required", so the model answers in words only through reply, whose text
-//                          streams out as the answer; no held draft and no second look),
-//                          required_held (the same, but words written before a call are held until the
-//                          call begins: spoken if it is reply, never if it is a real tool; with no call at
-//                          all the second look runs as before)
-//   ZB_EXP_CHECK_MODEL=ID  the model the parallel check asks (default: the main model)
 //   ZB_EXP_WEB=BASE        every web read a tool makes (search, forecasts, place names, exchange rates,
 //                          stock prices) goes to a stand-in at BASE
 //                          (tests/mocks/fake_web.py) instead of the internet: https://HOST/PATH?Q is
@@ -47,14 +32,9 @@
 //                          runners set it, so a test run never sends a real photo to the service or
 //                          an infrared code into the room, whatever the model does
 #pragma once
-#include <atomic>
 #include <chrono>
 #include <string>
-#include <thread>
-#include <utility>
-#include <vector>
 
-#include "agent/llm.h"
 #include "core/util.h"
 
 #ifndef ZB_EXPERIMENTS
@@ -67,9 +47,6 @@ struct Switches {
     std::string trace;          // ZB_EXP_TRACE: the file, or "" for no trace
     bool cache_bust = false;    // ZB_EXP_CACHE_BUST
     bool tts_probe = false;     // ZB_EXP_TTS_PROBE
-    std::string tools = "full";             // ZB_EXP_TOOLS: full, say1, lean
-    std::string decide = "second_look";     // ZB_EXP_DECIDE: second_look, parallel, required, required_held
-    std::string check_model;                // ZB_EXP_CHECK_MODEL ("" = the main model)
     std::string web;                        // ZB_EXP_WEB ("" = the real services)
     bool no_hardware = false;               // ZB_EXP_NO_HARDWARE
     std::string net;                        // ZB_EXP_NET: "loopback" or the one origin allowed besides ("" = unrestricted)
@@ -93,55 +70,7 @@ std::string net_refusal(const std::string &url);  // ZB_EXP_NET: why a request t
 inline bool net_pinned() { return !get().net.empty(); }   // ZB_EXP_NET: no redirect is followed
 std::string no_lan();                           // ZB_EXP_NET: why the real network is not identified, or ""
 
-// E2: the tool list as it is about to be sent (tools::schema), in the variant ZB_EXP_TOOLS asks for.
-// Only "description" texts change. E3b (ZB_EXP_DECIDE=required) adds the reply tool at the end.
-void shape_tools(json &schema);
-// E2: the system prompt's opening of its rule about "say", in that variant.
-std::string say_rule(const std::string &standard);
-
-// E3b (ZB_EXP_DECIDE=required): the model must call a tool in deciding rounds, and answers in words
-// through the reply tool. llm::chat turns reply calls back into answer text as they stream
-// (ReplyCalls), so the loop and the conversation see plain text, never a reply call.
-inline bool decide_required() { return get().decide == "required" || get().decide == "required_held"; }
-inline bool reply_held() { return get().decide == "required_held"; }
-class ReplyCalls {
-public:
-    // A piece of call idx's arguments: returns the newly decoded text of its "text" value, if reply.
-    std::string feed(size_t idx, const std::string &name, const std::string &piece);
-    // Removes the reply calls; `unstreamed` gets any reply text feed() has not returned. Returns how many.
-    int finish(std::vector<llm::ToolCall> &calls, std::string &unstreamed);
-private:
-    struct One { std::string raw; size_t at = std::string::npos, cursor = 0; bool done = false; std::string text; };
-    std::vector<One> calls_;
-};
-
-// E3 (ZB_EXP_DECIDE=parallel): a short check call beside the deciding call, on its own thread, asking
-// whether the request needs a tool at all. It never acts: a tool call it makes only counts as "a tool
-// is needed". Destroying it cancels the call and waits for its thread.
-inline bool parallel_check() { return get().decide == "parallel"; }
-class ParallelCheck {
-public:
-    enum Verdict { kPending, kNone, kTool, kUnclear, kFailed, kCancelled };
-    void start(json messages, const json &tools, const std::string &main_model);
-    bool active() const { return started_; }
-    bool said_none() const { return verdict_ == kNone; }
-    bool answered() const { return verdict_ != kPending; }
-    bool wait_none(int max_ms);                 // waits for the verdict up to max_ms; true when it is "none"
-    void used(const char *how) { used_ = how; } // what the loop did with it, for the trace
-    void stop();                                // cancels the call if it is still running, and waits
-    json summary() const;                       // for the request's trace line
-    ~ParallelCheck();
-private:
-    std::thread thread_;
-    std::atomic<int> verdict_{kPending};
-    std::atomic<long> ms_{-1};
-    std::atomic<bool> cancel_{false};
-    std::chrono::steady_clock::time_point start_;
-    bool started_ = false;
-    std::string used_ = "unused";
-};
-
-// One request, from the input absorbed to its last word: built up in Agent::run_turn.
+// One request, from the input absorbed to its last word: built up in Agent::Turn.
 class RequestTrace {
 public:
     void absorbing();                           // input is about to be absorbed (transcribed if spoken)
@@ -150,7 +79,6 @@ public:
     void tool(const std::string &name, long ms, const std::string &result);
     void guard(const char *which);
     void second_look(const std::string &outcome);
-    void parallel_check(const json &summary);
     void steered();
     void end();
     ~RequestTrace() { end(); }
@@ -177,29 +105,6 @@ inline std::string no_infrared() { return std::string(); }
 inline std::string net_refusal(const std::string &) { return std::string(); }
 inline bool net_pinned() { return false; }
 inline std::string no_lan() { return std::string(); }
-inline void shape_tools(json &) {}
-inline std::string say_rule(const std::string &standard) { return standard; }
-inline bool parallel_check() { return false; }
-inline bool decide_required() { return false; }
-inline bool reply_held() { return false; }
-class ReplyCalls {
-public:
-    std::string feed(size_t, const std::string &, const std::string &) { return ""; }
-    int finish(std::vector<llm::ToolCall> &, std::string &) { return 0; }
-};
-
-class ParallelCheck {
-public:
-    void start(const json &, const json &, const std::string &) {}
-    bool active() const { return false; }
-    bool said_none() const { return false; }
-    bool answered() const { return false; }
-    bool wait_none(int) { return false; }
-    void used(const char *) {}
-    void stop() {}
-    json summary() const { return nullptr; }
-};
-
 class RequestTrace {
 public:
     void absorbing() {}
@@ -208,7 +113,6 @@ public:
     void tool(const std::string &, long, const std::string &) {}
     void guard(const char *) {}
     void second_look(const std::string &) {}
-    void parallel_check(const json &) {}
     void steered() {}
     void end() {}
 };

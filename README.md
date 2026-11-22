@@ -45,10 +45,10 @@ needs a [Tavily](https://tavily.com) key.
 
 | Key | What it does |
 |---|---|
-| **TAB** | Start talking. Press **TAB** again when you have finished. |
+| **TAB** | Start talking. Press **TAB** again when you have finished. The answer is spoken and shown on the screen. |
 | **SPACE** | Open settings (**TAB** twice quickly does the same). **SPACE** or **TAB** closes them again. |
 | **SPACE** twice quickly | Save this conversation, to help diagnose and improve the assistant (see [Diagnostics (temporary)](#diagnostics-temporary)). Because of this, one **SPACE** opens settings a moment later, once no second press has come (at once if another key follows it). |
-| **ENTER** | Start typing a message; **ENTER** again sends it. |
+| **ENTER** | Start typing a message; **ENTER** again sends it. A typed message is answered on the screen only, without speaking (anything you say while it is worked on makes the answer spoken too). |
 | **del** twice quickly | Start a new conversation: what was said so far is forgotten. Calendar, timers, reminders and saved memories are kept. |
 | **ESC** | Cancel what is happening: recording, typing, a running request, music. |
 | Hold **ESC** | Leave the app and return to the launcher. |

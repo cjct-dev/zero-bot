@@ -45,6 +45,9 @@ prompt_tokens_details.cached_tokens from the script's top-level "cached_tokens" 
 
 POST .../audio/speech (the speech service) answers 200 with 0.1 s of silent 24 kHz PCM, logged
 with "rule": "speech".
+POST .../audio/transcriptions (speech to text) answers {"text": ...} with the script's top-level "heard"
+(a string, or a list used one per recording in turn, the last repeating; default "hello"), logged with
+"rule": "transcription" and the size of what was sent in place of its body.
 
 LOG gets one JSON object per request: {"n": 1, "rule": index or "default", "body": {...}}.
 """
@@ -60,6 +63,7 @@ LOG = sys.argv[2]
 LOCK = threading.Lock()
 USED = {}
 COUNT = [0, 0]   # requests, tool calls
+HEARD = [0]      # recordings transcribed
 
 
 def text_of(message):
@@ -146,7 +150,26 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        raw_body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        if self.path.endswith("/audio/transcriptions"):   # multipart: the recording is not read
+            heard = SCRIPT.get("heard", "hello")
+            with LOCK:
+                COUNT[0] += 1
+                if isinstance(heard, list):
+                    heard = heard[min(HEARD[0], len(heard) - 1)]
+                HEARD[0] += 1
+                with open(LOG, "a") as f:
+                    f.write(json.dumps({"n": COUNT[0], "rule": "transcription", "body": {"bytes": len(raw_body)}}) + "\n")
+            raw = json.dumps({"text": heard}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(raw)
+            self.close_connection = True
+            return
+        body = json.loads(raw_body or b"{}")
         if self.path.endswith("/audio/speech"):
             with LOCK:
                 COUNT[0] += 1

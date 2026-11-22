@@ -11,7 +11,7 @@ one line per group and a short summary instead of each script's own output.
     tests/run.py --groups unit,hue               these groups only
     tests/run.py --groups live-suite --tags timer --repeat 5
     tests/run.py --groups live-scored --scored-only radio_ --repeat 5
-    tests/run.py --groups live-suite --exp ZB_EXP_TOOLS=lean --baseline B.json    a variant, gated
+    tests/run.py --groups live-suite --exp ZB_EXP_OFF=second_look --baseline B.json    a variant, gated
     tests/run.py ... --plan                      say what would run and why; run nothing
 
 Each group's whole output goes to build/test-runs/<date-time>/<group>.log, with plan.txt and
@@ -278,7 +278,7 @@ PATH_RULES = [
 # each change is in) for the tools they touch; "all" means a sample of every suite category.
 MODEL_FACING = [
     (r"^src/agent/prompt\.cpp$", "all"),
-    (r"^src/agent/(agent|llm)\.cpp$", "all"),
+    (r"^src/agent/(agent|llm|guards|controls)\.cpp$", "all"),
     (r"^src/agent/tools\.cpp$", "scan"),
     (r"^src/smarthome/(tool|control)\.cpp$", ["home", "tv"]),   # the schema; the sentences results carry
     (r"^src/core/timers\.cpp$", ["timer", "countdown"]),
@@ -604,7 +604,7 @@ def release_mode(o):
 
 def probe_cli(path):
     """Why the cli build at PATH cannot run live cases, or '': it must be an experiments build (an unknown
-    ZB_EXP_DECIDE stops it), its hardware guard must hold (under ZB_EXP_NO_HARDWARE a stand-in camera
+    ZB_EXP_OFF name stops it), its hardware guard must hold (under ZB_EXP_NO_HARDWARE a stand-in camera
     program that would work is never started), and it must write the evaluator's records (ZB_EVAL_RECORDS:
     a start and an end even for a run of no turns). Nothing here reaches a service or a device."""
     if not os.access(path, os.X_OK):
@@ -617,8 +617,8 @@ def probe_cli(path):
         def run(args, stdin="", **extra):
             return subprocess.run([path] + args, env=dict(base, **extra), input=stdin, capture_output=True, text=True,
                                   timeout=30, cwd=tmp)
-        r = run(["--prompt"], ZB_EXP_DECIDE="zb-probe")
-        if r.returncode != 2 or "is not a variant this build knows" not in r.stderr:
+        r = run(["--prompt"], ZB_EXP_OFF="zb-probe")
+        if r.returncode != 2 or "is not a control this build knows" not in r.stderr:
             return "it is not an experiments build (ZB_EXPERIMENTS): no hardware guard, no records"
         stand_ins, marker = tmp + "/bin", tmp + "/camera-used"
         os.makedirs(stand_ins)
@@ -1299,6 +1299,8 @@ def self_test():
     # Model-facing changes: advice, never a live run by itself.
     tags, hit, scored = model_facing_tags(["src/agent/prompt.cpp", "README.md"])
     check("prompt.cpp asks for a sample of everything", tags == "all" and hit == ["src/agent/prompt.cpp"], (tags, hit))
+    tags, hit, _ = model_facing_tags(["src/agent/guards.cpp", "src/agent/controls.cpp"])
+    check("the loop's guards and controls ask for a sample of everything", tags == "all" and len(hit) == 2, (tags, hit))
     tags, _, _ = model_facing_tags(["src/agent/tools.cpp"], lambda p: "@@ static std::string t_timer(...)\n+  remind")
     check("tools.cpp: the tools its changed lines touch", tags == ["reminder", "timer"], tags)
     tags, _, scored = model_facing_tags(["src/core/radio.cpp"])
@@ -1425,7 +1427,7 @@ def self_test():
         check("a live subset's time", group_secs("live-suite", parse(["--only", "timer-001", "--repeat", "3"])) < 60)
 
     # What a group inherits: no switch that changes what it tests; the runner's own; --exp for live runs.
-    keys = ("ZB_UPDATE_SHOTS", "ZB_UPDATE_SNAPSHOTS", "ZB_UNIT_BUILD_ONLY", "ZB_UNIT_SKIP_SCRIPTS", "ZB_EXP_TOOLS", "HUE_E2E_ONLY",
+    keys = ("ZB_UPDATE_SHOTS", "ZB_UPDATE_SNAPSHOTS", "ZB_UNIT_BUILD_ONLY", "ZB_UNIT_SKIP_SCRIPTS", "ZB_EXP_OFF", "HUE_E2E_ONLY",
             "ZB_FAST_MODE", "ZB_EVAL_TRACE")
     saved_env = {k: os.environ.get(k) for k in keys}
     tmp = tempfile.mkdtemp(prefix="zb-run-selftest-")
@@ -1461,9 +1463,9 @@ def self_test():
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-    check("--exp", exp_env(parse(["--exp", "ZB_EXP_TOOLS=lean"])) == {"ZB_EXP_TOOLS": "lean"})
-    for bad in (["--exp", "ZB_EXP_WEB=http://127.0.0.1:1"], ["--exp", "OTHER=1"], ["--exp", "ZB_EXP_TOOLS"],
-                ["--profile", "release", "--exp", "ZB_EXP_TOOLS=lean"]):
+    check("--exp", exp_env(parse(["--exp", "ZB_EXP_OFF=say"])) == {"ZB_EXP_OFF": "say"})
+    for bad in (["--exp", "ZB_EXP_WEB=http://127.0.0.1:1"], ["--exp", "OTHER=1"], ["--exp", "ZB_EXP_OFF"],
+                ["--profile", "release", "--exp", "ZB_EXP_OFF=say"]):
         try:
             with contextlib.redirect_stderr(io.StringIO()):
                 parse(bad)

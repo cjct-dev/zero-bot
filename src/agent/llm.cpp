@@ -7,8 +7,10 @@
 #include <unistd.h>
 
 #include "agent/experiment.h"
+#include "agent/llm_stream.h"
 #include "core/settings.h"
 #include "net/http.h"
+#include "platform/audio.h"
 #include "platform/codec.h"
 
 namespace llm {
@@ -76,15 +78,41 @@ http::Retry service_retry(int attempts, long budget_s) {
 
 // Re-encodes a 16-bit mono WAV (as produced by the recorder) to MP3. False if that is not possible.
 bool wav_to_mp3(const std::string &wav, std::string &mp3) {
-    if (wav.size() < 46 || wav.compare(0, 4, "RIFF") != 0 || !codec::can_encode_mp3()) return false;
-    uint32_t rate = 0;
-    memcpy(&rate, wav.data() + 24, 4);
-    const size_t data = wav.find("data", 12);
-    if (data == std::string::npos || data + 8 >= wav.size() || rate < 8000) return false;
-    const size_t count = (wav.size() - data - 8) / 2;
-    std::vector<int16_t> pcm(count);
-    memcpy(pcm.data(), wav.data() + data + 8, count * 2);
-    return codec::mp3_encode(pcm, static_cast<int>(rate), 32, mp3);
+    std::vector<int16_t> pcm;
+    int rate = 0;
+    if (!codec::can_encode_mp3() || !audio::pcm_from_wav(wav, pcm, rate)) return false;
+    return codec::mp3_encode(pcm, rate, 32, mp3);
+}
+
+// What the experiments' trace records of one chat call (ZB_EXP_TRACE), gathered as it runs: times in
+// ms (-1 until it happens), the sends it took and the token counts the service reported.
+struct CallTrace {
+    long t_send = -1;                                   // since the request began, when the call was sent
+    long ttfb = -1, first_text = -1, first_call = -1;   // since it was sent: the first byte, text, tool call
+    int attempts = 1;
+    json usage;
+};
+
+// The call's line in the trace. Counts, sizes and times only: never the words sent or received, a
+// key or the model's id.
+void trace_record(const ChatOptions &opt, const json &tools, const json &body, size_t body_bytes, const CallTrace &t, long done_ms,
+                  const http::Response &res, const ChatResult &out) {
+    json outcome;
+    if (res.error == "cancelled") outcome = "cancelled";
+    else if (!res.ok() || !out.error.empty()) outcome = "error";
+    else if (!out.tool_calls.empty()) {
+        outcome = json::array();
+        for (const auto &c : out.tool_calls)
+            if (!c.name.empty()) outcome.push_back(c.name);
+    } else outcome = out.content.empty() ? "empty" : "text";
+    experiment::trace_call({{"role", opt.role.empty() ? "main" : opt.role}, {"purpose", opt.purpose},
+                            {"tools", tools.is_array() ? static_cast<long>(tools.size()) : 0L},
+                            {"tool_choice", body.contains("tool_choice") ? body["tool_choice"] : json(nullptr)},
+                            {"fast", body.contains("reasoning_effort")}, {"usage_asked", body.contains("stream_options")},
+                            {"body_bytes", static_cast<long>(body_bytes)}, {"t_send", t.t_send}, {"ttfb_ms", t.ttfb},
+                            {"first_text_ms", t.first_text}, {"first_call_ms", t.first_call}, {"done_ms", done_ms},
+                            {"attempts", t.attempts}, {"status", res.status}, {"usage", t.usage}, {"outcome", outcome},
+                            {"text_chars", static_cast<long>(out.content.size())}});
 }
 
 }  // namespace
@@ -97,7 +125,7 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
                  {"max_tokens", opt.max_tokens}, {"temperature", opt.temperature}};
     if (tools.is_array() && !tools.empty()) {
         body["tools"] = tools;
-        body["tool_choice"] = opt.tool_choice.empty() ? "auto" : opt.tool_choice;
+        body["tool_choice"] = "auto";
     }
     // Reasoning models think privately before answering, which costs a second or more per
     // call. Fast mode asks them not to. Servers that reject the field get one retry without it.
@@ -112,68 +140,21 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
     const bool sent_usage = tracing && !usage_rejected;
     if (sent_usage) body["stream_options"] = {{"include_usage", true}};
     const auto started = std::chrono::steady_clock::now();
-    const long t_send = tracing ? experiment::request_ms() : -1;
-    long ttfb = -1, first_text = -1, first_call = -1;
-    int attempts = 1;
-    json usage;
+    CallTrace ct;
+    ct.t_send = tracing ? experiment::request_ms() : -1;
     auto since = [&] {
         return static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
     };
 
-    // With reasoning switched off, some models still leak their thinking markers into the
-    // answer: a "<think>...</think>" block, or the answer, a stray "</think>", then the answer
-    // again. Neither may reach the speaker, so text is passed on only once it is known to be
-    // clear of a marker.
-    std::string held;
-    bool thinking = false, answer_over = false;
-    experiment::ReplyCalls replies;   // experiments only (E3b): answers given through the reply tool, as text
-    int reply_calls = 0;
-    // E3b: a service may stream the answer as text and then repeat it in the reply call; it is said once,
-    // from whichever came first.
-    bool plain_said = false, reply_said = false;
-    auto emit = [&](const std::string &text) {
+    // Answer text reaches the caller only once it is clear of thinking markers (llm_stream.h).
+    ThinkFilter think;
+    const std::function<void(const std::string &)> emit = [&](const std::string &text) {
         if (text.empty()) return;
         out.content += text;
         if (opt.on_text) opt.on_text(text);
     };
-    auto filter_text = [&](const std::string &piece, bool final) {
-        static const std::string open = "<think>", close = "</think>";
-        if (answer_over) return;
-        held += piece;
-        for (;;) {
-            const size_t c = held.find(close);
-            if (thinking) {
-                if (c == std::string::npos) { if (held.size() > close.size()) held.erase(0, held.size() - close.size()); break; }
-                held.erase(0, c + close.size());
-                thinking = false;
-                continue;
-            }
-            const size_t o = held.find(open);
-            if (c != std::string::npos && (o == std::string::npos || c < o)) {
-                emit(held.substr(0, c));
-                held.clear();
-                answer_over = true;
-                break;
-            }
-            if (o != std::string::npos) {
-                emit(held.substr(0, o));
-                held.erase(0, o + open.size());
-                thinking = true;
-                continue;
-            }
-            // Keep back a tail that could be the start of a marker split across chunks.
-            size_t keep = 0;
-            for (size_t n = std::min(held.size(), close.size() - 1); n > 0 && !final; --n)
-                if (close.compare(0, n, held, held.size() - n, n) == 0 || open.compare(0, n, held, held.size() - n, n) == 0) { keep = n; break; }
-            emit(held.substr(0, held.size() - keep));
-            held.erase(0, held.size() - keep);
-            break;
-        }
-        if (final && thinking) held.clear();
-    };
-
-    std::string pending;  // partial SSE line carried between network chunks
-    auto handle_line = [&](const std::string &line) {
+    LineSplitter lines;   // the event stream's lines (llm_stream.h)
+    const std::function<void(const std::string &)> handle_line = [&](const std::string &line) {
         if (line.compare(0, 5, "data:") != 0) return;
         const std::string payload = util::trim(line.substr(5));
         if (payload.empty() || payload == "[DONE]") return;
@@ -185,21 +166,20 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
             return;
         }
         // The token counts come in a last event of their own, with an empty list of choices.
-        if (tracing && ev.contains("usage") && ev["usage"].is_object()) usage = experiment::numbers_only(ev["usage"]);
+        if (tracing && ev.contains("usage") && ev["usage"].is_object()) ct.usage = experiment::numbers_only(ev["usage"]);
         if (!ev.contains("choices") || !ev["choices"].is_array() || ev["choices"].empty()) return;
         const json &choice = ev["choices"][0];
         if (!choice.contains("delta") || !choice["delta"].is_object()) return;
         const json &delta = choice["delta"];
         if (delta.contains("content") && delta["content"].is_string()) {
             const std::string piece = delta["content"].get<std::string>();
-            if (!piece.empty() && !reply_said) {
-                if (tracing && first_text < 0) first_text = since();
-                if (!util::trim(piece).empty()) plain_said = true;
-                filter_text(piece, false);
+            if (!piece.empty()) {
+                if (tracing && ct.first_text < 0) ct.first_text = since();
+                think.feed(piece, false, emit);
             }
         }
         if (delta.contains("tool_calls") && delta["tool_calls"].is_array()) {
-            if (tracing && first_call < 0) first_call = since();
+            if (tracing && ct.first_call < 0) ct.first_call = since();
             for (const json &tc : delta["tool_calls"]) {
                 const size_t idx = static_cast<size_t>(util::jget(tc, "index", 0));
                 if (out.tool_calls.size() <= idx) out.tool_calls.resize(idx + 1);
@@ -209,18 +189,8 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
                 if (tc.contains("function") && tc["function"].is_object()) {
                     const json &fn = tc["function"];
                     const std::string name = util::jget(fn, "name", std::string());
-                    const bool begins = call.name.empty() && !name.empty();
                     if (!name.empty()) call.name = name;
-                    if (begins && opt.on_call) opt.on_call(name);
-                    if (fn.contains("arguments") && fn["arguments"].is_string()) {
-                        call.args += fn["arguments"].get<std::string>();
-                        const std::string said = replies.feed(idx, call.name, fn["arguments"].get<std::string>());
-                        if (!said.empty() && !plain_said) {
-                            if (tracing && first_text < 0) first_text = since();
-                            reply_said = true;
-                            filter_text(said, false);
-                        }
-                    }
+                    if (fn.contains("arguments") && fn["arguments"].is_string()) call.args += fn["arguments"].get<std::string>();
                 }
             }
         }
@@ -235,25 +205,15 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
     req.timeout_s = 180;
     req.cancel = opt.cancel;
     req.on_data = [&](const char *data, size_t n) {
-        if (tracing && ttfb < 0) ttfb = since();
-        pending.append(data, n);
-        size_t pos;
-        while ((pos = pending.find('\n')) != std::string::npos) {
-            std::string line = pending.substr(0, pos);
-            pending.erase(0, pos + 1);
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            handle_line(line);
-        }
+        if (tracing && ct.ttfb < 0) ct.ttfb = since();
+        lines.feed(data, n, handle_line);
     };
     auto reset = [&] {
-        pending.clear();
-        held.clear();
-        thinking = answer_over = false;
+        lines.reset();
+        think.reset();
         out = ChatResult();
-        ttfb = first_text = first_call = -1;
-        usage = nullptr;
-        replies = experiment::ReplyCalls();
-        plain_said = reply_said = false;
+        ct.ttfb = ct.first_text = ct.first_call = -1;
+        ct.usage = nullptr;
     };
     // Upstream hiccups (5xx, dropped connections, a service that says it is overloaded) are common
     // on mobile links. As long as nothing has been passed on yet, the call is tried again, twice at
@@ -264,7 +224,7 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
         if (!out.content.empty() || !out.tool_calls.empty()) return false;
         return r.ok() ? !out.error.empty() && busy_message(out.error) : http::transient(r);
     };
-    retry.before_resend = [&] { reset(); ++attempts; };
+    retry.before_resend = [&] { reset(); ++ct.attempts; };
     http::Response res = http::send_retrying(req, retry);
     auto remaining_budget = [&] {
         const long spent_s = static_cast<long>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count());
@@ -277,7 +237,7 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
         body.erase("stream_options");
         req.body = dump(body);
         reset();
-        ++attempts;
+        ++ct.attempts;
         retry.budget_ms = remaining_budget();
         res = http::send_retrying(req, retry);
         if (res.ok()) usage_rejected = true;
@@ -288,38 +248,14 @@ ChatResult chat(const json &messages, const json &tools, const ChatOptions &opt)
         body.erase("reasoning_effort");
         req.body = dump(body);
         reset();
-        ++attempts;
+        ++ct.attempts;
         retry.budget_ms = remaining_budget();
         res = http::send_retrying(req, retry);
     }
-    if (!pending.empty()) handle_line(pending);
-    {
-        std::string unstreamed;
-        reply_calls = replies.finish(out.tool_calls, unstreamed);
-        if (!unstreamed.empty() && !plain_said) filter_text(unstreamed, false);
-    }
-    filter_text("", true);
+    lines.finish(handle_line);
+    think.feed("", true, emit);
 
-    if (tracing) {
-        // Counts, sizes and times only: never the words sent or received, a key or the model's id.
-        json outcome;
-        if (res.error == "cancelled") outcome = "cancelled";
-        else if (!res.ok() || !out.error.empty()) outcome = "error";
-        else if (!out.tool_calls.empty()) {
-            outcome = json::array();
-            for (const auto &c : out.tool_calls)
-                if (!c.name.empty()) outcome.push_back(c.name);
-        } else outcome = out.content.empty() ? "empty" : "text";
-        experiment::trace_call({{"role", opt.role.empty() ? "main" : opt.role}, {"purpose", opt.purpose},
-                                {"tools", tools.is_array() ? static_cast<long>(tools.size()) : 0L},
-                                {"tool_choice", body.contains("tool_choice") ? body["tool_choice"] : json(nullptr)},
-                                {"fast", body.contains("reasoning_effort")}, {"usage_asked", body.contains("stream_options")},
-                                {"body_bytes", static_cast<long>(req.body.size())}, {"t_send", t_send}, {"ttfb_ms", ttfb},
-                                {"first_text_ms", first_text}, {"first_call_ms", first_call}, {"done_ms", since()},
-                                {"attempts", attempts}, {"status", res.status}, {"usage", usage}, {"outcome", outcome},
-                                {"text_chars", static_cast<long>(out.content.size())}, {"reply_calls", reply_calls},
-                                {"reply_after_text", reply_calls > 0 && plain_said}});
-    }
+    if (tracing) trace_record(opt, tools, body, req.body.size(), ct, since(), res, out);
 
     if (res.error == "cancelled") { out.cancelled = true; return out; }
     if (!res.ok() && out.error.empty()) out.error = api_error(res);
@@ -412,8 +348,8 @@ bool synthesize(const std::string &text, std::string &pcm, std::string &err, std
     pcm = res.body;
     // Some servers answer with a WAV container even when PCM was requested.
     if (pcm.size() > 44 && pcm.compare(0, 4, "RIFF") == 0) {
-        const size_t data = pcm.find("data", 12);
-        pcm.erase(0, data == std::string::npos ? 44 : data + 8);
+        const size_t at = audio::wav_samples_at(pcm);
+        pcm.erase(0, at == std::string::npos ? 44 : at);
     }
     return true;
 }
