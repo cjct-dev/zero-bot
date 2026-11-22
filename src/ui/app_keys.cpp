@@ -156,6 +156,9 @@ void App::change_station(int step) {
     });
 }
 
+// A key goes to the first of these that takes it: a dark screen (woken), the press already spent on
+// waking it or on an alarm, a ringing alarm, the fn layer's controls, the breathing exercise, ESC,
+// settings, TAB, typing, and last the chat screen's own keys.
 void App::handle_key(const KeyEvent &ev) {
     const unsigned long now = sys::now_ms();
     // A key on a dark screen only wakes it, whatever is showing (the chat, typing, settings, the
@@ -170,93 +173,113 @@ void App::handle_key(const KeyEvent &ev) {
     // existed ("SPACE, Down, ENTER" still works however quickly it is typed).
     if (ev.state == 1 && ev.key != Key::None && !keyguide::is_settings_key(ev) && space_tap.cancel() && settings_may_open())
         open_menu();
-
-    // A ringing alarm takes the next key press, whatever the key and whatever is on screen (the
-    // chat, a menu, the breathing exercise), and the press goes no further. TAB also starts
-    // listening, so that "give it five more minutes" is one press away.
-    if (ev.state == 1) spent_key = Key::None;
-    else if (spent_key != Key::None && ev.key == spent_key && ev.text == spent_text) {
-        if (ev.state == 0) spent_key = Key::None;
-        return;   // the repeats and the release of the press that silenced it
-    }
-    if (ev.state == 1 && alarm.ringing()) {
-        const bool tab = ev.key == Key::Tab;
-        alarm.key(tab);
-        sync_banner();
-        spent_key = ev.key;
-        spent_text = ev.text;
-        if (tab) {
-            if (breath.active()) breath.stop();
-            if (menu.open()) menu.close();
-            if (!recorder.active()) start_recording();
-        }
-        return;
-    }
+    if (spent(ev) || alarm_key(ev)) return;
     // A modifier tapped on its own, or a key the app has no use for: it has woken the screen or
     // kept it lit, and stopped an alarm ("any key"), above. Nothing more.
     if (ev.key == Key::None) return;
 
-    if (control_key(ev)) return;
-
-    // A breathing exercise takes the whole screen. ESC ends it; TAB ends it and starts listening,
-    // since wanting to say something is a fair reason to stop. Other keys are left alone so a
-    // stray press does not break the calm.
-    if (breath.active()) {
-        if (ev.state != 1) return;
-        if (ev.key == Key::Esc) { breath.stop(); esc_armed = false; return; }
-        if (ev.key != Key::Tab) return;
-        breath.stop();
-    }
-
-    // ESC: a short press backs out of whatever is happening, a long hold leaves the app.
-    if (ev.key == Key::Esc) {
-        if (ev.state == 1) { esc_down = now; esc_armed = true; }
-        if (ev.state == 0 && esc_armed) {
-            esc_armed = false;
-            if (now - esc_down < kEscHoldMs) short_escape();
-        }
-        return;
-    }
-
-    if (menu.open()) {
-        if (ev.key == Key::Tab) { if (ev.state == 1) menu.close(); return; }
-        // Outside a text field, SPACE closes settings as it opened them, and H shows the keys.
-        // Not the first-run guide, which SPACE did not open: a new user presses it to choose.
-        if (!menu.editing() && keyguide::is_settings_key(ev)) {
-            if (menu.in_guide()) menu.toast("Press ENTER to choose");
-            else menu.close();
-            return;
-        }
-        if (!menu.editing() && keyguide::is_guide_key(ev)) { open_key_guide(menu, true); return; }
-        menu.key(ev);
-        return;
-    }
-
-    if (ev.key == Key::Tab) {
-        if (ev.state != 1) return;
-        if (recorder.active()) {
-            if (now - rec_start < kDoubleTapMs) { finish_recording(false); open_menu(); }
-            else finish_recording(true);
-        } else {
-            start_recording();
-        }
-        return;
-    }
+    if (control_key(ev) || breath_key(ev)) return;
+    if (ev.key == Key::Esc) { escape_key(ev, now); return; }
+    if (menu.open()) { settings_key(ev); return; }
+    if (ev.key == Key::Tab) { talk_key(ev, now); return; }
     if (recorder.active() || ev.state == 0) return;
+    if (chat.typing()) { typing_key(ev); return; }
+    chat_screen_key(ev, now);
+}
 
-    if (chat.typing()) {
-        if (ev.key == Key::Enter) {
-            if (ev.state != 1) return;
-            const std::string text = util::trim(chat.typing_text());
-            chat.typing_end();
-            if (!text.empty()) when_online([text] { Agent::get().submit_text(text); });
-        } else if (ev.key == Key::Up || ev.key == Key::Down) {
-            chat.scroll(ev.key == Key::Up ? ChatView::kLineScroll : -ChatView::kLineScroll);
-        } else {
-            chat.typing_key(ev);
-        }
+// The repeats and the release of the press that woke the screen or silenced an alarm: they do nothing.
+// A new press ends that.
+bool App::spent(const KeyEvent &ev) {
+    if (ev.state == 1) {
+        spent_key = Key::None;
+        return false;
+    }
+    if (spent_key == Key::None || ev.key != spent_key || ev.text != spent_text) return false;
+    if (ev.state == 0) spent_key = Key::None;
+    return true;
+}
+
+// A ringing alarm takes the next key press, whatever the key and whatever is on screen (the
+// chat, a menu, the breathing exercise), and the press goes no further. TAB also starts
+// listening, so that "give it five more minutes" is one press away.
+bool App::alarm_key(const KeyEvent &ev) {
+    if (ev.state != 1 || !alarm.ringing()) return false;
+    const bool tab = ev.key == Key::Tab;
+    alarm.key(tab);
+    sync_banner();
+    spent_key = ev.key;
+    spent_text = ev.text;
+    if (tab) {
+        if (breath.active()) breath.stop();
+        if (menu.open()) menu.close();
+        if (!recorder.active()) start_recording();
+    }
+    return true;
+}
+
+// A breathing exercise takes the whole screen. ESC ends it; TAB ends it and starts listening,
+// since wanting to say something is a fair reason to stop. Other keys are left alone so a
+// stray press does not break the calm.
+bool App::breath_key(const KeyEvent &ev) {
+    if (!breath.active()) return false;
+    if (ev.state != 1) return true;
+    if (ev.key == Key::Esc) { breath.stop(); esc_armed = false; return true; }
+    if (ev.key != Key::Tab) return true;
+    breath.stop();
+    return false;   // TAB goes on, to start listening
+}
+
+// ESC: a short press backs out of whatever is happening, a long hold leaves the app.
+void App::escape_key(const KeyEvent &ev, unsigned long now) {
+    if (ev.state == 1) { esc_down = now; esc_armed = true; }
+    if (ev.state == 0 && esc_armed) {
+        esc_armed = false;
+        if (now - esc_down < kEscHoldMs) short_escape();
+    }
+}
+
+// A key while settings are open. TAB closes them.
+void App::settings_key(const KeyEvent &ev) {
+    if (ev.key == Key::Tab) { if (ev.state == 1) menu.close(); return; }
+    // Outside a text field, SPACE closes settings as it opened them, and H shows the keys.
+    // Not the first-run guide, which SPACE did not open: a new user presses it to choose.
+    if (!menu.editing() && keyguide::is_settings_key(ev)) {
+        if (menu.in_guide()) menu.toast("Press ENTER to choose");
+        else menu.close();
         return;
     }
+    if (!menu.editing() && keyguide::is_guide_key(ev)) { open_key_guide(menu, true); return; }
+    menu.key(ev);
+}
+
+// TAB starts listening and, pressed again, sends what was said; pressed twice quickly it opens
+// settings instead.
+void App::talk_key(const KeyEvent &ev, unsigned long now) {
+    if (ev.state != 1) return;
+    if (recorder.active()) {
+        if (now - rec_start < kDoubleTapMs) { finish_recording(false); open_menu(); }
+        else finish_recording(true);
+    } else {
+        start_recording();
+    }
+}
+
+// While typing: ENTER sends the text, Up and Down scroll the chat, the rest edit the line.
+void App::typing_key(const KeyEvent &ev) {
+    if (ev.key == Key::Enter) {
+        if (ev.state != 1) return;
+        const std::string text = util::trim(chat.typing_text());
+        chat.typing_end();
+        if (!text.empty()) when_online([text] { Agent::get().submit_text(text); });
+    } else if (ev.key == Key::Up || ev.key == Key::Down) {
+        chat.scroll(ev.key == Key::Up ? ChatView::kLineScroll : -ChatView::kLineScroll);
+    } else {
+        chat.typing_key(ev);
+    }
+}
+
+// The chat screen's own keys (keyguide::chat_key says which is which).
+void App::chat_screen_key(const KeyEvent &ev, unsigned long now) {
     using keyguide::ChatKey;
     switch (keyguide::chat_key(ev)) {
         // Two taps of the delete key (not while typing, where it deletes text) start a new conversation.

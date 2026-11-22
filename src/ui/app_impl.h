@@ -131,6 +131,15 @@ struct App {
     unsigned long station_chosen_at = 0;
     void change_station(int step);
     void handle_key(const KeyEvent &ev);
+    // handle_key's steps, in the order a key is offered to them
+    bool spent(const KeyEvent &ev);
+    bool alarm_key(const KeyEvent &ev);
+    bool breath_key(const KeyEvent &ev);
+    void escape_key(const KeyEvent &ev, unsigned long now);
+    void settings_key(const KeyEvent &ev);
+    void talk_key(const KeyEvent &ev, unsigned long now);
+    void typing_key(const KeyEvent &ev);
+    void chat_screen_key(const KeyEvent &ev, unsigned long now);
     void short_escape();
 
     // ------------------------------------------------------------ periodic work (app_status.cpp)
