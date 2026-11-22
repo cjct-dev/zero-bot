@@ -505,7 +505,7 @@ a later version (and their files deleted from the device).
   only conversations you are happy to share with whoever looks into a problem.
   *Settings → Your data → Saved conversations* shows how many there are and deletes them all.
 
-`tests/suite/from_conversation.py FILE` turns a saved conversation into a draft test case for the
+`tests/agent/suite/from_conversation.py FILE` turns a saved conversation into a draft test case for the
 generated request set, for a person to edit (and to replace your own words with others) before
 adding it.
 
@@ -586,27 +586,30 @@ quick` runs everything that needs neither the device nor an AI service (a few mi
 change` only what covers the files you changed, and `--list` names every group and what it needs.
 The groups are:
 
-- the unit tests, `tests/run_unit.sh`: the smart-home layer, each driver (Fire TV, HomeKit, Hue,
+- the unit tests, `tests/unit/run_unit.sh`: the smart-home layer, each driver (Fire TV, HomeKit, Hue,
   Kasa, WiZ, Shelly) and the helpers they share, the HTTP options for devices, the timers (the
   timer tool, storage, the countdown and the alarm), the radio (the station file, the radio tool,
   the check of a stream against a pretend radio server), the keys and their guide, when the screen
   dims and goes off, the speaker, the microphone with a plug in the headphone socket, the music
   player, which models are chosen, reading the service's streamed replies, the calculator, dates,
-  time zones and helper programs, what every thread shares, and saved conversations;
+  time zones and helper programs, the breathing exercise's timing, what every thread shares, and
+  saved conversations;
 - the offline tools through the command-line build, with good, wrong and hostile arguments
-  (`tests/tools_cli.py`);
-- the conversation loop against scripted chat services (`tests/agent_loop_test.py`;
-  `tests/home_chat_e2e.py`, which checks that a change needing your yes waits for one; and
-  `tests/selfheal_chat_e2e.py`, for failures);
-- each smart-home driver end to end against simulated devices (`tests/tapo_e2e.py`,
+  (`tests/sim/tools_cli.py`);
+- the conversation loop against scripted chat services (`tests/sim/agent_loop_test.py`;
+  `tests/sim/home_chat_e2e.py`, which checks that a change needing your yes waits for one; and
+  `tests/sim/selfheal_chat_e2e.py`, for failures);
+- each smart-home driver end to end against simulated devices (`tests/sim/tapo_e2e.py`,
   `firetv_e2e.py`, `homekit_e2e.py`, `hue_e2e.py`, `kasa_e2e.py`, `wiz_e2e.py`, `shelly_e2e.py`);
+- the package and its install scripts, built from a stand-in program and read back
+  (`tests/sim/packaging_test.py`);
 - every screen, rendered by the simulator build and compared with stored pictures
-  (`tests/shots_compare.py`).
+  (`tests/sim/screens/shots_compare.py`).
 
-With an AI service, `tests/agent_eval.py` (a scored set of requests) and `tests/agent_suite.py`
-(a generated set of about 600) report which tools were called, whether the answers hold up, and
-how long each took; their web reads go to a stand-in, never to the real services. See the notes
-at the top of each file, and AGENTS.md section 6.
+With an AI service, `tests/agent/agent_eval.py` (a scored set of requests) and
+`tests/agent/agent_suite.py` (a generated set of about 600) report which tools were called, whether
+the answers hold up, and how long each took; their web reads go to a stand-in, never to the real
+services. `tests/README.md` says what each test checks, and AGENTS.md section 6 how to run them.
 
 ## Troubleshooting
 
@@ -661,7 +664,7 @@ src/ui/         chat screen, menus, settings pages, setup guide, alarm banner, s
 src/net/        HTTP client (libcurl)
 src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers and their shared helpers
 scripts/        toolchain setup, packaging, deployment
-tests/          the test runner (run.py), unit tests, end-to-end tests with simulated devices and chat services, stored screenshots, scored agent test sets
+tests/          the test runner (run.py) and the tests by kind: unit/ (unit tests), sim/ (end to end with simulated devices and chat services, stored screenshots), agent/ (scored agent test sets), tools/, mocks/; tests/README.md lists them
 licenses/       third-party notices and the Apache-2.0 text
 packaging/      launcher entry, icon, wake-screen picture and the package's maintainer scripts
 extras/         device-tree overlay for the Wi-Fi channel fix
