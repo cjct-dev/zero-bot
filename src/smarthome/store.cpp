@@ -129,7 +129,11 @@ Saved from_json(const json &j) {
     if (j.contains("found_by") && j["found_by"].is_array())
         for (const auto &m : j["found_by"])
             if (m.is_string()) d.found_by.push_back(m.get<std::string>());
-    if (j.contains("auth") && j["auth"].is_object()) d.auth = j["auth"];
+    // Something typed for it was handed to its driver and the outcome never reached the file (the app
+    // stopped, or the file could not take it): its pairing data may hold a password the device refused
+    // since, with that refusal lost. They are not used, until something typed for it is written with
+    // its outcome (pairing_submit, which takes the mark back in the same write).
+    if (d.trying.empty() && j.contains("auth") && j["auth"].is_object()) d.auth = j["auth"];
     if (j.contains("things") && j["things"].is_array())
         for (const auto &tj : j["things"]) {
             Thing t;
@@ -326,6 +330,15 @@ namespace {
 const char *const kKey = "trial";
 const char *const kTyped = "typed";
 std::string state(const json &holder) { return holder.is_object() ? util::jget(holder, kKey, std::string()) : std::string(); }
+
+std::mutex g_refused_mtx;
+std::map<std::string, std::set<std::string>> g_refused;   // slot -> prints refused in this run
+
+// The memory of refusals is this run's: another run starts without it (testing::new_run).
+void forget_refusals() {
+    std::lock_guard<std::mutex> lk(g_refused_mtx);
+    g_refused.clear();
+}
 }  // namespace
 
 void typed(json &holder) {
@@ -348,6 +361,22 @@ bool end(json &holder) {
     if (!holder.is_object() || !holder.contains(kKey)) return false;
     holder.erase(kKey);
     return true;
+}
+
+void refuse(const std::string &slot, const std::string &print) {
+    std::lock_guard<std::mutex> lk(g_refused_mtx);
+    g_refused[slot].insert(print);
+}
+
+bool refused(const std::string &slot, const std::string &print) {
+    std::lock_guard<std::mutex> lk(g_refused_mtx);
+    const auto it = g_refused.find(slot);
+    return it != g_refused.end() && it->second.count(print) > 0;
+}
+
+void forgive(const std::string &slot) {
+    std::lock_guard<std::mutex> lk(g_refused_mtx);
+    g_refused.erase(slot);
 }
 }  // namespace trial
 
@@ -678,8 +707,11 @@ void set_network_source(const NetworkSource *source) {
 void set_clock(unsigned long (*clock_ms)()) { g_test_clock = clock_ms; }
 
 void new_run() {
-    std::lock_guard<std::mutex> lk(g_run_mtx);
-    g_run.clear();
+    {
+        std::lock_guard<std::mutex> lk(g_run_mtx);
+        g_run.clear();
+    }
+    trial::forget_refusals();
 }
 
 void clear_drivers() {

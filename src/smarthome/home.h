@@ -41,7 +41,8 @@ struct ThingMeta {
 
 struct Saved : Device {
     std::vector<std::string> found_by;
-    std::string trying;          // a code or password typed for it was being handed to its driver (pairing_submit)
+    std::string trying;          // a code or password typed for it was being handed to its driver (pairing_submit);
+                                 // while it is set, `auth` is not read from the file (store.cpp from_json)
     bool enabled = true;         // the assistant may use it
     bool needs_setup = false;    // its driver wants pairing before anything else
     time_t last_seen = 0;

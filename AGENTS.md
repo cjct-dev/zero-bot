@@ -832,7 +832,17 @@ key, real audio), say so plainly rather than implying it was.
   and a trial an earlier run left behind counts as refused until the user types it again (the app
   may have stopped before the device answered, and a Tapo plug locks after a few refusals).
   `pairing_submit` writes a "trying" mark on the device record before it hands anything typed to a
-  driver. Every failed write of `smarthome.json` is reported (`home::kNotSaved`), not lost.
+  driver, and takes it back in the write of the outcome; while it stands, the record's pairing data
+  are not read (`from_json`). Shelly ended a password's trial when a pairing was refused, before
+  that write: when the write failed, the record kept the old password with neither its refusal nor
+  a trial, and it was sent again. Every failed write of `smarthome.json` is reported
+  (`home::kNotSaved`), not lost.
+- A refusal is kept in memory for the rest of the run as well as in the file (`home::trial::refuse`,
+  per credential): the file can fail to take it, and Tapo's transport remembers a refusal per plug
+  only, so the account's other plugs, or another WiZ device, were sent the refused password or key
+  again in the same run. A credential on trial goes to one device at a time (each family's
+  `g_first_try`, taken before the account or key is read): a command that fans out sent a wrong
+  password to four plugs at once. A refusal the file could not take is said.
 - A scan is of the network the user agreed to: `home::scan` takes the network the settings page
   showed (`discovery::Options::network_id`), refuses once the device is on another, and drops what
   it heard when the network changed while it listened. So does the short scan for a device that
@@ -1130,7 +1140,9 @@ driver keeps: map only allow-listed types (lights, plugs, switches, thermostats,
 speakers, TVs, scenes, read-only sensors; never locks, garage doors, alarms, cameras, valves or
 cooking appliances); state in the units and keys documented in `home.h`; secrets only in
 `Device::auth` or `secrets()`, never in errors; never retry a rejected code or password, even in
-a later run, and keep a typed one on trial (`home::trial`) until a device accepts it; an id that
+a later run, and keep a typed one on trial (`home::trial`) until a device accepts it, a refusal in
+this run's memory too (`trial::refuse`), and, for one credential that serves several devices, its
+first try to one device at a time; an id that
 is never a family's prefix alone, and, where the protocol has no login, a change only to a device
 that positively names the MAC it was saved under (section 8); no retries of its own of a change
 (the shared layer resends one only at a device's new address, and only when it comes out the same if made twice; `http::send_retrying` is for

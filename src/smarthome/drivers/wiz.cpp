@@ -41,6 +41,9 @@ const char *const kNeedsKey =
 const char *const kKeyRefused =
     "A WiZ device did not accept the signing key, so it is not sent again. Type the key again in Settings, Smart home, "
     "on the device's page.";
+const char *const kKeyRefusedNotNoted =
+    "A WiZ device did not accept the signing key, so it is not sent again; that refusal could not be noted on this device "
+    "(its storage may be full). Type the key again in Settings, Smart home, on the device's page.";
 const char *const kClockNotSet = "The clock here is not set yet, so a signed command cannot be sent. Try again in a minute.";
 const char *const kKeyNotSaved =
     "The WiZ signing key's first use could not be noted on this device (its storage may be full), so nothing was sent.";
@@ -216,6 +219,11 @@ bool names_no_mac(const json &result) {
 // one at a time, so that a refusal kept by one is not overwritten by another's trial.
 std::mutex g_key_mtx;
 
+// A key on trial goes to one device at a time: signed_set() takes this before it reads the key and
+// keeps it until the outcome is kept. Every device a command fans out to would otherwise be sent a key
+// that may be wrong at once; the others wait, and then see whether it was refused.
+std::mutex g_first_try;
+
 // Devices that turned down an unsigned command in this run, by device id: they want a key even
 // before a read has marked their things as signed.
 std::mutex g_mtx;
@@ -227,7 +235,9 @@ bool needs_key_now(const Device &dev) {
     return g_needs_key.count(memory_id(dev)) > 0;
 }
 
-enum class Outcome { Ok, NoAnswer, Garbled, NoSuchMethod, NeedsKey, KeyRefused, KeyUnconfirmed, KeyNotSaved, ClockNotSet, Refused };
+enum class Outcome {
+    Ok, NoAnswer, Garbled, NoSuchMethod, NeedsKey, KeyRefused, KeyRefusedNotNoted, KeyUnconfirmed, KeyNotSaved, ClockNotSet, Refused
+};
 
 const char *sentence(Outcome o) {
     switch (o) {
@@ -235,6 +245,7 @@ const char *sentence(Outcome o) {
         case Outcome::Garbled: return kGarbled;
         case Outcome::NeedsKey: return kNeedsKey;
         case Outcome::KeyRefused: return kKeyRefused;
+        case Outcome::KeyRefusedNotNoted: return kKeyRefusedNotNoted;
         case Outcome::KeyUnconfirmed: return kKeyUnconfirmed;
         case Outcome::KeyNotSaved: return kKeyNotSaved;
         case Outcome::ClockNotSet: return kClockNotSet;
@@ -665,6 +676,7 @@ public:
             err = "The key could not be saved on this device; its storage may be full.";
             return false;
         }
+        home::trial::forgive(kFamily);
         return true;
     }
 
@@ -779,15 +791,21 @@ private:
         std::string bytes;          // 16 bytes; empty when none is saved
         bool refused = false;       // a device turned it down: it is not sent again
         bool unconfirmed = false;   // also refused: sent by a run that stopped before it knew the outcome
+        bool on_trial = false;      // typed, and not yet taken by a device
     };
+
+    // What tells one key from another in this run's memory of refusals: a hash, not the key.
+    static std::string print_of(const std::string &key) { return support::hex(support::digest(EVP_sha256(), key)); }
 
     Key family_key() const {
         Key k;
         if (!secrets_) return k;
         const json j = secrets_->get(kFamily);
         if (!detail::parse_key(jstr(j, "signing_key"), k.bytes)) return {};
-        k.unconfirmed = !jbool(j, "refused") && home::trial::stale(j);   // a refusal kept says more
-        k.refused = jbool(j, "refused") || k.unconfirmed;
+        const bool kept = jbool(j, "refused") || home::trial::refused(kFamily, print_of(k.bytes));
+        k.unconfirmed = !kept && home::trial::stale(j);   // a refusal kept says more
+        k.refused = kept || k.unconfirmed;
+        k.on_trial = j.contains("trial");
         return k;
     }
 
@@ -802,9 +820,12 @@ private:
     }
 
     // setPilot signed with the family's key, when there is one that no device has refused and the
-    // clock is set. A refusal is kept in the file so that no later run sends that key again.
+    // clock is set. Decided under g_first_try, held while the key is on trial until its outcome is
+    // kept (refused_key, trial::end), so that its first try goes to one device at a time.
     Outcome signed_set(Target &t, const std::string &params, long long deadline, json &result) {
+        std::unique_lock<std::mutex> first(g_first_try);
         const Key k = family_key();
+        if (!k.on_trial) first.unlock();   // a key a device has taken may go to all of them at once
         if (k.bytes.empty()) return Outcome::NeedsKey;
         if (k.unconfirmed) return Outcome::KeyUnconfirmed;
         if (k.refused) return Outcome::KeyRefused;
@@ -815,10 +836,18 @@ private:
         // still stops the next run.
         if (!note_key(k.bytes, [](json &j) { return home::trial::begin(j); })) return Outcome::KeyNotSaved;
         const Outcome o = call(t, "setPilot", params, k.bytes, deadline, result);
-        // Only the key that was sent is marked: one typed meanwhile gets its own try.
-        if (o == Outcome::KeyRefused) note_key(k.bytes, [](json &j) { j["refused"] = true; return true; });
+        if (o == Outcome::KeyRefused) return refused_key(k.bytes);
         if (o == Outcome::Ok) note_key(k.bytes, [](json &j) { return home::trial::end(j); });
         return o;
+    }
+
+    // A device turned `key` down: kept in this run's memory, so that no device is sent it again, and
+    // in the file for later runs (only the key that was sent is marked: one typed meanwhile gets its
+    // own try). KeyRefusedNotNoted when the file could not take it.
+    Outcome refused_key(const std::string &key) {
+        home::trial::refuse(kFamily, print_of(key));
+        const bool noted = note_key(key, [](json &j) { j["refused"] = true; return true; });
+        return noted ? Outcome::KeyRefused : Outcome::KeyRefusedNotNoted;
     }
 
     // Whether the device that gave `pilot` is the one saved under `expected` (same_device). Firmware

@@ -34,7 +34,8 @@
 //    the key (Pairing::Token) while there is none or the saved one was refused. pair() stores what
 //    was typed (the hex, or the whole exported file pasted) and sends nothing: only a change shows
 //    whether a key is right, and none is made up. A key a device refused (-32605) is never sent
-//    again, by this run or a later one, until a key is typed again. A signed request carries the
+//    again, by this run or a later one, until a key is typed again; a key not yet taken by any
+//    device goes to one device at a time. A signed request carries the
 //    time, and a stale one is refused like a wrong key, so nothing is signed while the clock reads
 //    earlier than 2025 (never set), nor in the first ten minutes after start while the kernel
 //    reports the clock as not synchronised (a board without a battery-backed clock starts from a
@@ -69,6 +70,7 @@ extern const char *const kNoAnswer;      // "The WiZ device did not answer."
 extern const char *const kGarbled;       // "The WiZ device replied with something that could not be understood."
 extern const char *const kNeedsKey;      // "This WiZ device only accepts signed commands. ..."
 extern const char *const kKeyRefused;    // "A WiZ device did not accept the signing key, ..."
+extern const char *const kKeyRefusedNotNoted;   // the same, when that refusal could not be noted on this device
 extern const char *const kClockNotSet;   // "The clock here is not set yet, ..."
 extern const char *const kKeyNotSaved;      // "The WiZ signing key's first use could not be noted on this device ..."
 extern const char *const kKeyUnconfirmed;   // "No WiZ device has confirmed the signing key typed last ..."
