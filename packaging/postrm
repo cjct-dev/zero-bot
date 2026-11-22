@@ -3,13 +3,19 @@
 # (lockscreen.png.distrib, kept current by the launcher's updates) back in its place and drop the
 # diversion the preinst made. As in Debian policy's example of a diversion, this is also done when a first
 # install, or an upgrade from a version without the picture, fails after the preinst had diverted.
+# Only a diversion zero-bot holds is removed: after a remove, another package may have taken the picture
+# before the purge, and dpkg-divert refuses to remove another package's diversion (the purge would fail).
+# Going back to a version without the picture is not handled here: remove zero-bot first.
 set -e
 
 IMAGE=/usr/share/APPLaunch/share/images/lockscreen.png
 FIRST_WITH_PICTURE=0.4.9
 
 restore_launcher_picture() {
-    dpkg-divert --package zero-bot --remove --rename --divert "$IMAGE.distrib" "$IMAGE"
+    owner=$(dpkg-divert --listpackage "$IMAGE")
+    if [ "$owner" = zero-bot ]; then
+        dpkg-divert --package zero-bot --remove --rename --divert "$IMAGE.distrib" "$IMAGE"
+    fi
 }
 
 case "$1" in

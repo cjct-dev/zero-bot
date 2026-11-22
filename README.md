@@ -109,7 +109,7 @@ Download `zero-bot_<version>_arm64.deb` from the Releases page, copy it to the C
 (over SSH, ADB or the microSD card) and install it on the device:
 
 ```sh
-sudo apt install ./zero-bot_0.4.8_arm64.deb
+sudo apt install ./zero-bot_0.4.9_arm64.deb
 ```
 
 "Zero Bot" then appears in the launcher within a few seconds. To build the package yourself
@@ -119,7 +119,9 @@ The package also puts Zero, the app's 8-bit robot, on the picture the launcher s
 wakes from its lock screen, from the next restart of the device. It changes the launcher's picture the
 way Debian provides for (a diversion): the launcher's own picture is kept beside it and kept current by
 the launcher's updates, and removing Zero Bot (`sudo apt remove zero-bot`) puts it back, again from the
-next restart.
+next restart. To go back to a version older than 0.4.9, remove Zero Bot first and then install the older
+package: those versions know nothing of the picture, so installing one over this would leave the launcher's
+own picture set aside.
 
 ### 2. Follow the setup guide
 

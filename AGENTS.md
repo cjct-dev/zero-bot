@@ -628,8 +628,10 @@ What exists:
   tar reader (files, owners, modes, control fields, maintainer scripts), checks the wake picture
   (320x150, 8-bit RGB, no chunk but IHDR, IDAT and IEND) and runs `packaging/preinst` and `postrm` for
   every action dpkg can pass them (an upgrade from 0.2.0 and 0.4.8, without the picture, among them)
-  against a stand-in `dpkg-divert` that records its arguments and a stand-in `dpkg --compare-versions`.
-  What dpkg itself then does with the diversion is not tested here (this PC has no dpkg).
+  against a stand-in `dpkg-divert` that keeps each diversion with its owner and renames the files as
+  dpkg 1.22's does (refusing another package's diversion, or a rename over a file already there), and a
+  stand-in `dpkg --compare-versions`; each case is checked by the calls made and the state left. What
+  dpkg itself then does with the diversion is not tested here (this PC has no dpkg).
 
 When a model-facing change is made (prompt, tool description, tool schema, loop), run the
 affected cases repeated, then the whole set once. When something cannot be tested (a physical
@@ -1204,9 +1206,16 @@ package's preinst moves the launcher's picture aside with `dpkg-divert --rename`
 puts it back when Zero Bot is removed, the way Debian policy describes; never copy over the launcher's
 file, which its next update would undo. Either change shows from the launcher's next start (a restart
 of the device). `FIRST_WITH_PICTURE` in the postrm is the first version that carries the picture (0.4.9):
-a failed upgrade from an older version undoes the diversion. Going back to an older version means
-removing Zero Bot first (`sudo apt remove zero-bot`): otherwise the diversion stays and the launcher's
-own picture does not come back.
+a failed upgrade from an older version undoes the diversion. `packaging_test.py` checks that the built
+package's version is not below it: the picture came in while the project's version still said 0.4.8, a
+version the postrm counts as one without it, so an aborted upgrade back to such a package would have undone
+the diversion. The postrm removes only a diversion `dpkg-divert --listpackage` says zero-bot holds: after a
+remove, another package may take the picture before the purge, and dpkg-divert refuses to remove its
+diversion (the purge would fail).
+Downgrades are not handled by the scripts and stay a documented step (README, Install): going back to a
+version older than 0.4.9 means removing Zero Bot first (`sudo apt remove zero-bot`); installed over this
+one, the older version's scripts leave the diversion in place and the launcher's own picture never comes
+back.
 
 ## 10. Planned work
 
