@@ -1279,7 +1279,7 @@ bool model_retries_ok(App &app) {
 bool input_waits_for_phone(App &app) {
     std::vector<int> sent;
     auto input = [&sent](int n) { return [&sent, n] { sent.push_back(n); }; };
-    app.menu.close();              // ESC on the chat screen
+    app.menu.close();              // so that ESC below acts on the chat screen
     app.connecting_phone = true;   // as when_online leaves it while the phone is tried
     app.when_online(input(1));
     app.when_online(input(2));
