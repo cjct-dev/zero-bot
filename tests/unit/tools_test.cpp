@@ -186,11 +186,11 @@ void test_processes(const std::string &tmp) {
 constexpr int kHigh = 5000;
 
 // A child of the test holds descriptor kHigh, refuses itself the system calls `refused` with a
-// seccomp filter (ENOSYS, as a sandbox or an older kernel would), lowers its soft limit on open files
-// to `soft` (below kHigh, as a program may after opening it; the hard limit too with `hard_too`), and
-// runs a helper program. What the helper saw: 0 not kHigh, 1 kHigh, 2 the test could not be set up
-// here, 3 the helper did not run.
-int helper_sees_high(const std::string &tmp, const std::vector<long> &refused, rlim_t soft, bool hard_too) {
+// seccomp filter (ENOSYS, as a sandbox or an older kernel would), and with `keep_high` the close of
+// kHigh alone (EPERM), lowers its soft limit on open files to `soft` (below kHigh, as a program may
+// after opening it; the hard limit too with `hard_too`), and runs a helper program. What the helper
+// saw: 0 not kHigh, 1 kHigh, 2 the test could not be set up here, 3 the helper did not run.
+int helper_sees_high(const std::string &tmp, const std::vector<long> &refused, bool keep_high, rlim_t soft, bool hard_too) {
     const pid_t pid = fork();
     if (pid == 0) {
         rlimit lim{};
@@ -207,6 +207,12 @@ int helper_sees_high(const std::string &tmp, const std::vector<long> &refused, r
         for (const long call : refused) {
             filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<unsigned>(call), 0, 1));
             filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA)));
+        }
+        if (keep_high) {   // close(kHigh) refused; its first argument's low word, on a little-endian machine
+            filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_close, 0, 3));
+            filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, args[0])));
+            filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, kHigh, 0, 1));
+            filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)));
         }
         filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
         sock_fprog prog{static_cast<unsigned short>(filter.size()), filter.data()};
@@ -227,7 +233,8 @@ int helper_sees_high(const std::string &tmp, const std::vector<long> &refused, r
 // stands in for it must reach every descriptor the process holds: not stop at 4096, nor at the limits
 // on open files, which may have been lowered below a descriptor already open (fix round 2, C7). It
 // closes what /proc/self/fd lists; where that cannot be read either, no bound on the numbers is sure,
-// and the helper is not run at all (fix round 3, D10).
+// and the helper is not run at all (fix round 3, D10). Nor is it when a descriptor listed there cannot be
+// closed (fix round 4, E10): the pass that failed to close it first counted as one with nothing left.
 void test_descriptors_without_close_range(const std::string &tmp) {
     g_test = "helper programs without close_range";
 #ifdef SYS_close_range
@@ -239,20 +246,22 @@ void test_descriptors_without_close_range(const std::string &tmp) {
     struct Case {
         const char *what;
         std::vector<long> refused;
+        bool keep_high;   // the close of the descriptor refused as well
         rlim_t soft;
         bool hard_too;
         bool runs;   // whether the helper may run (closing every descriptor can be made sure of)
     };
     const Case cases[] = {
-        {"close_range refused", {SYS_close_range}, 8192, false, true},
-        {"close_range refused, the soft limit lowered below the descriptor", {SYS_close_range}, 1024, false, true},
-        {"close_range refused, both limits lowered below the descriptor", {SYS_close_range}, 1024, true, true},
-        {"close_range and the listing of /proc/self/fd refused", {SYS_close_range, SYS_getdents64}, 8192, false, false},
-        {"close_range and the listing of /proc/self/fd refused, both limits lowered", {SYS_close_range, SYS_getdents64}, 1024, true,
-         false},
+        {"close_range refused", {SYS_close_range}, false, 8192, false, true},
+        {"close_range refused, the soft limit lowered below the descriptor", {SYS_close_range}, false, 1024, false, true},
+        {"close_range refused, both limits lowered below the descriptor", {SYS_close_range}, false, 1024, true, true},
+        {"close_range and the listing of /proc/self/fd refused", {SYS_close_range, SYS_getdents64}, false, 8192, false, false},
+        {"close_range and the listing of /proc/self/fd refused, both limits lowered", {SYS_close_range, SYS_getdents64}, false, 1024,
+         true, false},
+        {"close_range refused, and the close of a descriptor /proc/self/fd lists", {SYS_close_range}, true, 8192, false, false},
     };
     for (const Case &c : cases) {
-        const int code = helper_sees_high(tmp, c.refused, c.soft, c.hard_too);
+        const int code = helper_sees_high(tmp, c.refused, c.keep_high, c.soft, c.hard_too);
         if (code == 2) {
             printf("tools: note: system calls could not be refused here (no seccomp); the check \"%s\" was skipped\n", c.what);
             continue;

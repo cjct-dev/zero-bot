@@ -45,12 +45,16 @@ struct Request {
 };
 
 struct Response {
-    long status = 0;
+    long status = 0;                         // the last answer's, kept when the transfer then failed (a body cut short)
     std::string body;
     std::string error;                       // transport-level failure, empty if none
     std::string peer_cert_pem;               // with want_peer_cert: the peer's own certificate
     std::string content_type;                // the answer's Content-Type header, as sent ("" if none)
     bool sent = false;                       // a connection was made and the request went out on it
+    // With digest_user: the last answer is to the request that carried the login, not the challenge
+    // before it (libcurl sends the login only once challenged). A 401 then refused the login; a
+    // challenge, even one whose body was cut short, refused nothing.
+    bool digest_answered = false;
     bool ok() const { return error.empty() && status >= 200 && status < 300; }
     std::string describe() const;            // short human-readable failure reason
 };

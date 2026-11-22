@@ -66,6 +66,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def cut(self, status, headers):
+        """An answer whose body stops a tenth of the way through, with the connection closed. It is sent as HTTP/1.1
+        and says nothing of closing: curl then reads on for the rest (told the connection closes, it leaves a
+        challenge's body unread and sends the login on a new connection)."""
+        self.protocol_version = "HTTP/1.1"
+        self.send_response(status)
+        for k, v in headers.items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", "100")
+        self.end_headers()
+        self.wfile.write(b"x" * 10)
+        self.close_connection = True
+
     def do_GET(self):
         if self.path == "/redirect":
             self.reply(302, b"moved", {"Location": "/target"})
@@ -79,6 +92,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, b"digest ok")
             else:
                 self.reply(401, b"who are you", {"WWW-Authenticate": 'Digest realm="%s", qop="auth", nonce="%s", algorithm=MD5' % (REALM, NONCE)})
+        elif self.path in ("/digest-cut", "/challenge-cut"):   # a 401 cut short: to the login, or the challenge itself
+            challenge = {"WWW-Authenticate": 'Digest realm="%s", qop="auth", nonce="%s", algorithm=MD5' % (REALM, NONCE)}
+            login = (self.headers.get("Authorization") or "").startswith("Digest ")
+            if not login and self.path == "/digest-cut":
+                self.reply(401, b"who are you", challenge)
+            elif not login:
+                self.cut(401, challenge)
+            elif self.path == "/digest-cut":
+                self.cut(401, challenge)
+            else:
+                self.reply(200, b"the login was sent after all")
         elif self.path == "/hello":
             self.reply(200, b"tls ok")
         elif self.path == "/who":

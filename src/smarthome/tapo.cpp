@@ -734,8 +734,9 @@ bool prove_password(const std::string &pw_hex, const Bytes &user_random, const R
 }
 
 // Step 3, pake_share. From here on the plug counts a failure towards its lock, so whatever
-// it rejects is remembered and never sent again. On success `resp` holds the plug's answer, whose
-// proof of the password has been checked.
+// it rejects is remembered and never sent again: a lock it answers the proof with too, since the proof
+// may be what locked it. On success `resp` holds the plug's answer, whose proof of the password has
+// been checked.
 bool pake_share(const std::string &host, const std::string &base, State &st, const std::string &fp,
                 const detail::SpakeProof &proof, json &resp, std::string &err) {
     const json share = {{"sub_method", "pake_share"},
@@ -744,7 +745,11 @@ bool pake_share(const std::string &host, const std::string &base, State &st, con
     if (!login_step(host, base, share, resp, err)) return false;
     long long code = 0;
     get_int(resp, "error_code", code);
-    if (code == kLocked) return locked(st, resp, err);
+    if (code == kLocked) {
+        locked(st, resp, err);
+        st.rejected[fp] = err;
+        return false;
+    }
     if (code != 0) {
         err = code == kWrongPassword ? detail::describe_error(kWrongPassword)
                                      : "the plug rejected the login (error code " + std::to_string(code) + ")";
@@ -1009,7 +1014,10 @@ bool exchange(const Device &dev, const Credentials &cred, const json &req, json 
     json resp;
     const bool answered = converse(*st, dev, cred, key, req, resp, err);
     // From the state this call used: forget_sessions() meanwhile drops it from g_states, not from here.
-    refused = st->rejected.count(key.fp) > 0 || std::chrono::steady_clock::now() < st->locked_until;
+    // Only what the plug said of these credentials: a lock it reported before any proof of them (another
+    // app locked it, or it is still cooling down) is its own state, kept in `st` (locked_until), and no
+    // refusal of the account, which would stop every plug of it.
+    refused = st->rejected.count(key.fp) > 0;
     if (!answered) return false;
     long long c = 0;
     get_int(resp, "error_code", c);
@@ -1094,18 +1102,8 @@ bool get_info(const Device &dev, const Credentials &cred, json &info, std::strin
     info["name"] = get_str(info, "nickname");
     info["model"] = get_str(info, "model");
     info["fw"] = get_str(info, "fw_ver");
-    info["sockets"] = 0;
+    info["strip"] = !info.contains("device_on");   // no switch of its own: its sockets have theirs (list_sockets)
     info["on"] = is_on(info);
-    if (!info.contains("device_on")) {   // a strip has no switch of its own: it is on when any socket is
-        json list;
-        if (children(dev, cred, list, err, code, refused)) {
-            info["sockets"] = list.size();
-            for (const json &child : list) info["on"] = info["on"].get<bool>() || is_on(child);
-        } else if (code == 0) {
-            return false;   // not the plug saying it has no sockets
-        }
-        err.clear();
-    }
     return true;
 }
 

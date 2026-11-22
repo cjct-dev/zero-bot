@@ -16,10 +16,11 @@ this file agreeing means two independent implementations agree. `--selftest` che
 against published vectors.
 
 Test hooks (never present on a real plug): GET /mock/stats, and POST /mock/reset with any of
-{"budget":[1,0], "lock_after":1, "no_energy_usage":true, "page":3, "refuse_set":true, "deep":"reply"}, which
-also clears all state. The budget is how many requests each successive session serves before the plug forgets
-it; refuse_set answers every switch command with error -1001 (the plug says no), for tests of what the
-app does after a command fails. deep adds a "pad" nested DEEP levels to otherwise right answers: "login" to
+{"budget":[1,0], "lock_after":1, "locked":true, "no_energy_usage":true, "page":3, "refuse_set":true, "deep":"reply"},
+which also clears all state. The budget is how many requests each successive session serves before the plug forgets
+it; locked answers every login step with the lock (-2101) from the first, as a plug another app has locked does, before
+any proof of the password; refuse_set answers every switch command with error -1001 (the plug says no), for tests of
+what the app does after a command fails. deep adds a "pad" nested DEEP levels to otherwise right answers: "login" to
 every TPAP login step's, "reply" to every command's (inside the encryption, KLAP and TPAP), "lost" to the
 plain notice that a TPAP session is no longer known; for tests that the app reads none of them (ZB-093).
 
@@ -325,6 +326,7 @@ class Mock:
     def reset(self, cfg):
         self.budget = cfg.get("budget") or []
         self.lock_after = cfg.get("lock_after", self.args.lock_after)
+        self.locked = cfg.get("locked", False)
         self.no_energy_usage = cfg.get("no_energy_usage", self.args.no_energy_usage)
         self.page = cfg.get("page", self.args.page)
         self.refuse_set = cfg.get("refuse_set", False)
@@ -521,7 +523,7 @@ class Mock:
         except (ValueError, KeyError, TypeError):
             return {"error_code": -1003}
         locked = {"error_code": -2101, "error_info": {"lockedMinute": 30, "remainAttempts": 0}}
-        is_locked = self.lock_after and self.failed_logins >= self.lock_after
+        is_locked = self.locked or (self.lock_after and self.failed_logins >= self.lock_after)
         if sub == "discover":
             self.stats["discover"] += 1
             if is_locked:

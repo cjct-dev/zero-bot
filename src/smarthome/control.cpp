@@ -1430,11 +1430,21 @@ bool mark_trying(const std::string &network_id, const std::string &device_id, co
     });
 }
 
-// Hands what was typed to the driver under the device's lock, if the device is still on the
-// network by then (`handed`); `next` is what the driver needs after it. Whether the driver took it.
+// Whether the driver still asks for the step the page showed (`shown`): what was typed for one step
+// goes to no other, nor to a device another submission has set up meanwhile.
+bool same_step(const Driver *drv, const Device &dev, const PairStep &shown) {
+    try {
+        const PairStep now = drv->next_step(dev);
+        return now.kind == shown.kind && now.field == shown.field;
+    } catch (const std::exception &) {
+        return false;
+    }
+}
+
+// Hands what was typed to the driver (the caller holds the device's lock), if the device is still on
+// the network by then (`handed`); `next` is what the driver needs after it. Whether the driver took it.
 bool hand_over(Driver *drv, const std::string &network_id, Device &dev, const std::string &input, PairStep &next,
                bool &handed, std::string &err) {
-    std::lock_guard<std::mutex> lk(device_lock(dev.id));
     handed = still_on(network_id, err);
     if (!handed) return false;
     try {
@@ -1489,13 +1499,23 @@ bool record_pairing(const std::string &network_id, const Device &dev, bool ok, c
 
 }  // namespace
 
-bool pairing_submit(const std::string &network_id, const std::string &device_id, const std::string &input, std::string &err) {
+bool pairing_submit(const std::string &network_id, const std::string &device_id, const PairStep &step,
+                    const std::string &input, std::string &err) {
+    // Held from the first read of the device to the write of the outcome, or of the mark put back: a
+    // second code typed while the first was with a HomeKit accessory read the record the first had
+    // marked (no pairing data), and wrote its own failure over the pairing the first then saved.
+    std::lock_guard<std::mutex> lk(device_lock(device_id));
     Saved saved;
     if (!on_network(network_id, err)) return false;
     if (!find_saved(network_id, device_id, saved)) { err = "That device is no longer saved."; return false; }
     Driver *drv = driver_for(saved);
     if (!drv) { err = "This kind of device cannot be set up here."; return false; }
     if (!may_contact(saved, err)) return false;
+    if (!same_step(drv, saved, step)) {
+        err = "Its setup has moved on since this page was opened, so nothing was sent. Open the device again to see what it "
+              "needs now.";
+        return false;
+    }
     const bool typed = !input.empty();
     if (typed && !mark_trying(network_id, device_id, run_id())) {
         err = std::string("Nothing was sent to the device. ") + kNotSaved;

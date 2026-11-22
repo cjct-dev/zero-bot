@@ -48,10 +48,11 @@ std::string thing_value(const home::Saved &d, const home::Thing &t) {
 void open_home_device(Menu &menu, const std::string &network_id, const std::string &device_id);
 void run_pairing(Menu &menu, const std::string &network_id, const std::string &device_id, const home::PairStep &step);
 
-// Hands what the user typed (or "" after a button) to the device's driver, then carries on with
-// the next step, or reads the device once it is ready. The next step is asked for off the UI
+// Hands what the user typed (or "" after a button) for `step` to the device's driver, then carries on
+// with the next step, or reads the device once it is ready. The next step is asked for off the UI
 // thread too: it looks at the network (home::pairing_step).
-void submit_pairing(Menu &menu, const std::string &network_id, const std::string &device_id, const std::string &input) {
+void submit_pairing(Menu &menu, const std::string &network_id, const std::string &device_id, const home::PairStep &step,
+                    const std::string &input) {
     struct Outcome {
         bool ok = false;
         std::string err;
@@ -60,9 +61,9 @@ void submit_pairing(Menu &menu, const std::string &network_id, const std::string
     menu.toast("Checking…");
     background_on_page(
         menu,
-        [network_id, device_id, input] {
+        [network_id, device_id, step, input] {
             Outcome r;
-            r.ok = home::pairing_submit(network_id, device_id, input, r.err);
+            r.ok = home::pairing_submit(network_id, device_id, step, input, r.err);
             if (r.ok) r.next = home::pairing_step(network_id, device_id);
             return r;
         },
@@ -94,9 +95,9 @@ void run_pairing(Menu &menu, const std::string &network_id, const std::string &d
                 std::vector<MenuItem> items;
                 Menu::add_paragraph(items, step.prompt);
                 const char *done = step.kind == home::Pairing::PressButton ? "I have pressed it" : "I have accepted it";
-                items.push_back(MenuItem::action(done, [&menu, network_id, device_id] {
+                items.push_back(MenuItem::action(done, [&menu, network_id, device_id, step] {
                     menu.pop();
-                    submit_pairing(menu, network_id, device_id, "");
+                    submit_pairing(menu, network_id, device_id, step, "");
                 }));
                 items.push_back(MenuItem::action("Cancel", [&menu] { menu.pop(); }));
                 return items;
@@ -106,9 +107,9 @@ void run_pairing(Menu &menu, const std::string &network_id, const std::string &d
         }
         default:   // a code, a password or a token
             menu.edit_text(step.field.empty() ? std::string("Code") : step.field, "", step.kind != home::Pairing::EnterCode,
-                           [&menu, network_id, device_id](const std::string &text) {
+                           [&menu, network_id, device_id, step](const std::string &text) {
                                if (text.empty()) return;
-                               submit_pairing(menu, network_id, device_id, text);
+                               submit_pairing(menu, network_id, device_id, step, text);
                            },
                            step.prompt);
             return;

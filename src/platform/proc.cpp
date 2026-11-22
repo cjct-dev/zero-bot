@@ -29,9 +29,13 @@ static int fd_number(const char *name) {
 }
 
 #ifdef SYS_getdents64
+// Whether `fd` is closed now. Linux lets a descriptor go even when close() reports an error (EINTR,
+// EIO), but not when the call was refused before it ran (a sandbox's filter): that one stays open.
+static bool gone(int fd) { return fcntl(fd, F_GETFD) == -1 && errno == EBADF; }
+
 // One pass over /proc/self/fd (open as `dir`), read with getdents64 into a buffer on the stack:
 // closes each descriptor it lists from `lowest` up, but `dir`. How many it closed; -1 when the
-// listing could not be read.
+// listing could not be read, or a descriptor it lists could not be closed.
 static int close_pass(int dir, int lowest) {
     alignas(dirent64) char buf[4096];
     if (lseek(dir, 0, SEEK_SET) != 0) return -1;
@@ -42,7 +46,9 @@ static int close_pass(int dir, int lowest) {
             const auto *entry = reinterpret_cast<const dirent64 *>(buf + at);
             at += entry->d_reclen;
             const int fd = fd_number(entry->d_name);
-            if (fd >= lowest && fd != dir && close(fd) == 0) ++closed;
+            if (fd < lowest || fd == dir) continue;
+            if (close(fd) != 0 && !gone(fd)) return -1;
+            ++closed;
         }
     return n < 0 ? -1 : closed;
 }
@@ -50,7 +56,7 @@ static int close_pass(int dir, int lowest) {
 
 // In the child: closes every descriptor from `lowest` up that /proc/self/fd lists (system calls
 // only). Closing changes the listing, so it is read again until a pass closes nothing. False when
-// it cannot be read (no /proc, or the call refused).
+// it cannot be read (no /proc, or the call refused), or a descriptor it lists cannot be closed.
 static bool close_listed(int lowest) {
 #ifdef SYS_getdents64
     const int dir = open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -67,9 +73,10 @@ static bool close_listed(int lowest) {
 
 // In the child, between fork and exec: closes every descriptor from `lowest` up. Only system calls
 // here (the parent has other threads, so nothing that might take a lock). False when that cannot be
-// made sure of: close_range missing or refused, and /proc/self/fd not to be listed. Closing every
-// number up to a bound is no stand-in: a process can hold a descriptor above any bound it can learn
-// (its limits lowered after it was opened, or raised past any fixed ceiling).
+// made sure of: close_range missing or refused, and /proc/self/fd not to be listed or a descriptor it
+// lists not to be closed. Closing every number up to a bound is no stand-in: a process can hold a
+// descriptor above any bound it can learn (its limits lowered after it was opened, or raised past any
+// fixed ceiling).
 static bool close_from(int lowest) {
 #ifdef SYS_close_range
     if (syscall(SYS_close_range, static_cast<unsigned>(lowest), ~0U, 0U) == 0) return true;

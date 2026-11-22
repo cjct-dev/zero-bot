@@ -589,7 +589,11 @@ key, real audio), say so plainly rather than implying it was.
   were first simply not read, so the next write of the record erased them: taking the mark back when
   the network changed before the handover, or any other change saved meanwhile, lost a Shelly's user
   name or a Fire TV's pairing that nothing had been sent with. A mark taken back puts back the one
-  before it (an earlier run's still stands). Shelly ended a password's trial when a pairing was refused, before
+  before it (an earlier run's still stands). `pairing_submit` holds the device's lock from its first
+  read of the record to that write: a second HomeKit code typed while the first was with the accessory
+  read the marked record (no pairing data), failed once the first had paired, and wrote its failure
+  over the keys the first had saved. It also takes the step the page showed, and refuses, sending
+  nothing, when the driver no longer asks for it. Shelly ended a password's trial when a pairing was refused, before
   that write: when the write failed, the record kept the old password with neither its refusal nor
   a trial, and it was sent again. Every failed write of `smarthome.json` is reported
   (`home::kNotSaved`), not lost.
@@ -602,13 +606,20 @@ key, real audio), say so plainly rather than implying it was.
   anyway (its trial stays), but one a device had accepted before is then held by the memory alone, and
   could be tried once more after a restart. A credential on trial goes to one device at a time (each
   family's `g_first_try`, taken before the account or key is read, let go once the outcome is kept, not
-  after the slow reads that follow, such as a plug's energy readings): a command that fans out sent a
-  wrong password to four plugs at once. It is also sent once: WiZ resends a datagram after 250 ms, which
+  after the slow reads that follow, such as a plug's energy readings or a strip's sockets, which
+  `tapo::get_info` read inside the first answer's call): a command that fans out sent a
+  wrong password to four plugs at once. A refusal on such a later read is said as any other, with
+  whether the file took it; the energy readings first dropped it, being extra. It is also sent once: WiZ resends a datagram after 250 ms, which
   sent a key on trial again while the device's first answer was on the way; on trial it goes out in
   one. A refusal is what the call that sent the credential said (`tapo::request`'s `refused`), not
   looked up afterwards: saving the Tapo account, even unchanged, drops the transport's sessions and
   what each plug said, and a refusal that arrived meanwhile was lost, so the next plug was sent the
-  same password.
+  same password. And it is the refusal of the entry that was sent: each password typed is a new
+  generation (`generation` in the account, kept over a change of e-mail), so the late refusal of a
+  login with the same password typed before no longer refuses the new entry before it is tried. Only
+  the credential's own rejection is a refusal: a TPAP plug locked by another app says so at
+  `pake_register`, before any proof of the password, and that lock is the plug's own (kept by the
+  transport for that plug), not the account's; it first stopped every plug of the account.
 - A scan is of the network the user agreed to: `home::scan` takes the network the settings page
   showed (`discovery::Options::network_id`), refuses once the device is on another, and drops what
   it heard when the network changed while it listened. So does the short scan for a device that
@@ -674,6 +685,13 @@ key, real audio), say so plainly rather than implying it was.
   device that asks for no password takes that empty request as the call. The Shelly driver
   therefore makes its digest calls as GET (Shelly's `/rpc/<Method>?<params>`); a mock that
   parses the body before checking the login hides the problem.
+- A 401 to a login is the device's answer whatever then happens to its body. One whose connection
+  dropped part way through the body made libcurl report a transfer error, which the Shelly driver
+  took for no answer: it kept the password and sent it again. `http::Response` keeps the status of
+  an answer whose body failed, and says whether a digest login was answered (`digest_answered`):
+  the 401 that only challenges, before libcurl sends the login, refused nothing, even cut short.
+  (Told that the connection closes, libcurl leaves a challenge's body unread and sends the login on a
+  new connection; otherwise it reads on, and a challenge cut short ends the request there.)
 - A garage-door exclusion that read only the channel's name missed the usual set-up: the owner
   names the device ("Garage door") and leaves its relay unnamed, and a Gen1 blind has no name at
   all. Check the name the thing will be called by, and what the wiring says (a relay that switches
@@ -784,8 +802,9 @@ key, real audio), say so plainly rather than implying it was.
 - A sandbox does not close what it inherits: `bwrap` handed the app's open descriptors (the
   framebuffer among them, which LVGL opens without close-on-exec) to the sandboxed Python.
   `proc::spawn` closes everything above stderr in the child; keep it. Where close_range is missing
-  or refused it closes what /proc/self/fd lists, and where that cannot be read either it does not
-  run the program (the child exits with 127): its fallback first stopped at 4096, then at the soft
+  or refused it closes what /proc/self/fd lists, and where that cannot be read either, or a
+  descriptor it lists will not close (a sandbox may refuse close() too), it does not run the program
+  (the child exits with 127): its fallback first stopped at 4096, then at the soft
   limit, then at the hard limit, and a process can lower either below a descriptor it already
   holds, so no count up to a bound is sure to reach them all. Anything slow that a tool
   starts takes `ctx.cancel` (`proc::run`'s last argument), so ESC stops it.

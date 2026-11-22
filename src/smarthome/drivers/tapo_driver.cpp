@@ -49,13 +49,16 @@ std::mutex g_first_try;
 
 struct Account {
     std::string email, sha1;
+    // Which typing of a password this is (typed_password()): the outcome of a login still on its way
+    // with the same password typed before is not this one's.
+    long long generation = 0;
     bool refused = false;
     bool unconfirmed = false;   // tried by an earlier run that never learnt whether it worked: counts as refused
     bool on_trial = false;      // typed, and not yet accepted by a plug
 };
 
 // What tells one saved account from another in this run's memory of refusals.
-std::string print_of(const Account &a) { return a.email + "\n" + a.sha1; }
+std::string print_of(const Account &a) { return a.email + "\n" + a.sha1 + "\n" + std::to_string(a.generation); }
 
 Account read_account(const home::Secrets *s) {
     Account a;
@@ -63,6 +66,7 @@ Account read_account(const home::Secrets *s) {
     const json j = s->get(kFamily);
     a.email = util::jget(j, "email", std::string());
     a.sha1 = util::jget(j, "password_sha1", std::string());
+    a.generation = util::jget(j, "generation", 0LL);
     const bool kept = util::jget(j, "refused", false) || home::trial::refused(kFamily, print_of(a));
     a.unconfirmed = !kept && home::trial::stale(j);   // a refusal kept says more
     a.refused = kept || a.unconfirmed;
@@ -71,17 +75,31 @@ Account read_account(const home::Secrets *s) {
 }
 
 // A password just typed, in place of the one before and its refusal: on trial (driver.h), its trial
-// begun as well when its first login follows at once (pair_password()).
+// begun as well when its first login follows at once (pair_password()). A new generation, even for the
+// same password typed again.
 void typed_password(json &account, const std::string &password, bool first_login_now) {
     account["password_sha1"] = tapo::sha1_hex(password);
+    account["generation"] = util::jget(account, "generation", 0LL) + 1;
     account.erase("refused");
     home::trial::typed(account);
     if (first_login_now) home::trial::begin(account);
 }
 
-// Whether `j` still holds the account `a` was read from (it may have been typed again meanwhile).
+// The account as saved with `email`. A different address is a different account: the old password is
+// not kept for it, but the count of passwords typed is, so that no later one shares a generation with
+// one whose login may still be on its way.
+json with_email(const json &account, const std::string &email) {
+    if (util::jget(account, "email", std::string()) == email) return account;
+    json fresh = {{"email", email}};
+    if (account.contains("generation")) fresh["generation"] = account["generation"];
+    return fresh;
+}
+
+// Whether `j` still holds the account `a` was read from (it may have been typed again meanwhile, even
+// the same password: a new generation).
 bool same_account(const json &j, const Account &a) {
-    return util::jget(j, "email", std::string()) == a.email && util::jget(j, "password_sha1", std::string()) == a.sha1;
+    return util::jget(j, "email", std::string()) == a.email && util::jget(j, "password_sha1", std::string()) == a.sha1 &&
+           util::jget(j, "generation", 0LL) == a.generation;
 }
 
 tapo::Credentials credentials(const Account &a) {
@@ -199,7 +217,7 @@ public:
         json info;
         bool refused = false;
         if (!tapo::get_info(t, c, info, err, refused)) { failed(refused, a, first, err); return false; }
-        accepted(a, first);
+        accepted(a, first);   // the outcome, before a strip's sockets are read (one request or more)
         const std::string name = util::jget(info, "name", std::string());
         if (!name.empty()) dev.name = name;   // the shared layer cleans it
         const std::string model = util::jget(info, "model", std::string());
@@ -208,7 +226,7 @@ public:
         if (device_type.empty()) device_type = util::jget(info, "type", std::string());
         const std::string type = type_for(device_type);
         if (type.empty()) { err = "Zero Bot cannot control this kind of Tapo device."; return false; }
-        if (util::jget(info, "sockets", 0) > 0) {
+        if (util::jget(info, "strip", false)) {
             json sockets;
             if (!tapo::list_sockets(t, c, sockets, err, refused)) { failed(refused, a, first, err); return false; }
             for (const auto &s : sockets) {
@@ -264,11 +282,15 @@ public:
         if (!tapo::get_info(t, c, info, err, refused)) { failed(refused, a, first, err); return false; }
         accepted(a, first);
         json energy;
-        std::string ignored;
+        std::string why;
         const bool metered = detail && std::any_of(things.begin(), things.end(), [](const home::Thing &th) {
             return (th.caps & home::kSensor) != 0;
-        }) && tapo::get_energy(t, c, energy, ignored, refused) && energy.is_object();
-        keep_refusal(refused, a);   // the readings are extra, but a refusal on the way is kept all the same
+        }) && tapo::get_energy(t, c, energy, why, refused) && energy.is_object();
+        if (refused) {   // the readings are extra, but a refusal on the way is kept and said as any other is
+            err = why;
+            failed(refused, a, first, err);
+            return false;
+        }
         for (auto &th : things) {
             th.state = {{"on", util::jget(info, "on", false)}};
             if (metered && (th.caps & home::kSensor)) {
@@ -312,9 +334,7 @@ private:
             return false;
         }
         std::lock_guard<std::mutex> lk(g_account_mtx);
-        json j = secrets_->get(kFamily);
-        if (util::jget(j, "email", std::string()) != email) j = {{"email", email}};
-        if (!secrets_->put(kFamily, j)) {
+        if (!secrets_->put(kFamily, with_email(secrets_->get(kFamily), email))) {
             err = "The e-mail address could not be saved on this device; its storage may be full.";
             return false;
         }
@@ -406,12 +426,14 @@ private:
 
     enum class Refusal { None, Kept, NotNoted };
 
-    // When the call that sent the account says the plug refused it (or locked itself): kept in this
+    // When the call that sent the account says the plug refused it (or locked itself in answer to it;
+    // a plug locked before it was sent anything is no refusal of the account, tapo.h): kept in this
     // run's memory, so that no plug is sent it again in this run whatever the file does, and in the
     // file, so that no later run is either. NotNoted when the file could not take it: a password still
     // on trial counts as refused in the next run all the same (its trial stays), but one a plug had
     // taken before is held by the memory alone, and would be tried once more after a restart. The
-    // refusal is the account that was sent (`a`): one typed again meanwhile is not marked.
+    // refusal is the account that was sent (`a`, its generation too): one typed again meanwhile, even the
+    // same password, is not marked, and gets the try it was typed for.
     Refusal keep_refusal(bool refused, const Account &a) {
         if (!secrets_ || !refused) return Refusal::None;
         home::trial::refuse(kFamily, print_of(a));
@@ -454,9 +476,7 @@ bool set_tapo_account(const std::string &email, const std::string &password) {
         if (e.empty()) {
             saved = secrets().put(kFamily, json::object());
         } else {
-            json j = secrets().get(kFamily);
-            // A different address is a different account: the old password is not kept for it.
-            if (util::jget(j, "email", std::string()) != e) j = {{"email", e}};
+            json j = with_email(secrets().get(kFamily), e);
             if (!password.empty()) typed_password(j, password, false);   // its first login writes its trial first (ready())
             saved = secrets().put(kFamily, j);
         }
