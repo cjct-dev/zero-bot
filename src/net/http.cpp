@@ -82,15 +82,10 @@ std::string Response::describe() const {
     return msg;
 }
 
-Response send(const Request &req) {
-    Response res;
-    // A test run (ZB_EXP_NET, experiment builds only) sends only to 127.x and the AI service's own origin.
-    if (const std::string why = experiment::net_refusal(req.url); !why.empty()) { res.error = why; return res; }
-    CURL *curl = curl_easy_init();
-    if (!curl) { res.error = "could not start HTTP client"; return res; }
-    Ctx ctx{&req, &res};
+namespace {
 
-    curl_easy_setopt(curl, CURLOPT_URL, req.url.c_str());
+// Where the request goes, and how long it may take.
+void set_route(CURL *curl, const Request &req) {
     // A device's own certificate settings are kept apart from the shared connections and TLS
     // sessions used for the internet.
     const bool own_tls = req.insecure || !req.pinned_pubkey.empty() || !req.client_cert_pem.empty() || req.want_peer_cert;
@@ -117,6 +112,11 @@ Response send(const Request &req) {
     else curl_easy_setopt(curl, CURLOPT_TIMEOUT, req.timeout_s);
     if (req.connect_timeout_ms > 0) curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, req.connect_timeout_ms);
     else curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, req.connect_timeout_s);
+}
+
+// A device's own TLS and login: no certificate checks, a pinned key, its certificate read back,
+// digest authentication, a client certificate (copied: curl keeps its own).
+void set_device_auth(CURL *curl, const Request &req) {
     if (req.insecure) {
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
@@ -138,8 +138,10 @@ Response send(const Request &req) {
             curl_easy_setopt(curl, CURLOPT_SSLKEYTYPE, "PEM");
         }
     }
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "zero-bot/" ZB_VERSION);
-    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+}
+
+// The reply read through write_cb and header_cb, and progress_cb watching for the request to be cancelled.
+void set_callbacks(CURL *curl, Ctx &ctx) {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
@@ -147,12 +149,14 @@ Response send(const Request &req) {
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_cb);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &ctx);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+}
 
-    curl_slist *headers = nullptr;
+// The headers, the body (multipart, or posted as it is) and the method. The caller frees `headers` and
+// `mime` once the transfer is over.
+void set_payload(CURL *curl, const Request &req, curl_slist *&headers, curl_mime *&mime) {
     for (auto &h : req.headers) headers = curl_slist_append(headers, h.c_str());
     if (headers) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
-    curl_mime *mime = nullptr;
     if (!req.multipart.empty()) {
         mime = curl_mime_init(curl);
         for (auto &p : req.multipart) {
@@ -169,8 +173,11 @@ Response send(const Request &req) {
     }
     if (req.method != "GET" && req.method != "POST")
         curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, req.method.c_str());
+}
 
-    const CURLcode rc = curl_easy_perform(curl);
+// What came back besides the body: the status, whether the peer can have seen the request, a failure
+// in words, the content type, and the peer's certificate when it was asked for.
+void read_outcome(CURL *curl, CURLcode rc, const Request &req, Response &res) {
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     res.status = status;
@@ -196,7 +203,29 @@ Response send(const Request &req) {
             for (curl_slist *s = info->certinfo[0]; s; s = s->next)
                 if (strncmp(s->data, "Cert:", 5) == 0) res.peer_cert_pem = s->data + 5;
     }
+}
 
+}  // namespace
+
+Response send(const Request &req) {
+    Response res;
+    // A test run (ZB_EXP_NET, experiment builds only) sends only to 127.x and the AI service's own origin.
+    if (const std::string why = experiment::net_refusal(req.url); !why.empty()) { res.error = why; return res; }
+    CURL *curl = curl_easy_init();
+    if (!curl) { res.error = "could not start HTTP client"; return res; }
+    Ctx ctx{&req, &res};
+
+    curl_easy_setopt(curl, CURLOPT_URL, req.url.c_str());
+    set_route(curl, req);
+    set_device_auth(curl, req);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "zero-bot/" ZB_VERSION);
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+    set_callbacks(curl, ctx);
+    curl_slist *headers = nullptr;
+    curl_mime *mime = nullptr;
+    set_payload(curl, req, headers, mime);
+
+    read_outcome(curl, curl_easy_perform(curl), req, res);
     if (mime) curl_mime_free(mime);
     if (headers) curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
