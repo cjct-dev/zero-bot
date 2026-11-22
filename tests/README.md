@@ -169,11 +169,13 @@ UI change should be checked this way before it goes to the device. The script (`
 presses Up or Down as a user would), so a new settings row changes only the screens that show its page; renaming a row
 the script walks to fails the run until the script is given the new label. It also checks what needs the real screen
 code (a key on a dark screen only wakes it, labels fit, the status bar redraws only what changed, the two
-model-choosing rules of `ui/models.h`, when the service is asked for its models and how long the main loop sleeps:
-`shots_idle`). `sim/screens/shots_compare.py` renders them into a temporary folder and compares each with
-`sim/screens/golden/` (small tolerance; differences drawn to `build/shots-diff/`), with the wall clock pinned
-(`sim/screens/fixclock.c`, built with `cc` and preloaded) and stand-ins on `PATH` for the audio, volume and network
-helpers, so it plays no sound and changes nothing on the PC (plain `--shots` plays a chime and sets the system volume).
+model-choosing rules of `ui/models.h`, where a lookup of the models sends its key, at a stand-in service on 127.0.0.1,
+when the service is asked for its models, that input waiting for the phone goes with a cancelled request, and how
+long the main loop sleeps: `shots_idle`). `sim/screens/shots_compare.py` renders them into a temporary folder and
+compares each with `sim/screens/golden/` (small tolerance; differences drawn to `build/shots-diff/`), with the wall
+clock pinned (`sim/screens/fixclock.c`, built with `cc` and preloaded) and stand-ins on `PATH` for the audio, volume
+and network helpers, so it plays no sound and changes nothing on the PC (plain `--shots` plays a chime and sets the
+system volume).
 After an intended change, `ZB_UPDATE_SHOTS=1 tests/sim/screens/shots_compare.py` and look at every changed image before
 committing. The images depend on the installed fonts: refresh them on a new machine first.
 `sim/screens/golden/masks.json` hides the strip where the now-playing title scrolls with real time.

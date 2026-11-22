@@ -9,6 +9,7 @@
 #include <dirent.h>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -89,35 +90,38 @@ void App::wire_agent() {
     Agent::get().start(ev);
 }
 
-// Picks sensible models the first time, so the app works before settings are touched.
+// Picks sensible models the first time, so the app works before settings are touched. The service is
+// asked at the address, with the key, that models_wanted read (llm::Service), and its answer is checked
+// against the same two (models_answered).
 void App::auto_select_models() {
-    const std::string service = models_wanted();
-    if (service.empty() || selecting_models.exchange(true)) return;
-    std::thread([this, service] {
+    const std::optional<llm::Service> wanted = models_wanted();
+    if (!wanted || selecting_models.exchange(true)) return;
+    std::thread([this, service = *wanted] {
         std::string err;
-        const models::List list = models::list(err);
+        const models::List list = models::list(service, err);
         selecting_models = false;
         uiq::post([this, list, err, service] { models_answered(list, err, service); });
     }).detach();
 }
 
-// The service (address and key) to ask for its models, or "" when there is nothing to ask. A
+// The service (address and key) to ask for its models, or none when there is nothing to ask. A
 // service's list is read once: what it lacks (since ZB-088 a service that labels none of its models
 // gets no chat model chosen) the user picks in settings, and asking again would only wake the Wi-Fi.
 // Only a service with another address or key is asked again (periodic() looks every model_retry_ms).
-std::string App::models_wanted() const {
+std::optional<llm::Service> App::models_wanted() const {
     const Settings s = Settings::get();
-    if (!s.configured() || (!s.stt_model.empty() && !s.tts_model.empty() && !s.eff_llm_model().empty())) return "";
-    const std::string service = models::service(s);
-    return service == models_listed_for ? "" : service;
+    if (!s.configured() || (!s.stt_model.empty() && !s.tts_model.empty() && !s.eff_llm_model().empty())) return std::nullopt;
+    const llm::Service service = llm::Service::of(s);
+    if (service == models_listed_for) return std::nullopt;
+    return service;
 }
 
 // The service's answer, on the UI thread. One that could not be reached (offline, most likely) is
 // asked again after twice as long each time, up to kModelRetryMaxMs, and at once when the
 // connection comes back (follow_connection). An answer from a service the user has since changed is
 // of no use: the new one is asked in its turn (periodic).
-void App::models_answered(const models::List &list, const std::string &err, const std::string &service) {
-    if (service != models::service(Settings::get())) return;
+void App::models_answered(const models::List &list, const std::string &err, const llm::Service &service) {
+    if (service != llm::Service::of(Settings::get())) return;
     if (!err.empty()) {
         model_retry_ms = std::min(model_retry_ms * 2, kModelRetryMaxMs);
         return;
@@ -228,7 +232,10 @@ void App::phone_tried() {
 }
 
 // The request the waiting input belongs to was abandoned (ESC, a new conversation): it goes with it,
-// and never starts a request of its own once the phone has been tried.
+// and never starts a request of its own once the phone has been tried. Called after the agent's cancel
+// (Agent::cancel, or reset_conversation, which cancels), so that the cancel is published while the gate
+// is still shut: with the gate opened first, a call waiting at it could find it open and nothing queued,
+// and be made before the cancel came (fix round 4, E4).
 void App::drop_waiting_input() {
     waiting_input.clear();
     Agent::get().set_input_coming(false);

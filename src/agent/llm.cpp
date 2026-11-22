@@ -15,15 +15,16 @@
 
 namespace llm {
 
+Service Service::of(const Settings &s) { return {s.eff_api_base(), s.eff_api_key()}; }
+
 namespace {
 
-std::vector<std::string> auth_headers(bool json_body) {
-    std::vector<std::string> h = {"Authorization: Bearer " + Settings::get().eff_api_key()};
-    if (json_body) h.push_back("Content-Type: application/json");
-    return h;
+// A request to `path` of `to`, with its key: both from the one snapshot (Service).
+void address(http::Request &req, const Service &to, const char *path, bool json_body) {
+    req.url = to.base + path;
+    req.headers = {"Authorization: Bearer " + to.key};
+    if (json_body) req.headers.push_back("Content-Type: application/json");
 }
-
-std::string endpoint(const char *path) { return Settings::get().eff_api_base() + path; }
 
 std::string api_error(const http::Response &res) {
     if (!res.error.empty()) return res.error;
@@ -186,8 +187,7 @@ ChatResult ChatCall::run() {
 
 void ChatCall::make_request() {
     req_.method = "POST";
-    req_.url = endpoint("/chat/completions");
-    req_.headers = auth_headers(true);
+    address(req_, Service::of(Settings::get()), "/chat/completions", true);
     req_.headers.push_back("Accept: text/event-stream");
     req_.body = dump(body_);
     req_.timeout_s = 180;
@@ -339,8 +339,7 @@ std::string transcribe(const std::string &wav, std::string &err, std::atomic<boo
     if (s.stt_model.empty()) { err = "No speech-to-text model is selected in settings."; return ""; }
     http::Request req;
     req.method = "POST";
-    req.url = endpoint("/audio/transcriptions");
-    req.headers = auth_headers(false);
+    address(req, Service::of(s), "/audio/transcriptions", false);
     // Speech is sent as MP3 when it can be: about a tenth of the size of WAV, which matters far
     // more than the encoding time on a slow or tethered connection. A service that turns MP3
     // down gets the original WAV instead, from then on.
@@ -380,8 +379,7 @@ bool synthesize(const std::string &text, std::string &pcm, std::string &err, std
     auto fetch = [&](const char *format) {
         http::Request req;
         req.method = "POST";
-        req.url = endpoint("/audio/speech");
-        req.headers = auth_headers(true);
+        address(req, Service::of(s), "/audio/speech", true);
         req.body = dump({{"model", s.tts_model}, {"input", text}, {"voice", s.tts_voice.empty() ? "alloy" : s.tts_voice},
                          {"response_format", format}});
         req.timeout_s = 60;
@@ -442,12 +440,11 @@ std::string describe_image(const std::string &jpeg, const std::string &question,
     return util::trim(res.content);
 }
 
-std::vector<ModelInfo> list_models(std::string &err) {
+std::vector<ModelInfo> list_models(const Service &service, std::string &err) {
     std::vector<ModelInfo> out;
-    if (!Settings::get().configured()) { err = "No AI service is configured."; return out; }
+    if (service.base.empty() || service.key.empty()) { err = "No AI service is configured."; return out; }
     http::Request req;
-    req.url = endpoint("/models");
-    req.headers = auth_headers(false);
+    address(req, service, "/models", false);
     req.timeout_s = 20;
     const http::Response res = http::send(req);
     if (!res.ok()) { err = api_error(res); return out; }

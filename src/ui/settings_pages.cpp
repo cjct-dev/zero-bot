@@ -62,7 +62,7 @@ void open_status(Menu &menu) {
             if (batt >= 0) text += "Battery: " + std::to_string(batt) + "%\n";
             text += "Time zone: " + (S().timezone.empty() ? util::system_timezone() + " (system)" : S().timezone) + "\n";
             std::string err;
-            const models::List list = models::list(err);
+            const models::List list = models::list(llm::Service::of(S()), err);
             text += err.empty() ? "AI service: reachable, " + std::to_string(list.size()) + " models" : "AI service: " + err;
             text += "\nMusic: " + std::to_string(MusicLibrary::get().size()) + " tracks";
             return text;
