@@ -596,8 +596,8 @@ def test_session_failures():
     fresh_pairing(m, st)
     m.stop()
     rc, out, err, _ = st.run("unpair")
-    # The driver's half only: the app must then store Device::auth as the driver left it (today
-    # src/smarthome/control.cpp unpair() clears it whatever happened; STATUS.md, gap 1).
+    # The driver's half only: the app then stores Device::auth as the driver left it
+    # (src/smarthome/control.cpp, home::unpair).
     check("unpair while the accessory is unreachable: the driver keeps the pairing for a later try",
           rc == 0 and out[0]["paired"] is True, out)
 

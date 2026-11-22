@@ -6,8 +6,12 @@
 # stream, the player's live mode), the keys (what each does on the chat screen, and the key guide),
 # when the screen dims and goes off, what the other tools stand on (calculator, dates, time
 # zones, helper programs), what every thread shares (one file saved by two threads, the settings,
-# all-day alerts when the clocks change) and the diagnostics (the activity log and saved
-# conversations; temporary). Nothing but 127.0.0.1 is contacted, and no AI service, sound or screen is needed.
+# all-day alerts when the clocks change) and the small shared helpers (failure shape, battery,
+# Wi-Fi list, default route, monotonic count, start of a day), the speaker stopped on another
+# thread, the microphone's route with a plug in the jack, the music player's MP3 path, which models
+# are chosen (ui/models.h), a streamed reply's parts (agent/llm_stream.h) and the diagnostics (the
+# activity log and saved conversations; temporary). Nothing but 127.0.0.1 is contacted, and no AI
+# service, sound or screen is needed (stand-ins take the place of pw-cat, pacat, amixer and ffplay).
 #
 #   tests/run_unit.sh                   build into build/unit and run
 #   ZB_UPDATE_SNAPSHOTS=1 tests/run_unit.sh    rewrite tests/snapshots/*.json from the current schema

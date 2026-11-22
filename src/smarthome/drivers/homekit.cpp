@@ -2743,8 +2743,8 @@ public:
                 if (link.open(dev, err) && !pair_verify(link, me, peer, not_known, err)) removed = not_known;
             }
             // Not removed (the accessory could not be reached): the pairing is kept in dev.auth so
-            // that Unpair can be tried again. (The app must store dev.auth as left here; see
-            // STATUS.md, gap 1.)
+            // that Unpair can be tried again. (The app stores dev.auth as left here: control.cpp,
+            // home::unpair.)
             if (removed) {
                 forget_pairing(dev);
                 clear_forgotten(dev);

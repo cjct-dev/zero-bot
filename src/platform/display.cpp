@@ -10,6 +10,7 @@
 #include <png.h>
 
 #include "lvgl.h"
+#include "platform/sys.h"
 
 namespace display {
 
@@ -20,7 +21,7 @@ lv_obj_t *g_cover = nullptr;      // black, over everything, while the screen is
 bool g_off = false;
 unsigned long g_refreshes = 0;
 
-uint32_t tick_cb() { return static_cast<uint32_t>(now_ms()); }
+uint32_t tick_cb() { return static_cast<uint32_t>(sys::now_ms()); }
 
 void headless_flush(lv_display_t *disp, const lv_area_t *, uint8_t *) { lv_display_flush_ready(disp); }
 
