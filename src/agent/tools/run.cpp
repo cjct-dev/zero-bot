@@ -148,9 +148,7 @@ std::string one_shape(const std::string &result) {
 
 }  // namespace
 
-bool failed(const std::string &result) {
-    return result.compare(0, 5, "ERROR") == 0 || result.compare(0, 9, "{\"error\"") == 0;
-}
+bool failed(const std::string &text) { return result::failed(text); }
 
 std::string run(const std::string &name, const std::string &raw_args, Context &ctx) {
     ctx.say_refused = false;

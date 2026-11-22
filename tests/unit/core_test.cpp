@@ -265,13 +265,19 @@ void test_result() {
     CHECK_EQ(result::fail("give the length"), "ERROR: give the length");
     CHECK_EQ(result::fail(""), "ERROR: ");
     for (const char *yes : {"ERROR: no", "ERROR:no", "ERROR", "ERRORS", "{\"error\""}) CHECK(result::failed(yes));
-    for (const char *no : {"", "error: x", "ERR", " ERROR: x", "{\"ok\":1}", "{ \"error\": 1}"}) CHECK(!result::failed(no));
-    // As tools::failed has decided all along: its JSON test compares 9 characters with the 8 of
-    // {"error", so a JSON object holding "error" is not counted. Harmless in the app, where
-    // tools::run's one_shape() has made every such object with a text error into "ERROR: ..." first;
-    // {"error": 5} and {"error": ""} pass as successes. Kept as it is until ZB-090 decides.
-    CHECK(!result::failed("{\"error\": \"x\"}"));
-    CHECK(!result::failed("{\"error\":5}"));
+    for (const char *no : {"", "error: x", "ERR", " ERROR: x", "{\"ok\":1}"}) CHECK(!result::failed(no));
+    // ZB-090: a JSON object holding "error" is a failure, wherever the key is and whatever its value.
+    // Before, only text beginning {"error" counted (9 characters were compared with an 8-character
+    // prefix), so {"error": 5} and {"error": ""}, which tools::run's one_shape() leaves as they are,
+    // passed as successes.
+    for (const char *yes : {"{\"error\": \"x\"}", "{\"error\":5}", "{\"error\": \"\"}", "{ \"error\": 1}",
+                            "{\"done\": [1], \"error\": null}", "{\n  \"error\": {\"code\": 3}\n}"})
+        CHECK(result::failed(yes));
+    // Not an object holding "error": the word as a value, a longer key, a nested key, a list, text that
+    // only looks like JSON.
+    for (const char *no : {"{\"errors\": [1]}", "{\"note\": \"error\"}", "{\"x\": {\"error\": 1}}", "[\"error\"]",
+                           "{\"error", "{x \"error\": 1}", " {\"error\": 1}"})
+        CHECK(!result::failed(no));
     CHECK_EQ(result::words("ERROR: no such timer"), "no such timer");
     CHECK_EQ(result::words("ERROR:  two"), " two");
     CHECK_EQ(result::words("ERROR:no"), "ERROR:no");          // only the exact prefix goes
