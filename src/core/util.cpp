@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -88,6 +89,18 @@ std::string trim(const std::string &s) {
     while (a < b && isspace(static_cast<unsigned char>(s[a]))) ++a;
     while (b > a && isspace(static_cast<unsigned char>(s[b - 1]))) --b;
     return s.substr(a, b - a);
+}
+
+bool to_number(const std::string &text, double &out) {
+    const std::string s = trim(text);
+    // Only what a decimal number is written with: strtod alone would also read hexadecimal, "inf" and
+    // "nan", and stop happily at the first character that is not part of a number.
+    if (s.empty() || s.find_first_not_of("+-.0123456789eE") != std::string::npos) return false;
+    char *end = nullptr;
+    const double v = strtod(s.c_str(), &end);
+    if (end != s.c_str() + s.size() || !std::isfinite(v)) return false;
+    out = v;
+    return true;
 }
 
 std::string lower(const std::string &s) {

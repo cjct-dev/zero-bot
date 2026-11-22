@@ -143,9 +143,12 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   - *What the model is told.* `tools::run` checks each argument against the tool's own schema
     before the tool runs: a wrong type names the argument, what it must be and what was sent;
     "yes", "true" or 1 for a boolean and an enum value in other capitals are taken as meant; empty
-    text for a number counts as not given. A call cut short or broken says where, with an example;
-    an unknown tool name gets the nearest one. Every failure has one shape, `ERROR: what was wrong.
-    What to do` (a tool's JSON `{"error": ...}` is turned into it); `tools::failed()` recognises it.
+    text for a number counts as not given, and other text must be a number as a whole
+    (`util::to_number`, which `num_arg` uses too: "20 minutes" is not 20, "12oops" not reminder 12).
+    A call cut short or broken says where, with an example; an unknown tool name gets the nearest
+    one. Every failure has one shape, `ERROR: what was wrong. What to do` (a tool's JSON
+    `{"error": ...}`, whatever "error" holds, is turned into it before anything is added to the
+    result or it is cut short); `tools::failed()` recognises it.
     Tools whose schema is made at run time (`smart_home`, `radio`: `obj({})` in `build()`) check
     their own arguments.
   - *Retries.* Only what is safe to repeat is sent again by itself: the AI service, transcription,
@@ -641,8 +644,9 @@ key, real audio), say so plainly rather than implying it was.
 - Models send `1e300`, `"nan"` and numbers where text was meant. Converting a double that is not
   finite or not in range to an int is undefined (it crashed `date_info`), so the tools' `num_arg`
   takes finite values only and `clamp_int` brings them into range first; text arguments accept a
-  number as its digits. Nested brackets overflowed the calculator's stack: recursive parsers need
-  a depth limit.
+  number as its digits. A number sent as text is read as a whole (`util::to_number`): `strtod`
+  stops quietly at the first character it cannot read, so `"id": "12oops"` once cancelled reminder
+  12. Nested brackets overflowed the calculator's stack: recursive parsers need a depth limit.
 - `mktime` makes 31 February into 3 March without a word, and the zone database holds folders
   named like countries ("Australia") that the C library reads as UTC: `parse_local` and
   `timezone_exists` refuse both. Check that a date, time or zone exists before using it.

@@ -22,6 +22,11 @@ json load_json(const std::string &path, const json &fallback);
 bool save_json(const std::string &path, const json &value);
 
 std::string trim(const std::string &s);
+// A number written out in plain decimal ("12", "-3.5", "1e3"), as a whole: spaces round it are allowed,
+// nothing else ("12oops", "20 minutes", "0x10" and "nan" are not numbers). Finite only. The one reading
+// of a number sent as text, for the tools' argument checks and their own reading. False, with `out`
+// unchanged, for anything else.
+bool to_number(const std::string &text, double &out);
 std::string lower(const std::string &s);
 std::vector<std::string> split(const std::string &s, char sep);
 bool contains_ci(const std::string &haystack, const std::string &needle);

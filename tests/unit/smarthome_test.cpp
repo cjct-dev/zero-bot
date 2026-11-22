@@ -995,6 +995,9 @@ void test_commands() {
     CHECK(!home::tool_say_ok({{"action", "on"}}, "CONFIRM: ask"));
     CHECK(!home::tool_say_ok({{"action", "on"}}, "ERROR: no"));
     CHECK(!home::tool_say_ok({{"action", "off"}}, R"({"target":"Bedroom","changed":1,"now":"off","failed":["x: y"]})"));
+    // A JSON failure, whatever its "error" holds (its prefix was once compared one character too long).
+    CHECK(!home::tool_say_ok({{"action", "on"}}, R"({"error":"no answer","target":"Floor lamp"})"));
+    CHECK(!home::tool_say_ok({{"action", "on"}}, R"({"target":"Floor lamp","error":5})"));
 
     // A plug the maker's app calls "Bedroom", renamed "Bed heater": turning on the bedroom turns
     // on its lamp, never that plug.

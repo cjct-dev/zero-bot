@@ -22,7 +22,7 @@ bool dry_run();   // ZB_DRY_RUN: nothing is played, sent or switched
 // ---- arguments (the model's JSON, already checked against the schema's types)
 std::string str_arg(const json &a, const char *key);    // text, trimmed; a number as its digits; "" when absent
 bool given(const json &a, const char *key);             // present and not null
-bool num_arg(const json &a, const char *key, double &out);   // a finite number, or text that starts with one
+bool num_arg(const json &a, const char *key, double &out);   // a finite number, or text that is one (util::to_number)
 int clamp_int(double v, int lo, int hi);                // a finite value in [lo, hi], as an int
 // An id from an earlier result; `where` says how to find it ("use calendar_list to find it").
 bool id_arg(const json &a, const char *key, int &id, std::string &err, const std::string &where);

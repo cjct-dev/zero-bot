@@ -130,6 +130,10 @@ def run_all(root):
           "no argument called 'minutes'", "its arguments are at, in_minutes, text")
     error(s, "timer", {"action": "start", "minutes": "five"}, "minutes must be a number")
     error(s, "calendar_delete", {"id": [1]}, "id must be a whole number", "not a list")
+    # A number sent as text is a number as a whole, spaces aside: "20 minutes" and "0x10" are not numbers.
+    error(s, "timer", {"action": "start", "minutes": "20 minutes"}, "minutes must be a number, such as 5; '20 minutes' is not one")
+    error(s, "date_info", {"add_days": "0x10"}, "add_days must be a number, such as 5; '0x10' is not one")
+    ok(s, "date_info", {"date": "2030-01-01", "add_days": " 7 "}, "2030-01-08")
     error(s, "device", {"setting": "spoken_replies", "on": "perhaps"}, "on must be true or false, not 'perhaps'")
     ok(s, "device", {"setting": "spoken_replies", "on": "no"}, "spoken replies off")   # yes/no taken as meant
     ok(s, "device", {"setting": "spoken_replies", "on": 1}, "spoken replies on")
@@ -221,6 +225,10 @@ def run_all(root):
     ok(r, "reminder_set", {"text": "Both", "in_minutes": 0, "at": "2030-12-25 10:00"}, "2030-12-25 10:00")
     ok(r, "reminder_list", {}, "Call the bank")
     error(r, "reminder_cancel", {"id": "x"}, "whole number")
+    # "1oops" is not reminder 1 (its first digits were once taken for the id).
+    error(r, "reminder_cancel", {"id": "1oops"}, "id must be a whole number such as 12", "'1oops' is not one")
+    check("a malformed id cancels nothing", any(x.get("id") == 1 for x in r.file("data", "zero-bot", "reminders.json") or []),
+          r.file("data", "zero-bot", "reminders.json"))
     # A cancel whose confirmation claims a new time it did not set (suite case reminder-028: "at 10
     # instead" said with reminder_cancel alone) is refused, and nothing is cancelled.
     for say, word in [("Done — I'll remind you to call the bank tomorrow at 10 instead.", "i'll remind you"),
@@ -248,6 +256,15 @@ def run_all(root):
     mid = ok(r, "memory_save", {"text": "Sister is called Ann"}, "saved as memory ").split()[-1]
     error(r, "memory_delete", {"id": mid, "say": "Forgotten; I've changed it to Anne."}, "memory_delete only forgets", "replace_id")
     ok(r, "memory_delete", {"id": mid, "say": "Forgotten."}, "deleted")
+
+    # ---- timers picked by id (an argument the schema does not list, so the timer tool reads it itself)
+    t = State(root, "timers")
+    ok(t, "timer", {"action": "start", "minutes": 10, "label": "pasta"}, '"started"')
+    ok(t, "timer", {"action": "start", "minutes": 6, "label": "eggs"}, '"started"')
+    error(t, "timer", {"action": "cancel", "id": "1oops"}, "more than one timer could be meant")   # not timer 1
+    error(t, "timer", {"action": "cancel", "id": 1e300}, "no running timer has that id")
+    check("neither timer was cancelled", len([x for x in t.file("data", "zero-bot", "reminders.json") or [] if x.get("kind") == "timer"]) == 2,
+          t.file("data", "zero-bot", "reminders.json"))
 
     # ---- memory
     m = State(root, "memory")
@@ -319,6 +336,17 @@ def run_all(root):
               "Fix it and run it again", "ValueError: 42")
         out = expect(p, "run_python", {"code": "import socket\nsocket.create_connection(('127.0.0.1', 9), 1)"}, "ERROR")
         out = expect(p, "run_python", {"code": "print(open('/etc/passwd').read())"}, "ERROR")
+        # One shape for every failure (ZB-090): a JSON answer with a top-level "error", whatever its value, comes out as
+        # an ERROR sentence before the note on an unknown argument is added (the note once made it unreadable as JSON,
+        # and so a success).
+        for value, words in ((5, "ERROR: 5. {\"attempt\":1}"), ({"code": 3}, "ERROR: {\"code\":3}. {\"attempt\":1}"),
+                             ("", "ERROR: the tool failed without saying why. {\"attempt\":1}"),
+                             (None, "ERROR: the tool failed without saying why. {\"attempt\":1}"),
+                             ("disk full", "ERROR: disk full. {\"attempt\":1}")):
+            printed = json.dumps({"attempt": 1, "error": value})
+            out = error(p, "run_python", {"code": "print(%r)" % printed, "bogus": 1}, words, "(this tool has no argument called 'bogus'")
+            check("run_python printing %s: the shaped error comes first" % printed, out.startswith(words), out)
+        out = error(p, "run_python", {"code": "print('{\"error\": 5')", "bogus": 1}, "ERROR: {\"error\": 5 (this tool has no argument")
     else:
         print("(no bwrap or python3 here: the sandbox checks were skipped)")
 
