@@ -1395,7 +1395,8 @@ PairStep pairing_step(const std::string &network_id, const std::string &device_i
 namespace {
 
 // Said when what a pairing leaves in the file could not be written.
-const char *const kSetUpAgain = "that could not be saved on this device (its storage may be full); it will need setting up again.";
+const char *const kSetUpAgain =
+    "that could not be saved on this device (its storage may be full); it will need setting up again.";
 
 // What was typed goes to the driver only once the file has taken a note that it is being tried
 // (`trying`, this run's mark): the driver keeps its refusal there, and one it could not keep would be

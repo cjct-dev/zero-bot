@@ -327,7 +327,7 @@ private:
     // tried again by itself.
     bool pair_password(const home::Device &dev, const std::string &input, std::string &err) {
         if (input.empty()) { err = "Type the password."; return false; }
-        std::lock_guard<std::mutex> first(g_first_try);
+        std::unique_lock<std::mutex> first(g_first_try);
         {
             std::lock_guard<std::mutex> lk(g_account_mtx);
             json j = secrets_->get(kFamily);
@@ -345,7 +345,7 @@ private:
         std::string why;
         bool refused = false;
         if (tapo::get_info(t, credentials(a), info, why, refused)) {
-            accepted(a);
+            accepted(a, first);
             return true;
         }
         const Refusal r = keep_refusal(refused, a);
@@ -392,18 +392,15 @@ private:
         return true;
     }
 
-    // A plug accepted the account: its password's trial is over. When that cannot be written the
-    // trial stays, and the next run asks for the password again: the safe way to be wrong.
-    void accepted(const Account &a) {
-        if (!secrets_ || !a.on_trial) return;
-        std::lock_guard<std::mutex> lk(g_account_mtx);
-        json j = secrets_->get(kFamily);
-        if (same_account(j, a) && home::trial::end(j)) secrets_->put(kFamily, j);
-    }
-
-    // The same, and the first try is over: the other plugs may go ahead while this one is read further.
+    // A plug accepted the account: its password's trial is over, and so is the first try (`first` is
+    // let go): the other plugs may go ahead while this one is read further. When the trial's end cannot
+    // be written the trial stays, and the next run asks for the password again: the safe way to be wrong.
     void accepted(const Account &a, std::unique_lock<std::mutex> &first) {
-        accepted(a);
+        if (secrets_ && a.on_trial) {
+            std::lock_guard<std::mutex> lk(g_account_mtx);
+            json j = secrets_->get(kFamily);
+            if (same_account(j, a) && home::trial::end(j)) secrets_->put(kFamily, j);
+        }
         if (first.owns_lock()) first.unlock();
     }
 

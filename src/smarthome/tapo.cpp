@@ -970,8 +970,8 @@ bool converse(State &st, const Device &dev, const Credentials &cred, const Key &
     const std::string want_mac = support::mac_digits(dev.mac);
     const auto login = [&]() {
         st.session.reset();
-        return key.tpap ? login_tpap(host, dev, key.pw_hex, st, key.fp, err)
-                        : login_klap(host, "http://" + host + ":" + std::to_string(dev.port), cred.email, key.pw_sha1, st, key.fp, err);
+        if (key.tpap) return login_tpap(host, dev, key.pw_hex, st, key.fp, err);
+        return login_klap(host, "http://" + host + ":" + std::to_string(dev.port), cred.email, key.pw_sha1, st, key.fp, err);
     };
     bool fresh = false;   // at most one login per call
     if (!st.session || st.session->fp != key.fp || st.session->tpap != key.tpap) {
