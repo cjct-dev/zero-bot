@@ -1,5 +1,6 @@
-// Unit tests for agent/llm_stream.h: the event stream split into lines across network chunks, and the
-// answer cleared of thinking markers however the pieces fall. Header-only and pure: nothing linked.
+// Unit tests for agent/llm_stream.h: the event stream split into lines across network chunks, the
+// answer cleared of thinking markers however the pieces fall, and tool calls put together from their
+// pieces (an index out of range refused). Header-only and pure: nothing linked.
 // Each check prints one line on failure; the exit status is non-zero when any fails.
 #include "agent/llm_stream.h"
 
@@ -88,6 +89,34 @@ int main() {
         f.reset();
         f.feed("<think>x</think>two.", true, emit);
         check(out == "one.two.", "reset starts afresh after an answer that ended");
+    }
+
+    // Tool calls, piece by piece: each piece goes to the call its index names, and an index outside 0 to 15 is a
+    // fault in the stream, reported as an error, with nothing added (a negative one once wrapped round to a slot
+    // far past the end; a huge one would have asked for gigabytes).
+    {
+        std::vector<llm::ToolCall> calls;
+        std::string err;
+        bool ok = llm::add_tool_delta(calls, json::parse(R"({"index":0,"id":"a","function":{"name":"timer","arguments":"{\"min"}})"), err);
+        ok = ok && llm::add_tool_delta(calls, json::parse(R"({"index":0,"function":{"arguments":"utes\":5}"}})"), err);
+        ok = ok && llm::add_tool_delta(calls, json::parse(R"({"index":1,"id":"b","function":{"name":"date_info"}})"), err);
+        check(ok && err.empty() && calls.size() == 2 && calls[0].id == "a" && calls[0].name == "timer" && calls[0].args == "{\"minutes\":5}" &&
+                  calls[1].id == "b" && calls[1].name == "date_info",
+              "a call's pieces are joined by index; a second call gets its own slot");
+        calls.clear();
+        check(llm::add_tool_delta(calls, json::parse(R"({"id":"c","function":{"name":"timer"}})"), err) && calls.size() == 1 &&
+                  calls[0].id == "c",
+              "a piece without an index is the first call's");
+        check(llm::add_tool_delta(calls, json::parse(R"({"index":15,"id":"z"})"), err) && calls.size() == 16 && calls[15].id == "z",
+              "index 15 is the last taken");
+        for (const char *bad : {R"({"index":-1,"id":"x"})", R"({"index":16})", R"({"index":4294967295})", R"({"index":18446744073709551615})",
+                                R"({"index":1e300})", R"({"index":1.5})", R"({"index":"1"})", R"({"index":[0]})"}) {
+            std::vector<llm::ToolCall> some(1);
+            std::string why;
+            const bool took = llm::add_tool_delta(some, json::parse(bad), why);
+            check(!took && some.size() == 1 && some[0].id.empty() && why.find("could not read") != std::string::npos,
+                  std::string("an index out of range or not a whole number is an error, nothing added: ") + bad + " -> " + why);
+        }
     }
 
     printf("llm stream: %d checks, %d failed\n", g_passed + g_failed, g_failed);
