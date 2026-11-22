@@ -677,6 +677,43 @@ void App::shots_setup(Shots &shots) {
         if (!without_power_on(menu, "setup guide's extras", {"Speak replies", "Finish"})) failed = true;
         menu.close();
     }
+    {
+        // The answer to "Test and continue" comes back after the user skipped the step and finished the
+        // guide: it changes nothing on screen. It used to reopen the finished guide on its models page,
+        // whose Continue then used a self-reference already let go (a crash), or here, where nothing
+        // listens at the address and the answer is a quick failure, to show "That did not work" over
+        // the chat. Checked, not pictured.
+        const Settings was = Settings::get();
+        set([](Settings &s) { s.api_base = "http://127.0.0.1:9/v1"; s.api_key = "unused"; });
+        KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
+        bool ended = false;
+        open_setup(menu, [&ended] { ended = true; });
+        shots.menu_to("Start setup");
+        menu.key(enter);
+        if (!move_to(menu, "Continue")) shots.menu_to("Continue without internet");
+        menu.key(enter);
+        shots.menu_to("Test and continue");
+        menu.key(enter);                       // asks the service; its answer waits in the UI queue
+        for (const char *row : {"Skip this step", "Continue", "Continue", "Finish"}) {
+            shots.menu_to(row);
+            menu.key(enter);
+        }
+        const bool finished = ended && !menu.open();
+        bool reopened = false;
+        for (int i = 0; i < 75 && !reopened; ++i) {   // up to 1.5 s for the answer (a refused connection)
+            uiq::drain();
+            reopened = menu.open();
+            usleep(20 * 1000);
+        }
+        if (!finished || reopened) {
+            fprintf(stderr, "a late answer to the setup guide's service test reopened it after it had finished (finished %d, "
+                            "reopened on \"%s\")\n", finished, menu.title().c_str());
+            failed = true;
+        }
+        menu.close();
+        for (int i = 0; i < Menu::kToastTicks; ++i) menu.tick();   // its toast goes, for the screens to come
+        set([&was](Settings &s) { s = was; });
+    }
 }
 
 void App::shots_settings(Shots &shots) {
