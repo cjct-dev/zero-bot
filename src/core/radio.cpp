@@ -130,6 +130,45 @@ std::string names_in_quotes(const std::vector<Station> &list) {
 
 constexpr size_t kHead = 16 * 1024;   // what the check reads of a stream before it is satisfied
 
+// Why a stream's request got no answer, for the user.
+std::string transport_error(const std::string &error) {
+    if (error == "no connection")
+        return tether::online() ? "the station's server could not be reached: it may be off the air, or its address may have changed"
+                                : "there is no internet connection";
+    if (error == "timed out") return "the station's server did not answer in time";
+    return "the stream could not be opened (" + error + ")";
+}
+
+// Why the station's server turned the request down, for the user; "" when it did not.
+std::string status_error(long status) {
+    if (status == 401 || status == 403 || status == 451)
+        return "the station refused to play it here, which usually means it is not available in this country";
+    if (status == 404 || status == 410) return "the station's address no longer works: it has probably changed";
+    if (status == 429) return "the station's server is busy: try again in a minute";
+    if (status >= 500)
+        return "the station's server reported a fault (HTTP " + std::to_string(status) + "): it may pass, or the address may be "
+               "missing a part it needs";
+    if (status >= 300) return "the station's server refused the request (HTTP " + std::to_string(status) + ")";
+    return "";
+}
+
+// The first stream a playlist file names: a .pls's "FileN=" lines, or an .m3u's lines that are not
+// comments. "" when it names none.
+std::string first_entry(const std::string &head, bool pls) {
+    for (std::string line : util::split(head, '\n')) {
+        line = util::trim(line);
+        if (pls) {
+            const size_t eq = line.find('=');
+            if (eq == std::string::npos || !starts_with(util::lower(line), "file")) continue;
+            line = util::trim(line.substr(eq + 1));
+        } else if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        if (good_url(line)) return line;
+    }
+    return "";
+}
+
 Check check_at(const std::string &url, std::atomic<bool> *cancel, int depth) {
     Check out;
     out.url = url;
@@ -153,28 +192,8 @@ Check check_at(const std::string &url, std::atomic<bool> *cancel, int depth) {
     if (cancel && cancel->load()) { out.error = "the request was cancelled"; return out; }
     // Ended on purpose once enough had come, or a slow stream that was still trickling in.
     const bool flowing = total > 0 && (res.error == "cancelled" || res.error == "timed out");
-    if (!res.error.empty() && !flowing) {
-        if (res.error == "no connection")
-            out.error = tether::online() ? "the station's server could not be reached: it may be off the air, or its address may have changed"
-                                         : "there is no internet connection";
-        else if (res.error == "timed out")
-            out.error = "the station's server did not answer in time";
-        else
-            out.error = "the stream could not be opened (" + res.error + ")";
-        return out;
-    }
-    const long status = res.status;
-    if (status == 401 || status == 403 || status == 451)
-        out.error = "the station refused to play it here, which usually means it is not available in this country";
-    else if (status == 404 || status == 410)
-        out.error = "the station's address no longer works: it has probably changed";
-    else if (status == 429)
-        out.error = "the station's server is busy: try again in a minute";
-    else if (status >= 500)
-        out.error = "the station's server reported a fault (HTTP " + std::to_string(status) + "): it may pass, or the address may be "
-                    "missing a part it needs";
-    else if (status >= 300)
-        out.error = "the station's server refused the request (HTTP " + std::to_string(status) + ")";
+    if (!res.error.empty() && !flowing) { out.error = transport_error(res.error); return out; }
+    out.error = status_error(res.status);
     if (!out.error.empty()) return out;
 
     const std::string type = util::lower(res.content_type);
@@ -192,18 +211,7 @@ Check check_at(const std::string &url, std::atomic<bool> *cancel, int depth) {
                      (bare.size() > 4 && (bare.compare(bare.size() - 4, 4, ".m3u") == 0 || bare.compare(bare.size() - 4, 4, ".pls") == 0) &&
                       (type.empty() || starts_with(type, "text/")));
     if (pls || m3u) {
-        std::string next;
-        for (std::string line : util::split(head, '\n')) {
-            line = util::trim(line);
-            if (pls) {
-                const size_t eq = line.find('=');
-                if (eq == std::string::npos || !starts_with(util::lower(line), "file")) continue;
-                line = util::trim(line.substr(eq + 1));
-            } else if (line.empty() || line[0] == '#') {
-                continue;
-            }
-            if (good_url(line)) { next = line; break; }
-        }
+        const std::string next = first_entry(head, pls);
         if (next.empty()) { out.error = "the playlist at that address names no stream"; return out; }
         if (depth >= 2) { out.error = "the address leads to a playlist of playlists, which cannot be played"; return out; }
         return check_at(next, cancel, depth + 1);

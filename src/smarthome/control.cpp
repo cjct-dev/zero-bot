@@ -650,6 +650,50 @@ bool still_on(const std::string &network_id, std::string &why) {
     return on_network(network_id, why);
 }
 
+// Several things of one device with one change: a single request where the driver has one. False when
+// it has none (or the change differs between them): each is then sent its own.
+bool apply_together(Driver *drv, const Saved &dev, const std::vector<Step *> &todo) {
+    bool same = todo.size() > 1;
+    for (auto *s : todo) same = same && change_json(s->change) == change_json(todo[0]->change);
+    if (!same) return false;
+    std::vector<const Thing *> things;
+    for (auto *s : todo) things.push_back(&s->item->thing);
+    std::string err;
+    bool ok = false;
+    try {
+        ok = drv->apply_many(dev, things, todo[0]->change, kApplyDeadlineMs, err);
+    } catch (const std::exception &) {
+        err = "the device's answer could not be understood";
+    }
+    if (!ok && err.empty()) return false;
+    for (auto *s : todo) { s->ok = ok; s->err = ok ? "" : clause(err); }
+    return true;
+}
+
+// Each thing its own request. A device that spent most of its time on a change and then did not answer
+// is not asked again for each of its other things in this command: a stalled four-relay device cost
+// 2.5 s a relay, and only then was it looked for. A quick "did not answer" (a refused connection, a
+// bridge reporting one lamp out of reach) is asked thing by thing as before. False when the connection
+// moved part-way: the rest are not sent.
+bool apply_each(const std::string &network_id, Driver *drv, const Saved &dev, const std::vector<Step *> &todo) {
+    std::string stalled, why;
+    for (size_t k = 0; k < todo.size(); ++k) {
+        if (k > 0 && !still_on(network_id, why)) {
+            for (size_t j = k; j < todo.size(); ++j) todo[j]->err = why;
+            return false;
+        }
+        if (!stalled.empty()) { todo[k]->err = stalled; continue; }
+        const auto started = std::chrono::steady_clock::now();
+        todo[k]->ok = call_apply(drv, dev, todo[k]->item->thing, todo[k]->change, todo[k]->err);
+        const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+        // unreachable() also lets "answered with error code ..." through (another device may
+        // have the address); a device that answered, however slowly, has not stalled.
+        if (!todo[k]->ok && took.count() >= kStalledMs && unreachable(todo[k]->err) && !answered(todo[k]->err))
+            stalled = todo[k]->err;
+    }
+    return true;
+}
+
 // Carries out the steps for one device; the caller holds no lock.
 void apply_device(const std::string &network_id, const Saved &saved, std::vector<Step *> &steps) {
     Driver *drv = driver_for(saved);
@@ -671,46 +715,7 @@ void apply_device(const std::string &network_id, const Saved &saved, std::vector
             for (auto *s : todo) s->err = why;
             return;
         }
-        bool same = todo.size() > 1;
-        for (auto *s : todo) same = same && change_json(s->change) == change_json(todo[0]->change);
-        bool handled = false;
-        if (same) {
-            // Several things on one device with one change: a single request where the driver has one.
-            std::vector<const Thing *> things;
-            for (auto *s : todo) things.push_back(&s->item->thing);
-            std::string err;
-            bool ok = false;
-            try {
-                ok = drv->apply_many(dev, things, todo[0]->change, kApplyDeadlineMs, err);
-            } catch (const std::exception &) {
-                err = "the device's answer could not be understood";
-            }
-            if (ok || !err.empty()) {
-                handled = true;
-                for (auto *s : todo) { s->ok = ok; s->err = ok ? "" : clause(err); }
-            }
-        }
-        if (!handled) {
-            // A device that spent most of its time on a change and then did not answer is not asked
-            // again for each of its other things in this command: a stalled four-relay device cost
-            // 2.5 s a relay, and only then was it looked for. A quick "did not answer" (a refused
-            // connection, a bridge reporting one lamp out of reach) is asked thing by thing as before.
-            std::string stalled;
-            for (size_t k = 0; k < todo.size(); ++k) {
-                if (k > 0 && !still_on(network_id, why)) {
-                    for (size_t j = k; j < todo.size(); ++j) todo[j]->err = why;
-                    return;
-                }
-                if (!stalled.empty()) { todo[k]->err = stalled; continue; }
-                const auto started = std::chrono::steady_clock::now();
-                todo[k]->ok = call_apply(drv, dev, todo[k]->item->thing, todo[k]->change, todo[k]->err);
-                const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
-                // unreachable() also lets "answered with error code ..." through (another device may
-                // have the address); a device that answered, however slowly, has not stalled.
-                if (!todo[k]->ok && took.count() >= kStalledMs && unreachable(todo[k]->err) && !answered(todo[k]->err))
-                    stalled = todo[k]->err;
-            }
-        }
+        if (!apply_together(drv, dev, todo) && !apply_each(network_id, drv, dev, todo)) return;
         // No answer at the saved address: the router may have given the device a new one. Sent
         // there once more, and only when the device has turned up at another address, so the first
         // cannot have reached it; and only a change that comes out the same if it did after all.
@@ -1263,70 +1268,53 @@ bool find_saved(const std::string &network_id, const std::string &device_id, Sav
     return false;
 }
 
-// Asks the controllable devices `pick` chooses for their things, names and states, and saves them.
-std::string refresh_where(const std::string &network_id, const std::function<bool(const Saved &)> &pick) {
-    std::string why;
-    if (!on_network(network_id, why)) return why;
-    const NetworkEntry e = entry(network_id);
-    struct Out {
-        const Saved *saved = nullptr;
-        bool ok = false, setup = false;
-        bool paired_meanwhile = false;   // set up while this ran: what pairing saved stands
-        bool not_asked = false;          // the connection moved before its turn: nothing to save
-        std::string problem;
-        Device dev;
-        std::vector<Thing> fresh;
-    };
-    std::vector<Out> outs;
-    for (const auto &d : e.devices)
-        if (pick(d) && d.controllable()) {
-            Out o;
-            o.saved = &d;
-            outs.push_back(o);
-        }
-    run_parallel(outs.size(), kWorkers, [&](size_t k) {
-        Out &o = outs[k];
-        Driver *drv = driver_for(*o.saved);
-        if (!drv) return;
-        o.dev = *o.saved;
-        if (!still_on(network_id, o.problem)) { o.not_asked = true; return; }
-        PairStep step;
-        try {
-            step = drv->next_step(o.dev);
-        } catch (const std::exception &) {
-            o.problem = "Its driver could not tell what it needs.";
-            return;
-        }
-        if (step.kind != Pairing::None) {
-            o.setup = true;
-            o.problem = step.prompt.empty() ? "It needs setting up first." : step.prompt;
-            return;
-        }
-        std::string err;
-        if (!may_contact(o.dev, err)) { o.problem = err; return; }
-        std::lock_guard<std::mutex> lk(device_lock(o.dev.id));
-        if (!still_on(network_id, o.problem)) { o.not_asked = true; return; }
-        try {
-            o.ok = drv->enumerate(o.dev, o.fresh, err);
-        } catch (const std::exception &) {
-            o.ok = false;
-            err = "its answer could not be understood";
-        }
-        if (!o.ok) o.problem = err.empty() ? "It did not answer." : err;
-    });
-    // A family's account typed on another page while this ran: the step asked at the start is
-    // out of date.
-    for (auto &o : outs) {
-        if (!o.setup) continue;
-        Driver *drv = driver_for(*o.saved);
-        try {
-            o.paired_meanwhile = drv && drv->next_step(o.dev).kind == Pairing::None;
-        } catch (...) {
-        }
+// What reading one saved device came to (refresh_where).
+struct DeviceRead {
+    const Saved *saved = nullptr;
+    bool ok = false, setup = false;
+    bool paired_meanwhile = false;   // set up while this ran: what pairing saved stands
+    bool not_asked = false;          // the connection moved before its turn: nothing to save
+    std::string problem;
+    Device dev;
+    std::vector<Thing> fresh;
+};
+
+// Asks one device for its things, unless it needs setting up first or may not be contacted now.
+void read_device(const std::string &network_id, DeviceRead &o) {
+    Driver *drv = driver_for(*o.saved);
+    if (!drv) return;
+    o.dev = *o.saved;
+    if (!still_on(network_id, o.problem)) { o.not_asked = true; return; }
+    PairStep step;
+    try {
+        step = drv->next_step(o.dev);
+    } catch (const std::exception &) {
+        o.problem = "Its driver could not tell what it needs.";
+        return;
     }
+    if (step.kind != Pairing::None) {
+        o.setup = true;
+        o.problem = step.prompt.empty() ? "It needs setting up first." : step.prompt;
+        return;
+    }
+    std::string err;
+    if (!may_contact(o.dev, err)) { o.problem = err; return; }
+    std::lock_guard<std::mutex> lk(device_lock(o.dev.id));
+    if (!still_on(network_id, o.problem)) { o.not_asked = true; return; }
+    try {
+        o.ok = drv->enumerate(o.dev, o.fresh, err);
+    } catch (const std::exception &) {
+        o.ok = false;
+        err = "its answer could not be understood";
+    }
+    if (!o.ok) o.problem = err.empty() ? "It did not answer." : err;
+}
+
+// Writes back what the reads found. False when the file could not be saved.
+bool save_reads(const std::string &network_id, const std::vector<DeviceRead> &reads) {
     const time_t now = time(nullptr);
-    const bool kept = modify_entry(network_id, [&](NetworkEntry &en) {
-        for (const auto &o : outs)
+    return modify_entry(network_id, [&](NetworkEntry &en) {
+        for (const auto &o : reads)
             for (auto &d : en.devices) {
                 if (d.id != o.saved->id || o.not_asked) continue;
                 // The pairing is written back only if nobody paired or unpaired the device while
@@ -1345,17 +1333,48 @@ std::string refresh_where(const std::string &network_id, const std::function<boo
                 d.last_seen = now;
             }
     });
+}
+
+// "3 devices ready.", or how many were not and the first reason.
+std::string refresh_summary(const std::vector<DeviceRead> &reads, bool kept) {
     int ready = 0, failed = 0;
     std::string first_problem;
-    for (const auto &o : outs) {
+    for (const auto &o : reads) {
         if (o.ok) ++ready;
         else { ++failed; if (first_problem.empty()) first_problem = o.problem; }
     }
-    if (outs.empty()) return "Nothing here can be controlled yet.";
+    if (reads.empty()) return "Nothing here can be controlled yet.";
     std::string summary = failed == 0 ? std::to_string(ready) + (ready == 1 ? " device ready." : " devices ready.")
                                       : std::to_string(ready) + " ready, " + std::to_string(failed) + " not: " + first_problem;
     if (!kept) summary = clause(summary) + ". What was read could not be saved on this device: its storage may be full.";
     return summary;
+}
+
+// Asks the controllable devices `pick` chooses for their things, names and states, and saves them.
+std::string refresh_where(const std::string &network_id, const std::function<bool(const Saved &)> &pick) {
+    std::string why;
+    if (!on_network(network_id, why)) return why;
+    const NetworkEntry e = entry(network_id);
+    std::vector<DeviceRead> reads;
+    for (const auto &d : e.devices)
+        if (pick(d) && d.controllable()) {
+            DeviceRead o;
+            o.saved = &d;
+            reads.push_back(o);
+        }
+    run_parallel(reads.size(), kWorkers, [&](size_t k) { read_device(network_id, reads[k]); });
+    // A family's account typed on another page while this ran: the step asked at the start is
+    // out of date.
+    for (auto &o : reads) {
+        if (!o.setup) continue;
+        Driver *drv = driver_for(*o.saved);
+        try {
+            o.paired_meanwhile = drv && drv->next_step(o.dev).kind == Pairing::None;
+        } catch (...) {
+        }
+    }
+    const bool kept = save_reads(network_id, reads);
+    return refresh_summary(reads, kept);
 }
 
 }  // namespace

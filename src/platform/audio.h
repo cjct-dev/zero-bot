@@ -149,6 +149,9 @@ public:
 
 private:
     Music() = default;
+    void run_queue(int gen);
+    std::thread start_player(const std::string &path);   // with mtx_ held
+    void wait_player(int gen);
     void run_live(int gen, std::string url);
     void stop_locked();                           // stop() with ctl_ already held
     // play(), play_live() and stop() are called from the UI thread (ESC, fn+W/fn+E, settings) and

@@ -668,50 +668,13 @@ int HttpReader::feed(const Bytes &buf, size_t &pos) {
                 if (line_bytes_ > 8) return -1;
                 break;
             }
-            const size_t sp = l.find(' ');
-            if (sp == std::string::npos || l.size() < sp + 4) return -1;
-            const std::string version = l.substr(0, sp);
-            if (version.compare(0, 7, "HTTP/1.") == 0) msg.event = false;
-            else if (version.compare(0, 8, "EVENT/1.") == 0) msg.event = true;
-            else return -1;
-            int status = 0;
-            for (size_t i = sp + 1; i < sp + 4; i++) {
-                if (l[i] < '0' || l[i] > '9') return -1;
-                status = status * 10 + (l[i] - '0');
-            }
-            if (l.size() > sp + 4 && l[sp + 4] != ' ') return -1;
-            msg.status = status;
-            st_ = St::kHeader;
+            if (!status_line(l)) return -1;
             break;
         }
         case St::kHeader: {
             const int r = line(buf, pos, l);
             if (r <= 0) return r;
-            if (!l.empty()) {
-                if (++headers_ > kMaxHeaders) return -1;
-                const size_t colon = l.find(':');
-                if (colon == std::string::npos || colon == 0) return -1;
-                const std::string name = lower(trim(l.substr(0, colon))), value = trim(l.substr(colon + 1));
-                const auto old = msg.headers.find(name);
-                if (name == "content-length" && old != msg.headers.end() && old->second != value) return -1;
-                msg.headers[name] = value;
-                break;
-            }
-            const auto te = msg.headers.find("transfer-encoding");
-            const auto cl = msg.headers.find("content-length");
-            if (te != msg.headers.end() && lower(te->second).find("chunked") != std::string::npos) {
-                chunked_ = true;
-                st_ = St::kChunkSize;
-            } else if (cl != msg.headers.end()) {
-                const std::string &v = cl->second;
-                if (v.empty() || v.size() > 18 || v.find_first_not_of("0123456789") != std::string::npos) return -1;
-                const unsigned long long n = std::stoull(v);
-                if (n > max_body_) return -1;
-                want_ = static_cast<size_t>(n);
-                st_ = want_ ? St::kBody : St::kDone;
-            } else {
-                st_ = St::kDone;   // 204 and the like: no body
-            }
+            if (!(l.empty() ? body_framing() : header_line(l))) return -1;
             break;
         }
         case St::kBody:
@@ -727,21 +690,7 @@ int HttpReader::feed(const Bytes &buf, size_t &pos) {
         case St::kChunkSize: {
             const int r = take_line(buf, pos, 64, l);
             if (r <= 0) return r;
-            if (++headers_ > kMaxChunks) return -1;
-            size_t n = 0, i = 0;
-            for (; i < l.size() && isxdigit(static_cast<unsigned char>(l[i])); i++) {
-                if (n > (max_body_ >> 4)) return -1;   // larger than anything allowed, and no overflow
-                const char c = static_cast<char>(tolower(static_cast<unsigned char>(l[i])));
-                n = n * 16 + static_cast<size_t>(c <= '9' ? c - '0' : c - 'a' + 10);
-            }
-            if (i == 0 || (i < l.size() && l[i] != ';' && l[i] != ' ' && l[i] != '\t')) return -1;
-            if (n == 0) {
-                st_ = St::kTrailer;
-                break;
-            }
-            if (n > max_body_ - msg.body.size()) return -1;
-            want_ = n;
-            st_ = St::kChunkData;
+            if (!chunk_size(l)) return -1;
             break;
         }
         case St::kChunkEnd: {
@@ -761,6 +710,78 @@ int HttpReader::feed(const Bytes &buf, size_t &pos) {
             return 1;
         }
     }
+}
+
+// The status line: "HTTP/1.x", or "EVENT/1.0" for an accessory's event, then a three-digit status.
+bool HttpReader::status_line(const std::string &l) {
+    const size_t sp = l.find(' ');
+    if (sp == std::string::npos || l.size() < sp + 4) return false;
+    const std::string version = l.substr(0, sp);
+    if (version.compare(0, 7, "HTTP/1.") == 0) msg.event = false;
+    else if (version.compare(0, 8, "EVENT/1.") == 0) msg.event = true;
+    else return false;
+    int status = 0;
+    for (size_t i = sp + 1; i < sp + 4; i++) {
+        if (l[i] < '0' || l[i] > '9') return false;
+        status = status * 10 + (l[i] - '0');
+    }
+    if (l.size() > sp + 4 && l[sp + 4] != ' ') return false;
+    msg.status = status;
+    st_ = St::kHeader;
+    return true;
+}
+
+// One header. A second Content-Length that differs from the first is refused.
+bool HttpReader::header_line(const std::string &l) {
+    if (++headers_ > kMaxHeaders) return false;
+    const size_t colon = l.find(':');
+    if (colon == std::string::npos || colon == 0) return false;
+    const std::string name = lower(trim(l.substr(0, colon))), value = trim(l.substr(colon + 1));
+    const auto old = msg.headers.find(name);
+    if (name == "content-length" && old != msg.headers.end() && old->second != value) return false;
+    msg.headers[name] = value;
+    return true;
+}
+
+// The end of the headers: the body comes in chunks, or as many bytes as Content-Length says (no more
+// than allowed), or not at all.
+bool HttpReader::body_framing() {
+    const auto te = msg.headers.find("transfer-encoding");
+    const auto cl = msg.headers.find("content-length");
+    if (te != msg.headers.end() && lower(te->second).find("chunked") != std::string::npos) {
+        chunked_ = true;
+        st_ = St::kChunkSize;
+    } else if (cl != msg.headers.end()) {
+        const std::string &v = cl->second;
+        if (v.empty() || v.size() > 18 || v.find_first_not_of("0123456789") != std::string::npos) return false;
+        const unsigned long long n = std::stoull(v);
+        if (n > max_body_) return false;
+        want_ = static_cast<size_t>(n);
+        st_ = want_ ? St::kBody : St::kDone;
+    } else {
+        st_ = St::kDone;   // 204 and the like: no body
+    }
+    return true;
+}
+
+// A chunk's size line: hex digits, perhaps an extension after them. A size of 0 ends the body.
+bool HttpReader::chunk_size(const std::string &l) {
+    if (++headers_ > kMaxChunks) return false;
+    size_t n = 0, i = 0;
+    for (; i < l.size() && isxdigit(static_cast<unsigned char>(l[i])); i++) {
+        if (n > (max_body_ >> 4)) return false;   // larger than anything allowed, and no overflow
+        const char c = static_cast<char>(tolower(static_cast<unsigned char>(l[i])));
+        n = n * 16 + static_cast<size_t>(c <= '9' ? c - '0' : c - 'a' + 10);
+    }
+    if (i == 0 || (i < l.size() && l[i] != ';' && l[i] != ' ' && l[i] != '\t')) return false;
+    if (n == 0) {
+        st_ = St::kTrailer;
+        return true;
+    }
+    if (n > max_body_ - msg.body.size()) return false;
+    want_ = n;
+    st_ = St::kChunkData;
+    return true;
 }
 
 // ---------------------------------------------------------------------------------------------
