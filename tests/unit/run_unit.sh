@@ -8,8 +8,9 @@
 # zones, helper programs), what every thread shares (one file saved by two threads, the settings,
 # all-day alerts when the clocks change, the store's lock while its files are written, the main
 # loop's sleep and what wakes it) and the small shared helpers (failure shape, battery,
-# Wi-Fi list, default route, monotonic count, start of a day), the speaker stopped on another
-# thread, the microphone's route with a plug in the jack, the music player's MP3 path, which models
+# Wi-Fi list, default route, monotonic count, start of a day, numeric and typed dates, an event's
+# next time, the breathing timing), the speaker stopped on another thread, the microphone's route
+# with a plug in the jack, the music player (its queue under the holds, its MP3 path), which models
 # are chosen (ui/models.h), a streamed reply's parts (agent/llm_stream.h) and the diagnostics (the
 # activity log and saved conversations; temporary). Nothing but 127.0.0.1 is contacted, and no AI
 # service, sound or screen is needed (stand-ins take the place of pw-cat, pacat, amixer and ffplay).
@@ -55,8 +56,8 @@ TOOLS="src/agent/calc.cpp"
 DIAG="src/core/activity.cpp src/core/settings.cpp"
 # What an older version left behind (core_test), with util.cpp and proc.cpp from above.
 UPGRADE="src/core/upgrade.cpp"
-# The shared helpers core_test checks, with net_status.cpp and sys.cpp from APP.
-HELPERS="src/platform/power.cpp"
+# The shared helpers core_test checks, with net_status.cpp and sys.cpp from APP, and the breathing timing.
+HELPERS="src/platform/power.cpp src/core/breath.cpp"
 # What every thread shares: files saved at once, the settings, the calendar's alerts (store.cpp
 # from TIMERS, util.cpp from above, settings.cpp from DIAG).
 
@@ -127,7 +128,8 @@ $WRAP $CXX -o "$OUT/llm_stream_test" "$OUT/tests_unit_llm_stream_test.o"
 # main loop's sleep and what wakes it (core/ui_queue.h: inline).
 $WRAP $CXX -o "$OUT/core_test" "$OUT/tests_unit_core_test.o" "$(obj_of src/core/settings.cpp)" "$(obj_of src/core/store.cpp)" \
     "$(obj_of src/core/upgrade.cpp)" "$(obj_of src/core/util.cpp)" "$(obj_of src/platform/proc.cpp)" \
-    "$(obj_of src/platform/net_status.cpp)" "$(obj_of src/platform/power.cpp)" "$(obj_of src/platform/sys.cpp)" -lpthread \
+    "$(obj_of src/platform/net_status.cpp)" "$(obj_of src/platform/power.cpp)" "$(obj_of src/platform/sys.cpp)" \
+    "$(obj_of src/core/breath.cpp)" -lpthread \
     -Wl,--wrap=fsync
 # DIAGNOSTICS (temporary): saved conversations.
 $WRAP $CXX -o "$OUT/activity_test" "$OUT/tests_unit_activity_test.o" "$(obj_of src/core/activity.cpp)" \
@@ -164,7 +166,7 @@ echo "=== model choice"
 "$OUT/models_test" || failed=1
 echo "=== a streamed reply: lines and thinking markers"
 "$OUT/llm_stream_test" || failed=1
-echo "=== core: files saved at once, settings shared between threads, all-day alerts and clock changes, the store's lock, the main loop's sleep, an old drop-in"
+echo "=== core: files saved at once, settings shared between threads, all-day alerts and clock changes, the store's lock, the main loop's sleep, an old drop-in, dates said, typed and repeated, breathing"
 "$OUT/core_test" "$state/core" || failed=1
 echo "=== diagnostics: saved conversations (temporary)"
 "$OUT/activity_test" "$state/activity" || failed=1
@@ -187,7 +189,7 @@ done
 env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_CACHE_HOME HOME="$home" TMPDIR="$state" TZ=UTC "$OUT/timers_test" || failed=1
 echo "=== the built-in microphone with a plug in the jack"
 "$OUT/mic_route_test" || failed=1
-echo "=== music: MP3 decoded in the app and played by pacat"
+echo "=== music: the queue under the holds; MP3 decoded in the app and played by pacat"
 "$OUT/music_test" || failed=1
 echo "=== the speaker written on one thread, stopped on another"
 TMPDIR="$state" "$OUT/speaker_test" || failed=1

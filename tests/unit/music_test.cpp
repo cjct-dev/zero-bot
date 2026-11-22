@@ -1,6 +1,7 @@
-// The music player's MP3 path (audio::Music with codec::Mp3File and pacat), against a stand-in pacat
-// that keeps what it is given. An MP3 is made at the start with ffmpeg; without ffmpeg or libmpg123
-// the test says so and passes (the app then plays MP3s with ffplay, as before).
+// The music player (audio::Music). First its queue under the holds, against a stand-in ffplay (the player
+// of anything but an MP3), which needs nothing installed. Then its MP3 path (codec::Mp3File and pacat),
+// against a stand-in pacat that keeps what it is given: an MP3 is made with ffmpeg; without ffmpeg or
+// libmpg123 that part says so and passes (the app then plays MP3s with ffplay, as before).
 #include "platform/audio.h"
 #include "platform/codec.h"
 
@@ -8,11 +9,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
+#include <vector>
 
 namespace {
 int passed = 0, failed = 0;
@@ -26,17 +30,111 @@ bool wait_until(const std::function<bool()> &done, int ms) {
     for (int i = 0; i < ms / 20; ++i) { if (done()) return true; std::this_thread::sleep_for(std::chrono::milliseconds(20)); }
     return done();
 }
+void settle() { std::this_thread::sleep_for(std::chrono::milliseconds(400)); }   // longer than the player's own 100 ms checks
+
+// A process's state from /proc: 'T' while suspended (SIGSTOP), 0 once it has gone.
+char state_of(pid_t pid) {
+    std::ifstream f("/proc/" + std::to_string(pid) + "/stat");
+    std::string line;
+    std::getline(f, line);
+    const size_t close = line.rfind(')');
+    const char state = close == std::string::npos || close + 2 >= line.size() ? 0 : line[close + 2];
+    return state == 'Z' ? 0 : state;
+}
+bool suspended(pid_t pid) { return state_of(pid) == 'T'; }
+bool playing(pid_t pid) { return state_of(pid) != 0 && !suspended(pid); }
+
+// Each start of the stand-in ffplay notes its process id and track, then waits as a long track would. The
+// search path holds its folder alone, so no real player can start.
+struct StandInPlayer {
+    std::string dir, log;
+    bool make(const std::string &folder) {
+        dir = folder;
+        log = dir + "/started.log";
+        std::ofstream(dir + "/ffplay") << "#!/bin/sh\nPATH=/usr/bin:/bin\necho \"$$ $*\" >> '" << log << "'\nexec sleep 600\n";
+        chmod((dir + "/ffplay").c_str(), 0755);
+        const bool env = symlink("/usr/bin/env", (dir + "/env").c_str()) == 0 || symlink("/bin/env", (dir + "/env").c_str()) == 0;
+        setenv("PATH", dir.c_str(), 1);
+        return env;
+    }
+    // (process id, track) of each start, in order.
+    std::vector<std::pair<pid_t, std::string>> starts() const {
+        std::vector<std::pair<pid_t, std::string>> out;
+        std::istringstream lines(slurp(log));
+        for (std::string line; std::getline(lines, line);)
+            if (!line.empty()) out.push_back({static_cast<pid_t>(atol(line.c_str())), line.substr(line.rfind(' ') + 1)});
+        return out;
+    }
+};
+
+// The holds (AGENTS.md section 8, Audio): a queue asked for during a request waits until the reply has been
+// spoken; the microphone, a question and its answer, and the user's pause suspend the player; "next" while
+// paused waits for the pause to end; "previous" goes back a track; stop ends a suspended player.
+void test_queue_holds() {
+    using audio::Music;
+    char tmpl[] = "/tmp/music_holds.XXXXXX";
+    if (!mkdtemp(tmpl)) { check(false, "a folder for the stand-in player"); return; }
+    const std::string dir = tmpl, path0 = getenv("PATH") ? getenv("PATH") : "/usr/bin:/bin";
+    StandInPlayer p;
+    check(p.make(dir), "the stand-in player is in place");
+    Music &m = Music::get();
+    m.hold(Music::kExchange, true);                   // the music tool, called during a request
+    m.play({dir + "/a.ogg", dir + "/b.ogg", dir + "/c.ogg"});
+    settle();
+    check(p.starts().empty(), "a queue asked for during a request waits");
+    m.hold(Music::kSpeech, true);                     // the reply is spoken
+    settle();
+    check(p.starts().empty(), "... and while the reply is spoken");
+    m.hold(Music::kSpeech | Music::kExchange, false);
+    check(wait_until([&] { return p.starts().size() == 1; }, 3000) && p.starts()[0].second == dir + "/a.ogg",
+          "once the reply has been spoken, the first track starts");
+    const pid_t first = p.starts().empty() ? 0 : p.starts()[0].first;
+    m.hold(Music::kMic, true);                        // TAB: the microphone opens
+    check(wait_until([&] { return suspended(first); }, 2000), "the microphone open: the track is suspended");
+    m.hold(Music::kExchange, true);                   // the question is sent
+    m.hold(Music::kMic, false);
+    settle();
+    check(suspended(first), "the question sent: still suspended, until its answer");
+    m.hold(Music::kSpeech, true);
+    m.hold(Music::kSpeech | Music::kExchange, false);   // the answer has been spoken
+    check(wait_until([&] { return playing(first); }, 2000), "the answer spoken: the track goes on");
+    m.pause(true);                                    // fn+Q
+    check(wait_until([&] { return suspended(first); }, 2000), "paused by the user: suspended");
+    m.next();
+    check(wait_until([&] { return state_of(first) == 0; }, 3000), "next while paused: the track ends");
+    settle();
+    check(p.starts().size() == 1, "... and the next waits for the pause to end");
+    m.pause(false);
+    check(wait_until([&] { return p.starts().size() == 2; }, 3000) && p.starts()[1].second == dir + "/b.ogg",
+          "unpaused: the next track plays");
+    m.previous();
+    check(wait_until([&] { return p.starts().size() == 3; }, 3000) && p.starts()[2].second == dir + "/a.ogg",
+          "previous: back to the track before");
+    const pid_t last = p.starts().size() == 3 ? p.starts()[2].first : 0;
+    m.hold(Music::kMic, true);
+    check(wait_until([&] { return suspended(last); }, 2000), "the microphone open again: suspended");
+    m.stop();
+    check(state_of(last) == 0 && !m.playing(), "stopped while suspended: the player has gone");
+    m.hold(Music::kMic, false);
+    setenv("PATH", path0.c_str(), 1);
+    if (dir.rfind("/tmp/music_holds.", 0) == 0) (void)system(("rm -r '" + dir + "'").c_str());
+}
 }  // namespace
 
 int main() {
+    test_queue_holds();
     char tmpl[] = "/tmp/music_test.XXXXXX";
     if (!mkdtemp(tmpl)) { perror("mkdtemp"); return 1; }
     const std::string dir = tmpl;
     const std::string mp3 = dir + "/tone.mp3";
     const std::string make = "ffmpeg -loglevel error -y -f lavfi -i sine=f=440:d=3 -ac 2 -ar 44100 -c:a libmp3lame -b:a 192k '" + mp3 + "'";
-    if (system(make.c_str()) != 0 || size_of(mp3) <= 0) { printf("music: no ffmpeg to make a test MP3; skipped\n"); return 0; }
+    const char *skip = system(make.c_str()) != 0 || size_of(mp3) <= 0 ? "no ffmpeg to make a test MP3" : nullptr;
     codec::Mp3File probe;
-    if (!probe.open(mp3)) { printf("music: no libmpg123 here; skipped\n"); return 0; }
+    if (!skip && !probe.open(mp3)) skip = "no libmpg123 here";
+    if (skip) {
+        printf("music: %d passed, %d failed; the MP3 path skipped: %s\n", passed, failed, skip);
+        return failed ? 1 : 0;
+    }
     check(probe.rate() == 44100 && probe.channels() == 2, "the decoder reads the file's rate and channels");
     long total = 0;
     unsigned char buf[8192];
