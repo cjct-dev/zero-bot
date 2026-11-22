@@ -2071,6 +2071,75 @@ void test_unconfirmed_pairing() {
     g_fake->reset();
 }
 
+// The pairing data the file holds for a device, as written (not as the layer hands them to a driver).
+json auth_on_file(const std::string &device_id) {
+    json root = util::load_json(file_path(), json::object());
+    for (const auto &d : root["networks"][g_net.id()]["devices"])
+        if (d.value("id", "") == device_id) return d.value("auth", json::object());
+    return json();
+}
+
+// Something typed for a device whose trying mark was written, while another command held the device, and
+// the Wi-Fi joined another network before it could be handed over (fix round 3, D3): nothing is handed to
+// the driver, the mark from before is put back, and what pairing had saved before (a Shelly's user name, a
+// Fire TV's pairing) is as it was in the file and used again. Writes while the mark stood kept it as well.
+// An earlier run's mark that still stood stays, and its pairing data stay unused, but kept.
+void test_pairing_not_handed_over() {
+    Section s("pairing: an attempt the network change stopped before handover keeps the pairing data saved before it");
+    g_fake->reset();
+    discovery::Network moved = g_net;
+    moved.ssid = "Neighbour";
+    moved.gateway_mac = "02:00:00:00:00:0b";
+    const json shelly_user = {{"user", "owner"}, {"dev", "a4cf12f45378"}};
+    const json firetv_pairing = {{"token", "paired-token"}, {"client", "zero-bot"}};
+    for (const std::string &earlier_mark : {std::string(), std::string("run-of-an-earlier-start")}) {
+        for (const json &held : {shelly_user, firetv_pairing}) {
+            json tv = device("fake:held", {thing("tv", "Lounge TV", "tv", home::kPower)});
+            tv["auth"] = held;
+            if (!earlier_mark.empty()) tv["trying"] = earlier_mark;
+            write_home({tv, device("fake:lamp", {thing("lamp", "Desk lamp", "light", home::kPower)})});
+            std::string err;
+            bool submitted = true;
+            std::unique_lock<std::mutex> busy(home::device_lock("fake:held"));   // another command has the device
+            std::thread typing([&] { submitted = home::pairing_submit(g_net.id(), "fake:held", "1234", err); });
+            for (int i = 0; i < 300 && home::entry(g_net.id()).devices[0].trying != home::run_id(); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            CHECK(home::entry(g_net.id()).devices[0].trying == home::run_id() && home::entry(g_net.id()).devices[0].auth.empty());
+            CHECK(home::set_enabled(g_net.id(), "fake:lamp", false));   // another write while the mark stands
+            CHECK_MSG(auth_on_file("fake:held") == held, auth_on_file("fake:held").dump());
+            home::testing::set_network(&moved);
+            busy.unlock();
+            typing.join();
+            home::testing::set_network(&g_net);
+            CHECK_MSG(!submitted && has(err, "different network") && !has(err, "could not be saved") && g_fake->pairs == 0, err);
+            const home::Saved after = home::entry(g_net.id()).devices[0];
+            CHECK_MSG(after.trying == earlier_mark && auth_on_file("fake:held") == held, after.trying + " " + auth_on_file("fake:held").dump());
+            run({{"action", "on"}, {"target", "Lounge TV"}});
+            const json used = earlier_mark.empty() ? held : json::object();
+            CHECK_MSG(g_fake->seen_auth["fake:held"] == used, g_fake->seen_auth["fake:held"].dump());
+            g_fake->reset();
+        }
+    }
+    // When the mark cannot be taken back, that is said.
+    const std::string dir = util::data_dir();
+    if (!read_only_holds(dir)) return;
+    json tv = device("fake:held", {thing("tv", "Lounge TV", "tv", home::kPower)});
+    tv["auth"] = firetv_pairing;
+    write_home({tv});
+    std::string err;
+    std::unique_lock<std::mutex> busy(home::device_lock("fake:held"));
+    std::thread typing([&] { home::pairing_submit(g_net.id(), "fake:held", "1234", err); });
+    for (int i = 0; i < 300 && home::entry(g_net.id()).devices[0].trying.empty(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    chmod(dir.c_str(), 0500);
+    home::testing::set_network(&moved);
+    busy.unlock();
+    typing.join();
+    chmod(dir.c_str(), 0700);
+    home::testing::set_network(&g_net);
+    CHECK_MSG(has(err, "different network") && has(err, "could not be saved") && auth_on_file("fake:held") == firetv_pairing, err);
+}
+
 // ---------------------------------------------------------------- the stand-in test network
 void test_stand_in() {
     Section s("test network: ZB_TEST_NETWORK stands in, contacts 127.x only and never scans");
@@ -3604,6 +3673,7 @@ int main(int argc, char **argv) {
     test_storage();
     test_tapo_refusals();
     test_unconfirmed_pairing();
+    test_pairing_not_handed_over();
     test_stand_in();
     test_scan_binding();
     test_network_gate();

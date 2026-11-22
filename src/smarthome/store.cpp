@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <random>
 #include <set>
+#include <utility>
 
 #include "platform/sys.h"
 #include "smarthome/drivers/support.h"
@@ -99,6 +100,13 @@ bool thing_from_json(const json &j, Thing &t, ThingMeta &m) {
     return !t.id.empty() && allowed_type(t.type);
 }
 
+// The pairing data the file holds for a device: while a trying mark stands, the ones kept aside from
+// before it (Saved::held_auth), whatever a read meanwhile left in `auth`.
+json stored_auth(const Saved &d) {
+    const json &a = d.trying.empty() ? d.auth : d.held_auth;
+    return a.is_object() ? a : json::object();
+}
+
 json to_json(const Saved &d) {
     json things = json::array();
     for (const auto &t : d.things) {
@@ -108,7 +116,7 @@ json to_json(const Saved &d) {
     json j = {{"id", d.id}, {"kind", d.kind}, {"name", d.name}, {"model", d.model}, {"mac", d.mac}, {"last_ip", d.ip},
             {"port", d.port}, {"info", d.info}, {"found_by", d.found_by}, {"enabled", d.enabled},
             {"needs_setup", d.needs_setup}, {"last_seen", static_cast<long long>(d.last_seen)}, {"problem", d.problem},
-            {"auth", d.auth.is_object() ? d.auth : json::object()}, {"things", things}};
+            {"auth", stored_auth(d)}, {"things", things}};
     if (!d.trying.empty()) j["trying"] = d.trying;
     return j;
 }
@@ -132,8 +140,10 @@ Saved from_json(const json &j) {
     // Something typed for it was handed to its driver and the outcome never reached the file (the app
     // stopped, or the file could not take it): its pairing data may hold a password the device refused
     // since, with that refusal lost. They are not used, until something typed for it is written with
-    // its outcome (pairing_submit, which takes the mark back in the same write).
-    if (d.trying.empty() && j.contains("auth") && j["auth"].is_object()) d.auth = j["auth"];
+    // its outcome (pairing_submit, which takes the mark back in the same write), but they are kept as
+    // they are: every write of the record puts them back (stored_auth).
+    const json stored = j.contains("auth") && j["auth"].is_object() ? j["auth"] : json::object();
+    (d.trying.empty() ? d.auth : d.held_auth) = stored;
     if (j.contains("things") && j["things"].is_array())
         for (const auto &tj : j["things"]) {
             Thing t;
@@ -379,6 +389,12 @@ void forgive(const std::string &slot) {
     g_refused.erase(slot);
 }
 }  // namespace trial
+
+void Saved::set_trying(const std::string &mark) {
+    if (trying.empty() && !mark.empty()) held_auth = std::exchange(auth, json::object());
+    else if (!trying.empty() && mark.empty()) auth = std::exchange(held_auth, json());
+    trying = mark;
+}
 
 bool Saved::controllable() const { return driver_for(*this) != nullptr; }
 

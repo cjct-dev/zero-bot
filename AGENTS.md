@@ -855,7 +855,11 @@ key, real audio), say so plainly rather than implying it was.
   may have stopped before the device answered, and a Tapo plug locks after a few refusals).
   `pairing_submit` writes a "trying" mark on the device record before it hands anything typed to a
   driver, and takes it back in the write of the outcome; while it stands, the record's pairing data
-  are not read (`from_json`). Shelly ended a password's trial when a pairing was refused, before
+  are handed to no driver, but kept as they are (`Saved::held_auth`, written back by every write). They
+  were first simply not read, so the next write of the record erased them: taking the mark back when
+  the network changed before the handover, or any other change saved meanwhile, lost a Shelly's user
+  name or a Fire TV's pairing that nothing had been sent with. A mark taken back puts back the one
+  before it (an earlier run's still stands). Shelly ended a password's trial when a pairing was refused, before
   that write: when the write failed, the record kept the old password with neither its refusal nor
   a trial, and it was sent again. Every failed write of `smarthome.json` is reported
   (`home::kNotSaved`), not lost.
