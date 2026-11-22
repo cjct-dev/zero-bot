@@ -194,6 +194,51 @@ const home::PairStep *pairing_needs(Menu &menu, const std::shared_ptr<PairingNee
     return needs->step ? &*needs->step : nullptr;
 }
 
+// What a device the app can control still needs (`step`, nullptr while it is asked), whether the
+// assistant may use it, its things, and reading it again or unpairing it.
+void controllable_rows(Menu &menu, const std::string &network_id, const std::string &device_id, const home::Saved &d,
+                       const home::PairStep *step, std::vector<MenuItem> &items) {
+    if (!step) {
+        Menu::add_paragraph(items, "Checking whether it needs setting up…");
+    } else if (step->kind != home::Pairing::None) {
+        Menu::add_paragraph(items, step->prompt.empty() ? "This device needs setting up first." : step->prompt);
+        items.push_back(MenuItem::action("Set up…", [&menu, network_id, device_id, now = *step] { run_pairing(menu, network_id, device_id, now); }));
+    } else if (!d.problem.empty()) {
+        Menu::add_paragraph(items, d.problem);
+    }
+    items.push_back(MenuItem::val("Assistant may use it", [d] { return on_off(d.enabled); }, nullptr,
+                                  [&menu, network_id, device_id, d](int) {
+                                      say_if_unsaved(menu, home::set_enabled(network_id, device_id, !d.enabled));
+                                  }));
+    bool header = false;
+    for (const auto &t : d.things) {
+        if (!d.listed(t)) continue;
+        if (!header) { items.push_back(MenuItem::header("What it controls")); header = true; }
+        const std::string thing_id = t.id;
+        items.push_back(MenuItem::val(home::spoken(t), [d, t] { return thing_value(d, t); },
+                                      [&menu, network_id, device_id, thing_id] { open_home_thing(menu, network_id, device_id, thing_id); }));
+    }
+    if (step && step->kind == home::Pairing::None)
+        items.push_back(MenuItem::action("Read it again", [&menu, network_id, device_id] {
+            menu.toast("Asking the device…");
+            background_on_page(menu, [network_id, device_id] { return home::refresh(network_id, device_id); },
+                               [&menu](const std::string &summary) {
+                                   menu.toast(summary);
+                                   menu.refresh();
+                               });
+        }));
+    if (!d.auth.empty())
+        items.push_back(MenuItem::action("Unpair", [&menu, network_id, device_id] {
+            menu.confirm("Unpair this device? It will need setting up again.", "Unpair", [&menu, network_id, device_id] {
+                background_on_page(menu, [network_id, device_id] { return home::unpair(network_id, device_id); },
+                                   [&menu](const std::string &why) {
+                                       if (!why.empty()) menu.problem("Not unpaired", why);
+                                       menu.refresh();
+                                   });
+            });
+        }, true));
+}
+
 void open_home_device(Menu &menu, const std::string &network_id, const std::string &device_id) {
     auto needs = std::make_shared<PairingNeeds>();
     MenuPage page;
@@ -205,52 +250,8 @@ void open_home_device(Menu &menu, const std::string &network_id, const std::stri
         items.push_back(MenuItem::val("Name", [d] { return d.title(); }, nullptr));
         items.push_back(MenuItem::val("Type", [d] { return home::kind_label(d) + (d.model.empty() ? "" : " " + d.model); }, nullptr));
         items.push_back(MenuItem::val("Address", [d] { return d.ip; }, nullptr));
-        if (!d.controllable()) {
-            Menu::add_paragraph(items, "Found on this network, but Zero Bot cannot control this kind of device yet.");
-        } else {
-            const home::PairStep *step = pairing_needs(menu, needs, network_id, device_id);
-            if (!step) {
-                Menu::add_paragraph(items, "Checking whether it needs setting up…");
-            } else if (step->kind != home::Pairing::None) {
-                Menu::add_paragraph(items, step->prompt.empty() ? "This device needs setting up first." : step->prompt);
-                items.push_back(MenuItem::action("Set up…", [&menu, network_id, device_id, now = *step] {
-                    run_pairing(menu, network_id, device_id, now);
-                }));
-            } else if (!d.problem.empty()) {
-                Menu::add_paragraph(items, d.problem);
-            }
-            items.push_back(MenuItem::val("Assistant may use it", [d] { return on_off(d.enabled); }, nullptr,
-                                          [&menu, network_id, device_id, d](int) {
-                                              say_if_unsaved(menu, home::set_enabled(network_id, device_id, !d.enabled));
-                                          }));
-            bool header = false;
-            for (const auto &t : d.things) {
-                if (!d.listed(t)) continue;
-                if (!header) { items.push_back(MenuItem::header("What it controls")); header = true; }
-                const std::string thing_id = t.id;
-                items.push_back(MenuItem::val(home::spoken(t), [d, t] { return thing_value(d, t); },
-                                              [&menu, network_id, device_id, thing_id] { open_home_thing(menu, network_id, device_id, thing_id); }));
-            }
-            if (step && step->kind == home::Pairing::None)
-                items.push_back(MenuItem::action("Read it again", [&menu, network_id, device_id] {
-                    menu.toast("Asking the device…");
-                    background_on_page(menu, [network_id, device_id] { return home::refresh(network_id, device_id); },
-                                       [&menu](const std::string &summary) {
-                                           menu.toast(summary);
-                                           menu.refresh();
-                                       });
-                }));
-            if (!d.auth.empty())
-                items.push_back(MenuItem::action("Unpair", [&menu, network_id, device_id] {
-                    menu.confirm("Unpair this device? It will need setting up again.", "Unpair", [&menu, network_id, device_id] {
-                        background_on_page(menu, [network_id, device_id] { return home::unpair(network_id, device_id); },
-                                           [&menu](const std::string &why) {
-                                               if (!why.empty()) menu.problem("Not unpaired", why);
-                                               menu.refresh();
-                                           });
-                    });
-                }, true));
-        }
+        if (!d.controllable()) Menu::add_paragraph(items, "Found on this network, but Zero Bot cannot control this kind of device yet.");
+        else controllable_rows(menu, network_id, device_id, d, pairing_needs(menu, needs, network_id, device_id), items);
         // A device that holds the pairing itself (a HomeKit accessory) stays paired to this app
         // when it is only removed from the list, and then refuses other controllers.
         const std::string remove_question = d.auth.empty() ? "Remove this device?"
@@ -358,6 +359,65 @@ void open_home_warning(Menu &menu, const discovery::Network &shown) {
     menu.push(std::move(page));
 }
 
+// The things the assistant can use on a scanned network, by room (those without one last).
+void thing_rows(Menu &menu, const home::NetworkEntry &e, std::vector<MenuItem> &items) {
+    struct Row { std::string room, label, device_id, thing_id, value; };
+    std::vector<Row> rows;
+    for (const auto &d : e.devices) {
+        if (!d.controllable() || d.needs_setup) continue;
+        for (const auto &t : d.things)
+            if (d.listed(t)) rows.push_back({t.room, home::spoken(t), d.id, t.id, thing_value(d, t)});
+    }
+    std::stable_sort(rows.begin(), rows.end(), [](const Row &a, const Row &b) {
+        if (a.room.empty() != b.room.empty()) return b.room.empty();   // things without a room last
+        return a.room != b.room ? a.room < b.room : a.label < b.label;
+    });
+    std::string shown_room = "\x01";
+    const std::string id = e.id;
+    for (const auto &r : rows) {
+        if (r.room != shown_room) { items.push_back(MenuItem::header(r.room.empty() ? "Not in a room" : r.room)); shown_room = r.room; }
+        const std::string did = r.device_id, tid = r.thing_id, value = r.value;
+        items.push_back(MenuItem::val(r.label, [value] { return value; }, [&menu, id, did, tid] { open_home_thing(menu, id, did, tid); }));
+    }
+}
+
+// Devices with nothing listed by thing_rows: those waiting to be set up, never read, or whose things
+// have all gone from their last answer (a strip or bridge that listed nothing), and those the app
+// cannot control. Their page is the only way to read them again or remove them.
+void unlisted_rows(Menu &menu, const home::NetworkEntry &e, std::vector<MenuItem> &items) {
+    const std::string id = e.id;
+    bool header = false;
+    for (const auto &d : e.devices) {
+        if (!d.controllable() || (!d.needs_setup && d.any_listed())) continue;
+        if (!header) { items.push_back(MenuItem::header("To set up")); header = true; }
+        const std::string did = d.id;
+        items.push_back(MenuItem::val(d.title(), [d] { return std::string(d.needs_setup ? "set up" : "not ready"); },
+                                      [&menu, id, did] { open_home_device(menu, id, did); }));
+    }
+    header = false;
+    for (const auto &d : e.devices) {
+        if (d.controllable()) continue;
+        if (!header) { items.push_back(MenuItem::header("Found, not controllable yet")); header = true; }
+        const std::string did = d.id;
+        items.push_back(MenuItem::val(d.title(), [d] { return home::kind_label(d); }, [&menu, id, did] { open_home_device(menu, id, did); }));
+    }
+}
+
+// The Tapo account (when the network has a Tapo device), a new scan, and forgetting the network.
+void manage_rows(Menu &menu, const discovery::Network &net, const home::NetworkEntry &e, std::vector<MenuItem> &items) {
+    const std::string id = e.id;
+    items.push_back(MenuItem::header("Manage"));
+    if (std::any_of(e.devices.begin(), e.devices.end(), [](const home::Saved &d) { return d.controllable() && d.kind == "tapo"; }))
+        items.push_back(MenuItem::val("Tapo account", [] {
+            const home::TapoAccount a = home::tapo_account();
+            return a.refused ? std::string("check password") : a.set() ? a.email : std::string("needed");
+        }, [&menu, id] { open_tapo_account(menu, id); }));
+    items.push_back(MenuItem::action("Scan again", [&menu, net] { run_home_scan(menu, net); }));
+    items.push_back(MenuItem::action("Forget this network", [&menu, id] {
+        menu.confirm("Forget every device saved for this network?", "Forget", [&menu, id] { say_if_unsaved(menu, home::forget_network(id)); });
+    }, true));
+}
+
 }  // namespace
 
 // The things the assistant can use, by room; then devices still to be set up; then the rest. The
@@ -391,54 +451,9 @@ void open_smart_home(Menu &menu) {
             return items;
         }
         const home::NetworkEntry e = home::entry(id);
-        struct Row { std::string room, label, device_id, thing_id, value; };
-        std::vector<Row> rows;
-        bool any_tapo = false;
-        for (const auto &d : e.devices) {
-            if (!d.controllable()) continue;
-            any_tapo = any_tapo || d.kind == "tapo";
-            if (d.needs_setup) continue;
-            for (const auto &t : d.things)
-                if (d.listed(t)) rows.push_back({t.room, home::spoken(t), d.id, t.id, thing_value(d, t)});
-        }
-        std::stable_sort(rows.begin(), rows.end(), [](const Row &a, const Row &b) {
-            if (a.room.empty() != b.room.empty()) return b.room.empty();   // things without a room last
-            return a.room != b.room ? a.room < b.room : a.label < b.label;
-        });
-        std::string shown_room = "\x01";
-        for (const auto &r : rows) {
-            if (r.room != shown_room) { items.push_back(MenuItem::header(r.room.empty() ? "Not in a room" : r.room)); shown_room = r.room; }
-            const std::string did = r.device_id, tid = r.thing_id, value = r.value;
-            items.push_back(MenuItem::val(r.label, [value] { return value; }, [&menu, id, did, tid] { open_home_thing(menu, id, did, tid); }));
-        }
-        // Devices with nothing listed above: those waiting to be set up, never read, or whose
-        // things have all gone from their last answer (a strip or bridge that listed nothing).
-        // Their page is the only way to read them again or remove them.
-        bool header = false;
-        for (const auto &d : e.devices) {
-            if (!d.controllable() || (!d.needs_setup && d.any_listed())) continue;
-            if (!header) { items.push_back(MenuItem::header("To set up")); header = true; }
-            const std::string did = d.id;
-            items.push_back(MenuItem::val(d.title(), [d] { return std::string(d.needs_setup ? "set up" : "not ready"); },
-                                          [&menu, id, did] { open_home_device(menu, id, did); }));
-        }
-        header = false;
-        for (const auto &d : e.devices) {
-            if (d.controllable()) continue;
-            if (!header) { items.push_back(MenuItem::header("Found, not controllable yet")); header = true; }
-            const std::string did = d.id;
-            items.push_back(MenuItem::val(d.title(), [d] { return home::kind_label(d); }, [&menu, id, did] { open_home_device(menu, id, did); }));
-        }
-        items.push_back(MenuItem::header("Manage"));
-        if (any_tapo)
-            items.push_back(MenuItem::val("Tapo account", [] {
-                const home::TapoAccount a = home::tapo_account();
-                return a.refused ? std::string("check password") : a.set() ? a.email : std::string("needed");
-            }, [&menu, id] { open_tapo_account(menu, id); }));
-        items.push_back(MenuItem::action("Scan again", [&menu, net] { run_home_scan(menu, net); }));
-        items.push_back(MenuItem::action("Forget this network", [&menu, id] {
-            menu.confirm("Forget every device saved for this network?", "Forget", [&menu, id] { say_if_unsaved(menu, home::forget_network(id)); });
-        }, true));
+        thing_rows(menu, e, items);
+        unlisted_rows(menu, e, items);
+        manage_rows(menu, net, e, items);
         return items;
     };
     menu.push(std::move(page));
