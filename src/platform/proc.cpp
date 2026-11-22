@@ -10,24 +10,12 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/prctl.h>
-#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 namespace proc {
-
-// How far the descriptor numbers can go when the open ones cannot be listed: the hard limit on open
-// files, read before fork (the child may only make system calls). Not the soft limit, which may have
-// been lowered below a descriptor already open, nor a fixed bound such as 4096.
-static int descriptor_bound() {
-    constexpr rlim_t kCeiling = 1 << 20;   // the kernel's own default ceiling (fs.nr_open)
-    rlimit lim{};
-    if (getrlimit(RLIMIT_NOFILE, &lim) != 0 || lim.rlim_max == RLIM_INFINITY || lim.rlim_max > kCeiling)
-        return static_cast<int>(kCeiling);
-    return static_cast<int>(lim.rlim_max);
-}
 
 // A descriptor's number from its name in /proc/self/fd; -1 for anything else ("." and "..").
 static int fd_number(const char *name) {
@@ -62,7 +50,7 @@ static int close_pass(int dir, int lowest) {
 
 // In the child: closes every descriptor from `lowest` up that /proc/self/fd lists (system calls
 // only). Closing changes the listing, so it is read again until a pass closes nothing. False when
-// it cannot be read (no /proc, or the call refused): the caller then goes through every number.
+// it cannot be read (no /proc, or the call refused).
 static bool close_listed(int lowest) {
 #ifdef SYS_getdents64
     const int dir = open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -77,14 +65,16 @@ static bool close_listed(int lowest) {
 #endif
 }
 
-// In the child, between fork and exec: close every descriptor from `lowest` up. Only system calls
-// here (the parent has other threads, so nothing that might take a lock).
-static void close_from(int lowest, int bound) {
+// In the child, between fork and exec: closes every descriptor from `lowest` up. Only system calls
+// here (the parent has other threads, so nothing that might take a lock). False when that cannot be
+// made sure of: close_range missing or refused, and /proc/self/fd not to be listed. Closing every
+// number up to a bound is no stand-in: a process can hold a descriptor above any bound it can learn
+// (its limits lowered after it was opened, or raised past any fixed ceiling).
+static bool close_from(int lowest) {
 #ifdef SYS_close_range
-    if (syscall(SYS_close_range, static_cast<unsigned>(lowest), ~0U, 0U) == 0) return;
+    if (syscall(SYS_close_range, static_cast<unsigned>(lowest), ~0U, 0U) == 0) return true;
 #endif
-    if (close_listed(lowest)) return;
-    for (int fd = lowest; fd < bound; ++fd) close(fd);
+    return close_listed(lowest);
 }
 
 Child spawn(const std::vector<std::string> &argv, bool pipe_in, bool pipe_out, bool merge_err, bool die_with_parent) {
@@ -100,7 +90,6 @@ Child spawn(const std::vector<std::string> &argv, bool pipe_in, bool pipe_out, b
     std::vector<char *> args;
     for (auto &a : argv) args.push_back(const_cast<char *>(a.c_str()));
     args.push_back(nullptr);
-    const int bound = descriptor_bound();
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -122,8 +111,9 @@ Child spawn(const std::vector<std::string> &argv, bool pipe_in, bool pipe_out, b
         // Many descriptors are opened without close-on-exec (the graphics library's framebuffer,
         // files read with streams, possibly sockets kept alive for the next request), and a
         // sandbox does not close what it inherits: the sandboxed Python could otherwise write to
-        // the screen or to a device's open connection. The child gets its three standard streams.
-        close_from(3, bound);
+        // the screen or to a device's open connection. The child gets its three standard streams, or
+        // the program is not run at all (as if it could not be started).
+        if (!close_from(3)) _exit(127);
         signal(SIGPIPE, SIG_DFL);
         execvp(args[0], args.data());
         _exit(127);
