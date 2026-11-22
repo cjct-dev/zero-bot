@@ -76,7 +76,9 @@ void SpeechQueue::close_stream(int gen) {
 // The newest answer with nothing left in the queue (lock held).
 int SpeechQueue::last_unqueued() const { return queue_.empty() ? answer_ : queue_.front().answer - 1; }
 
-// The answers up to `answer` are over: each is told to the observer once, in order (lock held).
+// The answers up to `answer` are over: each is told to the observer once, in order (lock held). An answer
+// whose next one came before it had played out shares its stream, and the player cannot say where in it
+// one ends: both are over when the stream is, the first told late.
 void SpeechQueue::played_out(int answer) {
     for (; over_ < answer; ++over_)
         if (observer_) observer_(over_ + 1, true);
@@ -86,14 +88,7 @@ void SpeechQueue::run() {
     for (;;) {
         Sentence next;
         int gen;
-        if (!take(next, gen)) continue;
-        // The next answer came before this one had played out: this one plays out first, in a stream of its own.
-        if (stream_open_ && next.answer != sounding_) {
-            close_stream(gen);
-            std::lock_guard<std::mutex> lk(mtx_);
-            played_out(next.answer - 1);
-        }
-        speak(next, gen);
+        if (take(next, gen)) speak(next, gen);
     }
 }
 
@@ -158,7 +153,6 @@ void SpeechQueue::speak(const Sentence &next, int gen) {
         std::lock_guard<std::mutex> lk(mtx_);
         stream_open_ = true;
         playing_ = true;
-        sounding_ = next.answer;
     }
     speaker().write(pcm.data(), pcm.size());
     // A short pause between sentences sounds more natural than back-to-back audio.

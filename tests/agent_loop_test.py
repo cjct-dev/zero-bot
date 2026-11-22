@@ -28,7 +28,7 @@ size of the first request; smart-home questions and answers on a stand-in home; 
 (--ask-wav, --steer-wav: a typed one is answered on the screen only, one with anything said aloud is
 spoken too, counted at the stand-in speech service, with a stand-in player that plays nothing; a spoken
 answer's end signalled at its own request's end, and timed from it, each of two said back to back
-included; music held with a spoken question until its answer has been heard, and not at all with spoken
+included (those two end together, with the stream they share); music held with a spoken question until its answer has been heard, and not at all with spoken
 replies off); a spoken request that comes to
 nothing (the chat call or the transcription failed, or no words were heard): one short sentence said, not
 kept in the conversation, never said over an open microphone or waited for, its own failure noted after
@@ -842,8 +842,10 @@ def speech_done_timed_from_its_request():
 
 @scenario
 def speech_done_per_answer():
-    # Two spoken answers, the second queued while the first is still being said: each is done once it has played out, and
-    # timed from its own request (the speech was once timed as one stretch, from the first request to the end of both).
+    # Two spoken answers, the second queued while the first is still being said: each is said to be done, timed from its
+    # own request (the speech was once timed as one stretch, from the first request to the end of both). They share one
+    # stream, as on the device, where the second's synthesis does not wait for the first to play out; the player cannot
+    # say where in it the first ends, so both are done when it is.
     script = dict(LISBON, heard=["what is the capital of portugal", "what is the capital of spain"], speech_delay_ms=1500,
                   rules=[{"when": {"said": "portugal"}, "reply": {"text": "Lisbon is the capital of Portugal.", "delay_ms": 2000}},
                          {"when": {"said": "spain"}, "reply": {"text": "Madrid is the capital of Spain.", "delay_ms": 300}}])
@@ -854,11 +856,12 @@ def speech_done_per_answer():
     check(n + ": both are spoken, and each is said to be done", spoken_lines(r) == ["Lisbon is the capital of Portugal.",
           "Madrid is the capital of Spain."] and len(done) == 2 and r.answer == "Madrid is the capital of Spain.", (done, r))
     if len(done) != 2 or first is None: return
-    # The first is synthesized once its request has ended (1.5 s); the second, after it, takes as long again. Timed from the
-    # first request, the second would end a whole first request later than that.
-    check(n + ": the first is timed from its own request, when it has played out", first + 1.0 <= done[0] <= first + 2.5, (done, first))
-    check(n + ": the second is timed from its own request, once the first and then it have played out",
-          done[0] + 1.0 <= done[1] + first <= done[0] + 2.5, (done, first))
+    # The first is synthesized once its request has ended (1.5 s), the second after it (as long again); the shared stream
+    # ends after both. Each is timed from its own request, so the two differ by the time between the requests' starts
+    # (about the first request's length); timed from the first request, they would be the same.
+    check(n + ": the first is timed from its own request, once the stream it shares has played out",
+          first + 1.0 <= done[0] <= first + 4.0, (done, first))
+    check(n + ": the second is timed from its own request", abs(done[0] - done[1] - first) <= 0.5, (done, first))
 
 
 # ------------------------------------------------------------------ a spoken request that comes to nothing (ZB-094)

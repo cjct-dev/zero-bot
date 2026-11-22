@@ -113,7 +113,7 @@ through `Settings::update([](Settings &s) { ... })`, which makes it under that l
 |---|---|---|
 | UI (main) | `ui::run_app` (app.cpp) | LVGL, keys from the reader's queue, `App::periodic` (app_status.cpp), whatever `uiq::post` queued. Between passes it sleeps in `uiq::wait` until LVGL's next timer or the app's next periodic work (`App::sleep_ms`); a key or a post wakes it at once. Never waits on the network or a child process. |
 | Agent worker | `Agent::start` (`Agent::worker`) | One request at a time (`Agent::Turn`); `Agent::mtx_` guards its inputs, history and state. |
-| Speech | `SpeechQueue::run` | Synthesises and plays sentence by sentence, each answer in a stream of its own (the next waits for it to play out); a watcher per sentence lets `stop()` cut a synthesis short. |
+| Speech | `SpeechQueue::run` | Synthesises and plays sentence by sentence; a watcher per sentence lets `stop()` cut a synthesis short. |
 | Key reader | `input::start` (device only) | Reads the keypad and makes the auto-repeat; its queue is drained by the UI thread. |
 | Recorder, music | `audio::Recorder`, `audio::Music` (and a feeder per MP3, `run_live` for the radio) | `Music::ctl_` serialises `play`, `play_live` and `stop`, which the UI and the agent call at once. |
 | Short helpers, detached | alarm rings (`AlarmSound`, one per ring), chimes, `set_volume_async`, the microphone lookup and the jack's put-back (audio.cpp), `radio::check_async`, `background()`, the app's thumbnail, model choice and phone link (app.cpp), `upgrade`'s reload | Each hands its result to the UI through `uiq::post`, or touches nothing shared. |

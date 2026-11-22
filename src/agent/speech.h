@@ -26,7 +26,8 @@ public:
     void set_on_failure(std::function<void(const std::string &reason)> cb) { on_failure_ = std::move(cb); }
     // For the command line's timings: told each answer's number as its first sentence is queued (on the
     // thread that queues it, so it can be tied to the request giving it), and again, with `over`, once
-    // its last sound has played out, or it was stopped or could not be spoken (on the speech thread).
+    // the stream that played it has played out, or it was stopped or could not be spoken (on the speech
+    // thread). Two answers back to back share a stream, so the first is told only when both are over.
     // Called with the queue's lock held: it must not call into the queue. Set once, before the first answer.
     void set_observer(std::function<void(int answer, bool over)> cb) { observer_ = std::move(cb); }
 
@@ -64,7 +65,6 @@ private:
     std::function<void(int, bool)> observer_;
     int answer_ = 0;            // counts answers (guarded by mtx_)
     int over_ = 0;              // the answers up to this one are over and told so (guarded by mtx_)
-    int sounding_ = 0;          // the answer the open stream plays: each answer has its own (speech thread only)
     int reported_ = -1;         // the answer whose failure was last reported (speech thread only)
     void failed(int answer, const std::string &reason);
 };
