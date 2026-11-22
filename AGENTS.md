@@ -1000,7 +1000,10 @@ key, real audio), say so plainly rather than implying it was.
   a separate function.
 - A sandbox does not close what it inherits: `bwrap` handed the app's open descriptors (the
   framebuffer among them, which LVGL opens without close-on-exec) to the sandboxed Python.
-  `proc::spawn` closes everything above stderr in the child; keep it. Anything slow that a tool
+  `proc::spawn` closes everything above stderr in the child; keep it. Where close_range is missing
+  or refused it closes what /proc/self/fd lists, else every number up to the hard limit: its
+  fallback first stopped at 4096, then at the soft limit, which a process can lower below a
+  descriptor it already holds. Anything slow that a tool
   starts takes `ctx.cancel` (`proc::run`'s last argument), so ESC stops it.
 
 ## 9. Adding things
