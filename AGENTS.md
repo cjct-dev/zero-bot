@@ -873,7 +873,8 @@ key, real audio), say so plainly rather than implying it was.
   could be tried once more after a restart. A credential on trial goes to one device at a time (each
   family's `g_first_try`, taken before the account or key is read, let go once the outcome is kept, not
   after the slow reads that follow, such as a plug's energy readings): a command that fans out sent a
-  wrong password to four plugs at once. A refusal is what the call that sent the credential said
+  wrong password to four plugs at once. It is also sent once: WiZ resends a datagram after 250 ms, which
+  sent a key on trial again while the device's first answer was on the way; on trial it goes out in one. A refusal is what the call that sent the credential said
   (`tapo::request`'s `refused`), not looked up afterwards: saving the Tapo account, even unchanged, drops
   the transport's sessions and what each plug said, and a refusal that arrived meanwhile was lost, so
   the next plug was sent the same password.

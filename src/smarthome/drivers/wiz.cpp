@@ -140,11 +140,11 @@ enum class Got { Reply, Nothing, Garbage };
 
 // Sends one datagram and waits for the JSON object that answers it: one whose "method" is ours,
 // or an error that names no method. Sent again at 250 ms and then at growing intervals until the
-// reply or the deadline (steady clock, ms). A socket of its own, connected, so that only the
-// device's own datagrams are seen; it is closed before this returns. Other datagrams (a late
-// answer to an earlier request, a push) are skipped.
+// reply or the deadline (steady clock, ms), `sends_at_most` datagrams in all. A socket of its own,
+// connected, so that only the device's own datagrams are seen; it is closed before this returns.
+// Other datagrams (a late answer to an earlier request, a push) are skipped.
 Got udp_exchange(const std::string &ip, int port, const std::string &method, const std::string &datagram, long long deadline,
-                 json &reply) {
+                 int sends_at_most, json &reply) {
     addrinfo hints{}, *res = nullptr;
     hints.ai_socktype = SOCK_DGRAM;
     hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;   // an address, never a name to look up
@@ -163,13 +163,13 @@ Got udp_exchange(const std::string &ip, int port, const std::string &method, con
     for (;;) {
         const long long now = now_ms();
         if (now >= deadline) break;
-        if (sends < kMaxSends && now >= next_send) {
+        if (sends < sends_at_most && now >= next_send) {
             (void)!send(fd, datagram.data(), datagram.size(), MSG_NOSIGNAL);   // a refusal shows up on a read
             sends++;
             next_send = now + interval;
             interval += interval / 2;
         }
-        const long long until = sends < kMaxSends ? std::min(next_send, deadline) : deadline;
+        const long long until = sends < sends_at_most ? std::min(next_send, deadline) : deadline;
         pollfd p{fd, POLLIN, 0};
         if (poll(&p, 1, static_cast<int>(std::max(1LL, until - now))) <= 0) continue;
         const ssize_t n = recv(fd, &buf[0], buf.size(), MSG_TRUNC);
@@ -259,12 +259,14 @@ struct Target {
     bool signed_firmware = false;   // set when a reply carried a signature
 };
 
-// One request and its reply, unsigned unless a key (16 bytes) is given.
+// One request and its reply, unsigned unless a key (16 bytes) is given; resent while no reply has come,
+// unless `once` (a key on trial, which goes out once).
 Outcome call(Target &t, const std::string &method, const std::string &params, const std::string &key, long long deadline,
-             json &result) {
+             json &result, bool once = false) {
     result = json::object();
     json reply;
-    const Got got = udp_exchange(t.ip, t.port, method, detail::datagram(method, params, key, unix_now()), deadline, reply);
+    const Got got = udp_exchange(t.ip, t.port, method, detail::datagram(method, params, key, unix_now()), deadline,
+                                 once ? 1 : kMaxSends, reply);
     if (got == Got::Nothing) return Outcome::NoAnswer;
     if (got == Got::Garbage) return Outcome::Garbled;
     if (reply.contains("hmac")) t.signed_firmware = true;
@@ -833,9 +835,11 @@ private:
         const bool synced = g_unix_clock != system_unix_time || kernel_clock_synced();
         if (!detail::signing_clock_ok(unix_now(), synced, uptime_s())) return Outcome::ClockNotSet;
         // A key's first use is written down before it is sent: a refusal that could not be kept
-        // still stops the next run.
+        // still stops the next run. On trial, it goes out in one datagram, not resent while its
+        // answer is on the way: a key that may be wrong is sent once; after a device has taken it,
+        // a lost datagram is resent as any other.
         if (!note_key(k.bytes, [](json &j) { return home::trial::begin(j); })) return Outcome::KeyNotSaved;
-        const Outcome o = call(t, "setPilot", params, k.bytes, deadline, result);
+        const Outcome o = call(t, "setPilot", params, k.bytes, deadline, result, k.on_trial);
         if (o == Outcome::KeyRefused) return refused_key(k.bytes);
         if (o == Outcome::Ok) note_key(k.bytes, [](json &j) { return home::trial::end(j); });
         return o;

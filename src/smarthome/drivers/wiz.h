@@ -35,7 +35,8 @@
 //    was typed (the hex, or the whole exported file pasted) and sends nothing: only a change shows
 //    whether a key is right, and none is made up. A key a device refused (-32605) is never sent
 //    again, by this run or a later one, until a key is typed again; a key not yet taken by any
-//    device goes to one device at a time. A signed request carries the
+//    device goes to one device at a time, in one datagram (no resend while its answer is on the
+//    way; once a device has taken it, a lost datagram is resent as usual). A signed request carries the
 //    time, and a stale one is refused like a wrong key, so nothing is signed while the clock reads
 //    earlier than 2025 (never set), nor in the first ten minutes after start while the kernel
 //    reports the clock as not synchronised (a board without a battery-backed clock starts from a

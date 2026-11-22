@@ -967,6 +967,57 @@ static void test_key_refusals() {
     check("and both say it was not accepted", err_one == kKeyRefused && err_two == kKeyRefused, err_one + " / " + err_two);
 }
 
+// A bulb with signing firmware at `mac` that takes any key: it answers a signed setPilot `delay_ms`
+// after it comes, and leaves the next `drop` of them unanswered (lost datagrams).
+static Peer::Handler key_taker(const std::string &mac, std::atomic<int> &delay_ms, std::atomic<int> &drop) {
+    return [mac, &delay_ms, &drop](const json &req, const std::string &) -> std::vector<std::string> {
+        const std::string m = req.is_object() ? req.value("method", "") : "";
+        auto signed_reply = [&](json body) {
+            body["sigTs"] = 1790441723;
+            return json{{"method", m}, {"env", "pro"}, {"result", body}, {"hmac", "AAAA"}}.dump();
+        };
+        if (m == "getSystemConfig") return {signed_reply({{"mac", mac}, {"moduleName", "ESP25_SHORGB_01"}})};
+        if (m == "getPilot") return {signed_reply({{"mac", mac}, {"state", false}, {"dimming", 10}})};
+        if (m != "setPilot") return {R"({"env":"pro","error":{"code":-32601,"message":"Method not found"}})"};
+        if (drop > 0) {
+            --drop;
+            return {};
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms.load()));
+        return {signed_reply({{"success", true}})};
+    };
+}
+
+// A key on trial goes out in one datagram (fix round 3, D8): a device that answers its first signed
+// command late is not sent the key again while the answer is on the way. Once a device has taken the
+// key, a lost datagram is resent as any other.
+static void test_key_on_trial_sent_once() {
+    home::testing::new_run();
+    auto driver = make_wiz_driver();
+    MemSecrets store;
+    driver->attach(&store);
+    std::atomic<int> delay_ms{0}, drop{0};
+    Peer bulb(key_taker("a8bb50000003", delay_ms, drop));
+    home::Device dev = at(bulb.port());
+    dev.id = "wiz:a8bb50000003";
+    std::vector<home::Thing> listed;
+    std::string err;
+    check("once: the device is listed", driver->enumerate(dev, listed, err), err);
+    const home::Thing light = thing_of(listed, "light");
+    dev.things = listed;
+    home::Change c;
+    c.on = true;
+    check("once: a key typed", driver->pair(dev, "00112233445566778899aabbccddeeff", err), err);
+    delay_ms = 600;   // past the first resend, at 250 ms
+    check("once: the key on trial is taken, late", driver->apply(dev, light, c, 2500, err), err);
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));   // anything sent meanwhile has reached the bulb
+    check("once: and was sent in one datagram", bulb.count("setPilot") == 1, std::to_string(bulb.count("setPilot")) + " sent");
+    check("once: its trial is over", !store.get("wiz").contains("trial"), store.get("wiz").dump());
+    delay_ms = 0;
+    drop = 1;
+    check("once: taken, a lost datagram is resent", driver->apply(dev, light, c, 2500, err) && bulb.count("setPilot") == 3, err);
+}
+
 int main() {
     test_signing();
     test_models();
@@ -975,6 +1026,7 @@ int main() {
     test_pilots();
     test_driver();
     test_key_refusals();
+    test_key_on_trial_sent_once();
     printf("%d checks, %d failed\n", g_run, g_failed);
     return g_failed ? 1 : 0;
 }
