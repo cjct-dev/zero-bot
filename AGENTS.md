@@ -587,7 +587,11 @@ key, real audio), say so plainly rather than implying it was.
   were first simply not read, so the next write of the record erased them: taking the mark back when
   the network changed before the handover, or any other change saved meanwhile, lost a Shelly's user
   name or a Fire TV's pairing that nothing had been sent with. A mark taken back puts back the one
-  before it (an earlier run's still stands). Shelly ended a password's trial when a pairing was refused, before
+  before it (an earlier run's still stands). `pairing_submit` holds the device's lock from its first
+  read of the record to that write: a second HomeKit code typed while the first was with the accessory
+  read the marked record (no pairing data), failed once the first had paired, and wrote its failure
+  over the keys the first had saved. It also takes the step the page showed, and refuses, sending
+  nothing, when the driver no longer asks for it. Shelly ended a password's trial when a pairing was refused, before
   that write: when the write failed, the record kept the old password with neither its refusal nor
   a trial, and it was sent again. Every failed write of `smarthome.json` is reported
   (`home::kNotSaved`), not lost.

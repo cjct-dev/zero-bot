@@ -117,10 +117,14 @@ std::vector<std::string> rooms(const std::string &network_id);   // every room i
 // ---- pairing, driven from the settings page. All of it applies to the current network only.
 // What the device's driver wants next; kind None when it is ready (or cannot be asked).
 PairStep pairing_step(const std::string &network_id, const std::string &device_id);
-// Hands the driver what the user typed ("" for a button or prompt step). A refusal is reported
-// and never tried again by itself. What was typed goes to the driver only after the file has taken
-// a note that it is being tried; when the file cannot be written nothing is sent (kNotSaved).
-bool pairing_submit(const std::string &network_id, const std::string &device_id, const std::string &input, std::string &err);
+// Hands the driver what the user typed ("" for a button or prompt step) for `step`, the step the page
+// showed (as pairing_step gave it). A refusal is reported and never tried again by itself. What was
+// typed goes to the driver only after the file has taken a note that it is being tried; when the file
+// cannot be written nothing is sent (kNotSaved). One submission for a device at a time, from its first
+// read of the device to the write of the outcome; one whose step the driver no longer asks for by then
+// (another submission set the device up meanwhile) is refused, and nothing is sent or written.
+bool pairing_submit(const std::string &network_id, const std::string &device_id, const PairStep &step,
+                    const std::string &input, std::string &err);
 // "" once the pairing is gone; otherwise why it is kept (the device could not be told).
 std::string unpair(const std::string &network_id, const std::string &device_id);
 
