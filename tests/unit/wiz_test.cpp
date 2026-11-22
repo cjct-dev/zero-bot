@@ -659,26 +659,59 @@ static void test_driver() {
         const int before = bulb.count("setPilot");
         check("back at its own address it is switched", driver->apply(dev, light, c, 2500, err) && bulb.count("setPilot") == before + 1, err);
 
-        // A device that names no MAC cannot be told apart, and one whose MAC is nonsense is not this one.
-        std::string pilot_mac = "none";
+        // Firmware whose getPilot names no MAC (or an empty one) is asked getSystemConfig, which
+        // does, in the same time; one whose MAC is nonsense is not this device.
+        std::string pilot_mac = "none", system_mac = "a8bb5006033d";
         Peer quiet([&](const json &req, const std::string &raw) -> std::vector<std::string> {
             const std::string m = req.is_object() ? req.value("method", "") : "";
             if (m == "getPilot" && pilot_mac == "none") return {reply(m, {{"state", false}})};
             if (m == "getPilot") return {reply(m, {{"mac", pilot_mac}, {"state", false}})};
+            if (m == "getSystemConfig" && system_mac == "none") return {reply(m, {{"moduleName", "ESP01_SHRGB_03"}})};
+            if (m == "getSystemConfig") return {reply(m, {{"mac", system_mac}, {"moduleName", "ESP01_SHRGB_03"}})};
             return rgb_bulb(req, raw);
         });
         dev.port = quiet.port();
-        check("a pilot without a MAC: the change is made", driver->apply(dev, light, c, 2500, err) && quiet.count("setPilot") == 1, err);
+        check("a pilot without a MAC: getSystemConfig names it, and the change is made",
+              driver->apply(dev, light, c, 2500, err) && quiet.count("getSystemConfig") == 1 && quiet.count("setPilot") == 1, err);
+        pilot_mac = "";
+        check("a pilot with an empty MAC: the same", driver->apply(dev, light, c, 2500, err) && quiet.count("getSystemConfig") == 2 &&
+                                                         quiet.count("setPilot") == 2, err);
         for (const char *mac : {"A8:BB:50:06:03:3D", "a8bb5006033d"}) {
             pilot_mac = mac;
-            check(std::string("the same MAC written as ") + mac, driver->apply(dev, light, c, 2500, err), err);
+            check(std::string("the same MAC written as ") + mac, driver->apply(dev, light, c, 2500, err) && quiet.count("getSystemConfig") == 2,
+                  err);
         }
-        for (const char *mac : {"", "a8bb5006033", "a8bb5006033dff", "a8bb5006033\"", "xxxxxxxxxxxx"}) {
+        for (const char *mac : {"a8bb5006033", "a8bb5006033dff", "a8bb5006033\"", "xxxxxxxxxxxx"}) {
             pilot_mac = mac;
             const int sent = quiet.count("setPilot");
             check(std::string("a MAC of \"") + mac + "\" is not this device's", !driver->apply(dev, light, c, 2500, err) && err == kMoved &&
                                                                                     quiet.count("setPilot") == sent, err);
         }
+        // A device at the saved address that names no MAC anywhere (or empty ones), as another
+        // device could: never taken for this one, in words that make the app look for it.
+        for (const char *mac : {"none", ""}) {
+            pilot_mac = system_mac = mac;
+            const int sent = quiet.count("setPilot");
+            const std::string what = *mac ? "no MAC anywhere" : "empty MACs";
+            check(what + ": the change is refused, and none sent", !driver->apply(dev, light, c, 2500, err) && err == kNoMac &&
+                                                                    quiet.count("setPilot") == sent && reads_as_unreachable(err), err);
+            std::vector<home::Thing> some = {light};
+            check(what + ": nor read as this device", !driver->read(dev, some, err) && err == kNoMac, err);
+            std::vector<home::Thing> listed;
+            check(what + ": nor listed as it", !driver->enumerate(dev, listed, err) && err == kNoMac && listed.empty(), err);
+        }
+        pilot_mac = "none";
+        system_mac = "a8bb5006033d";
+        // A record saved without a MAC cannot be checked: nothing is sent to change it.
+        home::Device unknown = dev;
+        unknown.id = "wiz:unknown";
+        unknown.mac.clear();
+        const int asked = static_cast<int>(quiet.received().size());
+        check("saved without a MAC: the change is refused before anything is sent",
+              !driver->apply(unknown, light, c, 2500, err) && err == kNoIdentity && static_cast<int>(quiet.received().size()) == asked &&
+                  !reads_as_unreachable(err), err);
+        std::vector<home::Thing> readable = {light};
+        check("saved without a MAC: it can still be read", driver->read(unknown, readable, err), err);
     }
 
     {
@@ -705,6 +738,7 @@ static void test_driver() {
         });
         home::Device dev = at(signed_bulb.port());
         dev.id = "wiz:signed";
+        dev.mac = "a8:bb:50:06:03:3d";   // the id is not the MAC here: the saved MAC identifies it
         std::vector<home::Thing> things;
         std::string err;
         check("enumerate signed firmware: reads need no key", driver->enumerate(dev, things, err) && things.size() == 1, err);
@@ -748,6 +782,30 @@ static void test_driver() {
         const auto got = signed_bulb.received();
         const json last = json::parse(got.back(), nullptr, false);
         check("it was signed", last.value("env", "") == "pro" && last.contains("hmac") && last["params"].contains("sigTs"), got.back());
+        check("the key, taken, is no longer on trial", !secrets.get("wiz").contains("trial"), secrets.get("wiz").dump());
+
+        // A key sent by an earlier run that never learnt the outcome counts as refused: not sent.
+        const json kept = secrets.get("wiz");
+        secrets.all["wiz"] = {{"signing_key", key_hex}, {"trial", "run-of-an-earlier-start"}};
+        sent = signed_bulb.count("setPilot");
+        check("tried by an earlier run, never confirmed: not sent", !driver->apply(dev, light, c, 1500, err) && err == kKeyUnconfirmed &&
+                                                                       signed_bulb.count("setPilot") == sent, err);
+        step = driver->next_step(dev);
+        check("and the key is asked for again, saying why", step.kind == home::Pairing::Token &&
+                                                              step.prompt.find("confirmed") != std::string::npos, step.prompt);
+        // A store that cannot be written: a typed key is not saved, and one not yet tried is not sent.
+        struct FullSecrets : MemSecrets {
+            bool put(const std::string &, const json &) override { return false; }
+        } full;
+        full.all["wiz"] = {{"signing_key", key_hex}, {"trial", "typed"}};
+        auto stuck = make_wiz_driver();
+        stuck->attach(&full);
+        check("a key typed into a full store is refused", !stuck->pair(dev, key_hex, err) && err.find("could not be saved") != std::string::npos,
+              err);
+        sent = signed_bulb.count("setPilot");
+        check("a key whose first use cannot be noted is not sent", !stuck->apply(dev, light, c, 1500, err) && err == kKeyNotSaved &&
+                                                                     signed_bulb.count("setPilot") == sent, err);
+        secrets.all["wiz"] = kept;
 
         // A device not yet known to sign: unsigned first, then the saved key once.
         home::Thing unmarked = light;
@@ -769,6 +827,7 @@ static void test_driver() {
         });
         home::Device dev = at(old.port());
         dev.id = "wiz:old";
+        dev.mac = "a8:bb:50:06:03:3d";
         std::vector<home::Thing> things;
         std::string err;
         driver->enumerate(dev, things, err);
@@ -786,10 +845,12 @@ static void test_driver() {
     check("no socket is left open between calls", open_fds() == fds_before,
           std::to_string(fds_before) + " before, " + std::to_string(open_fds()) + " after");
 
-    for (const char *e : {kGarbled, kNeedsKey, kKeyRefused, kClockNotSet, kRefused})
+    for (const char *e : {kGarbled, kNeedsKey, kKeyRefused, kKeyUnconfirmed, kKeyNotSaved, kClockNotSet, kRefused})
         check(std::string("not read as unreachable: ") + e, !reads_as_unreachable(e));
     check("\"did not answer\" is read as unreachable", reads_as_unreachable(kNoAnswer));
-    check("another device at the address is read as unreachable (the app looks for this one)", reads_as_unreachable(kMoved));
+    check("another device at the address is read as unreachable (the app looks for this one)", reads_as_unreachable(kMoved) &&
+                                                                                                reads_as_unreachable(kNoMac));
+    check("a device saved without a MAC is not looked for (nothing to know it by)", !reads_as_unreachable(kNoIdentity));
 }
 
 int main() {

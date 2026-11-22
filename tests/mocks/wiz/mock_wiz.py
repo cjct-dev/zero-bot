@@ -36,9 +36,12 @@ Models (module name, firmware):
 The control side, HTTP on 127.0.0.1 (another port):
   GET  /mock/stats    {"requests": [...], "counts": {method: n}, "pilot": {...}, "replies": n}
                       each request: {"method", "params", "raw", "signed", "sig_ok", "port", "dropped"}
-  POST /mock/config   {"drop": "none"|"alternate"|"all", "garbage_first": bool, "late_other": bool}
+  POST /mock/config   {"drop": "none"|"alternate"|"all", "garbage_first": bool, "late_other": bool,
+                       "mac": "all"|"system_only"|"none"|"empty"}
                       alternate: every other datagram is lost (the first is); all: nothing answers,
-                      as when "Allow local communication" is off
+                      as when "Allow local communication" is off. mac: where the device names its
+                      MAC: in getSystemConfig and getPilot (all), only getSystemConfig (as some
+                      firmware's getPilot), nowhere (none), or as "" in both (empty)
   POST /mock/reset    forgets the requests seen
 """
 import argparse
@@ -94,7 +97,7 @@ class Device:
         self.lock = threading.Lock()
         self.requests = []
         self.replies = 0
-        self.config = {"drop": "none", "garbage_first": False, "late_other": False}
+        self.config = {"drop": "none", "garbage_first": False, "late_other": False, "mac": "all"}
         self.datagrams = 0
         cls = self.m["cls"]
         cct = (self.m.get("model_config") or {}).get("cctRange") or (self.m.get("user_config") or {}).get("extRange") or [2200, 6500]
@@ -172,8 +175,14 @@ class Device:
         m = self.m
         if method == "registration":
             return [self.reply(method, "result", {"mac": m["mac"], "success": True})], rec
+        with self.lock:
+            mac_mode = self.config["mac"]
         if method == "getSystemConfig":
             result = {"mac": m["mac"], "homeId": 653906, "roomId": 989983, "fwVersion": m["fw"], "groupId": 0, "ping": 0}
+            if mac_mode == "none":
+                del result["mac"]
+            elif mac_mode == "empty":
+                result["mac"] = ""
             if m.get("module"):
                 result["moduleName"] = m["module"]
             if "type_id" in m:
@@ -190,6 +199,10 @@ class Device:
         if method == "getPilot":
             with self.lock:
                 pilot = dict(self.pilot)
+            if mac_mode in ("system_only", "none"):
+                del pilot["mac"]
+            elif mac_mode == "empty":
+                pilot["mac"] = ""
             return [self.reply(method, "result", pilot)], rec
         if method == "getPower":
             if "power_mw" not in m:
@@ -240,8 +253,11 @@ class Device:
         if cfg["garbage_first"]:
             extra.append(b"\x00\xffnot json")
         if cfg["late_other"]:
-            extra.append(self.reply("getSystemConfig", "result", {"mac": self.m["mac"], "late": True}))
-            extra.append(b'{"env":"pro","method":"getPilot","error":{"code":-32601,"message":"Method not found"}}')
+            # Late answers to earlier requests of other methods (never the method just asked).
+            if rec["method"] != "getSystemConfig":
+                extra.append(self.reply("getSystemConfig", "result", {"mac": self.m["mac"], "late": True}))
+            if rec["method"] != "getPilot":
+                extra.append(b'{"env":"pro","method":"getPilot","error":{"code":-32601,"message":"Method not found"}}')
         for data in extra + out:
             sock.sendto(data, addr)
             with self.lock:

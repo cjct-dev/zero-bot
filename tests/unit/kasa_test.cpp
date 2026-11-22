@@ -442,8 +442,15 @@ static void test_identity() {
     check("a bulb by its mic_mac", same_device("1c:3b:f3:00:00:06", json::parse(kColourBulb)));
     check("another device at the address: not the same", !same_device("c0:06:c3:00:00:02", json::parse(kPlugV1)) &&
                                                           !same_device("50:c7:bf:00:00:01", json::parse(kColourBulb)));
-    check("nothing saved, or nothing reported: nothing to compare", same_device("", json::parse(kPlugV1)) &&
-                                                                       same_device("50:c7:bf:00:00:01", json::parse(kSwitch)));
+    // Only a MAC that matches counts: an answer without one cannot be told apart from another device's.
+    check("nothing saved, or nothing reported: not the same device", !same_device("", json::parse(kPlugV1)) &&
+                                                                         !same_device("50:c7:bf:00:00:01", json::parse(kSwitch)));
+    json blank = json::parse(kPlugV1);
+    blank["mac"] = "";
+    check("an empty MAC is not a match", !same_device("50:c7:bf:00:00:01", blank));
+    blank["mac"] = "not a mac";
+    blank["mic_mac"] = "50:C7:BF:00:00:01:FF";
+    check("a MAC that is not one is not a match", !same_device("50:c7:bf:00:00:01", blank));
     const std::string low = util::lower(kasa::kOtherDevice);
     check("its sentence reads as 'not at that address', so the app looks for the device again", has(low, "answer"));
 }
@@ -657,15 +664,45 @@ static void test_driver() {
             check("the saved plug at the address: asked who it is, then switched",
                   ok && got == std::vector<std::string>{get, R"J({"system":{"set_relay_state":{"state":1}}})J"}, err);
         }
+        // A device at the saved address that does not say which it is (no MAC, or an empty one):
+        // asked who it is, and nothing more. It may be another device that has taken the address.
+        for (const bool empty : {false, true}) {
+            json quiet = json::parse(kPlugV1);
+            quiet.erase("mac");
+            if (empty) quiet["mac"] = "";
+            const std::string reply = std::string(R"J({"system":{"get_sysinfo":)J") + quiet.dump() + "}}";
+            Listener l;
+            dev.port = l.port;
+            dev.mac = "50:c7:bf:00:00:01";
+            std::vector<std::string> got;
+            std::thread t = serve_each(l, got, {reply, R"J({"system":{"set_relay_state":{"err_code":0}}})J"});
+            const bool ok = kasa->apply(dev, dev.things[0], on, 2500, err);
+            t.join();
+            const std::string what = empty ? "an empty MAC" : "no MAC";
+            check("an answer with " + what + ": the change is refused, in words that make the app look for the device",
+                  !ok && err == kasa::kNoMac && has(err, "answers"), err);
+            check("an answer with " + what + ": it was only asked what it is", got == std::vector<std::string>{get} && !l.pending(300),
+                  got.empty() ? "" : got.back());
+            std::vector<home::Thing> out;
+            Listener l2;
+            dev.port = l2.port;
+            got.clear();
+            std::thread t2 = serve_each(l2, got, {reply});
+            const bool e = kasa->enumerate(dev, out, err);
+            t2.join();
+            check("an answer with " + what + ": not read as the saved device either", !e && err == kasa::kNoMac, err);
+        }
         {
             Listener l;
             dev.port = l.port;
-            dev.mac = "";   // a saved device without a MAC: nothing to compare, one request
-            std::vector<std::string> got;
-            std::thread t = serve_each(l, got, {R"J({"system":{"set_relay_state":{"err_code":0}}})J"});
+            dev.mac = "";   // a saved device without a MAC: it cannot be checked, so nothing is sent
             const bool ok = kasa->apply(dev, dev.things[0], on, 2500, err);
-            t.join();
-            check("no saved MAC: the change alone", ok && got.size() == 1 && has(got[0], "set_relay_state"), err);
+            check("no saved MAC: the change is refused, and nothing was sent", !ok && err == kasa::kNoIdentity && !l.pending(300), err);
+            bool reads_unreachable = false;
+            for (const char *w : {"connect", "reach", "answer", "respond", "timed out", "timeout", "no route", "unreachable"})
+                reads_unreachable = reads_unreachable || has(util::lower(err), w);
+            check("no saved MAC: the sentence does not send the app looking for it (there is nothing to know it by)", !reads_unreachable,
+                  err);
         }
     }
 

@@ -125,6 +125,17 @@ bool kasa_switched(const std::string &device_type) {
     return t == "iot.smartplugswitch" || t == "iot.smartbulb";
 }
 
+// A Tapo device's own id, for its saved id: letters, digits and the punctuation of serial numbers
+// only, and not too long (TP-Link's are 40 hex digits). "" when it gave none or something else, so
+// that no saved id is ever the family's prefix alone ("tapo:"), which every such plug would share.
+std::string device_id_part(const std::string &raw) {
+    const std::string id = util::lower(util::trim(raw));
+    if (id.empty() || id.size() > 128) return "";
+    for (const unsigned char c : id)
+        if (!isalnum(c) && c != '-' && c != '_' && c != '.' && c != ':') return "";
+    return id;
+}
+
 uint64_t fnv1a(const std::string &s) {
     uint64_t h = 1469598103934665603ULL;
     for (const unsigned char c : s) { h ^= c; h *= 1099511628211ULL; }
@@ -449,12 +460,13 @@ void Merge::mdns_instance(const std::string &type, const std::string &name) {
         for (const char *key : {"c", "n"})
             if (txt.count(key)) d.info[key] = txt[key];
     }
-    if (txt.count("bridgeid")) d.id = "hue:" + util::lower(txt["bridgeid"]);
+    // An id announced empty is no id ("homekit:" alone would be shared by every such device).
+    if (txt.count("bridgeid") && !util::trim(txt["bridgeid"]).empty()) d.id = "hue:" + util::lower(txt["bridgeid"]);
     else if (kind == "shelly" && shelly_label(label)) {
         d.id = "shelly:" + util::lower(label);   // one id whichever service is heard
         // What the driver claims by: a record saved before it existed has neither "id" nor "gen".
         if (!d.info.count("id")) d.info["id"] = util::lower(label);
-    } else if (txt.count("id")) d.id = kind + ":" + util::lower(txt["id"]);
+    } else if (txt.count("id") && !util::trim(txt["id"]).empty()) d.id = kind + ":" + util::lower(txt["id"]);
 }
 
 void Merge::tapo_answer(const std::string &ip, const json &r) {
@@ -479,8 +491,14 @@ void Merge::tapo_answer(const std::string &ip, const json &r) {
     Device &d = take(ip, "tapo", "tapo");
     d.model = clean(util::jget(r, "device_model", std::string()));
     d.name = "Tapo " + d.model;
-    d.id = "tapo:" + util::lower(util::jget(r, "device_id", std::string()));
-    d.mac = lower_mac(util::jget(r, "mac", std::string()));
+    d.mac = normal_mac(util::jget(r, "mac", std::string()));
+    // Its own id, else the MAC it gave; with neither, listed() takes the MAC the system learnt from
+    // its answer, or leaves it out. Two plugs whose answers lacked the id were once both saved as
+    // "tapo:", so that a rescan moved one's name, settings and MAC to the other.
+    const std::string own = device_id_part(util::jget(r, "device_id", std::string()));
+    if (!own.empty()) d.id = "tapo:" + own;
+    else if (!d.mac.empty()) d.id = "tapo:" + d.mac;
+    else d.id.clear();
     d.info["device_type"] = clean(util::jget(r, "device_type", std::string()));
     d.info["owner"] = clean(util::jget(r, "owner", std::string()), 64);
     if (r.contains("mgt_encrypt_schm") && r["mgt_encrypt_schm"].is_object()) {
@@ -571,7 +589,12 @@ std::vector<Device> Merge::listed() {
             } else if (d.kind == "fire_tv") d.name = d.info.count("n") && !d.info["n"].empty() ? d.info["n"] : "Fire TV";
         }
         if (d.mac.empty()) d.mac = mac_of(d.ip);
-        if (d.id.empty()) d.id = d.kind + ":" + (d.mac.empty() ? d.ip : d.mac);
+        if (d.id.empty()) {
+            // A Tapo device known by nothing of its own: an id made of its address would pass to
+            // whichever device the router gives that address next, with this one's settings.
+            if (d.kind == "tapo" && d.mac.empty()) continue;
+            d.id = d.kind + ":" + (d.mac.empty() ? d.ip : d.mac);
+        }
         if (d.name.empty()) d.name = d.kind;
         out.push_back(d);
     }
@@ -857,6 +880,10 @@ bool scan(const Options &opt, std::vector<Device> &out, std::string &err, bool *
     if (heard_self) *heard_self = false;
     const Network net = current_network();
     if (!net.usable) { err = net.why_not; return false; }
+    if (!opt.network_id.empty() && net.id() != opt.network_id) {
+        err = "This device is no longer on the network shown, so nothing was scanned.";
+        return false;
+    }
     in_addr local;
     inet_pton(AF_INET, net.address.c_str(), &local);
     Sockets sock;

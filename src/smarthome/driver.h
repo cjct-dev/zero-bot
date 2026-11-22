@@ -107,7 +107,31 @@ public:
     virtual ~Secrets() = default;
     virtual json get(const std::string &family) const = 0;            // {} when nothing is stored
     virtual void set(const std::string &family, const json &value) = 0;
+    // As set(), and whether it was written: false when the file could not be (a full or read-only
+    // store). A driver about to send a credential checks this first (trial below).
+    virtual bool put(const std::string &family, const json &value) {
+        set(family, value);
+        return true;
+    }
 };
+
+// A password, code or key the user has typed is on trial until a device first accepts it. A refused
+// one is never sent again by itself, not even by a later run (a Tapo plug locks itself after a
+// few), so the trial is written where the credential is kept (`holder`: the family's secrets, or
+// Device::auth) before it is first sent, and nothing is sent when that write fails:
+//   typed(h)   just typed: nothing sent yet
+//   begin(h)   about to be sent for the first time in this run: true when `h` changed and must be
+//              written, successfully, before anything is sent
+//   stale(h)   sent by an earlier run that never learnt the outcome (it stopped, or could not record
+//              a refusal): it counts as refused until it is typed again
+//   end(h)     accepted (or dropped): true when `h` changed and should be written
+// A holder without a trial (saved before trials existed, or accepted) is not on trial.
+namespace trial {
+void typed(json &holder);
+bool begin(json &holder);
+bool stale(const json &holder);
+bool end(json &holder);
+}  // namespace trial
 
 class Driver {
 public:

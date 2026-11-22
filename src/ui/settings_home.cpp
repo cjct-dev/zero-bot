@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,6 +23,11 @@ bool find_home_device(const std::string &network_id, const std::string &device_i
     for (const auto &d : home::entry(network_id).devices)
         if (d.id == device_id) { out = d; return true; }
     return false;
+}
+
+// A change the smart-home file could not take (a full store) is said, not lost without a word.
+void say_if_unsaved(Menu &menu, bool saved) {
+    if (!saved) menu.problem("Not saved", home::kNotSaved);
 }
 
 // What a thing is doing, as last read, for a list.
@@ -117,24 +123,28 @@ void open_home_thing(Menu &menu, const std::string &network_id, const std::strin
         // A room taken from the start of the name is shown as a guess for the user to correct.
         const bool guessed = !room_typed && !t.room.empty() && t.room == home::infer_room(t.name);
         items.push_back(MenuItem::val("Called", [t] { return home::spoken(t); }, [&menu, network_id, device_id, thing_id, t] {
-            menu.edit_text("What you call it", home::spoken(t), false, [network_id, device_id, thing_id, t](const std::string &text) {
+            menu.edit_text("What you call it", home::spoken(t), false, [&menu, network_id, device_id, thing_id, t](const std::string &text) {
                 const std::string alias = util::trim(text);
-                home::set_thing_alias(network_id, device_id, thing_id, alias == t.name ? "" : alias);
+                say_if_unsaved(menu, home::set_thing_alias(network_id, device_id, thing_id, alias == t.name ? "" : alias));
             }, "The name to say to the assistant. The maker's app calls it \"" + t.name + "\".");
         }));
         items.push_back(MenuItem::val("Room", [t, guessed] {
             if (t.room.empty()) return std::string("none");
             return guessed ? t.room + " (guessed)" : t.room;
         }, [&menu, network_id, device_id, thing_id, t] {
-            menu.edit_text("Room", t.room, false, [network_id, device_id, thing_id](const std::string &text) {
-                home::set_thing_room(network_id, device_id, thing_id, util::trim(text));
+            menu.edit_text("Room", t.room, false, [&menu, network_id, device_id, thing_id](const std::string &text) {
+                say_if_unsaved(menu, home::set_thing_room(network_id, device_id, thing_id, util::trim(text)));
             }, "Lights in a room can be switched together: \"turn off the bedroom\". Leave blank for no room.");
         }));
         items.push_back(MenuItem::val("Assistant may use it", [t] { return on_off(t.enabled); }, nullptr,
-                                      [network_id, device_id, thing_id, t](int) { home::set_thing_enabled(network_id, device_id, thing_id, !t.enabled); }));
+                                      [&menu, network_id, device_id, thing_id, t](int) {
+                                          say_if_unsaved(menu, home::set_thing_enabled(network_id, device_id, thing_id, !t.enabled));
+                                      }));
         if (t.caps & home::kPower) {
             items.push_back(MenuItem::val("Ask before switching on", [t] { return on_off(t.ask_first); }, nullptr,
-                                          [network_id, device_id, thing_id, t](int) { home::set_thing_ask_first(network_id, device_id, thing_id, !t.ask_first); }));
+                                          [&menu, network_id, device_id, thing_id, t](int) {
+                                              say_if_unsaved(menu, home::set_thing_ask_first(network_id, device_id, thing_id, !t.ask_first));
+                                          }));
             const auto on = t.state.find("on");
             const bool is_on = on != t.state.end() && on->is_boolean() && on->get<bool>();
             items.push_back(MenuItem::val("Switch now", [is_on] { return std::string(is_on ? "On" : "Off"); }, [&menu, network_id, device_id, thing_id, is_on] {
@@ -175,7 +185,9 @@ void open_home_device(Menu &menu, const std::string &network_id, const std::stri
                 Menu::add_paragraph(items, d.problem);
             }
             items.push_back(MenuItem::val("Assistant may use it", [d] { return on_off(d.enabled); }, nullptr,
-                                          [network_id, device_id, d](int) { home::set_enabled(network_id, device_id, !d.enabled); }));
+                                          [&menu, network_id, device_id, d](int) {
+                                              say_if_unsaved(menu, home::set_enabled(network_id, device_id, !d.enabled));
+                                          }));
             bool header = false;
             for (const auto &t : d.things) {
                 if (!d.listed(t)) continue;
@@ -211,7 +223,10 @@ void open_home_device(Menu &menu, const std::string &network_id, const std::stri
         const std::string remove_question = d.auth.empty() ? "Remove this device?"
                                                            : "Remove this device? It stays paired with Zero Bot: unpair it first to use it with another app.";
         items.push_back(MenuItem::action("Remove from this list", [&menu, network_id, device_id, remove_question] {
-            menu.confirm(remove_question, "Remove", [&menu, network_id, device_id] { home::remove_device(network_id, device_id); menu.pop(); });
+            menu.confirm(remove_question, "Remove", [&menu, network_id, device_id] {
+                if (!home::remove_device(network_id, device_id)) { say_if_unsaved(menu, false); return; }
+                menu.pop();
+            });
         }, true));
         return items;
     };
@@ -226,21 +241,24 @@ void open_tapo_account(Menu &menu, const std::string &network_id) {
         std::vector<MenuItem> items;
         Menu::add_paragraph(items, "Tapo plugs only obey the account they were set up with. The e-mail and a scrambled form of the "
                                    "password are kept on this device and used on your own network only.");
-        if (home::tapo_account().refused)
+        if (home::tapo_account().unconfirmed)
+            Menu::add_paragraph(items, "No plug has confirmed the password typed last (Zero Bot stopped before it knew), so "
+                                       "nothing more is sent to the plugs until it is typed again.");
+        else if (home::tapo_account().refused)
             Menu::add_paragraph(items, "A plug did not accept the saved password, so nothing more is sent to the plugs until it "
                                        "is typed again.");
         items.push_back(MenuItem::val("E-mail", [] { return or_dash(home::tapo_account().email); }, [&menu] {
             menu.edit_text("Tapo account e-mail", home::tapo_account().email, false,
-                           [](const std::string &t) { home::set_tapo_account(util::trim(t), ""); });
+                           [&menu](const std::string &t) { say_if_unsaved(menu, home::set_tapo_account(util::trim(t), "")); });
         }));
         items.push_back(MenuItem::val("Password", [] {
             const home::TapoAccount a = home::tapo_account();
-            return std::string(!a.password_saved ? "not set" : a.refused ? "not accepted" : "saved");
+            return std::string(!a.password_saved ? "not set" : a.unconfirmed ? "not confirmed" : a.refused ? "not accepted" : "saved");
         }, [&menu] {
             menu.edit_text("Tapo account password", "", true, [&menu](const std::string &t) {
                 if (t.empty()) return;
                 if (home::tapo_account().email.empty()) { menu.toast("Enter the e-mail first"); return; }
-                home::set_tapo_account(home::tapo_account().email, t);
+                say_if_unsaved(menu, home::set_tapo_account(home::tapo_account().email, t));
             }, "Typed text is shown while you enter it. Only a scrambled form is kept.");
         }));
         items.push_back(MenuItem::action("Check the plugs", [&menu, network_id] {
@@ -251,31 +269,35 @@ void open_tapo_account(Menu &menu, const std::string &network_id) {
         }));
         if (!home::tapo_account().email.empty())
             items.push_back(MenuItem::action("Forget the account", [&menu] {
-                menu.confirm("Forget the Tapo account on this device?", "Forget", [] { home::set_tapo_account("", ""); });
+                menu.confirm("Forget the Tapo account on this device?", "Forget",
+                             [&menu] { say_if_unsaved(menu, home::set_tapo_account("", "")); });
             }, true));
         return items;
     };
     menu.push(std::move(page));
 }
 
-// Starts a scan after the user has agreed to it on the warning page.
-void run_home_scan(Menu &menu) {
+// Starts a scan of `shown`, the network the page showed when the user agreed to it (the warning
+// page, or Scan again on a network scanned before). It is that network's scan or none: the home
+// layer refuses it once the device is elsewhere, and drops what it heard when the network changed
+// while it listened.
+void run_home_scan(Menu &menu, const discovery::Network &shown) {
     menu.toast("Looking for devices…");
     background(
-        [] {
-            const discovery::Network net = home::network_now(true);
+        [shown] {
             std::vector<discovery::Device> found;
             std::string err;
             bool heard = false;
-            if (!home::scan(found, err, &heard)) return std::string("!") + err;
+            if (!home::scan(shown, found, err, &heard)) return std::string("!") + err;
             if (found.empty())
                 return std::string("!") + (heard ? "Nothing answered. This network may keep devices from seeing each other, as guest networks do."
                                                  : "This device could not hear the network's announcements. A firewall may be blocking them.");
-            const int added = home::remember_scan(net, found);
+            const int added = home::remember_scan(shown, found);
+            if (added < 0) return std::string("!") + "The devices found could not be saved. " + home::kNotSaved;
             std::string summary = std::to_string(found.size()) + (found.size() == 1 ? " device found" : " devices found");
             if (added < static_cast<int>(found.size())) summary += ", " + std::to_string(added) + " new";
             // Devices that are already set up are read; the others only learn that they need it.
-            return summary + ". " + home::refresh(net.id());
+            return summary + ". " + home::refresh(shown.id());
         },
         [&menu](const std::string &result) {
             if (!menu.open()) return;
@@ -284,18 +306,19 @@ void run_home_scan(Menu &menu) {
         });
 }
 
-void open_home_warning(Menu &menu) {
+void open_home_warning(Menu &menu, const discovery::Network &shown) {
     MenuPage page;
     page.title = "Before you scan";
-    page.build = [&menu]() {
+    page.build = [&menu, shown]() {
         std::vector<MenuItem> items;
+        items.push_back(MenuItem::header("Network: " + shown.label()));
         Menu::add_paragraph(items, "Only do this on a network you own. On a hotel, office or shared network it would list other "
                                    "people's devices and may break the rules there.");
         Menu::add_paragraph(items, "The scan asks devices to identify themselves, the way a smart-home app does. It does not log in "
                                    "to anything or change anything.");
         Menu::add_paragraph(items, "What it finds is saved on this device for this network only. When you ask the assistant to "
                                    "control something, the device names are sent to your AI service.");
-        items.push_back(MenuItem::action("This is my network: scan it", [&menu] { menu.pop(); run_home_scan(menu); }));
+        items.push_back(MenuItem::action("This is my network: scan it", [&menu, shown] { menu.pop(); run_home_scan(menu, shown); }));
         items.push_back(MenuItem::action("Cancel", [&menu] { menu.pop(); }));
         return items;
     };
@@ -304,13 +327,24 @@ void open_home_warning(Menu &menu) {
 
 }  // namespace
 
-// The things the assistant can use, by room; then devices still to be set up; then the rest.
+// The things the assistant can use, by room; then devices still to be set up; then the rest. The
+// network is read off the UI thread when the page opens: the first full look runs `iw` and may wait
+// for the router's address, seconds in which keys, redraws and the alarm would stand still.
 void open_smart_home(Menu &menu) {
+    struct Shown {
+        bool known = false;
+        discovery::Network net;
+    };
+    auto shown = std::make_shared<Shown>();
     MenuPage page;
     page.title = "Smart home";
-    page.build = [&menu]() {
+    page.build = [&menu, shown]() {
         std::vector<MenuItem> items;
-        const discovery::Network net = home::network_now();
+        if (!shown->known) {
+            Menu::add_paragraph(items, "Looking at the network…");
+            return items;
+        }
+        const discovery::Network net = shown->net;
         if (!net.usable) {
             Menu::add_paragraph(items, net.why_not.empty() ? "There is no home network to look at right now." : net.why_not);
             return items;
@@ -320,7 +354,7 @@ void open_smart_home(Menu &menu) {
         if (!home::scanned(id)) {
             Menu::add_paragraph(items, "Nothing has been looked for on this network. A scan finds smart plugs, lights and "
                                        "similar devices so the assistant can switch them for you.");
-            items.push_back(MenuItem::action("Find devices on this network…", [&menu] { open_home_warning(menu); }));
+            items.push_back(MenuItem::action("Find devices on this network…", [&menu, net] { open_home_warning(menu, net); }));
             return items;
         }
         const home::NetworkEntry e = home::entry(id);
@@ -368,13 +402,18 @@ void open_smart_home(Menu &menu) {
                 const home::TapoAccount a = home::tapo_account();
                 return a.refused ? std::string("check password") : a.set() ? a.email : std::string("needed");
             }, [&menu, id] { open_tapo_account(menu, id); }));
-        items.push_back(MenuItem::action("Scan again", [&menu] { run_home_scan(menu); }));
+        items.push_back(MenuItem::action("Scan again", [&menu, net] { run_home_scan(menu, net); }));
         items.push_back(MenuItem::action("Forget this network", [&menu, id] {
-            menu.confirm("Forget every device saved for this network?", "Forget", [id] { home::forget_network(id); });
+            menu.confirm("Forget every device saved for this network?", "Forget", [&menu, id] { say_if_unsaved(menu, home::forget_network(id)); });
         }, true));
         return items;
     };
     menu.push(std::move(page));
+    background([] { return home::network_now(); }, [&menu, shown](const discovery::Network &net) {
+        shown->net = net;
+        shown->known = true;
+        if (menu.open() && menu.title() == "Smart home") menu.refresh();
+    });
 }
 
 }  // namespace ui

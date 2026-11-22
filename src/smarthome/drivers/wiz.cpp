@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cmath>
 #include <ctime>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <set>
@@ -41,8 +42,18 @@ const char *const kKeyRefused =
     "A WiZ device did not accept the signing key, so it is not sent again. Type the key again in Settings, Smart home, "
     "on the device's page.";
 const char *const kClockNotSet = "The clock here is not set yet, so a signed command cannot be sent. Try again in a minute.";
+const char *const kKeyNotSaved =
+    "The WiZ signing key's first use could not be noted on this device (its storage may be full), so nothing was sent.";
+const char *const kKeyUnconfirmed =
+    "No WiZ device has confirmed the signing key typed last (Zero Bot stopped before it knew), so it is not sent again. Type "
+    "the key again in Settings, Smart home, on the device's page.";
 const char *const kRefused = "The WiZ device refused the command.";
 const char *const kMoved = "Another WiZ device answered at this one's saved address, so it was left alone.";
+const char *const kNoMac =
+    "The device that answered at this WiZ device's saved address did not say which device it is, so it was left alone.";
+const char *const kNoIdentity =
+    "No hardware address is saved for this WiZ device, so Zero Bot cannot make sure that the device at its address is "
+    "still this one. Scan the network again in Settings, Smart home.";
 
 using home::Change;
 using home::Device;
@@ -186,16 +197,27 @@ std::string saved_mac(const Device &dev) {
     return from_id.empty() ? support::mac_digits(dev.mac) : from_id;
 }
 
-// Whether a getSystemConfig or getPilot result came from this device. Addresses are handed out
-// again (a router that loses its leases when it restarts, a bulb switched off at the wall for a
-// week), and WiZ devices have no key of their own that would fail at a different one: without this
-// a command for the bedroom lamp would switch whichever WiZ device now has its address, and a "yes"
-// asked for one thing would be spent on another. A result that names no MAC cannot be told apart.
+// Whether a getSystemConfig or getPilot result came from this device: it names the MAC the device
+// was saved under. Addresses are handed out again (a router that loses its leases when it restarts,
+// a bulb switched off at the wall for a week), and WiZ devices have no key of their own that would
+// fail at a different one: without this a command for the bedroom lamp would switch whichever WiZ
+// device now has its address, and a "yes" asked for one thing would be spent on another. Only a
+// match counts: a result that names no MAC cannot be told apart from another device's.
 bool same_device(const std::string &expected, const json &result) {
-    if (expected.empty()) return true;
-    const std::string got = support::mac_digits(jstr(result, "mac"));
-    return got.empty() ? !(result.is_object() && result.contains("mac")) : got == expected;
+    return !expected.empty() && support::mac_digits(jstr(result, "mac")) == expected;
 }
+
+// A result with no "mac", or an empty one: it says nothing of which device sent it (some firmware
+// leaves the MAC out of getPilot). Anything else in "mac" that is not this device's is another's.
+bool names_no_mac(const json &result) {
+    if (!result.is_object()) return true;
+    const auto it = result.find("mac");
+    return it == result.end() || (it->is_string() && it->get<std::string>().empty());
+}
+
+// The family's secrets are read, changed and written back by changes to several devices at once:
+// one at a time, so that a refusal kept by one is not overwritten by another's trial.
+std::mutex g_key_mtx;
 
 // Devices that turned down an unsigned command in this run, by device id: they want a key even
 // before a read has marked their things as signed.
@@ -208,7 +230,7 @@ bool needs_key_now(const Device &dev) {
     return g_needs_key.count(memory_id(dev)) > 0;
 }
 
-enum class Outcome { Ok, NoAnswer, Garbled, NoSuchMethod, NeedsKey, KeyRefused, ClockNotSet, Refused };
+enum class Outcome { Ok, NoAnswer, Garbled, NoSuchMethod, NeedsKey, KeyRefused, KeyUnconfirmed, KeyNotSaved, ClockNotSet, Refused };
 
 const char *sentence(Outcome o) {
     switch (o) {
@@ -216,6 +238,8 @@ const char *sentence(Outcome o) {
         case Outcome::Garbled: return kGarbled;
         case Outcome::NeedsKey: return kNeedsKey;
         case Outcome::KeyRefused: return kKeyRefused;
+        case Outcome::KeyUnconfirmed: return kKeyUnconfirmed;
+        case Outcome::KeyNotSaved: return kKeyNotSaved;
         case Outcome::ClockNotSet: return kClockNotSet;
         default: return kRefused;
     }
@@ -606,7 +630,11 @@ public:
         home::PairStep step;
         step.kind = home::Pairing::Token;
         step.field = "WiZ signing key";
-        step.prompt = k.refused
+        step.prompt = k.unconfirmed
+                          ? "No WiZ device has confirmed the signing key typed last (Zero Bot stopped before it knew), so it is "
+                            "not sent again. Type the udp_signing_key from the WiZ app's export for local integration again: 32 "
+                            "characters, 0 to 9 and a to f."
+                      : k.refused
                           ? "A WiZ device did not accept the saved signing key, so it is not sent again. Type the "
                             "udp_signing_key from the WiZ app's export for local integration again: 32 characters, 0 to 9 "
                             "and a to f."
@@ -631,8 +659,15 @@ public:
                           : "That is not a WiZ signing key: it is 32 characters, each 0 to 9 or a to f.";
             return false;
         }
-        // Typed again: one more try, even for the key that was refused.
-        secrets_->set(kFamily, json{{"signing_key", support::hex(key)}});
+        // Typed again: one more try, even for the key that was refused. It is on trial until a device
+        // takes it (driver.h home::trial): its first signed command writes that down first.
+        json j{{"signing_key", support::hex(key)}};
+        home::trial::typed(j);
+        std::lock_guard<std::mutex> lock(g_key_mtx);
+        if (!secrets_->put(kFamily, j)) {
+            err = "The key could not be saved on this device; its storage may be full.";
+            return false;
+        }
         return true;
     }
 
@@ -647,8 +682,9 @@ public:
             err = o == Outcome::NoAnswer ? kNoAnswerSetup : sentence(o);
             return false;
         }
-        if (!same_device(saved_mac(dev), sys)) {
-            err = kMoved;
+        const std::string expected = saved_mac(dev);
+        if (!expected.empty() && !same_device(expected, sys)) {   // one saved without a MAC may be read, never changed
+            err = names_no_mac(sys) ? kNoMac : kMoved;
             return false;
         }
         const std::string module = jstr(sys, "moduleName"), mac = jstr(sys, "mac");
@@ -695,10 +731,8 @@ public:
             err = sentence(o);
             return false;
         }
-        if (!same_device(saved_mac(dev), pilot)) {
-            err = kMoved;
-            return false;
-        }
+        const std::string expected = saved_mac(dev);
+        if (!expected.empty() && !confirm(t, expected, pilot, deadline, err)) return false;
         const bool wants_power = detail && std::any_of(things.begin(), things.end(), [](const Thing &th) {
                                      return jstr(th.ref, "k") == "plug" && (th.caps & home::kSensor);
                                  });
@@ -715,20 +749,20 @@ public:
         const long long deadline = now_ms() + std::clamp(deadline_ms <= 0 ? 2500 : deadline_ms, 100, 10000);
         Target t = target(dev);
         json result;
-        // First, that the device at the saved address is this one (same_device): a read, open on
-        // every firmware, with at most half the time.
+        // First, that the device at the saved address is this one (confirm): reads, open on every
+        // firmware, with at most half the time. A device saved without a MAC is never changed.
         const std::string expected = saved_mac(dev);
-        if (!expected.empty()) {
-            const Outcome seen = call(t, "getPilot", "{}", "", now_ms() + std::min(1250, left(deadline, 20000) / 2), result);
-            if (seen != Outcome::Ok) {
-                err = sentence(seen);
-                return false;
-            }
-            if (!same_device(expected, result)) {
-                err = kMoved;
-                return false;
-            }
+        if (expected.empty()) {
+            err = kNoIdentity;
+            return false;
         }
+        const long long checked_by = now_ms() + std::min(1250, left(deadline, 20000) / 2);
+        const Outcome seen = call(t, "getPilot", "{}", "", checked_by, result);
+        if (seen != Outcome::Ok) {
+            err = sentence(seen);
+            return false;
+        }
+        if (!confirm(t, expected, result, checked_by, err)) return false;
         const bool known_signed = jbool(thing.ref, "signed") || needs_key_now(dev);
         Outcome o;
         if (known_signed) {
@@ -745,8 +779,9 @@ public:
 
 private:
     struct Key {
-        std::string bytes;      // 16 bytes; empty when none is saved
-        bool refused = false;   // a device turned it down: it is not sent again
+        std::string bytes;          // 16 bytes; empty when none is saved
+        bool refused = false;       // a device turned it down: it is not sent again
+        bool unconfirmed = false;   // also refused: sent by a run that stopped before it knew the outcome
     };
 
     Key family_key() const {
@@ -754,8 +789,19 @@ private:
         if (!secrets_) return k;
         const json j = secrets_->get(kFamily);
         if (!detail::parse_key(jstr(j, "signing_key"), k.bytes)) return {};
-        k.refused = jbool(j, "refused");
+        k.unconfirmed = !jbool(j, "refused") && home::trial::stale(j);   // a refusal kept says more
+        k.refused = jbool(j, "refused") || k.unconfirmed;
         return k;
+    }
+
+    // Writes `change` to the family's secrets when they still hold `key`; false when that write
+    // was wanted and failed.
+    bool note_key(const std::string &key, const std::function<bool(json &)> &change) {
+        std::lock_guard<std::mutex> lock(g_key_mtx);
+        json j = secrets_->get(kFamily);
+        std::string saved;
+        if (!detail::parse_key(jstr(j, "signing_key"), saved) || saved != key || !change(j)) return true;
+        return secrets_->put(kFamily, j);
     }
 
     // setPilot signed with the family's key, when there is one that no device has refused and the
@@ -763,21 +809,38 @@ private:
     Outcome signed_set(Target &t, const std::string &params, long long deadline, json &result) {
         const Key k = family_key();
         if (k.bytes.empty()) return Outcome::NeedsKey;
+        if (k.unconfirmed) return Outcome::KeyUnconfirmed;
         if (k.refused) return Outcome::KeyRefused;
         // A test's own clock counts as set.
         const bool synced = g_unix_clock != system_unix_time || kernel_clock_synced();
         if (!detail::signing_clock_ok(unix_now(), synced, uptime_s())) return Outcome::ClockNotSet;
+        // A key's first use is written down before it is sent: a refusal that could not be kept
+        // still stops the next run.
+        if (!note_key(k.bytes, [](json &j) { return home::trial::begin(j); })) return Outcome::KeyNotSaved;
         const Outcome o = call(t, "setPilot", params, k.bytes, deadline, result);
-        if (o == Outcome::KeyRefused) {
-            // Only the key that was sent is marked: one typed meanwhile gets its own try.
-            json j = secrets_->get(kFamily);
-            std::string saved;
-            if (detail::parse_key(jstr(j, "signing_key"), saved) && saved == k.bytes) {
-                j["refused"] = true;
-                secrets_->set(kFamily, j);
-            }
-        }
+        // Only the key that was sent is marked: one typed meanwhile gets its own try.
+        if (o == Outcome::KeyRefused) note_key(k.bytes, [](json &j) { j["refused"] = true; return true; });
+        if (o == Outcome::Ok) note_key(k.bytes, [](json &j) { return home::trial::end(j); });
         return o;
+    }
+
+    // Whether the device that gave `pilot` is the one saved under `expected` (same_device). Firmware
+    // whose getPilot names no MAC is asked getSystemConfig, which names it, by `deadline`. False with
+    // kMoved when another MAC is named, kNoMac when none is.
+    static bool confirm(Target &t, const std::string &expected, const json &pilot, long long deadline, std::string &err) {
+        json sys;
+        const json *named = &pilot;
+        if (names_no_mac(pilot)) {
+            const Outcome o = call(t, "getSystemConfig", "{}", "", deadline, sys);
+            if (o != Outcome::Ok) {
+                err = sentence(o);
+                return false;
+            }
+            named = &sys;
+        }
+        if (same_device(expected, *named)) return true;
+        err = names_no_mac(*named) ? kNoMac : kMoved;
+        return false;
     }
 
     Target target(const Device &dev) const {

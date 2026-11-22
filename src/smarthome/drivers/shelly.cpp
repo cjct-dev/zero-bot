@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -962,7 +963,11 @@ public:
         if (gen == 0 && !refused) return step;       // no password asked for, as far as is known
         if (gen == 1 && (refused || text(member(dev.auth, "user")).empty())) {
             step.kind = home::Pairing::EnterCode;
-            step.prompt = refused ? "The Shelly did not accept the saved login, so nothing more is sent to it. Type its user "
+            step.prompt = trial_stale(key, login) && !refusal_kept(key, login)
+                              ? "The Shelly never confirmed the login typed last (Zero Bot stopped before it knew), so it is not "
+                                "sent again. Type its user name again (it is admin unless it was changed); its password is "
+                                "asked for next."
+                          : refused ? "The Shelly did not accept the saved login, so nothing more is sent to it. Type its user "
                                     "name again (it is admin unless it was changed); its password is asked for next."
                                   : "This Shelly asks for a login, set up in the Shelly app. Type its user name (it is admin "
                                     "unless it was changed); its password is asked for next.";
@@ -970,7 +975,10 @@ public:
             return step;
         }
         step.kind = home::Pairing::Password;
-        step.prompt = refused ? "The Shelly did not accept the saved password, so nothing more is sent to it. Type the "
+        step.prompt = trial_stale(key, login) && !refusal_kept(key, login)
+                          ? "The Shelly never confirmed the password typed last (Zero Bot stopped before it knew), so it is not "
+                            "sent again. Type the password again; capitals count."
+                      : refused ? "The Shelly did not accept the saved password, so nothing more is sent to it. Type the "
                                 "password again; capitals count."
                               : "This Shelly asks for a password, set by its owner in the Shelly app. Type it; capitals "
                                 "count. It is kept on this handheld only.";
@@ -1009,6 +1017,13 @@ public:
         dev.auth["password"] = input;
         if (locked_gen(key) >= 2) dev.auth["user"] = "admin";
         forget(key, false);
+        // On trial from now (driver.h home::trial), kept in the family's secrets: read() and apply()
+        // cannot change Device::auth. A password whose trial cannot be written is not kept.
+        if (!note_trial(key, login_of(dev, locked_gen(key)), [](json &e) { home::trial::typed(e); return true; })) {
+            dev.auth.erase("password");
+            err = "The password could not be saved on this device (its storage may be full), so it was not sent.";
+            return false;
+        }
         Identity who;
         if (!identify(t, dl, who, err)) {
             err += " The password is kept, and is tried when the device is next read.";
@@ -1022,10 +1037,15 @@ public:
         if (gen >= 2) dev.auth["user"] = "admin";
         // One request to check it. A refusal is not kept as the device's password at all.
         const Login login = login_of(dev, gen);
+        if (!begin_trial(key, login, err)) {
+            dev.auth.erase("password");
+            return false;
+        }
         const Reply r = exchange(t, "GET", gen >= 2 ? detail::rpc_path("Shelly.GetStatus", json()) : std::string("/status"), "", gen,
                                  &login, dl);
         if (r.answered && !r.too_long && r.status == 401) {
             dev.auth.erase("password");
+            note_trial(key, login, [](json &e) { return home::trial::end(e); });
             if (gen == 1) dev.auth.erase("user");
             err = gen == 1 ? "The Shelly did not accept this user name and password. Type them again; capitals count."
                            : "The Shelly did not accept this password. Capitals count; type it again.";
@@ -1047,6 +1067,7 @@ public:
             err = "The password is saved, but the Shelly reported an error when asked with it.";
             return false;
         }
+        note_trial(key, login, [](json &e) { return home::trial::end(e); });
         return true;
     }
 
@@ -1193,32 +1214,93 @@ private:
         return locked ? whole(member(*locked, key.c_str()), 1, 9, 0) : 0;
     }
 
-    bool is_refused(const std::string &key, const Login &login) const {
+    bool is_refused(const std::string &key, const Login &login) const { return trial_stale(key, login) || refusal_kept(key, login); }
+
+    // ---- a typed password's trial (driver.h home::trial), per device in the family's secrets beside
+    // the password's fingerprint: {"trial": {device: {"print": ..., "trial": "typed" | run}}}.
+    static std::string print_of(const Login &login) { return detail::fingerprint("", login.password); }
+
+    bool trial_open(const std::string &key, const Login &login) const {
+        if (!login.have()) return false;
+        const json f = family();
+        const json *all = member_obj(f, "trial");
+        const json *one = all ? member_obj(*all, key.c_str()) : nullptr;
+        return one && text(member(*one, "print")) == print_of(login);
+    }
+
+    bool trial_stale(const std::string &key, const Login &login) const {
+        if (!login.have()) return false;
+        const json f = family();
+        const json *all = member_obj(f, "trial");
+        const json *one = all ? member_obj(*all, key.c_str()) : nullptr;
+        return one && text(member(*one, "print")) == print_of(login) && home::trial::stale(*one);
+    }
+
+    // Lets `change` edit this password's trial record and writes it. False when that write was
+    // wanted and failed.
+    bool note_trial(const std::string &key, const Login &login, const std::function<bool(json &)> &change) {
+        if (!secrets_ || !login.have()) return false;
+        std::lock_guard<std::mutex> lk(secrets_mtx_);
+        json f = secrets_->get(kFamily);
+        if (!f.is_object()) f = json::object();
+        if (!f.contains("trial") || !f["trial"].is_object()) f["trial"] = json::object();
+        json entry = f["trial"].contains(key) && f["trial"][key].is_object() ? f["trial"][key] : json::object();
+        if (text(member(entry, "print")) != print_of(login)) entry = {{"print", print_of(login)}};
+        if (!change(entry)) return true;
+        if (entry.contains("trial")) f["trial"][key] = entry;
+        else f["trial"].erase(key);
+        if (f["trial"].empty()) f.erase("trial");
+        return secrets_->put(kFamily, f);
+    }
+
+    // Before a request that carries the password: the trial of one typed and never sent is begun in
+    // the file first, and nothing is sent when that write fails.
+    bool begin_trial(const std::string &key, const Login &login, std::string &err) {
+        if (!login.have()) return true;
+        const json f = family();
+        const json *all = member_obj(f, "trial");
+        const json *one = all ? member_obj(*all, key.c_str()) : nullptr;
+        if (!one || text(member(*one, "print")) != print_of(login) || text(member(*one, "trial")) != "typed") return true;
+        if (note_trial(key, login, [](json &e) { return home::trial::begin(e); })) return true;
+        err = "The Shelly's password could not be noted as tried on this device (its storage may be full), so it was not sent.";
+        return false;
+    }
+
+    // Whether this login's refusal was kept: in the file, or in memory when the file could not take it.
+    bool refusal_kept(const std::string &key, const Login &login) const {
+        const std::string print = detail::fingerprint(login.user, login.password);
+        {
+            std::lock_guard<std::mutex> lk(secrets_mtx_);
+            const auto kept = refused_here_.find(key);
+            if (kept != refused_here_.end() && kept->second == print) return true;
+        }
         const json f = family();
         const json *refused = member_obj(f, "refused");
-        return refused && text(member(*refused, key.c_str())) == detail::fingerprint(login.user, login.password);
+        return refused && text(member(*refused, key.c_str())) == print;
     }
 
     // Several devices are read at once (the app uses up to four threads), so the family's secrets
     // are read, changed and written under one lock: two refusals at the same moment must both stay.
-    void note(const char *list, const std::string &key, const json &value) {
-        if (!secrets_) return;
+    // False when the file could not be written.
+    bool note(const char *list, const std::string &key, const json &value) {
+        if (!secrets_) return false;
         std::lock_guard<std::mutex> lk(secrets_mtx_);
         json f = secrets_->get(kFamily);
         if (!f.is_object()) f = json::object();
         if (!f.contains(list) || !f[list].is_object()) f[list] = json::object();
-        if (f[list].contains(key) && f[list][key] == value) return;
+        if (f[list].contains(key) && f[list][key] == value) return true;
         f[list][key] = value;
-        secrets_->set(kFamily, f);
+        return secrets_->put(kFamily, f);
     }
 
     void forget(const std::string &key, bool locked_too) {
         if (!secrets_) return;
         std::lock_guard<std::mutex> lk(secrets_mtx_);
+        refused_here_.erase(key);
         json f = secrets_->get(kFamily);
         if (!f.is_object()) return;
         bool changed = false;
-        for (const char *list : {"refused", "locked"}) {
+        for (const char *list : {"refused", "locked", "trial"}) {
             if (!locked_too && std::string(list) == "locked") continue;
             if (f.contains(list) && f[list].is_object() && f[list].contains(key)) {
                 f[list].erase(key);
@@ -1271,6 +1353,7 @@ private:
     // After GET /shelly: whether the next requests may go, given what the device says of its login.
     bool may_log_in(const Target &t, const Identity &who, const Login &login, std::string &err) {
         if (login.have() && is_refused(t.key, login)) return refused_error(err);
+        if (!begin_trial(t.key, login, err)) return false;
         if (who.auth && !login.have()) {
             note("locked", t.key, who.gen);
             err = std::string(kNeedsPassword) + kTypeIt;
@@ -1305,7 +1388,12 @@ private:
         if (!r.answered) { err = kNoAnswer; return false; }
         if (r.status == 401) {
             if (r.sent_login) {
-                note("refused", t.key, detail::fingerprint(login.user, login.password));
+                const std::string print = detail::fingerprint(login.user, login.password);
+                // Kept in memory as well when the file cannot take it: not sent again in this run at least.
+                if (!note("refused", t.key, print)) {
+                    std::lock_guard<std::mutex> lk(secrets_mtx_);
+                    refused_here_[t.key] = print;
+                }
                 note("locked", t.key, gen);
                 return refused_error(err);
             }
@@ -1317,7 +1405,11 @@ private:
             err = std::string(kThrottled) + " after wrong passwords. Try again in a few minutes.";
             return false;
         }
-        if (r.status >= 200 && r.status < 300) return true;
+        if (r.status >= 200 && r.status < 300) {
+            // The Shelly took the password: its trial, if it was on one, is over.
+            if (r.sent_login && trial_open(t.key, login)) note_trial(t.key, login, [](json &e) { return home::trial::end(e); });
+            return true;
+        }
         if (r.status == 404) err = std::string("The Shelly does not have that channel. ") + kReadAgain;
         else if (r.status == 400) err = "The Shelly did not accept that command.";
         else err = "The Shelly reported an error.";
@@ -1350,7 +1442,8 @@ private:
         return ok;
     }
 
-    std::mutex secrets_mtx_;
+    mutable std::mutex secrets_mtx_;
+    std::map<std::string, std::string> refused_here_;   // refusals the file could not take, by device key
 };
 
 }  // namespace

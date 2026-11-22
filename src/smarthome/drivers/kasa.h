@@ -21,9 +21,11 @@
 //    and the error begins with kNewLogin. This driver does not speak that login. A 20002 answer
 //    that names another MAC than Device::mac is another device's: the error is kOtherDevice.
 //  - The device at the saved address must be the saved one: when Device::mac is known, every
-//    get_sysinfo answer is checked against it, and a change is preceded by a get_sysinfo (one more
-//    connection) so that nothing is switched on another Kasa device that has taken the address.
-//    The error then begins with kOtherDevice, which makes the app look for the device again.
+//    get_sysinfo answer must name it (its "mac", or "mic_mac" on bulbs), and a change is preceded by
+//    a get_sysinfo (one more connection) so that nothing is switched on another Kasa device that has
+//    taken the address. An answer naming another MAC gives kOtherDevice, one naming none kNoMac;
+//    both make the app look for the device again. A device saved without a MAC may be read but is
+//    never changed (kNoIdentity).
 //  - Port: Device::port when not 0 (kind "tplink"), else 9999. One TCP connection per request,
 //    closed after the reply. No pairing and no secrets. Deadlines: apply's deadline_ms for the
 //    check and the change together; 4 s for enumerate and read.
@@ -47,6 +49,8 @@ extern const char *const kNewLogin;   // "this Kasa device moved to TP-Link's ne
 extern const char *const kNoAnswer;   // "the Kasa device did not answer"
 extern const char *const kRefused;    // "the Kasa device refused the connection"
 extern const char *const kOtherDevice;   // "another Kasa device now answers at this one's saved address"
+extern const char *const kNoMac;         // "the device that answers at this Kasa device's saved address does not say ..."
+extern const char *const kNoIdentity;    // "no hardware address is saved for this Kasa device, ..."
 
 // Building blocks, exposed so that kasa_test.cpp can check each one. Not part of the interface.
 namespace detail {
@@ -89,8 +93,8 @@ bool reply_ok(const json &request, const json &reply, std::string &err);
 // The twelve hex digits of a MAC address written with ':', '-' or nothing between pairs, lower
 // case; "" when it is not one.
 std::string mac_digits(const std::string &raw);
-// Whether a get_sysinfo answer is from the device saved with `saved_mac` (its "mac", or "mic_mac"
-// on bulbs). True when either side has no MAC to compare.
+// Whether a get_sysinfo answer is from the device saved with `saved_mac`: its "mac", or "mic_mac" on
+// bulbs, is that MAC. Only a match counts: false when either side has no MAC.
 bool same_device(const std::string &saved_mac, const json &sysinfo);
 // The TCP port to use: Device::port for kind "tplink" when set, else 9999.
 int port_for(const home::Device &dev);

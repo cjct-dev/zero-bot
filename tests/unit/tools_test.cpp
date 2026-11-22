@@ -2,12 +2,22 @@
 // used to overflow the stack and end the app, and the percent forms that read one way and compute
 // another), dates and clock times that do not exist, time zones that are folders or tables rather
 // than zones, and running a helper program (cancelling it, bounding the wait for it, and giving it
-// no open file of the app's but its three standard streams).
+// no open file of the app's but its three standard streams, also where close_range is refused).
 //
 // Built and run by tests/run_unit.sh. Needs /bin/sh, sleep and ls; writes nothing outside the
 // temporary folder it is given.
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+
+#include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -170,6 +180,53 @@ void test_processes(const std::string &tmp) {
     CHECK(r.code == 3 && !r.timed_out);
 }
 
+// Where close_range is missing (an older kernel) or refused (a sandbox's filter), the loop that
+// stands in for it must reach every descriptor the process may hold, not stop at 4096. A child of
+// the test refuses close_range to itself with a seccomp filter, as such a sandbox would, holds a
+// descriptor at 5000, and runs a helper program.
+void test_descriptors_without_close_range(const std::string &tmp) {
+    g_test = "helper programs without close_range";
+#ifdef SYS_close_range
+    constexpr int kHigh = 5000;
+    rlimit lim{};
+    if (getrlimit(RLIMIT_NOFILE, &lim) != 0 || (lim.rlim_max != RLIM_INFINITY && lim.rlim_max <= kHigh)) {
+        printf("tools: note: the open-file limit is too low here to hold descriptor %d; that check was skipped\n", kHigh);
+        return;
+    }
+    const pid_t pid = fork();
+    if (pid == 0) {
+        // The child: exit 0 when the helper saw no descriptor 5000, 1 when it did, 2 when the
+        // test could not be set up, 3 when the helper did not run.
+        lim.rlim_cur = lim.rlim_max == RLIM_INFINITY ? 8192 : std::min<rlim_t>(lim.rlim_max, 8192);
+        if (setrlimit(RLIMIT_NOFILE, &lim) != 0) _exit(2);
+        const int fd = open((tmp + "/held-high").c_str(), O_CREAT | O_WRONLY, 0600);
+        if (fd < 0 || dup2(fd, kHigh) != kHigh) _exit(2);
+        sock_filter refuse[] = {
+            BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)),
+            BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_close_range, 0, 1),
+            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA)),
+            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        };
+        sock_fprog prog{static_cast<unsigned short>(sizeof(refuse) / sizeof(refuse[0])), refuse};
+        if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 || prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) != 0) _exit(2);
+        if (syscall(SYS_close_range, 4000U, 4001U, 0U) == 0 || errno != ENOSYS) _exit(2);
+        const proc::Result r = proc::run({"sh", "-c", "ls /proc/self/fd"}, "", 5000);
+        if (!r.ok()) _exit(3);
+        _exit(r.out.find("\n" + std::to_string(kHigh) + "\n") == std::string::npos ? 0 : 1);
+    }
+    int status = 0;
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid);
+    const int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (code == 2) {
+        printf("tools: note: close_range could not be refused here (no seccomp); that check was skipped\n");
+        return;
+    }
+    check(code == 0, code == 1 ? "descriptor 5000 reached the helper program" : "the helper program did not run", __LINE__);
+#else
+    printf("tools: note: this system's headers have no close_range; that check was skipped\n");
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -178,6 +235,7 @@ int main(int argc, char **argv) {
     test_dates();
     test_zones();
     test_processes(tmp);
+    test_descriptors_without_close_range(tmp);
     printf("tools: %d checks, %d failed\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

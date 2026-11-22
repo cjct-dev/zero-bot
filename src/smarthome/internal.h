@@ -11,8 +11,12 @@
 namespace home {
 
 // Loads the network's entry, lets `change` edit it and saves it, all under the file lock.
-// Returns false when the network is not saved. `change` must not call back into this layer.
+// Returns false when the network is not saved, or the file could not be written. `change` must
+// not call back into this layer.
 bool modify_entry(const std::string &network_id, const std::function<void(NetworkEntry &)> &change);
+
+// Different on every start of the app: what a mark written by this run carries (driver.h trial).
+std::string run_id();
 
 // One conversation with a device at a time; different devices do not wait for each other.
 std::mutex &device_lock(const std::string &device_id);
@@ -20,12 +24,20 @@ std::mutex &device_lock(const std::string &device_id);
 // Whether `network_id` is the network the device is on right now and may be used. Every path
 // that ends in a driver call checks this first.
 bool on_network(const std::string &network_id, std::string &why_not);
+// The stand-in for a discovery scan that the device-free tests set (testing::set_scan), or nullptr.
+using ScanFn = bool (*)(std::vector<discovery::Device> &found);
+ScanFn test_scan();
+
 // Whether this device's address may be contacted at all: on the stand-in test network only a
 // 127.x address may.
 bool may_contact(const Device &device, std::string &why_not);
 
 // Only these types of thing are ever kept or offered (survey 6.5: an allow-list).
 bool allowed_type(const std::string &type);
+
+// The twelve hex digits of a MAC address in any of the notations saved ("aa:bb:..", "AA-BB-..",
+// none), lower case; "" when it is not one, or is all zeros.
+std::string mac_key(const std::string &raw);
 
 // Folds a fresh list of things from a driver into what is saved for the device.
 void merge_things(Saved &device, std::vector<Thing> fresh, time_t now);
@@ -68,9 +80,11 @@ void set_network_source(const NetworkSource *source);
 void set_clock(unsigned long (*clock_ms)());               // nullptr restores the real clock
 void reset_control();                                      // forgets pending questions, rate counts, turn counters, the last lookup
 // Stands in for the scan that looks for a device which stopped answering at its saved address
-// (relocate in control.cpp), on the stand-in network too; nullptr restores the real scan.
+// (relocate in control.cpp), and for the settings page's scan (scan() in store.cpp), on the
+// stand-in network too; nullptr restores the real scan.
 void set_scan(bool (*scan)(std::vector<discovery::Device> &found));
 void clear_drivers();                                      // empties the driver table (and stops the built-in list loading)
+void new_run();                                            // run_id() changes, as when the app starts again
 }  // namespace testing
 
 }  // namespace home

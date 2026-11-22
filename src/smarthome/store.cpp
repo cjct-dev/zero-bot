@@ -10,12 +10,15 @@
 // top level; they are rewritten in the new form the first time they are loaded.
 #include <algorithm>
 #include <cstdlib>
+#include <random>
 #include <set>
 
 #include "platform/sys.h"
 #include "smarthome/internal.h"
 
 namespace home {
+
+const char *const kNotSaved = "That could not be saved on this device: its storage may be full.";
 
 namespace {
 
@@ -54,18 +57,6 @@ discovery::Network stand_in() {
 bool env_test_network() {
     const char *v = getenv("ZB_TEST_NETWORK");
     return v && *v && std::string(v) != "0";
-}
-
-// The twelve hex digits of a MAC address in any of the notations saved ("aa:bb:..", "AA-BB-..",
-// none), lower case; "" when it is not one, or is all zeros.
-std::string mac_key(const std::string &raw) {
-    std::string hex;
-    for (const char c : raw) {
-        if (c == ':' || c == '-') continue;
-        if (!isxdigit(static_cast<unsigned char>(c)) || hex.size() >= 12) return "";
-        hex += static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    }
-    return hex.size() == 12 && hex != "000000000000" ? hex : "";
 }
 
 // A plug or switch whose name sounds like a heater: the app asks before switching it on.
@@ -113,10 +104,12 @@ json to_json(const Saved &d) {
         const auto m = d.meta.find(t.id);
         things.push_back(thing_to_json(t, m == d.meta.end() ? ThingMeta() : m->second));
     }
-    return {{"id", d.id}, {"kind", d.kind}, {"name", d.name}, {"model", d.model}, {"mac", d.mac}, {"last_ip", d.ip},
+    json j = {{"id", d.id}, {"kind", d.kind}, {"name", d.name}, {"model", d.model}, {"mac", d.mac}, {"last_ip", d.ip},
             {"port", d.port}, {"info", d.info}, {"found_by", d.found_by}, {"enabled", d.enabled},
             {"needs_setup", d.needs_setup}, {"last_seen", static_cast<long long>(d.last_seen)}, {"problem", d.problem},
             {"auth", d.auth.is_object() ? d.auth : json::object()}, {"things", things}};
+    if (!d.trying.empty()) j["trying"] = d.trying;
+    return j;
 }
 
 Saved from_json(const json &j) {
@@ -128,6 +121,7 @@ Saved from_json(const json &j) {
     d.port = jget(j, "port", 0); d.enabled = jget(j, "enabled", true);
     d.needs_setup = jget(j, "needs_setup", false);
     d.last_seen = jget<long long>(j, "last_seen", 0); d.problem = jget(j, "problem", std::string());
+    d.trying = jget(j, "trying", std::string());
     if (j.contains("info") && j["info"].is_object())
         for (auto it = j["info"].begin(); it != j["info"].end(); ++it)
             if (it.value().is_string()) d.info[it.key()] = it.value().get<std::string>();
@@ -214,14 +208,15 @@ json load_root() {   // the caller holds g_mtx
     if (!j.contains("networks") || !j["networks"].is_object()) j["networks"] = json::object();
     if (migrate(j)) {
         j["version"] = 2;
-        util::save_json(path(), j);
+        util::save_json(path(), j);   // when it cannot be written, the next load migrates it again
     }
     return j;
 }
 
-void save_root(json &root) {   // the caller holds g_mtx
+// False when the file could not be written: every change that matters says so to its caller.
+bool save_root(json &root) {   // the caller holds g_mtx
     root["version"] = 2;
-    util::save_json(path(), root);
+    return util::save_json(path(), root);
 }
 
 class FileSecrets : public Secrets {
@@ -232,14 +227,18 @@ public:
         const auto it = root["secrets"].find(family);
         return it != root["secrets"].end() && it->is_object() ? *it : json::object();
     }
-    void set(const std::string &family, const json &value) override {
+    void set(const std::string &family, const json &value) override { put(family, value); }
+    bool put(const std::string &family, const json &value) override {
         std::lock_guard<std::mutex> lk(g_mtx);
         json root = load_root();
         if (value.is_object() && !value.empty()) root["secrets"][family] = value;
         else root["secrets"].erase(family);
-        save_root(root);
+        return save_root(root);
     }
 };
+
+std::mutex g_run_mtx;
+std::string g_run;   // run_id(), made the first time it is asked for
 
 FileSecrets g_secrets;
 
@@ -249,9 +248,9 @@ void ensure_builtin() {
     });
 }
 
-void edit_thing(const std::string &network_id, const std::string &device_id, const std::string &thing_id,
+bool edit_thing(const std::string &network_id, const std::string &device_id, const std::string &thing_id,
                 const std::function<void(Thing &, ThingMeta &)> &change) {
-    modify_entry(network_id, [&](NetworkEntry &e) {
+    return modify_entry(network_id, [&](NetworkEntry &e) {
         for (auto &d : e.devices)
             if (d.id == device_id)
                 for (auto &t : d.things)
@@ -260,6 +259,16 @@ void edit_thing(const std::string &network_id, const std::string &device_id, con
 }
 
 }  // namespace
+
+std::string mac_key(const std::string &raw) {
+    std::string hex;
+    for (const char c : raw) {
+        if (c == ':' || c == '-') continue;
+        if (!isxdigit(static_cast<unsigned char>(c)) || hex.size() >= 12) return "";
+        hex += static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    }
+    return hex.size() == 12 && hex != "000000000000" ? hex : "";
+}
 
 bool allowed_type(const std::string &type) {
     return std::find_if(std::begin(kTypes), std::end(kTypes), [&](const char *t) { return type == t; }) != std::end(kTypes);
@@ -308,6 +317,48 @@ Driver *driver_for(const Device &device) {
 }
 
 Secrets &secrets() { return g_secrets; }
+
+std::string run_id() {
+    std::lock_guard<std::mutex> lk(g_run_mtx);
+    if (g_run.empty()) {
+        std::random_device random;
+        char buf[40];
+        snprintf(buf, sizeof(buf), "run-%08x%08x-%lld", random(), random(), static_cast<long long>(time(nullptr)));
+        g_run = buf;
+    }
+    return g_run;
+}
+
+// ---------------------------------------------------------------- a typed credential's trial (driver.h)
+namespace trial {
+namespace {
+const char *const kKey = "trial";
+const char *const kTyped = "typed";
+std::string state(const json &holder) { return holder.is_object() ? util::jget(holder, kKey, std::string()) : std::string(); }
+}  // namespace
+
+void typed(json &holder) {
+    if (!holder.is_object()) holder = json::object();
+    holder[kKey] = kTyped;
+}
+
+bool begin(json &holder) {
+    if (state(holder) != kTyped) return false;
+    holder[kKey] = run_id();
+    return true;
+}
+
+bool stale(const json &holder) {
+    const std::string s = state(holder);
+    return !s.empty() && s != kTyped && s != run_id();
+}
+
+bool end(json &holder) {
+    if (!holder.is_object() || !holder.contains(kKey)) return false;
+    holder.erase(kKey);
+    return true;
+}
+}  // namespace trial
 
 bool Saved::controllable() const { return driver_for(*this) != nullptr; }
 
@@ -386,12 +437,31 @@ discovery::Network network_now(bool fresh) {
     return cached;
 }
 
-bool scan(std::vector<discovery::Device> &found, std::string &err, bool *heard_self) {
+bool scan(const discovery::Network &consented, std::vector<discovery::Device> &found, std::string &err, bool *heard_self) {
     found.clear();
     if (heard_self) *heard_self = false;
-    if (test_network()) { err = "Nothing is scanned while the test network is in use."; return false; }
+    const ScanFn stand_in_scan = test_scan();
+    if (!stand_in_scan && test_network()) { err = "Nothing is scanned while the test network is in use."; return false; }
+    // Asked afresh before and after: a cached answer could still describe the network left a moment ago.
+    auto still_on = [&consented] {
+        const discovery::Network now = network_now(true);
+        return now.usable && now.id() == consented.id();
+    };
+    if (!still_on()) {
+        err = "This device is no longer on the network shown, so nothing was scanned. Open Smart home again to see the "
+              "network it is on now.";
+        return false;
+    }
     discovery::Options opt;
-    return discovery::scan(opt, found, err, heard_self);
+    opt.network_id = consented.id();
+    if (!(stand_in_scan ? stand_in_scan(found) : discovery::scan(opt, found, err, heard_self))) return false;
+    if (!still_on()) {
+        found.clear();
+        err = "The network changed during the scan, so nothing it found was saved. Open Smart home again to see the "
+              "network this device is on now.";
+        return false;
+    }
+    return true;
 }
 
 bool on_network(const std::string &network_id, std::string &why_not) {
@@ -430,8 +500,7 @@ bool modify_entry(const std::string &network_id, const std::function<void(Networ
     NetworkEntry e = entry_from(network_id, root["networks"][network_id]);
     change(e);
     store_entry(root, e);
-    save_root(root);
-    return true;
+    return save_root(root);
 }
 
 int remember_scan(const discovery::Network &net, const std::vector<discovery::Device> &found) {
@@ -447,6 +516,7 @@ int remember_scan(const discovery::Network &net, const std::vector<discovery::De
     e.last_scan = now;
     int added = 0;
     for (const auto &f : found) {
+        if (f.id.empty() || f.id.back() == ':') continue;   // no id of its own: a family's prefix alone would be shared
         Saved *known = nullptr;
         // The same device (its MAC) is already saved under another id, and something was decided
         // there: the assistant's use switched off, or things read, which carry the user's settings
@@ -459,6 +529,10 @@ int remember_scan(const discovery::Network &net, const std::vector<discovery::De
             if (d.id == f.id) known = &d;
             else twin = twin || (!mac.empty() && mac_key(d.mac) == mac && (!d.enabled || !d.things.empty()));
         }
+        // The same id from a device with another MAC than the one saved is another device (an id
+        // made from an address, or one a device made up): it is not folded into the saved record,
+        // which keeps its name, settings and MAC, and it is not saved by this scan.
+        if (known && !mac.empty() && !mac_key(known->mac).empty() && mac_key(known->mac) != mac) continue;
         if (!known) {
             e.devices.emplace_back();
             known = &e.devices.back();
@@ -478,32 +552,31 @@ int remember_scan(const discovery::Network &net, const std::vector<discovery::De
         known->last_seen = now;
     }
     store_entry(root, e);
-    save_root(root);
-    return added;
+    return save_root(root) ? added : -1;
 }
 
-void set_enabled(const std::string &network_id, const std::string &device_id, bool on) {
-    modify_entry(network_id, [&](NetworkEntry &e) {
+bool set_enabled(const std::string &network_id, const std::string &device_id, bool on) {
+    return modify_entry(network_id, [&](NetworkEntry &e) {
         for (auto &d : e.devices)
             if (d.id == device_id) d.enabled = on;
     });
 }
 
-void remove_device(const std::string &network_id, const std::string &device_id) {
-    modify_entry(network_id, [&](NetworkEntry &e) {
+bool remove_device(const std::string &network_id, const std::string &device_id) {
+    return modify_entry(network_id, [&](NetworkEntry &e) {
         e.devices.erase(std::remove_if(e.devices.begin(), e.devices.end(), [&](const Saved &d) { return d.id == device_id; }), e.devices.end());
     });
 }
 
-void forget_network(const std::string &network_id) {
+bool forget_network(const std::string &network_id) {
     std::lock_guard<std::mutex> lk(g_mtx);
     json root = load_root();
     root["networks"].erase(network_id);
-    save_root(root);
+    return save_root(root);
 }
 
-void set_thing_alias(const std::string &network_id, const std::string &device_id, const std::string &thing_id, const std::string &alias) {
-    edit_thing(network_id, device_id, thing_id, [&](Thing &t, ThingMeta &) {
+bool set_thing_alias(const std::string &network_id, const std::string &device_id, const std::string &thing_id, const std::string &alias) {
+    return edit_thing(network_id, device_id, thing_id, [&](Thing &t, ThingMeta &) {
         const bool sounded_hot = suggests_heat(spoken(t));
         t.alias = clean_name(alias);
         // The name typed here can be the first that says what a plug feeds (a WiZ plug has none of
@@ -513,17 +586,17 @@ void set_thing_alias(const std::string &network_id, const std::string &device_id
     });
 }
 
-void set_thing_room(const std::string &network_id, const std::string &device_id, const std::string &thing_id, const std::string &room) {
+bool set_thing_room(const std::string &network_id, const std::string &device_id, const std::string &thing_id, const std::string &room) {
     // An empty room typed by the user also stays: it means "in no room", not "guess again".
-    edit_thing(network_id, device_id, thing_id, [&](Thing &t, ThingMeta &m) { t.room = clean_name(room); m.room_by_user = true; });
+    return edit_thing(network_id, device_id, thing_id, [&](Thing &t, ThingMeta &m) { t.room = clean_name(room); m.room_by_user = true; });
 }
 
-void set_thing_enabled(const std::string &network_id, const std::string &device_id, const std::string &thing_id, bool on) {
-    edit_thing(network_id, device_id, thing_id, [&](Thing &t, ThingMeta &) { t.enabled = on; });
+bool set_thing_enabled(const std::string &network_id, const std::string &device_id, const std::string &thing_id, bool on) {
+    return edit_thing(network_id, device_id, thing_id, [&](Thing &t, ThingMeta &) { t.enabled = on; });
 }
 
-void set_thing_ask_first(const std::string &network_id, const std::string &device_id, const std::string &thing_id, bool on) {
-    edit_thing(network_id, device_id, thing_id, [&](Thing &t, ThingMeta &) { t.ask_first = on; });
+bool set_thing_ask_first(const std::string &network_id, const std::string &device_id, const std::string &thing_id, bool on) {
+    return edit_thing(network_id, device_id, thing_id, [&](Thing &t, ThingMeta &) { t.ask_first = on; });
 }
 
 std::vector<std::string> rooms(const std::string &network_id) {
@@ -602,6 +675,11 @@ void set_network_source(const NetworkSource *source) {
 }
 
 void set_clock(unsigned long (*clock_ms)()) { g_test_clock = clock_ms; }
+
+void new_run() {
+    std::lock_guard<std::mutex> lk(g_run_mtx);
+    g_run.clear();
+}
 
 void clear_drivers() {
     g_skip_builtin = true;

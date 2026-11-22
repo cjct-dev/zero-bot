@@ -35,6 +35,10 @@ TMP = tempfile.mkdtemp(prefix="wiz-e2e-")
 NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # What the app counts as "it did not answer" (control.cpp unreachable()).
 UNREACHABLE_WORDS = ("connect", "reach", "answer", "respond", "timed out", "timeout", "no route", "unreachable")
+# The MAC each simulated model reports (mock_wiz.py MODELS): what discovery would have saved it under.
+MACS = {"rgb": "a8bb5006033d", "rgb_lowdim": "a8bb50aa0001", "tw": "6c29905a067c", "dw": "a8bb50060001", "old": "a8bb50bdf8d7",
+        "typeid": "a8bb502054e3", "socket": "d8a0119906b7", "socket_plain": "a8bb50df7693", "fan": "a8bb50fa0001",
+        "signed": "a8bb50510001", "camera": "a8bb50ca0001"}
 
 checks = failed = 0
 outputs = []   # everything printed by the CLI and the app, to check that no key ever appears
@@ -123,8 +127,8 @@ class State:
         self.path = os.path.join(TMP, "state%d.json" % State.count)
         self.mock = mock
         with open(self.path, "w") as f:
-            json.dump({"device": {"id": "wiz:" + mock.model, "kind": "wiz", "name": "WiZ", "ip": "127.0.0.1", "port": mock.port,
-                                  "info": {}, "auth": {}},
+            json.dump({"device": {"id": "wiz:" + mock.model, "kind": "wiz", "name": "WiZ", "mac": MACS[mock.model],
+                                  "ip": "127.0.0.1", "port": mock.port, "info": {}, "auth": {}},
                        "things": [], "secrets": secrets or {}}, f)
 
     def run(self, *args, timeout=30):
@@ -290,13 +294,18 @@ def driver_tests():
     rc, out, err = rgb_st.run("enumerate")
     check("nothing answers (local communication off): enumerate says what to check",
           rc == 1 and "did not answer" in err and "Allow local communication" in err and unreachable(err), err)
+    # A change starts by asking who is at the address (getPilot), with at most half its time.
+    rgb.reset()
     rc, err, sent = apply(rgb_st, "light", {"on": True}, deadline=2500)
+    asked = rgb.requests()
     check("nothing answers: a change gives up by its deadline", rc == 1 and unreachable(err) and rgb_st.seconds < 3.2,
           (err, rgb_st.seconds))
-    check("after a few resends, not a flood (at most 6 datagrams)", 2 <= len(sent) <= 6, len(sent))
+    check("after a few resends of the question who it is, not a flood (at most 6 datagrams), and no change sent",
+          2 <= len(asked) <= 6 and {r["method"] for r in asked} == {"getPilot"} and not sent, [r["method"] for r in asked])
+    rgb.reset()
     rc, err, sent = apply(rgb_st, "light", {"on": True}, deadline=6000)
-    check("nothing answers for 6 s: still at most 6 datagrams, and given up by the deadline",
-          rc == 1 and len(sent) == 6 and rgb_st.seconds < 6.7, (len(sent), rgb_st.seconds))
+    check("nothing answers for 6 s: still at most 6 datagrams, given up within the question's share of the time (1.25 s)",
+          rc == 1 and len(rgb.requests()) <= 6 and not sent and rgb_st.seconds < 2.0, (len(rgb.requests()), rgb_st.seconds))
     rgb.config(drop="none")
 
 
@@ -317,7 +326,8 @@ def signed_tests():
     check("something that is not a key is refused, nothing saved", rc == 1 and "32 characters" in err and st.secrets() == {}, err)
 
     rc, out, err = st.run("pair", WRONG)
-    check("a wrong key is saved; nothing is sent when it is typed", rc == 0 and st.secrets().get("wiz") == {"signing_key": WRONG} and
+    check("a wrong key is saved, on trial; nothing is sent when it is typed",
+          rc == 0 and st.secrets().get("wiz") == {"signing_key": WRONG, "trial": "typed"} and
           not dev.requests("setPilot"), (rc, err, st.secrets()))
     rc, step, err = st.run("step")
     check("then no step is asked", step.get("kind") == "none", step)
@@ -342,7 +352,8 @@ def signed_tests():
 
     export = json.dumps({"homes": [{"name": "Home", "udp_signing_key": KEY.upper()}]})
     rc, out, err = st.run("pair", export)
-    check("the right key, pasted as the exported file", rc == 0 and st.secrets().get("wiz") == {"signing_key": KEY}, (rc, err, st.secrets()))
+    check("the right key, pasted as the exported file", rc == 0 and st.secrets().get("wiz") == {"signing_key": KEY, "trial": "typed"},
+          (rc, err, st.secrets()))
     rc, out, err = st.run("apply", "light", '{"on":true,"brightness":50}')
     sent = dev.requests("setPilot")
     check("a signed change goes through", rc == 0, err)
@@ -350,6 +361,7 @@ def signed_tests():
           len(sent) == 2 and sent[-1]["sig_ok"] is True and {k: v for k, v in sent[-1]["params"].items() if k != "sigTs"} ==
           {"state": True, "dimming": 50} and json.loads(sent[-1]["raw"]).get("env") == "pro", sent[-1:])
     check("and it did it", dev.stats()["pilot"]["state"] is True and dev.stats()["pilot"]["dimming"] == 50, dev.stats()["pilot"])
+    check("and the key, taken, is no longer on trial", st.secrets().get("wiz") == {"signing_key": KEY}, st.secrets())
     rc, out, err = st.run("read")
     check("read after signing", rc == 0 and first_state(out).get("on") is True, (rc, err))
 
@@ -404,7 +416,7 @@ class App:
 
 
 def saved_device(mock, name):
-    return {"id": "wiz:" + mock.model, "kind": "wiz", "name": name, "model": "", "mac": "", "last_ip": "127.0.0.1",
+    return {"id": "wiz:" + mock.model, "kind": "wiz", "name": name, "model": "", "mac": MACS[mock.model], "last_ip": "127.0.0.1",
             "port": mock.port, "info": {}, "found_by": ["wiz"], "enabled": True, "last_seen": 1, "problem": "", "things": []}
 
 
@@ -535,11 +547,78 @@ def moved_tests():
           (out, things))
 
 
+def identity_tests():
+    """A device must say it is the one saved before it is changed: its MAC, in getPilot or, for
+    firmware whose getPilot leaves it out, in getSystemConfig. A device at the saved address that names
+    none (as another device could) is never changed. Checked from the device's side."""
+    if not os.access(CLI, os.X_OK):
+        return
+    lamp = Mock("rgb")
+    st = State(lamp)
+    rc, out, err = st.run("enumerate")
+    check("identity: the light listed while it names its MAC", rc == 0 and "light" in st.things(), (rc, err))
+
+    lamp.config(mac="system_only")
+    lamp.reset()
+    rc, out, err = st.run("apply", "light", '{"on":true}')
+    check("identity: firmware whose getPilot names no MAC is asked getSystemConfig, then changed",
+          rc == 0 and [r["method"] for r in lamp.requests()] == ["getPilot", "getSystemConfig", "setPilot"] and
+          lamp.stats()["pilot"]["state"] is True, (rc, err, [r["method"] for r in lamp.requests()]))
+
+    for mode in ("none", "empty"):
+        lamp.config(mac=mode)
+        lamp.reset()
+        before = lamp.stats()["pilot"]["state"]
+        rc, out, err = st.run("apply", "light", json.dumps({"on": not before}))
+        check("identity (%s MAC): a device that does not say who it is gets no change" % mode,
+              rc == 1 and unreachable(err) and not lamp.requests("setPilot") and lamp.stats()["pilot"]["state"] is before and
+              [r["method"] for r in lamp.requests()] == ["getPilot", "getSystemConfig"], (rc, err, [r["method"] for r in lamp.requests()]))
+        rc, out, err = st.run("read")
+        check("identity (%s MAC): nor is it read as the light" % mode, rc == 1 and "did not say which device" in err, (rc, err))
+        rc, out, err = st.run("enumerate")
+        check("identity (%s MAC): nor listed as it, the light's things kept" % mode, rc == 1 and set(st.things()) == {"light"},
+              (rc, err, st.things()))
+    lamp.config(mac="all")
+
+    # A record saved without a MAC: nothing is sent to change it.
+    bare = State(lamp)
+    root = bare.load()
+    root["device"]["mac"] = ""
+    with open(bare.path, "w") as f:
+        json.dump(root, f)
+    bare.run("enumerate")
+    lamp.reset()
+    rc, out, err = bare.run("apply", "light", '{"on":false}')
+    check("identity: a device saved without a MAC is not changed, and nothing is sent",
+          rc == 1 and "No hardware address" in err and not unreachable(err) and lamp.requests() == [], (rc, err, lamp.requests()))
+
+    if not os.access(APP, os.X_OK):
+        return
+    # Through the app: the saved light's address now answers without naming a MAC.
+    app = App()
+    out = app.run("--home-refresh")
+    network = next((l.split(" id ")[1].strip() for l in out.splitlines() if l.startswith("network: Test network, id ")), "")
+    light = Mock("rgb")
+    dev = saved_device(light, "WiZ 033d")
+    dev["id"] = "wiz:" + MACS["rgb"]
+    app.save({"version": 2, "secrets": {},
+              "networks": {network: {"label": "Test network", "gateway_mac": "02:00:00:00:00:00", "allowed_at": 1, "last_scan": 1,
+                                     "devices": [dev]}}})
+    out = app.run("--home-refresh")
+    check("app identity: the light read while it names its MAC", "1 device ready." in out, out)
+    light.config(mac="none")
+    r = app.tool({"action": "on", "target": "WiZ light 033d"})
+    check("app identity: 'on' for the light is not sent to a device that does not say who it is",
+          isinstance(r, str) and r.startswith("ERROR") and not light.requests("setPilot") and light.stats()["pilot"]["state"] is False,
+          (r, light.requests("setPilot")))
+
+
 def main():
     driver_tests()
     signed_tests()
     app_tests()
     moved_tests()
+    identity_tests()
     print("%d checks, %d failed" % (checks, failed))
     sys.exit(1 if failed else 0)
 

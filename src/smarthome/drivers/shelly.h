@@ -50,7 +50,12 @@
 //  - A password the device rejected is never sent again, by this run or any later one: its
 //    fingerprint (SHA-256 of user and password, not the password) is kept as
 //    secrets.shelly.refused[device] until a password is typed again (pair) or the device is
-//    unpaired. A 429 (the device's protection against guessing) is "try later", not a refusal.
+//    unpaired; when the file cannot take it, it is kept in memory for the rest of the run. A 429 (the
+//    device's protection against guessing) is "try later", not a refusal.
+//  - A typed password is on trial (driver.h home::trial) until the device takes it, kept as
+//    secrets.shelly.trial[device] = {"print": its fingerprint, "trial": ...}: written before the first
+//    request that carries it (nothing is sent when that write fails), and one tried by an earlier run
+//    that never learnt the outcome counts as refused until it is typed again.
 //  - Device::port is honoured (80 when 0). Only IPv4 addresses are contacted.
 //  - Deadlines: 4 s for enumerate(), read() and pair(); apply() keeps to deadline_ms.
 //  - Device text (names) is cleaned with home::clean_name; numbers outside their documented
