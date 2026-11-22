@@ -39,74 +39,79 @@ struct DryQueue {
 };
 DryQueue &dry_queue() { static DryQueue q; return q; }
 
-std::string t_music(const json &a, Context &ctx) {
-    const std::string action = util::lower(str_arg(a, "action"));
-    audio::Music &player = audio::Music::get();
-    MusicLibrary &lib = MusicLibrary::get();
-    DryQueue &dry = dry_queue();
-    std::unique_lock<std::mutex> dry_lock(dry.mtx, std::defer_lock);
-    if (dry_run()) dry_lock.lock();
-    if (action == "stop") {
-        if (!dry_run()) player.stop();
-        else dry.paths.clear();
-        return "music stopped";
-    }
-    if (action == "next") {
-        if (dry_run()) {
-            if (dry.current().empty()) return fail("nothing is playing");
-            if (++dry.at >= dry.paths.size()) dry.paths.clear();   // past the last track, as the player stops
-            return "skipped to the next track";
-        }
-        if (!player.playing()) return fail("nothing is playing");
-        if (player.live()) return fail("a radio station is playing, not a list of songs; another station is started with radio");
-        player.next();
+std::string stop_music(DryQueue &dry) {
+    if (!dry_run()) audio::Music::get().stop();
+    else dry.paths.clear();
+    return "music stopped";
+}
+
+std::string skip_track(DryQueue &dry) {
+    if (dry_run()) {
+        if (dry.current().empty()) return fail("nothing is playing");
+        if (++dry.at >= dry.paths.size()) dry.paths.clear();   // past the last track, as the player stops
         return "skipped to the next track";
     }
-    if (action == "now_playing") {
-        if (!dry_run() && player.live())
-            return json{{"radio_station", player.title()},
-                        {"note", "a live station: the stream does not say which programme or song is on"}}.dump();
-        const std::string cur = dry_run() ? dry.current() : player.current();
-        if (cur.empty()) return "nothing is playing";
-        const Track t = lib.lookup(cur);
-        return json{{"title", t.title}, {"artist", t.artist}, {"album", t.album}}.dump();
-    }
-    if (action == "library") {
-        json out = {{"tracks", lib.size()}};
-        json g = json::array(), ar = json::array();
-        for (auto &x : lib.genres()) { g.push_back(x); if (g.size() >= 25) break; }
-        for (auto &x : lib.artists()) { ar.push_back(x); if (ar.size() >= 40) break; }
-        out["genres"] = g;
-        out["top_artists"] = ar;
-        return out.dump(-1, ' ', false, json::error_handler_t::replace);
-    }
-    if (action != "play" && action != "search") return fail("action must be play, search, stop, next, now_playing or library");
+    audio::Music &player = audio::Music::get();
+    if (!player.playing()) return fail("nothing is playing");
+    if (player.live()) return fail("a radio station is playing, not a list of songs; another station is started with radio");
+    player.next();
+    return "skipped to the next track";
+}
 
-    if (lib.size() == 0) {
-        json hint = json::object();
-        radio_hint(a, hint);
-        return fail("the music library is empty; songs go in " + Settings::get().eff_music_dir() +
-                    (hint.contains("radio") ? ". " + hint["radio"].get<std::string>() : std::string()));
+std::string now_playing(DryQueue &dry) {
+    audio::Music &player = audio::Music::get();
+    if (!dry_run() && player.live())
+        return json{{"radio_station", player.title()},
+                    {"note", "a live station: the stream does not say which programme or song is on"}}.dump();
+    const std::string cur = dry_run() ? dry.current() : player.current();
+    if (cur.empty()) return "nothing is playing";
+    const Track t = MusicLibrary::get().lookup(cur);
+    return json{{"title", t.title}, {"artist", t.artist}, {"album", t.album}}.dump();
+}
+
+// The library at a glance: its size, and the first genres and artists.
+std::string library_summary() {
+    MusicLibrary &lib = MusicLibrary::get();
+    json out = {{"tracks", lib.size()}};
+    json g = json::array(), ar = json::array();
+    for (auto &x : lib.genres()) { g.push_back(x); if (g.size() >= 25) break; }
+    for (auto &x : lib.artists()) { ar.push_back(x); if (ar.size() >= 40) break; }
+    out["genres"] = g;
+    out["top_artists"] = ar;
+    return out.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+// Nothing to play or list: the library is empty (and where songs go)...
+std::string empty_library(const json &a) {
+    json hint = json::object();
+    radio_hint(a, hint);
+    return fail("the music library is empty; songs go in " + Settings::get().eff_music_dir() +
+                (hint.contains("radio") ? ". " + hint["radio"].get<std::string>() : std::string()));
+}
+
+// ...or nothing in it matches (and the genres it has).
+std::string no_match(const json &a) {
+    json g = json::array();
+    for (auto &x : MusicLibrary::get().genres()) { g.push_back(x); if (g.size() >= 20) break; }
+    json out = {{"error", "nothing in the library matches, so nothing was started"},
+                {"hint", "tell the user it is not in their library; these genres are"},
+                {"genres", g}};
+    radio_hint(a, out);
+    return out.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+// action=search: how many match, and the first of them.
+std::string search_results(const std::vector<Track> &found) {
+    json arr = json::array();
+    for (auto &t : found) {
+        arr.push_back(t.title + (t.artist.empty() ? "" : " - " + t.artist) + (t.genre.empty() ? "" : " [" + t.genre + "]"));
+        if (arr.size() >= 15) break;
     }
-    std::vector<Track> found = lib.find(str_arg(a, "query"), str_arg(a, "artist"), str_arg(a, "genre"),
-                                        str_arg(a, "title"), str_arg(a, "album"));
-    if (found.empty()) {
-        json g = json::array();
-        for (auto &x : lib.genres()) { g.push_back(x); if (g.size() >= 20) break; }
-        json out = {{"error", "nothing in the library matches, so nothing was started"},
-                    {"hint", "tell the user it is not in their library; these genres are"},
-                    {"genres", g}};
-        radio_hint(a, out);
-        return out.dump(-1, ' ', false, json::error_handler_t::replace);
-    }
-    if (action == "search") {
-        json arr = json::array();
-        for (auto &t : found) {
-            arr.push_back(t.title + (t.artist.empty() ? "" : " - " + t.artist) + (t.genre.empty() ? "" : " [" + t.genre + "]"));
-            if (arr.size() >= 15) break;
-        }
-        return json{{"matches", found.size()}, {"first", arr}}.dump(-1, ' ', false, json::error_handler_t::replace);
-    }
+    return json{{"matches", found.size()}, {"first", arr}}.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+// action=play: the matches queued (shuffled unless one song was asked for), and the track that starts.
+std::string play_found(std::vector<Track> found, const json &a, Context &ctx, DryQueue &dry) {
     const bool one = str_arg(a, "title").size() > 0 && found.size() <= 3;
     if (bool_arg(a, "shuffle", !one)) {
         static std::mt19937 rng(std::random_device{}());
@@ -118,6 +123,7 @@ std::string t_music(const json &a, Context &ctx) {
     if (!dry_run()) {
         // Queue it now, start it once the reply has been spoken (the agent or the speech queue
         // lifts the hold), so the song does not begin, stop for the reply and begin again.
+        audio::Music &player = audio::Music::get();
         if (ctx.in_conversation) player.hold(audio::Music::kExchange, true);
         player.play(paths);
     } else {
@@ -127,6 +133,25 @@ std::string t_music(const json &a, Context &ctx) {
     const Track &first = found[0];
     return json{{"now_playing", first.title + (first.artist.empty() ? "" : " by " + first.artist)},
                 {"queued_tracks", found.size()}}.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+std::string t_music(const json &a, Context &ctx) {
+    const std::string action = util::lower(str_arg(a, "action"));
+    DryQueue &dry = dry_queue();
+    std::unique_lock<std::mutex> dry_lock(dry.mtx, std::defer_lock);
+    if (dry_run()) dry_lock.lock();
+    if (action == "stop") return stop_music(dry);
+    if (action == "next") return skip_track(dry);
+    if (action == "now_playing") return now_playing(dry);
+    if (action == "library") return library_summary();
+    if (action != "play" && action != "search") return fail("action must be play, search, stop, next, now_playing or library");
+
+    MusicLibrary &lib = MusicLibrary::get();
+    if (lib.size() == 0) return empty_library(a);
+    std::vector<Track> found = lib.find(str_arg(a, "query"), str_arg(a, "artist"), str_arg(a, "genre"),
+                                        str_arg(a, "title"), str_arg(a, "album"));
+    if (found.empty()) return no_match(a);
+    return action == "search" ? search_results(found) : play_found(std::move(found), a, ctx, dry);
 }
 
 // The other actions return something the model has not seen yet (the track that started), so the answer
