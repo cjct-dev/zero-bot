@@ -881,19 +881,21 @@ std::string lower(std::string s) {
 // Whether the plug in this session is the one saved (Device::mac, as `want`): another plug of the
 // same account given this one's address would accept the same login, and would then be switched
 // in its place. Asked once per session and per saved MAC (Session::mac), before anything else is
-// sent in it. A plug that names no MAC at all cannot be told apart and is taken as it is; one that
-// names a different MAC, or an unreadable one, gets nothing more (Sent::failed, the session
-// dropped). Sent::lost and failures on the way are send()'s own.
+// sent in it. Only a plug that names the saved MAC is taken: one that names another, none at all or
+// an unreadable one gets nothing more (Sent::failed, the session dropped), since a plug that does not
+// say cannot be told apart from another. Sent::lost and failures on the way are send()'s own.
 Sent check_plug(const std::string &host, Session &s, const std::string &want, bool &keep, std::string &err) {
     keep = true;
     if (want.empty() || s.mac == want) return Sent::ok;
     json resp;
     const Sent sent = send(host, s, R"({"method":"get_device_info","params":null})", resp, keep, err);
     if (sent != Sent::ok) return sent;
-    const json &result = get_obj(resp, "result");
-    if (result.is_object() && result.contains("mac") && support::mac_digits(get_str(result, "mac")) != want) {
+    const std::string named = support::mac_digits(get_str(get_obj(resp, "result"), "mac"));
+    if (named != want) {
         keep = false;
-        err = "another plug answered at this plug's saved address, so nothing was sent to it";
+        err = named.empty() ? "the plug that answered at this plug's saved address did not say which plug it is, so nothing "
+                              "was sent to it"
+                            : "another plug answered at this plug's saved address, so nothing was sent to it";
         return Sent::failed;
     }
     s.mac = want;
@@ -905,13 +907,17 @@ std::string fingerprint(bool tpap, const std::string &email, const std::string &
     return detail::hex(detail::sha256((tpap ? std::string("TPAP") : "KLAP" + email) + '\0' + pw_hex));
 }
 
-// request(), also reporting the plug's error code (0 when the failure was not the plug saying no).
-bool exchange(const Device &dev, const Credentials &cred, const json &req, json &reply, std::string &err, int &code) {
-    code = 0;
-    err.clear();
-    reply = json::object();
-    const bool tpap = dev.scheme == "TPAP";
-    if (!tpap && dev.scheme != "KLAP") {
+// What a login with these credentials sends, and the fingerprint its refusal is kept under.
+struct Key {
+    bool tpap = false;
+    Bytes pw_sha1;
+    std::string pw_hex, fp;
+};
+
+// Whether these credentials can be sent to this plug at all, and how: nothing is sent when not.
+bool key_for(const Device &dev, const Credentials &cred, Key &key, std::string &err) {
+    key.tpap = dev.scheme == "TPAP";
+    if (!key.tpap && dev.scheme != "KLAP") {
         err = "this plug's login scheme is not supported (only KLAP and TPAP are)";
         return false;
     }
@@ -921,33 +927,38 @@ bool exchange(const Device &dev, const Credentials &cred, const json &req, json 
         err = "the plug's address is not usable";
         return false;
     }
-    Bytes pw_sha1;
-    if (cred.password_sha1_hex.size() != 40 || !detail::unhex(cred.password_sha1_hex, pw_sha1)) {
+    if (cred.password_sha1_hex.size() != 40 || !detail::unhex(cred.password_sha1_hex, key.pw_sha1)) {
         err = "the stored password hash is not a SHA-1 in hex";
         return false;
     }
-    if (!tpap && cred.email.empty()) {
+    if (!key.tpap && cred.email.empty()) {
         err = "this plug needs the account e-mail to log in";
         return false;
     }
-    const std::string pw_hex = detail::hex(pw_sha1);
-    const std::string fp = fingerprint(tpap, cred.email, pw_hex);
+    key.pw_hex = detail::hex(key.pw_sha1);
+    key.fp = fingerprint(key.tpap, cred.email, key.pw_hex);
+    return true;
+}
 
-    std::shared_ptr<State> st;
-    {
-        std::lock_guard<std::mutex> lock(g_mu);
-        auto &slot = g_states[dev.ip + ":" + std::to_string(dev.port)];
-        if (!slot) slot = std::make_shared<State>();
-        st = slot;
-    }
-    std::lock_guard<std::mutex> lock(st->mu);
+// The plug's state, by its address: made on first use, dropped by forget_sessions().
+std::shared_ptr<State> state_of(const Device &dev) {
+    std::lock_guard<std::mutex> lock(g_mu);
+    auto &slot = g_states[dev.ip + ":" + std::to_string(dev.port)];
+    if (!slot) slot = std::make_shared<State>();
+    return slot;
+}
 
-    const auto rejected = st->rejected.find(fp);
-    if (rejected != st->rejected.end()) {
+// One request on the plug's state, whose lock the caller holds: nothing after a refusal of these
+// credentials or while the plug is locked, at most one login, and in each session the plug is asked
+// who it is first (check_plug), so that the request goes to no other. `resp` is the plug's whole answer.
+bool converse(State &st, const Device &dev, const Credentials &cred, const Key &key, const json &req, json &resp,
+              std::string &err) {
+    const auto rejected = st.rejected.find(key.fp);
+    if (rejected != st.rejected.end()) {
         err = rejected->second + kNoRetry;
         return false;
     }
-    if (std::chrono::steady_clock::now() < st->locked_until) {
+    if (std::chrono::steady_clock::now() < st.locked_until) {
         err = detail::describe_error(kLocked) + "; not contacted again until the lock should be over";
         return false;
     }
@@ -955,28 +966,25 @@ bool exchange(const Device &dev, const Credentials &cred, const json &req, json 
         err = "this e-mail does not match the plug's owner, so no login was attempted";
         return false;
     }
-
-    const std::string host = dev.ip;
+    const std::string &host = dev.ip;
     const std::string want_mac = support::mac_digits(dev.mac);
     const auto login = [&]() {
-        st->session.reset();
-        return tpap ? login_tpap(host, dev, pw_hex, *st, fp, err)
-                    : login_klap(host, "http://" + host + ":" + std::to_string(dev.port), cred.email, pw_sha1, *st, fp, err);
+        st.session.reset();
+        return key.tpap ? login_tpap(host, dev, key.pw_hex, st, key.fp, err)
+                        : login_klap(host, "http://" + host + ":" + std::to_string(dev.port), cred.email, key.pw_sha1, st, key.fp, err);
     };
     bool fresh = false;   // at most one login per call
-    if (!st->session || st->session->fp != fp || st->session->tpap != tpap) {
+    if (!st.session || st.session->fp != key.fp || st.session->tpap != key.tpap) {
         if (!login()) return false;
         fresh = true;
     }
     const std::string plain = req.dump();
-    json resp;
     for (;;) {
         bool keep = false;
-        // The plug is asked who it is first (once per session), so that the request goes to no other.
-        Sent sent = check_plug(host, *st->session, want_mac, keep, err);
-        if (sent == Sent::ok) sent = send(host, *st->session, plain, resp, keep, err);
-        if (!keep) st->session.reset();
-        if (sent == Sent::ok) break;
+        Sent sent = check_plug(host, *st.session, want_mac, keep, err);
+        if (sent == Sent::ok) sent = send(host, *st.session, plain, resp, keep, err);
+        if (!keep) st.session.reset();
+        if (sent == Sent::ok) return true;
         if (sent == Sent::failed) return false;
         if (fresh) {
             err = "the plug dropped a session it had only just opened; giving up";
@@ -985,6 +993,24 @@ bool exchange(const Device &dev, const Credentials &cred, const json &req, json 
         if (!login()) return false;
         fresh = true;
     }
+}
+
+// request(), also reporting the plug's error code (0 when the failure was not the plug saying no).
+bool exchange(const Device &dev, const Credentials &cred, const json &req, json &reply, std::string &err, int &code,
+              bool &refused) {
+    code = 0;
+    refused = false;
+    err.clear();
+    reply = json::object();
+    Key key;
+    if (!key_for(dev, cred, key, err)) return false;
+    const std::shared_ptr<State> st = state_of(dev);
+    std::lock_guard<std::mutex> lock(st->mu);
+    json resp;
+    const bool answered = converse(*st, dev, cred, key, req, resp, err);
+    // From the state this call used: forget_sessions() meanwhile drops it from g_states, not from here.
+    refused = st->rejected.count(key.fp) > 0 || std::chrono::steady_clock::now() < st->locked_until;
+    if (!answered) return false;
     long long c = 0;
     get_int(resp, "error_code", c);
     code = static_cast<int>(c);
@@ -996,9 +1022,10 @@ bool exchange(const Device &dev, const Credentials &cred, const json &req, json 
     return true;
 }
 
-bool exchange_safe(const Device &dev, const Credentials &cred, const json &req, json &reply, std::string &err, int &code) {
+bool exchange_safe(const Device &dev, const Credentials &cred, const json &req, json &reply, std::string &err, int &code,
+                   bool &refused) {
     try {
-        return exchange(dev, cred, req, reply, err, code);
+        return exchange(dev, cred, req, reply, err, code, refused);
     } catch (const std::exception &) {   // json: a request that is not valid UTF-8, or no memory
         code = 0;
         err = "the request could not be built or its answer could not be read";
@@ -1021,12 +1048,12 @@ std::string decoded(const json &j, const char *key) {
 }
 
 // The sockets of a strip, as the plug lists them (pages of get_child_device_list).
-bool children(const Device &dev, const Credentials &cred, json &list, std::string &err, int &code) {
+bool children(const Device &dev, const Credentials &cred, json &list, std::string &err, int &code, bool &refused) {
     list = json::array();
     for (int page = 0; page < 8; page++) {
         json r;
         const json req = {{"method", "get_child_device_list"}, {"params", {{"start_index", list.size()}}}};
-        if (!exchange_safe(dev, cred, req, r, err, code)) return false;
+        if (!exchange_safe(dev, cred, req, r, err, code, refused)) return false;
         const json &got = get_obj(r, "child_device_list");
         if (!got.is_array() || got.empty()) break;
         for (const json &child : got) list.push_back(child);
@@ -1054,29 +1081,14 @@ bool owned_by(const Device &dev, const std::string &email) {
     return !email.empty() && (owner == detail::hex(detail::md5(email)) || owner == detail::hex(detail::md5(lower(email))));
 }
 
-bool request(const Device &dev, const Credentials &cred, const json &req, json &reply, std::string &err) {
+bool request(const Device &dev, const Credentials &cred, const json &req, json &reply, std::string &err, bool &refused) {
     int code = 0;
-    return exchange_safe(dev, cred, req, reply, err, code);
+    return exchange_safe(dev, cred, req, reply, err, code, refused);
 }
 
-bool login_refused(const Device &dev, const Credentials &cred) {
-    Bytes pw_sha1;
-    if (cred.password_sha1_hex.size() != 40 || !detail::unhex(cred.password_sha1_hex, pw_sha1)) return false;
-    const std::string fp = fingerprint(dev.scheme == "TPAP", cred.email, detail::hex(pw_sha1));
-    std::shared_ptr<State> st;
-    {
-        std::lock_guard<std::mutex> lock(g_mu);
-        const auto it = g_states.find(dev.ip + ":" + std::to_string(dev.port));
-        if (it == g_states.end()) return false;
-        st = it->second;
-    }
-    std::lock_guard<std::mutex> lock(st->mu);
-    return st->rejected.count(fp) > 0 || std::chrono::steady_clock::now() < st->locked_until;
-}
-
-bool get_info(const Device &dev, const Credentials &cred, json &info, std::string &err) {
+bool get_info(const Device &dev, const Credentials &cred, json &info, std::string &err, bool &refused) {
     int code = 0;
-    if (!exchange_safe(dev, cred, getter("get_device_info"), info, err, code)) return false;
+    if (!exchange_safe(dev, cred, getter("get_device_info"), info, err, code, refused)) return false;
     for (const char *key : {"nickname", "ssid"})
         if (info.contains(key)) info[key] = decoded(info, key);
     info["name"] = get_str(info, "nickname");
@@ -1086,7 +1098,7 @@ bool get_info(const Device &dev, const Credentials &cred, json &info, std::strin
     info["on"] = is_on(info);
     if (!info.contains("device_on")) {   // a strip has no switch of its own: it is on when any socket is
         json list;
-        if (children(dev, cred, list, err, code)) {
+        if (children(dev, cred, list, err, code, refused)) {
             info["sockets"] = list.size();
             for (const json &child : list) info["on"] = info["on"].get<bool>() || is_on(child);
         } else if (code == 0) {
@@ -1097,26 +1109,26 @@ bool get_info(const Device &dev, const Credentials &cred, json &info, std::strin
     return true;
 }
 
-bool set_power(const Device &dev, const Credentials &cred, bool on, std::string &err) {
+bool set_power(const Device &dev, const Credentials &cred, bool on, std::string &err, bool &refused) {
     // As the tapo crate sends it: set_device_info carries the time and a terminal id.
     json req = set_on(on), reply;
     req["requestTimeMilis"] = std::chrono::duration_cast<std::chrono::milliseconds>(
                                   std::chrono::system_clock::now().time_since_epoch()).count();
     req["terminalUUID"] = "00-00-00-00-00-00";
-    return request(dev, cred, req, reply, err);
+    return request(dev, cred, req, reply, err, refused);
 }
 
 // One request in the usual case. Firmware differs in what it reports where, so what is missing
 // is asked for separately: get_energy_usage gives today's energy and, on most plugs, the power in
 // mW; get_emeter_data and get_current_power give the power; get_device_usage gives today's energy.
-bool get_energy(const Device &dev, const Credentials &cred, json &energy, std::string &err) {
+bool get_energy(const Device &dev, const Credentials &cred, json &energy, std::string &err, bool &refused) {
     energy = json::object();
     json raw = json::object(), r;
     std::string first_err;
     int code = 0;
     long long v = 0;
     const auto ask = [&](const char *method) {
-        if (exchange_safe(dev, cred, getter(method), r, err, code)) {
+        if (exchange_safe(dev, cred, getter(method), r, err, code, refused)) {
             raw[method] = r;
             return true;
         }
@@ -1157,11 +1169,11 @@ bool get_energy(const Device &dev, const Credentials &cred, json &energy, std::s
     return true;
 }
 
-bool list_sockets(const Device &dev, const Credentials &cred, json &sockets, std::string &err) {
+bool list_sockets(const Device &dev, const Credentials &cred, json &sockets, std::string &err, bool &refused) {
     json list;
     int code = 0;
     sockets = json::array();
-    if (!children(dev, cred, list, err, code)) return false;
+    if (!children(dev, cred, list, err, code, refused)) return false;
     for (const json &child : list) {
         json s = {{"id", get_str(child, "device_id")}, {"name", decoded(child, "nickname")}, {"on", is_on(child)}};
         long long position = 0;
@@ -1173,11 +1185,12 @@ bool list_sockets(const Device &dev, const Credentials &cred, json &sockets, std
 
 // A strip takes the request for a socket inside a multipleRequest inside a control_child, and
 // answers with an error code for the envelope and one for the socket's own request.
-bool set_socket_power(const Device &dev, const Credentials &cred, const std::string &child_id, bool on, std::string &err) {
+bool set_socket_power(const Device &dev, const Credentials &cred, const std::string &child_id, bool on, std::string &err,
+                      bool &refused) {
     const json inner = {{"method", "multipleRequest"}, {"params", {{"requests", {set_on(on)}}}}};
     const json req = {{"method", "control_child"}, {"params", {{"device_id", child_id}, {"requestData", inner}}}};
     json reply;
-    if (!request(dev, cred, req, reply, err)) return false;
+    if (!request(dev, cred, req, reply, err, refused)) return false;
     const json &responses = get_obj(get_obj(get_obj(reply, "responseData"), "result"), "responses");
     long long code = 0;
     if (!responses.is_array() || responses.empty() || !get_int(responses[0], "error_code", code)) {

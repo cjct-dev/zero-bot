@@ -1,14 +1,17 @@
 // TP-Link Tapo plugs and strips on the smart-home driver contract. All protocol work is in
 // smarthome/tapo.{h,cpp}; this file maps it onto things, changes and the pairing steps.
 //
-// A plug locks itself after a few rejected logins, so a login is never retried: the transport
-// remembers a rejection for that plug while the program runs, this driver remembers it for every
-// plug of the account (home::trial::refuse), and keeps it in the family secret ("refused") so that a
-// later run does not try the same password again either. A password just typed is on trial (driver.h
-// home::trial) until a plug accepts it: the trial is written before the first login with it, and
-// nothing is sent when that write fails, so a refusal that could not be recorded (a full store, the
-// app stopped) still stops a later run. Its first login is made by one call at a time (g_first_try).
-// The account e-mail is checked against the owner a plug announces before any login.
+// A plug locks itself after a few rejected logins, so a login is never retried. Each call to the
+// transport says whether the plug refused the account (`refused`); this driver then keeps that for
+// every plug of the account in this run's memory (home::trial::refuse: the same-run protection, which
+// nothing can fail) and in the family secret ("refused": the durable one, for later runs, which a full
+// store can refuse, and then says so). A password just typed is on trial (driver.h home::trial) until a
+// plug accepts it: the trial is written before the first login with it, and nothing is sent when that
+// write fails, so a refusal that could not be recorded (a full store, the app stopped) still stops a
+// later run; for a password a plug had accepted before, such a refusal is held by the memory alone, and
+// a later run would try it once more. Its first login is made by one call at a time (g_first_try).
+// The account e-mail is checked against the owner a plug announces before any login, and a plug saved
+// without a MAC is never switched (kNoIdentity).
 #include "smarthome/drivers/tapo_driver.h"
 
 #include <algorithm>
@@ -17,6 +20,7 @@
 #include <mutex>
 
 #include "core/util.h"
+#include "smarthome/drivers/support.h"
 #include "smarthome/home.h"
 #include "smarthome/tapo.h"
 
@@ -28,6 +32,8 @@ const char *const kFamily = "tapo";
 const char *const kNotSaved = "the Tapo account could not be saved on this device (its storage may be full), so nothing was sent "
                               "to the plug";
 const char *const kRefusalNotNoted = "; that refusal could not be noted on this device (its storage may be full)";
+const char *const kNoIdentity = "no hardware address is saved for this Tapo plug, so Zero Bot cannot make sure that the plug "
+                                "at its address is still this one; scan the network again in Settings, Smart home";
 
 // The account is read, changed and written back by the settings page and by every plug's reads at
 // once (up to four threads): one change at a time, so that none undoes another (a refusal kept by
@@ -35,9 +41,10 @@ const char *const kRefusalNotNoted = "; that refusal could not be noted on this 
 std::mutex g_account_mtx;
 
 // A password on trial goes to one plug at a time: the call that may send it takes this before it
-// reads the account (ready(), pair_password()) and keeps it until the outcome is kept. Every plug of
-// the account would otherwise be sent a password that may be wrong at once, up to four of them; the
-// others wait, and then see whether it was refused.
+// reads the account (ready(), pair_password()) and keeps it until the outcome is kept (accepted(),
+// failed()), not through the reads that follow. Every plug of the account would otherwise be sent a
+// password that may be wrong at once, up to four of them; the others wait, and then see whether it
+// was refused.
 std::mutex g_first_try;
 
 struct Account {
@@ -89,6 +96,10 @@ std::string info_of(const home::Device &d, const char *key) {
     return it == d.info.end() ? std::string() : it->second;
 }
 
+// The MAC a plug was saved under: the record's own, else the one its id was made from ("tapo:<MAC>"
+// when discovery heard no device id). Twelve zeros, which an earlier version could save, are none.
+std::string saved_mac(const home::Device &d) { return support::saved_mac(d, "tapo:"); }
+
 // What the transport needs, from what discovery recorded about the plug.
 tapo::Device transport(const home::Device &d) {
     tapo::Device t;
@@ -100,7 +111,7 @@ tapo::Device transport(const home::Device &d) {
     const json tpap = util::parse_untrusted_json(info_of(d, "tpap"));
     if (tpap.is_object()) t.tpap = tpap;
     t.owner = info_of(d, "owner");
-    t.mac = d.mac;   // the plug discovery saved: another plug of the account at its address is refused
+    t.mac = saved_mac(d);   // the plug discovery saved: another plug of the account at its address is refused
     return t;
 }
 
@@ -186,8 +197,9 @@ public:
         const tapo::Device t = transport(dev);
         const tapo::Credentials c = credentials(a);
         json info;
-        if (!tapo::get_info(t, c, info, err)) { failed(t, a, err); return false; }
-        accepted(a);
+        bool refused = false;
+        if (!tapo::get_info(t, c, info, err, refused)) { failed(refused, a, first, err); return false; }
+        accepted(a, first);
         const std::string name = util::jget(info, "name", std::string());
         if (!name.empty()) dev.name = name;   // the shared layer cleans it
         const std::string model = util::jget(info, "model", std::string());
@@ -198,7 +210,7 @@ public:
         if (type.empty()) { err = "Zero Bot cannot control this kind of Tapo device."; return false; }
         if (util::jget(info, "sockets", 0) > 0) {
             json sockets;
-            if (!tapo::list_sockets(t, c, sockets, err)) { failed(t, a, err); return false; }
+            if (!tapo::list_sockets(t, c, sockets, err, refused)) { failed(refused, a, first, err); return false; }
             for (const auto &s : sockets) {
                 home::Thing th;
                 th.id = util::jget(s, "id", std::string());
@@ -234,12 +246,13 @@ public:
         if (!ready(dev, a, first, err)) return false;
         const tapo::Device t = transport(dev);
         const tapo::Credentials c = credentials(a);
+        bool refused = false;
         const bool strip = std::any_of(things.begin(), things.end(),
                                        [](const home::Thing &th) { return !util::jget(th.ref, "child", std::string()).empty(); });
         if (strip) {
             json sockets;
-            if (!tapo::list_sockets(t, c, sockets, err)) { failed(t, a, err); return false; }
-            accepted(a);
+            if (!tapo::list_sockets(t, c, sockets, err, refused)) { failed(refused, a, first, err); return false; }
+            accepted(a, first);
             for (auto &th : things) {
                 const std::string child = util::jget(th.ref, "child", std::string());
                 for (const auto &s : sockets)
@@ -248,13 +261,14 @@ public:
             return true;
         }
         json info;
-        if (!tapo::get_info(t, c, info, err)) { failed(t, a, err); return false; }
-        accepted(a);
+        if (!tapo::get_info(t, c, info, err, refused)) { failed(refused, a, first, err); return false; }
+        accepted(a, first);
         json energy;
         std::string ignored;
         const bool metered = detail && std::any_of(things.begin(), things.end(), [](const home::Thing &th) {
             return (th.caps & home::kSensor) != 0;
-        }) && tapo::get_energy(t, c, energy, ignored) && energy.is_object();
+        }) && tapo::get_energy(t, c, energy, ignored, refused) && energy.is_object();
+        keep_refusal(refused, a);   // the readings are extra, but a refusal on the way is kept all the same
         for (auto &th : things) {
             th.state = {{"on", util::jget(info, "on", false)}};
             if (metered && (th.caps & home::kSensor)) {
@@ -267,15 +281,19 @@ public:
 
     bool apply(const home::Device &dev, const home::Thing &thing, const home::Change &change, int, std::string &err) override {
         if (!only_power(change)) { err = "this plug can only be switched on and off"; return false; }
+        // Without a saved MAC the transport has nothing to ask the plug at the address for: another
+        // plug of the account given that address would take the login, and be switched instead.
+        if (saved_mac(dev).empty()) { err = kNoIdentity; return false; }
         Account a;
         std::unique_lock<std::mutex> first;   // held while the password is on trial (ready())
         if (!ready(dev, a, first, err)) return false;
         const tapo::Device t = transport(dev);
         const std::string child = util::jget(thing.ref, "child", std::string());
-        const bool ok = child.empty() ? tapo::set_power(t, credentials(a), *change.on, err)
-                                      : tapo::set_socket_power(t, credentials(a), child, *change.on, err);
-        if (!ok) failed(t, a, err);
-        else accepted(a);
+        bool refused = false;
+        const bool ok = child.empty() ? tapo::set_power(t, credentials(a), *change.on, err, refused)
+                                      : tapo::set_socket_power(t, credentials(a), child, *change.on, err, refused);
+        if (!ok) failed(refused, a, first, err);
+        else accepted(a, first);
         return ok;
     }
 
@@ -325,11 +343,12 @@ private:
         const tapo::Device t = transport(dev);
         json info;
         std::string why;
-        if (tapo::get_info(t, credentials(a), info, why)) {
+        bool refused = false;
+        if (tapo::get_info(t, credentials(a), info, why, refused)) {
             accepted(a);
             return true;
         }
-        const Refusal r = keep_refusal(t, a);
+        const Refusal r = keep_refusal(refused, a);
         if (r == Refusal::None) err = "The password is saved, but the plug did not answer: " + why;
         else err = std::string("The plug did not accept this password. Capitals count; type it again.") +
                    (r == Refusal::NotNoted ? " That refusal could not be noted on this device (its storage may be full)." : "");
@@ -337,9 +356,9 @@ private:
     }
 
     // Whether the account may be used with this plug at all; nothing is sent when it may not. Decided
-    // under g_first_try, which `first` keeps while the password is on trial: the caller holds it until
-    // the outcome is kept (accepted(), failed()). A password typed and not yet tried has its trial
-    // written first (nothing is sent when that fails).
+    // under g_first_try, which `first` keeps while the password is on trial: the caller hands it to
+    // accepted() or failed(), which let go of it once the outcome is kept. A password typed and not yet
+    // tried has its trial written first (nothing is sent when that fails).
     bool ready(const home::Device &dev, Account &a, std::unique_lock<std::mutex> &first, std::string &err) {
         first = std::unique_lock<std::mutex>(g_first_try);
         a = read_account(secrets_);
@@ -382,14 +401,22 @@ private:
         if (same_account(j, a) && home::trial::end(j)) secrets_->put(kFamily, j);
     }
 
+    // The same, and the first try is over: the other plugs may go ahead while this one is read further.
+    void accepted(const Account &a, std::unique_lock<std::mutex> &first) {
+        accepted(a);
+        if (first.owns_lock()) first.unlock();
+    }
+
     enum class Refusal { None, Kept, NotNoted };
 
-    // After a failure: when the plug refused the account (or locked itself), that is kept in this
-    // run's memory, so that no plug is sent it again, and in the file, so that no later run is either.
-    // NotNoted when the file could not take it: a password still on trial counts as refused in the
-    // next run all the same, but one a plug had taken before would be tried once more.
-    Refusal keep_refusal(const tapo::Device &t, const Account &a) {
-        if (!secrets_ || !tapo::login_refused(t, credentials(a))) return Refusal::None;
+    // When the call that sent the account says the plug refused it (or locked itself): kept in this
+    // run's memory, so that no plug is sent it again in this run whatever the file does, and in the
+    // file, so that no later run is either. NotNoted when the file could not take it: a password still
+    // on trial counts as refused in the next run all the same (its trial stays), but one a plug had
+    // taken before is held by the memory alone, and would be tried once more after a restart. The
+    // refusal is the account that was sent (`a`): one typed again meanwhile is not marked.
+    Refusal keep_refusal(bool refused, const Account &a) {
+        if (!secrets_ || !refused) return Refusal::None;
         home::trial::refuse(kFamily, print_of(a));
         std::lock_guard<std::mutex> lk(g_account_mtx);
         json j = secrets_->get(kFamily);
@@ -398,9 +425,11 @@ private:
         return secrets_->put(kFamily, j) ? Refusal::Kept : Refusal::NotNoted;
     }
 
-    // A request failed: a refusal is kept (keep_refusal), and `err` says when it could not be noted.
-    void failed(const tapo::Device &t, const Account &a, std::string &err) {
-        if (keep_refusal(t, a) == Refusal::NotNoted) err += kRefusalNotNoted;
+    // A request failed: a refusal is kept (keep_refusal), `err` says when it could not be noted, and
+    // the first try is over.
+    void failed(bool refused, const Account &a, std::unique_lock<std::mutex> &first, std::string &err) {
+        if (keep_refusal(refused, a) == Refusal::NotNoted) err += kRefusalNotNoted;
+        if (first.owns_lock()) first.unlock();
     }
 };
 

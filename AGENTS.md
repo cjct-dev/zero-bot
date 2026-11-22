@@ -866,9 +866,17 @@ key, real audio), say so plainly rather than implying it was.
 - A refusal is kept in memory for the rest of the run as well as in the file (`home::trial::refuse`,
   per credential): the file can fail to take it, and Tapo's transport remembers a refusal per plug
   only, so the account's other plugs, or another WiZ device, were sent the refused password or key
-  again in the same run. A credential on trial goes to one device at a time (each family's
-  `g_first_try`, taken before the account or key is read): a command that fans out sent a wrong
-  password to four plugs at once. A refusal the file could not take is said.
+  again in the same run. The two protect differently: the memory is this run's and cannot fail; the
+  file is what stops a later run, and a write can fail. A refusal the file could not take is said (in
+  the error the user and the model read): a credential still on trial counts as refused in a later run
+  anyway (its trial stays), but one a device had accepted before is then held by the memory alone, and
+  could be tried once more after a restart. A credential on trial goes to one device at a time (each
+  family's `g_first_try`, taken before the account or key is read, let go once the outcome is kept, not
+  after the slow reads that follow, such as a plug's energy readings): a command that fans out sent a
+  wrong password to four plugs at once. A refusal is what the call that sent the credential said
+  (`tapo::request`'s `refused`), not looked up afterwards: saving the Tapo account, even unchanged, drops
+  the transport's sessions and what each plug said, and a refusal that arrived meanwhile was lost, so
+  the next plug was sent the same password.
 - A scan is of the network the user agreed to: `home::scan` takes the network the settings page
   showed (`discovery::Options::network_id`), refuses once the device is on another, and drops what
   it heard when the network changed while it listened. So does the short scan for a device that
@@ -892,7 +900,9 @@ key, real audio), say so plainly rather than implying it was.
   A login is no identity either: every plug of one Tapo account accepts the same password, and
   until the integration review a command for a desk lamp switched on the heater plug that had
   been given the lamp's address, with no question. The Tapo transport now asks each new session's
-  plug for its MAC (`tapo::Device::mac`) before sending anything else in it.
+  plug for its MAC (`tapo::Device::mac`) before sending anything else in it, and takes only a plug that
+  names it; a plug saved without a MAC (an earlier version saved twelve zeros, which are none) is never
+  switched: it was first taken as "nothing to compare", so the plug given its address was.
 - A default that reads a device's name must also read the name the user types. WiZ devices keep
   no name, so the heater question (on for a plug named like a heater) never applied to one until
   `set_thing_alias` learnt to switch it on for a name that newly sounds like a heater.

@@ -107,6 +107,7 @@ def converse(script, said, plug=False, refuse=False, ask_first=False, stations=N
             home = {"version": 2, "secrets": {"tapo": {"email": EMAIL, "password_sha1": hashlib.sha1(PASSWORD.encode()).hexdigest()}},
                     "networks": {network: {"label": "Test network", "gateway_mac": "02:00:00:00:00:00", "allowed_at": 1, "last_scan": 1,
                                            "devices": [{"id": "tapo:p110-0", "kind": "tapo", "name": "Tapo P110", "model": "P110(UK)",
+                                                        "mac": "AA-BB-CC-DD-EE-FF",   # the mock's, as a scan saves it
                                                         "last_ip": "127.0.0.1", "port": plug_port, "enabled": True, "things": [],
                                                         "info": info}]}}}
             path = state + "/data/zero-bot/smarthome.json"
