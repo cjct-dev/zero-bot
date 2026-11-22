@@ -33,7 +33,10 @@ private:
 };
 
 namespace input {
-void start();                 // begin reading the hardware keyboard (device) or SDL (simulator)
+// Begin reading the hardware keyboard (device) or SDL (simulator). `on_key` is called after each key
+// is queued, on the thread that read it: the main loop's wake (uiq::wake), so a key is not left
+// waiting for its sleep to end.
+void start(void (*on_key)());
 bool poll(KeyEvent &out);     // non-blocking; call from the UI thread
 void set_dump(bool on);       // log raw key codes to stderr (for mapping work)
 }  // namespace input

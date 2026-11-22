@@ -57,6 +57,8 @@ public:
     void toast(const std::string &text);
     void key(const KeyEvent &ev);   // returns to the app automatically when the last page closes
     void tick();
+    // tick() has something to do: a toast to take away, or values on screen that change by themselves.
+    bool needs_tick() const { return toast_ticks_ > 0 || (!stack_.empty() && !editing_ && stack_.back().page.live); }
 
     // Asks for a line of text. on_done receives the result when the user confirms.
     void edit_text(const std::string &title, const std::string &initial, bool secret,

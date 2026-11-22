@@ -255,16 +255,22 @@ int run_app(const std::string &shots_dir, bool keydump) {
     app.auto_select_models();
     if (!s.setup_done) app.run_setup();
     input::set_dump(keydump);
-    input::start();
+    input::start(uiq::wake);
     app.idle.use(sys::now_ms());
 
     while (!g_exit) {
         KeyEvent ev;
-        while (input::poll(ev)) app.handle_key(ev);
-        uiq::drain();
+        while (input::poll(ev)) {
+            app.handle_key(ev);
+            app.note_activity();
+        }
+        if (uiq::drain()) app.note_activity();
         app.periodic();
-        const uint32_t wait = lv_timer_handler();
-        usleep((wait > 16 ? 16 : (wait < 2 ? 2 : wait)) * 1000);
+        // Asleep until LVGL's next timer (an animation, a redraw) or the app's next periodic work,
+        // whichever is sooner, unless a key or something posted wakes it first. SIGTERM's g_exit is
+        // seen at the next wake, within a second.
+        const unsigned long lvgl = lv_timer_handler();
+        uiq::wait(std::max(2ul, std::min(lvgl, app.sleep_ms(sys::now_ms()))));
     }
 
     app.alarm.stop();                              // lets go of the music

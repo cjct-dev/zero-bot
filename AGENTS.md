@@ -109,7 +109,7 @@ through `Settings::update([](Settings &s) { ... })`, which makes it under that l
 
 | Thread | Started in | What to know |
 |---|---|---|
-| UI (main) | `ui::run_app` (app.cpp) | LVGL, keys from the reader's queue, `App::periodic` (app_status.cpp), whatever `uiq::post` queued. Never waits on the network or a child process. |
+| UI (main) | `ui::run_app` (app.cpp) | LVGL, keys from the reader's queue, `App::periodic` (app_status.cpp), whatever `uiq::post` queued. Between passes it sleeps in `uiq::wait` until LVGL's next timer or the app's next periodic work (`App::sleep_ms`); a key or a post wakes it at once. Never waits on the network or a child process. |
 | Agent worker | `Agent::start` (`Agent::worker`) | One request at a time (`Agent::Turn`); `Agent::mtx_` guards its inputs, history and state. |
 | Speech | `SpeechQueue::run` | Synthesises and plays sentence by sentence; a watcher per sentence lets `stop()` cut a synthesis short. |
 | Key reader | `input::start` (device only) | Reads the keypad and makes the auto-repeat; its queue is drained by the UI thread. |
@@ -383,7 +383,8 @@ What exists:
   zones that do not exist, helper programs: cancelling, time limits, no inherited descriptors),
   `tests/unit/core_test.cpp` (what every thread shares: one file saved by two threads, the settings
   read and changed on several threads, all-day alerts when the clocks change, the store read at once
-  while a slow write of its file is under way (fsync wrapped); what an older version
+  while a slow write of its file is under way (fsync wrapped), the main loop's sleep and what wakes it
+  (`uiq::wait`); what an older version
   left behind; and the shared helpers: failure shape, battery, Wi-Fi list, default route, monotonic
   count, start of a day), `tests/unit/speaker_test.cpp` (the speaker written on one thread and
   stopped or killed on another: nothing reaches a file opened after `stop()`, a stuck write is
@@ -590,7 +591,8 @@ What exists:
   the screens that show its page; renaming a row the script walks to fails the run until the
   script is given the new label. It also checks what needs the real screen code (a key on a dark
   screen only wakes it, labels fit, the status bar redraws only what changed, the two
-  model-choosing rules of `ui/models.h`, when the service is asked for its models: `shots_idle`). `tests/shots_compare.py` renders them into a temporary
+  model-choosing rules of `ui/models.h`, when the service is asked for its models and how long the
+  main loop sleeps: `shots_idle`). `tests/shots_compare.py` renders them into a temporary
   folder
   and compares each with `tests/golden/shots/` (small tolerance; differences drawn to
   `build/shots-diff/`), with the wall clock pinned (`tests/shots/fixclock.c`, built with `cc` and
@@ -919,6 +921,19 @@ key, real audio), say so plainly rather than implying it was.
   user would, and the pictures came out identical, pixel for pixel.
 
 **Power**
+- The main loop slept 16 ms at a time whatever happened: 62 wake-ups a second for as long as the app
+  ran (measured on the device, 2026-11-17). It now sleeps in `uiq::wait` until LVGL's next timer or
+  the app's next work (`App::sleep_ms`), woken at once by a key or a post: 1.3 wake-ups a second on a
+  quiet chat screen and 2.4 with a timer counting down, against 61.9 before, measured on the device
+  build under qemu. The sim cannot show it (its SDL driver polls every 5 ms). The device build runs on
+  a PC under `qemu-aarch64 -L <sysroot>`, with an `LD_PRELOAD` shim that answers the fbdev ioctls for
+  a regular file (`APPLAUNCH_LINUX_FBDEV_DEVICE`) and its keyboard at a FIFO of `input_event`
+  records (`APPLAUNCH_LINUX_KEYBOARD_DEVICE`): its frames can be read back and keys pressed, which
+  checked the alarm, its banner, keys, reminders and dimming against the new loop (ZB-036; the
+  scripts are in the maintainer's notes).
+- A file written with a lock held makes every thread waiting for the lock wait for the card too: a
+  tool's save of the calendar or memory held `Store::mtx_` through its fsync, and the UI thread takes
+  that lock every second (299 ms of a 300 ms write in `core_test`). Queue under the lock, write after.
 - The fuel gauge (`/sys/class/power_supply/bq27220-0/`) reports `current_now` in µA: positive
   while charging on USB, negative on battery, 0 only when full on USB. To measure the app, log it
   every 10 s from a detached process (`setsid nohup ... &`), unplug, use the device, plug back in
@@ -1008,6 +1023,11 @@ bottom row's hint short: it names only the keys wanted most.
 **A screen.** Follow `breath_view` or `chat_view`: create objects once, update only what
 changed, drive it from `App::periodic` (`app_status.cpp`), route keys in `App::handle_key`
 (`app_keys.cpp`), and add a `--shots` frame in the function of `shots.cpp` for its group of screens.
+The main loop ticks only while something needs it (`App::lively`, and a view's `needs_tick`) and for
+a second after anything happens; otherwise it sleeps to the next second's work. Whatever changes on
+screen by itself, without an LVGL animation or timer, a key or a `uiq::post` (a countdown, a polled
+state), must be added to `App::lively` or to `App::sleep_ms`'s deadlines, or it is drawn up to a
+second late; `--shots` checks the sleep (`loop_sleeps_ok`).
 A settings page that needs something slow (a subprocess, the network, the first full look at the
 network) reads it with `background()` and refreshes itself when the answer comes, showing a
 placeholder meanwhile; a late answer acts only while its page is still the one on top (the Smart

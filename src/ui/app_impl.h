@@ -28,8 +28,15 @@ inline constexpr unsigned long kEscHoldMs = 1200;      // hold ESC this long to 
 inline constexpr double kMinSpeechSeconds = 0.4;
 inline constexpr double kMaxSpeechSeconds = 90;
 // The footer, the chat, the menu, the breathing exercise and the timers are updated this often (about
-// 15 times a second: ChatView::tick and Menu::tick count in these ticks).
+// 15 times a second: ChatView::tick and Menu::tick count in these ticks) while any of them moves or
+// waits for something (App::lively); otherwise the main loop sleeps to the next second's work.
 inline constexpr unsigned long kTickMs = 66;
+// The rest of the periodic work: reminders, the screen's light and music holds every second, the
+// status bar's clock, battery and connection every five.
+inline constexpr unsigned long kSecondMs = 1000, kIndicatorsMs = 5000;
+// After anything happens (a key, something posted, the end of a request) the ticks go on this long
+// before the main loop sleeps to the next second (sleep_ms).
+inline constexpr unsigned long kSettleMs = 1000;
 // The service's model list, while it cannot be reached: asked again after this long, doubling up to the most.
 inline constexpr unsigned long kModelRetryMs = 15000, kModelRetryMaxMs = 5 * 60 * 1000;
 
@@ -80,6 +87,7 @@ struct App {
     bool esc_armed = false;
     screen::Idle idle;                // when the screen dims and goes off (screen_idle.h)
     unsigned long last_tick = 0, last_second = 0, last_indicators = 0, last_model_try = 0;
+    unsigned long quiet_since = 0;    // since when nothing has needed the ticks (sleep_ms); 0 while something does
     // Choosing models without the user (auto_select_models): how long until the service is asked again,
     // the service (address and key) whose list has been read, and whether the device was online when
     // update_indicators last looked (taken as yes at the start, which asks anyway).
@@ -131,6 +139,9 @@ struct App {
     bool wake_screen(unsigned long now);
     void tick_screen(unsigned long now, bool busy);
     void periodic();
+    bool lively();
+    unsigned long sleep_ms(unsigned long now);
+    void note_activity() { quiet_since = 0; }
 
     // ------------------------------------------------------------ screenshots (shots.cpp)
     // Each group of screens starts where the one before it left the screen and the menu.

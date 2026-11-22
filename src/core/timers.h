@@ -50,6 +50,9 @@ void fix_clock(time_t t);
 // Returns the time it read, for the rest of the tick: a second reading of the clock could fall on
 // the other side of a step from the timers.
 time_t follow_clock();
+// Milliseconds until the wall clock's next whole second, when a countdown on screen next changes
+// and an alarm can next ring: what the main loop sleeps for while a timer runs and nothing else moves.
+unsigned long ms_to_next_second();
 
 // A timer the app has just noticed is over.
 struct Ended {

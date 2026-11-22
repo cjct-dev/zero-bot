@@ -22,6 +22,7 @@
 #include "core/result.h"
 #include "core/settings.h"
 #include "core/store.h"
+#include "core/ui_queue.h"
 #include "core/upgrade.h"
 #include "core/util.h"
 #include "platform/net_status.h"
@@ -277,6 +278,31 @@ void test_store_writes_unlocked() {
     CHECK_EQ(static_cast<long long>(util::load_json(file, json::array()).size()), 0);
 }
 
+// ---------------------------------------------------------------- the main loop's sleep
+// The main loop sleeps in uiq::wait until its next work (ZB-036): something posted, or a key (wake),
+// ends the sleep at once; one that came just before the sleep is not lost; with neither, it lasts its time.
+void test_ui_wake() {
+    g_test = "the main loop's sleep and what wakes it";
+    auto timed = [](void (*f)()) {
+        const unsigned long t0 = sys::now_ms();
+        f();
+        return sys::now_ms() - t0;
+    };
+    CHECK(timed([] { uiq::wait(120); }) >= 110);
+    std::thread poster([] { usleep(50 * 1000); uiq::post([] {}); });
+    const unsigned long posted = timed([] { uiq::wait(2000); });
+    poster.join();
+    CHECK(posted >= 40 && posted < 500);
+    CHECK_EQ(static_cast<long long>(uiq::drain()), 1);
+    std::thread key([] { usleep(50 * 1000); uiq::wake(); });
+    const unsigned long woke = timed([] { uiq::wait(2000); });
+    key.join();
+    CHECK(woke >= 40 && woke < 500);
+    uiq::wake();                                         // before the sleep: it ends at once...
+    CHECK(timed([] { uiq::wait(2000); }) < 100);
+    CHECK(timed([] { uiq::wait(120); }) >= 110);         // ...and only that one
+}
+
 // ZB-085: "Start at power-on" is gone; the drop-in it wrote for the launcher is removed at start,
 // but only when Zero Bot wrote it, and its folder only when nothing else is left in it.
 void test_power_on_leftover(const std::string &root) {
@@ -455,6 +481,7 @@ int main(int argc, char **argv) {
     test_settings_threads(root);
     test_all_day_alerts(root);
     test_store_writes_unlocked();
+    test_ui_wake();
     test_power_on_leftover(root);
     const std::string helpers = root + "/helpers";
     util::make_dirs(helpers);

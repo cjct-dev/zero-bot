@@ -24,10 +24,14 @@ namespace {
 std::mutex g_mtx;
 std::deque<KeyEvent> g_queue;
 std::atomic<bool> g_dump{false};
+std::atomic<void (*)()> g_on_key{nullptr};   // start()'s on_key
 
 void push(const KeyEvent &ev) {
-    std::lock_guard<std::mutex> lk(g_mtx);
-    g_queue.push_back(ev);
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        g_queue.push_back(ev);
+    }
+    if (void (*on_key)() = g_on_key) on_key();
 }
 
 #if !ZB_DESKTOP
@@ -249,7 +253,8 @@ int sdl_watch(void *, SDL_Event *e) {
 #endif
 }  // namespace
 
-void start() {
+void start(void (*on_key)()) {
+    g_on_key = on_key;
 #if ZB_DESKTOP
     if (SDL_WasInit(SDL_INIT_VIDEO)) {
         SDL_AddEventWatch(sdl_watch, nullptr);

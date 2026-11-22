@@ -1111,34 +1111,74 @@ bool App::diagnostics_shots(Shots &shots) {
     return failed;
 }
 
-// What the app does while nobody uses it. Checked, not pictured: last, since it changes the settings.
-void App::shots_idle(Shots &shots) {
-    // The service's model list: one that cannot be reached is asked again after 30 s, then twice as
-    // long each time up to five minutes; once a list has been read, the same service is not asked
-    // again whatever it held (since ZB-088 one that labels none of its models gets nothing chosen,
-    // and it was asked every 15 s for ever), but one with another key is.
+namespace {
+
+// The service's model list: one that cannot be reached is asked again after 30 s, then twice as long
+// each time up to five minutes; once a list has been read, the same service is not asked again
+// whatever it held (since ZB-088 one that labels none of its models gets nothing chosen, and it was
+// asked every 15 s for ever), but one with another key is.
+bool model_retries_ok(App &app) {
     set([](Settings &s) {
         s.api_base = "http://127.0.0.1:9/v1";
         s.api_key = "first";
         s.llm_model.clear(); s.stt_model.clear(); s.tts_model.clear();
     });
-    const std::string service = models_wanted();
+    const std::string service = app.models_wanted();
     std::vector<unsigned long> waits;
     for (int i = 0; i < 6; ++i) {
-        models_answered({}, "The service did not answer.", service);
-        waits.push_back(model_retry_ms);
+        app.models_answered({}, "The service did not answer.", service);
+        waits.push_back(app.model_retry_ms);
     }
     const bool backs_off = waits == std::vector<unsigned long>{30000, 60000, 120000, 240000, 300000, 300000};
-    warned_models = true;   // no note in the chat
-    models_answered({{"one", ""}, {"two", ""}}, "", service);
-    const bool read_once = model_retry_ms == kModelRetryMs && models_wanted().empty();
+    app.warned_models = true;   // no note in the chat
+    app.models_answered({{"one", ""}, {"two", ""}}, "", service);
+    const bool read_once = app.model_retry_ms == kModelRetryMs && app.models_wanted().empty();
     set([](Settings &s) { s.api_key = "second"; });
-    const bool new_service = !models_wanted().empty();
-    if (!backs_off || !read_once || !new_service) {
+    const bool new_service = !app.models_wanted().empty();
+    if (!backs_off || !read_once || !new_service)
         fprintf(stderr, "the service's model list was asked for at the wrong times (backs off %d, read once %d, "
                         "another service asked %d)\n", backs_off, read_once, new_service);
-        shots.failed = true;
-    }
+    return backs_off && read_once && new_service;
+}
+
+// How long the main loop sleeps (sleep_ms), at made-up times well after anything the screenshots did:
+// a tick after something happens, and every tick while it settles; then until the next
+// once-a-second work; a tick again while a level is shown; while a timer runs, no longer than to
+// the wall clock's next second.
+bool loop_sleeps_ok(App &app) {
+    app.menu.close();
+    for (int i = 0; i < Menu::kToastTicks; ++i) { app.menu.tick(); app.chat.tick(); }
+    app.level_until = app.settings_dirty_at = 0;
+    app.esc_armed = false;
+    app.space_tap.cancel();
+    Store::get().clear_timers();
+    const unsigned long t = sys::now_ms() + 60 * kSecondMs;
+    app.last_tick = t;
+    app.note_activity();
+    const unsigned long settling = app.sleep_ms(t);
+    app.last_tick = app.last_second = app.last_indicators = app.last_model_try = t + kSettleMs;
+    const unsigned long quiet = app.sleep_ms(t + kSettleMs);
+    app.show_level("Volume");
+    const unsigned long level = app.sleep_ms(t + kSettleMs);
+    app.level_until = 0;
+    app.sleep_ms(t + kSettleMs);                               // quiet again from here
+    app.last_second = app.last_indicators = app.last_model_try = t + 8 * kSettleMs;
+    Store::get().add_timer("Tea", 300, time(nullptr));
+    const unsigned long timer = app.sleep_ms(t + 2 * kSettleMs);
+    Store::get().clear_timers();
+    const bool ok = settling == kTickMs && quiet == kSecondMs && level == kTickMs && timer >= 1 && timer <= kSecondMs;
+    if (!ok)
+        fprintf(stderr, "the main loop sleeps for the wrong time (%lu ms settling, %lu quiet, %lu with a level shown, %lu "
+                        "with a timer running)\n", settling, quiet, level, timer);
+    return ok;
+}
+
+}  // namespace
+
+// What the app does while nobody uses it. Checked, not pictured: last, since it changes the settings.
+void App::shots_idle(Shots &shots) {
+    if (!model_retries_ok(*this)) shots.failed = true;
+    if (!loop_sleeps_ok(*this)) shots.failed = true;
 }
 
 }  // namespace ui
