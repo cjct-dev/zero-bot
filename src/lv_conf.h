@@ -9,7 +9,10 @@
 #define LV_USE_STDLIB_SPRINTF LV_STDLIB_CLIB
 
 #define LV_USE_OS LV_OS_NONE
-#define LV_DEF_REFR_PERIOD 16
+/* LVGL's redraw and animation timers: 30 a second at most. The panel is fed over SPI by the kernel,
+ * which costs about five times what drawing does, so an animation (a scroll, a long title moving in the
+ * status bar while music plays) costs what it sends: half at 33 ms of what it was at 16. */
+#define LV_DEF_REFR_PERIOD 33
 #define LV_DPI_DEF 130
 
 #define LV_USE_LOG 1

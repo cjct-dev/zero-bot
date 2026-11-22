@@ -1045,7 +1045,8 @@ screen only, so it would be missing from the screenshots.
 value it already has. `ChatView`'s setters compare with what is shown and return early; keep
 that for anything added there (the timer countdown changes once a second, not every tick). A
 label that scrolls redraws the bar on every screen refresh (about 40 times a second, measured in
-the simulator), so nothing there should scroll for long: the now-playing text scrolls only when
+the simulator when LVGL refreshed every 16 ms; at most 30 since `LV_DEF_REFR_PERIOD` is 33), so
+nothing there should scroll for long: the now-playing text scrolls only when
 it has all of its room, and beside the countdown it is cut short with dots instead. A radio
 station's name, there for hours, never scrolls (`set_now_playing(text, true)`).
 
