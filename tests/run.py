@@ -518,7 +518,8 @@ def need_path(need):
 SIM_ONLY = ("src/ui/", "src/platform/display.", "src/platform/input.", "src/lv_conf.h")    # not in the cli build
 # What the cli and sim builds are made from: the sources, the bundled libraries and the build's own files.
 BUILD_INPUTS = ("src", "third_party", "cmake", "CMakeLists.txt", "CMakePresets.json")
-UNIT_SOURCES = ("src/smarthome/", "src/net/", "src/core/util.", "src/platform/proc.", "src/platform/sys.", "tests/unit/")
+UNIT_SOURCES = ("src/smarthome/", "src/net/", "src/core/util.", "src/platform/proc.", "src/platform/sys.",
+                "src/platform/net_status.", "tests/unit/")
 
 
 def stale_note(need):
