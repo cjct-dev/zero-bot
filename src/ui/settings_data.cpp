@@ -59,6 +59,62 @@ bool find_event(int id, CalEvent &out) {
     return false;
 }
 
+// An event's start (its first day, if it repeats), typed as a date for an all-day event.
+MenuItem start_row(Menu &menu, CalEvent e) {
+    return MenuItem::val(e.repeat.empty() ? "Starts" : "First on",
+                         [e] { return e.all_day ? util::short_day(e.start) : util::short_date(e.start); }, [&menu, e] {
+        menu.edit_text(e.all_day ? "Date" : "Start time", e.all_day ? util::typed_day(e.start) : util::typed_date(e.start), false,
+                       [&menu, e](const std::string &t) mutable {
+                           time_t when;
+                           if (!util::parse_typed(t, when)) {
+                               menu.toast("Use the form " + (e.all_day ? util::typed_day(e.start) : util::typed_date(e.start)));
+                               return;
+                           }
+                           if (e.all_day) when = midnight(when);
+                           if (e.end) e.end += when - e.start;
+                           e.start = when;
+                           Store::get().update_event(e);
+                       },
+                       e.all_day ? (util::month_first() ? "Month/day/year" : "Day/month/year") : util::typed_date_hint());
+    });
+}
+
+MenuItem repeats_row(CalEvent e) {
+    return MenuItem::val("Repeats", [e] { return repeat_text(e.repeat); }, nullptr, [e](int dir) mutable {
+        const int n = sizeof(kRepeatSteps) / sizeof(kRepeatSteps[0]);
+        int idx = 0;
+        for (int i = 0; i < n; ++i)
+            if (e.repeat == kRepeatSteps[i]) idx = i;
+        e.repeat = kRepeatSteps[((idx + dir) % n + n) % n];
+        Store::get().update_event(e);
+    });
+}
+
+// The end of an event that is not all day; typed blank for none.
+MenuItem end_row(Menu &menu, CalEvent e) {
+    return MenuItem::val("Ends", [e] { return e.end ? util::short_date(e.end) : std::string("not set"); }, [&menu, e] {
+        menu.edit_text("End time (blank for none)", e.end ? util::typed_date(e.end) : "", false,
+                       [&menu, e](const std::string &t) mutable {
+                           time_t when = 0;
+                           if (!util::trim(t).empty() && !util::parse_typed(t, when)) { menu.toast("Use the form " + util::typed_date(e.start + 3600)); return; }
+                           e.end = when;
+                           Store::get().update_event(e);
+                       },
+                       util::typed_date_hint());
+    });
+}
+
+MenuItem alert_row(CalEvent e) {
+    return MenuItem::val("Alert", [e] { return remind_text(e.remind_min, e.all_day); }, nullptr, [e](int dir) mutable {
+        const int n = sizeof(kRemindSteps) / sizeof(kRemindSteps[0]);
+        int idx = 0;
+        for (int i = 0; i < n; ++i)
+            if (kRemindSteps[i] <= e.remind_min) idx = i;
+        e.remind_min = kRemindSteps[clampi(idx + dir, 0, n - 1)];
+        Store::get().update_event(e);
+    });
+}
+
 void open_event(Menu &menu, int id) {
     MenuPage page;
     page.title = "Event";
@@ -73,22 +129,7 @@ void open_event(Menu &menu, int id) {
                 Store::get().update_event(e);
             });
         }));
-        items.push_back(MenuItem::val(e.repeat.empty() ? "Starts" : "First on",
-                                      [e] { return e.all_day ? util::short_day(e.start) : util::short_date(e.start); }, [&menu, e] {
-            menu.edit_text(e.all_day ? "Date" : "Start time", e.all_day ? util::typed_day(e.start) : util::typed_date(e.start), false,
-                           [&menu, e](const std::string &t) mutable {
-                               time_t when;
-                               if (!util::parse_typed(t, when)) {
-                                   menu.toast("Use the form " + (e.all_day ? util::typed_day(e.start) : util::typed_date(e.start)));
-                                   return;
-                               }
-                               if (e.all_day) when = midnight(when);
-                               if (e.end) e.end += when - e.start;
-                               e.start = when;
-                               Store::get().update_event(e);
-                           },
-                           e.all_day ? (util::month_first() ? "Month/day/year" : "Day/month/year") : util::typed_date_hint());
-        }));
+        items.push_back(start_row(menu, e));
         if (!e.repeat.empty()) {
             const time_t next = next_occurrence(e, midnight(time(nullptr)));
             if (next && next != e.start)
@@ -100,40 +141,15 @@ void open_event(Menu &menu, int id) {
             else e.start += 9 * 3600;   // a sensible hour to adjust from
             Store::get().update_event(e);
         }));
-        items.push_back(MenuItem::val("Repeats", [e] { return repeat_text(e.repeat); }, nullptr, [e](int dir) mutable {
-            const int n = sizeof(kRepeatSteps) / sizeof(kRepeatSteps[0]);
-            int idx = 0;
-            for (int i = 0; i < n; ++i)
-                if (e.repeat == kRepeatSteps[i]) idx = i;
-            e.repeat = kRepeatSteps[((idx + dir) % n + n) % n];
-            Store::get().update_event(e);
-        }));
-        if (!e.all_day)
-            items.push_back(MenuItem::val("Ends", [e] { return e.end ? util::short_date(e.end) : std::string("not set"); },
-                                          [&menu, e] {
-                menu.edit_text("End time (blank for none)", e.end ? util::typed_date(e.end) : "", false,
-                               [&menu, e](const std::string &t) mutable {
-                                   time_t when = 0;
-                                   if (!util::trim(t).empty() && !util::parse_typed(t, when)) { menu.toast("Use the form " + util::typed_date(e.start + 3600)); return; }
-                                   e.end = when;
-                                   Store::get().update_event(e);
-                               },
-                               util::typed_date_hint());
-            }));
+        items.push_back(repeats_row(e));
+        if (!e.all_day) items.push_back(end_row(menu, e));
         items.push_back(MenuItem::val("Notes", [e] { return e.notes; }, [&menu, e] {
             menu.edit_text("Notes", e.notes, false, [e](const std::string &t) mutable {
                 e.notes = util::trim(t);
                 Store::get().update_event(e);
             });
         }));
-        items.push_back(MenuItem::val("Alert", [e] { return remind_text(e.remind_min, e.all_day); }, nullptr, [e](int dir) mutable {
-            const int n = sizeof(kRemindSteps) / sizeof(kRemindSteps[0]);
-            int idx = 0;
-            for (int i = 0; i < n; ++i)
-                if (kRemindSteps[i] <= e.remind_min) idx = i;
-            e.remind_min = kRemindSteps[clampi(idx + dir, 0, n - 1)];
-            Store::get().update_event(e);
-        }));
+        items.push_back(alert_row(e));
         items.push_back(MenuItem::action("Delete event", [&menu, id] {
             menu.confirm("Delete this event?", "Delete", [&menu, id] { Store::get().delete_event(id); menu.pop(); });
         }, true));
