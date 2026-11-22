@@ -965,6 +965,22 @@ key, real audio), say so plainly rather than implying it was.
 
 ## 9. Adding things
 
+**Keep it as tidy as the refactor left it.** The code was restructured in November 2026 (ZB-035) so that
+each job has one place. New work keeps it that way; a change that works but undoes the structure is not
+finished:
+
+- Put code where section 3 says its job lives, and extend the file that owns the job. A new folder
+  or a new kind of file needs a reason that does not fit anywhere else.
+- Use the shared helpers rather than writing another copy: `result::fail`/`failed`,
+  `util::to_number`, `sys::now_ms`, `power::`, `net_status::`, `drivers/support`, `background()`,
+  `Settings::get`/`update`, `uiq::post`. Two copies of the same logic found while working become one.
+- Small functions with one job. Grow a long flow by adding a named step (as `Agent::Turn` does),
+  not by lengthening one; a function past about 60 lines needs a reason.
+- No dead or commented-out code, debug prints, or TODOs without a ticket. Comments say why, in plain
+  words; a forwarder left for callers goes once nothing calls it.
+- Tests beside the existing ones, and the documents (this file, the README) changed in the same change.
+- Before handing a change over, read its whole diff once only for tidiness.
+
 **A tool.** A new file `src/agent/tools/<name>.cpp` (include `agent/tools/common.h`) with
 `t_<name>(const json &, Context &)` returning text or JSON for the model (use `fail("...")`, which
 is `result::fail`, for errors, phrased as an instruction about what to do next) and
