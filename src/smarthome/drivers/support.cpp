@@ -81,7 +81,13 @@ std::string mac_digits(const std::string &raw) {
         if (!isxdigit(c) || hex.size() >= 12) return "";
         hex += static_cast<char>(tolower(c));
     }
-    return hex.size() == 12 ? hex : "";
+    return hex.size() == 12 && hex != "000000000000" ? hex : "";
+}
+
+std::string saved_mac(const home::Device &dev, const std::string &id_prefix) {
+    const std::string own = mac_digits(dev.mac);
+    if (!own.empty() || dev.id.compare(0, id_prefix.size(), id_prefix) != 0) return own;
+    return mac_digits(dev.id.substr(id_prefix.size()));
 }
 
 // ---------------------------------------------------------------- bytes

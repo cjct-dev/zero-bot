@@ -31,6 +31,7 @@
 #include "smarthome/drivers/hue.h"
 #include "smarthome/drivers/kasa.h"
 #include "smarthome/drivers/shelly.h"
+#include "smarthome/drivers/support.h"
 #include "smarthome/drivers/tapo_driver.h"
 #include "smarthome/drivers/wiz.h"
 #include "smarthome/home.h"
@@ -2588,7 +2589,7 @@ void test_device_ids() {
     CHECK(home::remember_scan(g_net, found) == static_cast<int>(found.size()));
     std::set<std::string> macs;
     for (const auto &d : home::entry(g_net.id()).devices)
-        if (d.kind == "tapo") macs.insert(home::mac_key(d.mac));
+        if (d.kind == "tapo") macs.insert(support::mac_digits(d.mac));
     CHECK(macs.size() == 4);
 
     // A record saved with its MAC and the user's decisions; a device found under the same id with
@@ -2610,7 +2611,7 @@ void test_device_ids() {
     other.name = "Tapo P110";
     CHECK(home::remember_scan(g_net, {other}) == 0);
     home::NetworkEntry e = home::entry(g_net.id());
-    CHECK_MSG(e.devices.size() == 1 && e.devices[0].ip == "192.0.2.90" && home::mac_key(e.devices[0].mac) == "aabbcc000090" &&
+    CHECK_MSG(e.devices.size() == 1 && e.devices[0].ip == "192.0.2.90" && support::mac_digits(e.devices[0].mac) == "aabbcc000090" &&
                   !e.devices[0].enabled && e.devices[0].things.size() == 1 && e.devices[0].things[0].ask_first,
               "the saved plug keeps its address, MAC and settings");
     // The same device (its MAC) at a new address is followed, as before; one saved without a MAC
@@ -2624,7 +2625,34 @@ void test_device_ids() {
     other.mac = "AA:BB:CC:00:00:92";
     CHECK(home::remember_scan(g_net, {other}) == 0);
     e = home::entry(g_net.id());
-    CHECK(e.devices.size() == 1 && home::mac_key(e.devices[0].mac) == "aabbcc000092");
+    CHECK(e.devices.size() == 1 && support::mac_digits(e.devices[0].mac) == "aabbcc000092");
+
+    // An all-zero MAC names no device (fix round 2, C5): it never replaces the one saved, so a later
+    // scan with another real MAC is still another device, not one that inherits this one's settings.
+    plug["mac"] = "aa:bb:cc:00:00:90";
+    write_home({plug});
+    other.ip = "192.0.2.90";
+    other.mac = "aa:bb:cc:00:00:90";
+    CHECK(home::remember_scan(g_net, {other}) == 0);
+    other.ip = "192.0.2.94";
+    other.mac = "00:00:00:00:00:00";
+    CHECK(home::remember_scan(g_net, {other}) == 0);
+    e = home::entry(g_net.id());
+    CHECK_MSG(e.devices.size() == 1 && support::mac_digits(e.devices[0].mac) == "aabbcc000090", e.devices[0].mac);
+    other.ip = "192.0.2.95";
+    other.mac = "AA:BB:CC:00:00:99";
+    CHECK(home::remember_scan(g_net, {other}) == 0);
+    e = home::entry(g_net.id());
+    CHECK_MSG(e.devices.size() == 1 && support::mac_digits(e.devices[0].mac) == "aabbcc000090" && e.devices[0].ip != "192.0.2.95" &&
+                  !e.devices[0].enabled && e.devices[0].things[0].ask_first,
+              "a device with another MAC took over the saved one's record: " + e.devices[0].mac + " at " + e.devices[0].ip);
+    // A new device that reports zeros is saved without a MAC.
+    discovery::Device zeros = other;
+    zeros.id = "tapo:8022000096";
+    zeros.mac = "00-00-00-00-00-00";
+    CHECK(home::remember_scan(g_net, {zeros}) == 1);
+    for (const auto &d : home::entry(g_net.id()).devices)
+        if (d.id == zeros.id) CHECK_MSG(d.mac.empty(), d.mac);
 }
 
 // WiZ: answers to its broadcast (the registration query) become devices of kind "wiz", which the

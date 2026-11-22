@@ -192,10 +192,7 @@ Got udp_exchange(const std::string &ip, int port, const std::string &method, con
 
 // The MAC this device was saved under, as 12 lower-case hex digits: discovery names a WiZ device
 // "wiz:<its MAC>". "" when the saved record does not say.
-std::string saved_mac(const Device &dev) {
-    const std::string from_id = dev.id.rfind("wiz:", 0) == 0 ? support::mac_digits(dev.id.substr(4)) : std::string();
-    return from_id.empty() ? support::mac_digits(dev.mac) : from_id;
-}
+std::string saved_mac(const Device &dev) { return support::saved_mac(dev, "wiz:"); }
 
 // Whether a getSystemConfig or getPilot result came from this device: it names the MAC the device
 // was saved under. Addresses are handed out again (a router that loses its leases when it restarts,

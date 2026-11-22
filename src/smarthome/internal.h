@@ -35,10 +35,6 @@ bool may_contact(const Device &device, std::string &why_not);
 // Only these types of thing are ever kept or offered (survey 6.5: an allow-list).
 bool allowed_type(const std::string &type);
 
-// The twelve hex digits of a MAC address in any of the notations saved ("aa:bb:..", "AA-BB-..",
-// none), lower case; "" when it is not one, or is all zeros.
-std::string mac_key(const std::string &raw);
-
 // Folds a fresh list of things from a driver into what is saved for the device.
 void merge_things(Saved &device, std::vector<Thing> fresh, time_t now);
 

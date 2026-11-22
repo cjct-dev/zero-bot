@@ -16,6 +16,7 @@
 
 #include "core/result.h"
 #include "smarthome/color.h"
+#include "smarthome/drivers/support.h"
 #include "smarthome/internal.h"
 
 namespace home {
@@ -527,7 +528,7 @@ bool (*g_test_scan)(std::vector<discovery::Device> &found) = nullptr;
 // A device found under the saved id but with another MAC than the saved one is another device (an id
 // made from an address, or one a device made up): the saved one is never moved to it.
 bool other_mac(const discovery::Device &f, const Device &d) {
-    const std::string found = mac_key(f.mac), saved = mac_key(d.mac);
+    const std::string found = support::mac_digits(f.mac), saved = support::mac_digits(d.mac);
     return !found.empty() && !saved.empty() && found != saved;
 }
 

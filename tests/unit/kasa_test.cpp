@@ -451,6 +451,11 @@ static void test_identity() {
     blank["mac"] = "not a mac";
     blank["mic_mac"] = "50:C7:BF:00:00:01:FF";
     check("a MAC that is not one is not a match", !same_device("50:c7:bf:00:00:01", blank));
+    // Twelve zeros name no device (fix round 2, C5): saved and reported, they are still no match.
+    blank["mac"] = "00:00:00:00:00:00";
+    blank["mic_mac"] = "";
+    check("zeros saved and zeros reported: not the same device", !same_device("00:00:00:00:00:00", blank) &&
+                                                                     !same_device("000000000000", blank));
     const std::string low = util::lower(kasa::kOtherDevice);
     check("its sentence reads as 'not at that address', so the app looks for the device again", has(low, "answer"));
 }
@@ -703,6 +708,42 @@ static void test_driver() {
                 reads_unreachable = reads_unreachable || has(util::lower(err), w);
             check("no saved MAC: the sentence does not send the app looking for it (there is nothing to know it by)", !reads_unreachable,
                   err);
+            dev.mac = "00:00:00:00:00:00";   // zeros name no device (fix round 2, C5)
+            check("a saved MAC of zeros: the change is refused, and nothing was sent",
+                  !kasa->apply(dev, dev.things[0], on, 2500, err) && err == kasa::kNoIdentity && !l.pending(300), err);
+        }
+        // A record saved by an earlier version with an empty "mac" but its id made from the MAC
+        // ("tplink:<MAC>"): the MAC is taken from the id, and only the device that names it is changed
+        // (fix round 2, C10).
+        dev.id = "tplink:50:c7:bf:00:00:01";
+        dev.mac = "";
+        {
+            Listener l;
+            dev.port = l.port;
+            std::vector<std::string> got;
+            std::thread t = serve_each(l, got, {sysinfo, R"J({"system":{"set_relay_state":{"err_code":0}}})J"});
+            const bool ok = kasa->apply(dev, dev.things[0], on, 2500, err);
+            t.join();
+            check("an upgraded record (MAC in its id only): asked who it is, then switched",
+                  ok && got == std::vector<std::string>{get, R"J({"system":{"set_relay_state":{"state":1}}})J"}, err);
+        }
+        {
+            Listener l;
+            dev.port = l.port;
+            dev.id = "tplink:c0:06:c3:00:00:02";   // another plug answers at its address
+            std::vector<std::string> got;
+            std::thread t = serve_each(l, got, {sysinfo});
+            const bool ok = kasa->apply(dev, dev.things[0], on, 2500, err);
+            t.join();
+            check("an upgraded record, another plug at the address: refused after asking who it is",
+                  !ok && err == kasa::kOtherDevice && got == std::vector<std::string>{get} && !l.pending(300), err);
+        }
+        for (const char *id : {"tplink:00:00:00:00:00:00", "tplink:switch"}) {
+            Listener l;
+            dev.port = l.port;
+            dev.id = id;
+            check(std::string("no MAC in the record or its id (") + id + "): refused, and nothing was sent",
+                  !kasa->apply(dev, dev.things[0], on, 2500, err) && err == kasa::kNoIdentity && !l.pending(300), err);
         }
     }
 

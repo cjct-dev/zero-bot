@@ -14,6 +14,7 @@
 #include <set>
 
 #include "platform/sys.h"
+#include "smarthome/drivers/support.h"
 #include "smarthome/internal.h"
 
 namespace home {
@@ -259,16 +260,6 @@ bool edit_thing(const std::string &network_id, const std::string &device_id, con
 }
 
 }  // namespace
-
-std::string mac_key(const std::string &raw) {
-    std::string hex;
-    for (const char c : raw) {
-        if (c == ':' || c == '-') continue;
-        if (!isxdigit(static_cast<unsigned char>(c)) || hex.size() >= 12) return "";
-        hex += static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    }
-    return hex.size() == 12 && hex != "000000000000" ? hex : "";
-}
 
 bool allowed_type(const std::string &type) {
     return std::find_if(std::begin(kTypes), std::end(kTypes), [&](const char *t) { return type == t; }) != std::end(kTypes);
@@ -524,15 +515,16 @@ int remember_scan(const discovery::Network &net, const std::vector<discovery::De
         // Bridge heard only as HomeKit, which no driver claims; a device never set up) holds no
         // decision, and must not leave the record that can control it switched off.
         bool twin = false;
-        const std::string mac = mac_key(f.mac);
+        const std::string mac = support::mac_digits(f.mac);
         for (auto &d : e.devices) {
             if (d.id == f.id) known = &d;
-            else twin = twin || (!mac.empty() && mac_key(d.mac) == mac && (!d.enabled || !d.things.empty()));
+            else twin = twin || (!mac.empty() && support::mac_digits(d.mac) == mac && (!d.enabled || !d.things.empty()));
         }
         // The same id from a device with another MAC than the one saved is another device (an id
         // made from an address, or one a device made up): it is not folded into the saved record,
         // which keeps its name, settings and MAC, and it is not saved by this scan.
-        if (known && !mac.empty() && !mac_key(known->mac).empty() && mac_key(known->mac) != mac) continue;
+        const std::string saved_mac = known ? support::mac_digits(known->mac) : std::string();
+        if (!mac.empty() && !saved_mac.empty() && saved_mac != mac) continue;
         if (!known) {
             e.devices.emplace_back();
             known = &e.devices.back();
@@ -548,7 +540,7 @@ int remember_scan(const discovery::Network &net, const std::vector<discovery::De
         known->kind = f.kind; known->model = f.model;
         if (known->things.empty() || known->name.empty()) known->name = f.name;
         known->ip = f.ip; known->port = f.port; known->info = f.info; known->found_by = f.found_by;
-        if (!f.mac.empty()) known->mac = f.mac;
+        if (!mac.empty()) known->mac = f.mac;   // an empty, unreadable or all-zero MAC never replaces the one saved
         known->last_seen = now;
     }
     store_entry(root, e);

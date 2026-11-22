@@ -845,7 +845,12 @@ key, real audio), say so plainly rather than implying it was.
   Only a positive match counts: an answer with no MAC, or an empty one, is not the saved device
   (Kasa's get_sysinfo; WiZ's getPilot, where firmware that leaves the MAC out is asked
   getSystemConfig within the same time), and a record saved without a MAC is never changed. The
-  first versions took "no MAC" for "nothing to compare" and switched whatever answered.
+  first versions took "no MAC" for "nothing to compare" and switched whatever answered. Twelve zeros
+  are no MAC either: one check (`support::mac_digits`) serves what is saved, compared and
+  controlled, after a scan that reported zeros replaced a real saved MAC and a later scan with
+  another real MAC took over the record and its settings. A record whose `mac` is empty but whose
+  id was made from the MAC (Kasa's "tplink:<MAC>", WiZ's "wiz:<MAC>") is checked against that MAC
+  (`support::saved_mac`); Kasa first refused such records from earlier versions outright.
   A login is no identity either: every plug of one Tapo account accepts the same password, and
   until the integration review a command for a desk lamp switched on the heater plug that had
   been given the lamp's address, with no question. The Tapo transport now asks each new session's

@@ -724,6 +724,20 @@ static void test_driver() {
                   !reads_as_unreachable(err), err);
         std::vector<home::Thing> readable = {light};
         check("saved without a MAC: it can still be read", driver->read(unknown, readable, err), err);
+        // Twelve zeros name no device (fix round 2, C5): saved under zeros, it is as one saved without
+        // a MAC, even when the device at the address reports zeros too.
+        pilot_mac = system_mac = "000000000000";
+        for (const char *id : {"wiz:000000000000", "wiz:zeros"}) {
+            home::Device zeros = dev;
+            zeros.id = id;
+            zeros.mac = "00:00:00:00:00:00";
+            const int before_zeros = static_cast<int>(quiet.received().size());
+            check(std::string("saved under zeros (") + id + "): the change is refused before anything is sent",
+                  !driver->apply(zeros, light, c, 2500, err) && err == kNoIdentity && static_cast<int>(quiet.received().size()) == before_zeros,
+                  err);
+        }
+        pilot_mac = "none";
+        system_mac = "a8bb5006033d";
     }
 
     {

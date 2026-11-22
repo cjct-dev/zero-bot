@@ -111,6 +111,10 @@ static void test_mac() {
     same("mac_digits: not a hex digit", support::mac_digits("aa:bb:cc:00:11:2g"), "");
     same("mac_digits: a space", support::mac_digits(" aa:bb:cc:00:11:22"), "");
     same("mac_digits: empty", support::mac_digits(""), "");
+    // Twelve zeros name no device (fix round 2, C5): not saved, never a match.
+    same("mac_digits: all zeros", support::mac_digits("00:00:00:00:00:00"), "");
+    same("mac_digits: all zeros, no separators", support::mac_digits("000000000000"), "");
+    same("mac_digits: zeros but one", support::mac_digits("00:00:00:00:00:01"), "000000000001");
 }
 
 static void test_bytes() {
