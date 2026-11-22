@@ -17,3 +17,7 @@ settings.json
 *.swp
 .DS_Store
 compile_commands.json
+
+# Python bytecode
+__pycache__/
+*.pyc
