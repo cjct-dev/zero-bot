@@ -14,6 +14,7 @@
 #include "agent/speech.h"
 #include "agent/tools.h"
 #include "core/activity.h"
+#include "core/result.h"
 #include "core/settings.h"
 #include "platform/audio.h"
 #include "smarthome/home.h"
@@ -44,10 +45,7 @@ std::string call_key(const std::string &name, const std::string &raw_args) {
 }
 
 // A failure's words without the "ERROR: " in front, short enough to quote.
-std::string error_words(const std::string &result) {
-    std::string e = result.compare(0, 7, "ERROR: ") == 0 ? result.substr(7) : result;
-    return util::truncate_utf8(e, 200, "...");
-}
+std::string error_words(const std::string &text) { return util::truncate_utf8(result::words(text), 200, "..."); }
 
 // The model calls a request may make (kMaxRounds), its tools' round trips included. A draft withdrawn
 // because the user said more does not count, and a request typed while the answer to the last one was
