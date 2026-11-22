@@ -57,7 +57,7 @@ Check check(const std::string &url, std::atomic<bool> *cancel = nullptr);
 // call's result is handed over: a station chosen meanwhile wins.
 void check_async(const Station &s, std::function<void(const Check &)> done);
 
-// ---- the radio tool (wired up in agent/tools.cpp)
+// ---- the radio tool (wired up in agent/tools/radio.cpp)
 // Its description and parameters for the model, made from the station list (names as allowed
 // values, nicknames as data), or null when there are no stations: the tool is then left out.
 json tool_spec(bool can_search);

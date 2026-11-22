@@ -536,30 +536,34 @@ def no_real_web(root):
 
 def web_wraps():
     """Every web read a tool makes goes through experiment::web(), so a forgotten wrap is caught here, before any
-    run: in src/agent/tools.cpp every fetch_json call's address is experiment::web(...), and the only http::send
-    calls in the app's own code are the reviewed ones (fetch_json, the AI service, the radio's check of a stream,
-    the smart-home drivers and the http layer itself)."""
+    run: anywhere in src/ every fetch_json call's address is experiment::web(...) (the tools are one file each in
+    src/agent/tools/; fetch_json is in web.cpp there), and the only http::send calls in the app's own code are the
+    reviewed ones (fetch_json, the AI service, the radio's check of a stream, the smart-home drivers and the http
+    layer itself)."""
     src = os.path.join(HERE, "..", "src")
-    with open(os.path.join(src, "agent", "tools.cpp"), encoding="utf-8") as f:
-        text = f.read()
-    calls = [m.start() for m in re.finditer(r"\bfetch_json\(", text)]
-    defs = [i for i in calls if re.match(r"fetch_json\(const std::string &url", text[i:])]
-    bad = [text[i:i + 90].replace("\n", " ") for i in calls if i not in defs and not re.match(r"fetch_json\(\s*experiment::web\(", text[i:])]
-    check("every fetch_json call in tools.cpp goes through experiment::web()", calls and not bad, bad)
-    allowed = {"agent/tools.cpp", "agent/llm.cpp", "core/radio.cpp", "net/http.cpp", "net/http.h"}
-    senders = []
+    sources = {}
     for d, _, files in os.walk(src):
         for name in files:
-            rel = os.path.relpath(os.path.join(d, name), src)
-            if rel.startswith("smarthome/") or not name.endswith((".cpp", ".h")):
+            if name.endswith((".cpp", ".h")):
+                with open(os.path.join(d, name), encoding="utf-8", errors="replace") as f:
+                    sources[os.path.relpath(os.path.join(d, name), src).replace(os.sep, "/")] = f.read()
+    calls, bad = 0, []
+    for rel, text in sorted(sources.items()):
+        for m in re.finditer(r"\bfetch_json\(", text):
+            i = m.start()
+            if re.match(r"fetch_json\(const std::string &url", text[i:]):   # its declaration and definition
                 continue
-            with open(os.path.join(d, name), encoding="utf-8", errors="replace") as f:
-                if re.search(r"http::send(_retrying)?\(", f.read()) and rel not in allowed:
-                    senders.append(rel)
+            calls += 1
+            if not re.match(r"fetch_json\(\s*experiment::web\(", text[i:]):
+                bad.append("%s: %s" % (rel, text[i:i + 90].replace("\n", " ")))
+    check("every fetch_json call goes through experiment::web() (%d calls)" % calls, calls and not bad, bad)
+    allowed = {"agent/tools/web.cpp", "agent/llm.cpp", "core/radio.cpp", "net/http.cpp", "net/http.h"}
+    senders = sorted(rel for rel, text in sources.items()
+                     if not rel.startswith("smarthome/") and re.search(r"http::send(_retrying)?\(", text) and rel not in allowed)
     check("no code but the reviewed files sends HTTP (a new sender must go through experiment::web or be reviewed)", not senders, senders)
-    with open(os.path.join(src, "agent", "tools.cpp"), encoding="utf-8") as f:
-        sends = len(re.findall(r"http::send(_retrying)?\(", f.read()))
-    check("tools.cpp sends HTTP only in fetch_json", sends == 1, sends)
+    sends = {rel: len(re.findall(r"http::send(_retrying)?\(", text)) for rel, text in sources.items() if rel.startswith("agent/tools/")}
+    sends = {rel: n for rel, n in sends.items() if n}
+    check("the tools send HTTP only in fetch_json (agent/tools/web.cpp)", sends == {"agent/tools/web.cpp": 1}, sends)
 
 
 def isolated(cmd, env, timeout=60):
