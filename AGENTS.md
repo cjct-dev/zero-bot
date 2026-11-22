@@ -1008,7 +1008,10 @@ changed, drive it from `App::periodic` (`app_status.cpp`), route keys in `App::h
 A settings page that needs something slow (a subprocess, the network, the first full look at the
 network) reads it with `background()` and refreshes itself when the answer comes, showing a
 placeholder meanwhile; a late answer acts only while its page is still the one on top (the Smart
-home page checks its title, the setup guide its `still_on`).
+home page checks its title, the setup guide its `still_on`). So does a row's value, which is read at
+every redraw of its page: the Smart home row on Your data shows the last count while it counts again
+(`home_things`); counting at each key press ran `iw` on the UI thread. `--shots` opens both pages
+with a network that answers only after 1.5 s (`opens_at_once`).
 
 **Something shown over every screen** (the timer's alarm banner, `AlarmView`): make it a child
 of the screen, created after the other views, and `raise()` it again whenever another view

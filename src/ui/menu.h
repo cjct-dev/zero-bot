@@ -76,6 +76,7 @@ public:
     // this label that the cursor can stop on (-1 when there is none). Rows count as in the page's build.
     int cursor() const;
     int row_of(const std::string &label) const;
+    std::string value_of(const std::string &label) const;   // that row's value as shown ("" with no such row)
     // The width a Pair row gives its key (the rest is for what it does): for the checks in --shots.
     static constexpr int kPairKeyW = 96;   // DIAGNOSTICS (temporary): 84 without the guide's "SPACE SPACE" line
     static int pair_text_width();

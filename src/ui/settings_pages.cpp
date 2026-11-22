@@ -4,6 +4,7 @@
 #include "ui/settings_pages.h"
 #include "ui/settings_internal.h"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -65,6 +66,27 @@ void open_status(Menu &menu) {
             return text;
         },
         [&menu](const std::string &text) { if (menu.open()) menu.message("Status", text); });
+}
+
+// ---------------------------------------------------------------- Your data
+// The Smart home row's value: how many things the assistant may use here. Counting them means a look
+// at the network the device is on (a subprocess, and now and then a wait for the router) and a read of
+// the smart-home file, which the UI thread does not wait for at every redraw: the row shows the last
+// count while it is counted again in the background, and the page is redrawn if it changed.
+std::string home_things(Menu &menu) {
+    static std::optional<size_t> known;   // these two are only touched on the UI thread
+    static bool counting = false;
+    if (!counting) {
+        counting = true;
+        background([] { return home::thing_count(); }, [&menu](size_t n) {
+            counting = false;
+            if (known == n) return;
+            known = n;
+            if (menu.open() && menu.title() == "Your data") menu.refresh();
+        });
+    }
+    if (!known) return "…";
+    return *known ? std::to_string(*known) + (*known == 1 ? " device" : " devices") : std::string("set up");
 }
 
 // ---------------------------------------------------------------- sections
@@ -177,10 +199,7 @@ void data_rows(Menu &menu, const SettingsHooks &hooks, std::vector<MenuItem> &it
                                   [&menu] { open_memory(menu); }));
     items.push_back(MenuItem::val("TV remote", [] { return S().tv_brand == "auto" ? std::string("any brand") : S().tv_brand; },
                                   [&menu] { open_remote(menu); }));
-    items.push_back(MenuItem::val("Smart home", [] {
-        const size_t n = home::thing_count();
-        return n ? std::to_string(n) + (n == 1 ? " device" : " devices") : std::string("set up");
-    }, [&menu] { open_smart_home(menu); }));
+    items.push_back(MenuItem::val("Smart home", [&menu] { return home_things(menu); }, [&menu] { open_smart_home(menu); }));
     items.push_back(MenuItem::val("Music library", [] { return std::to_string(MusicLibrary::get().size()) + " tracks"; }, [&menu] {
         menu.toast("Scanning " + S().eff_music_dir() + "…");
         background([] { MusicLibrary::get().refresh(S().eff_music_dir(), true); return MusicLibrary::get().size(); },

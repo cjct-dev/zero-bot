@@ -50,6 +50,42 @@ discovery::Network slow_look() {
     return net;
 }
 
+// The same through another interface, for the check of the Your data page, which comes first: the
+// look it leaves in home::network_now's memory does not answer the Smart home page's check (another
+// route is another network, looked at afresh).
+discovery::Route slow_route_data() { return {"test-data", "127.0.0.1"}; }
+discovery::Network slow_look_data() {
+    discovery::Network net = slow_look();
+    net.iface = "test-data";
+    return net;
+}
+
+// Presses ENTER on the row under the cursor while the network is found only after a slow first look
+// (`slow`): opening a page never waits for the network on the UI thread. True when the key came back
+// at once with the page `title` up and still without what `shown` looks for, which then came with
+// the answer (up to 4 s).
+bool opens_at_once(Menu &menu, const home::testing::NetworkSource &slow, const std::string &title,
+                   const std::function<bool()> &shown) {
+    unsetenv("ZB_TEST_NETWORK");
+    home::testing::set_network_source(&slow);
+    KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
+    const unsigned long t0 = sys::now_ms();
+    menu.key(enter);
+    const unsigned long took = sys::now_ms() - t0;
+    const bool looking = menu.title() == title && !shown();
+    for (int i = 0; i < 200 && !shown(); ++i) {
+        uiq::drain();
+        usleep(20 * 1000);
+    }
+    const bool listed = shown();
+    home::testing::set_network_source(nullptr);
+    setenv("ZB_TEST_NETWORK", "1", 1);
+    if (took > 500 || !looking || !listed)
+        fprintf(stderr, "opening %s waited for the network on the UI thread (%lu ms; looking %d, listed %d)\n", title.c_str(),
+                took, looking, listed);
+    return took <= 500 && looking && listed;
+}
+
 // A made-up home for the screenshots, saved on the stand-in test network: none of its addresses
 // is ever contacted, and nothing is scanned.
 void sample_home() {
@@ -759,7 +795,10 @@ void App::shots_settings(Shots &shots) {
     if (!without_power_on(menu, "Device", {"Time zone", "Internet via phone"})) failed = true;
     menu.key(esc);
     shots.menu_to("Your data");                    // whose first row is "Calendar"
-    menu.key(enter);
+    // Its Smart home row counts the things on the network the device is on, in the background: the
+    // page is up at once, and the count comes with the answer (as pictured).
+    static const home::testing::NetworkSource slow{slow_route_data, slow_router_mac, slow_look_data};
+    if (!opens_at_once(menu, slow, "Your data", [this] { return menu.value_of("Smart home") == "5 devices"; })) failed = true;
     shots_data(shots);
     shots_smart_home(shots);
     shots_radio(shots);
@@ -842,31 +881,12 @@ void App::shots_smart_home(Shots &shots) {
     KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
     KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
     shots.menu_to("Smart home");
-    {
-        // Opening Smart home never waits for the network on the UI thread: the first full look runs
-        // `iw` and can take seconds, in which keys, redraws and the alarm stood still. Here the look
-        // takes a second and a half: the page is up at once, says it is looking, and lists the home
-        // when the answer comes (as pictured).
-        static const home::testing::NetworkSource slow{slow_route, slow_router_mac, slow_look};
-        unsetenv("ZB_TEST_NETWORK");
-        home::testing::set_network_source(&slow);
-        const unsigned long t0 = sys::now_ms();
-        menu.key(enter);
-        const unsigned long took = sys::now_ms() - t0;
-        const bool looking = menu.title() == "Smart home" && menu.row_of("Bed heater") < 0;
-        for (int i = 0; i < 200 && menu.row_of("Bed heater") < 0; ++i) {   // up to 4 s
-            uiq::drain();
-            usleep(20 * 1000);
-        }
-        const bool listed = menu.row_of("Bed heater") >= 0;
-        home::testing::set_network_source(nullptr);
-        setenv("ZB_TEST_NETWORK", "1", 1);
-        if (took > 500 || !looking || !listed) {
-            fprintf(stderr, "opening Smart home waited for the network on the UI thread (%lu ms; looking %d, listed %d)\n", took,
-                    looking, listed);
-            shots.failed = true;
-        }
-    }
+    // Opening Smart home never waits for the network on the UI thread: the first full look runs `iw`
+    // and can take seconds, in which keys, redraws and the alarm stood still. Here the look takes a
+    // second and a half: the page is up at once, says it is looking, and lists the home when the
+    // answer comes (as pictured).
+    static const home::testing::NetworkSource slow{slow_route, slow_router_mac, slow_look};
+    if (!opens_at_once(menu, slow, "Smart home", [this] { return menu.row_of("Bed heater") >= 0; })) shots.failed = true;
     snap("smart-home");
     shots.menu_to("Bed heater");                   // the first thing
     menu.key(enter);
