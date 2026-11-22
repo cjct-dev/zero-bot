@@ -835,7 +835,9 @@ key, real audio), say so plainly rather than implying it was.
   driver. Every failed write of `smarthome.json` is reported (`home::kNotSaved`), not lost.
 - A scan is of the network the user agreed to: `home::scan` takes the network the settings page
   showed (`discovery::Options::network_id`), refuses once the device is on another, and drops what
-  it heard when the network changed while it listened.
+  it heard when the network changed while it listened. So does the short scan for a device that
+  stopped answering (`relocate`), through the same `scan_on`: it first scanned whatever network the
+  device was on by then, and saved the addresses it heard under the network the command was for.
 - An address is not an identity. Routers hand a device's address to another one (a router that
   loses its leases when it restarts, a bulb switched off at the wall for a week), and a device
   with no key of its own (WiZ, and any family whose protocol has no login) answers whoever asks.

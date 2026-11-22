@@ -537,28 +537,39 @@ bool moved(const discovery::Device &f, const Device &d) {
     return f.id == d.id && !other_mac(f, d) && !f.ip.empty() && (f.ip != d.ip || (f.port > 0 && d.port > 0 && f.port != d.port));
 }
 
+// The short scan (the caller holds g_lookup_mtx), of `network_id` only, as the settings page's is
+// (scan_on): the Wi-Fi can join another network while it listens, and that network's addresses must
+// not be saved as these devices'. The saved devices heard at a new address are moved there.
+bool look_again(const std::string &network_id) {
+    discovery::Options opt;
+    opt.listen_ms = 2500;
+    opt.network_id = network_id;
+    std::vector<discovery::Device> fresh;
+    std::string err;
+    if (!scan_on(opt, g_test_scan, fresh, err)) return false;
+    g_found = fresh;
+    g_found_on = network_id;
+    g_found_at = now_ms() ? now_ms() : 1;
+    modify_entry(network_id, [&](NetworkEntry &e) {
+        for (auto &d : e.devices)
+            for (const auto &f : g_found)
+                if (moved(f, d)) {
+                    d.ip = f.ip;
+                    if (f.port > 0) d.port = f.port;
+                }
+    });
+    return true;
+}
+
 Lookup relocate(const std::string &network_id, Saved &device) {
     std::lock_guard<std::mutex> lk(g_lookup_mtx);
     if (!g_test_scan && test_network()) return Lookup::NotTried;
-    const discovery::Network net = network_now(true);
-    if (!net.usable || net.id() != network_id) return Lookup::NotTried;
-    if (g_found_on != network_id || g_found_at == 0 || now_ms() - g_found_at > 20000) {
-        std::vector<discovery::Device> fresh;
-        std::string err;
-        discovery::Options opt;
-        opt.listen_ms = 2500;
-        if (!(g_test_scan ? g_test_scan(fresh) : discovery::scan(opt, fresh, err))) return Lookup::NotTried;
-        g_found = fresh;
-        g_found_on = network_id;
-        g_found_at = now_ms() ? now_ms() : 1;
-        modify_entry(network_id, [&](NetworkEntry &e) {
-            for (auto &d : e.devices)
-                for (const auto &f : g_found)
-                    if (moved(f, d)) {
-                        d.ip = f.ip;
-                        if (f.port > 0) d.port = f.port;
-                    }
-        });
+    const bool recent = g_found_on == network_id && g_found_at != 0 && now_ms() - g_found_at <= 20000;
+    if (recent) {
+        const discovery::Network net = network_now(true);
+        if (!net.usable || net.id() != network_id) return Lookup::NotTried;
+    } else if (!look_again(network_id)) {
+        return Lookup::NotTried;
     }
     for (const auto &f : g_found)
         if (f.id == device.id && !other_mac(f, device)) {

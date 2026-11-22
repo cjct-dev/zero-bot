@@ -3006,6 +3006,12 @@ bool stand_in_scan(std::vector<discovery::Device> &found) {
     return true;
 }
 
+// The same, while the Wi-Fi joins another network.
+bool roaming_scan(std::vector<discovery::Device> &found) {
+    home::testing::set_network(&g_elsewhere);
+    return stand_in_scan(found);
+}
+
 discovery::Device found_at(const std::string &id, const std::string &ip, int port = 9) {
     discovery::Device d;
     d.id = id;
@@ -3154,6 +3160,21 @@ void test_moved_devices() {
     g_scan_answer = {found_at("fake:tv", "127.0.0.2")};
     r = run({{"action", "status"}, {"target", "Bedroom TV"}});
     CHECK_MSG(starts(r, R"({"state":)") && g_scans == 1, r);
+
+    // The Wi-Fi joins another network while the short scan listens (fix round 2, C3): what it heard
+    // is another network's, so no address is saved from it and nothing is sent again.
+    g_elsewhere = g_net;
+    g_elsewhere.ssid = "Neighbour";
+    g_elsewhere.gateway_mac = "02:00:00:00:00:0a";
+    home::testing::set_scan(roaming_scan);
+    home_with_tv();
+    g_fake->broken = {"fake:tv"};
+    g_scan_answer = {found_at("fake:tv", "127.0.0.2")};
+    r = run({{"action", "on"}, {"target", "Bedroom TV"}});
+    home::testing::set_network(&g_net);
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": it did not answer. Tell the user" + std::string(kNoInfrared), r);
+    CHECK_MSG(applies() == 1 && g_scans == 1 && saved("fake:tv")->ip == "127.0.0.1", saved("fake:tv")->ip);
+    home::testing::set_scan(stand_in_scan);
 
     // On the stand-in test network with no stand-in scan, nothing is ever scanned for.
     home::testing::set_scan(nullptr);

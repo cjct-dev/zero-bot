@@ -428,24 +428,21 @@ discovery::Network network_now(bool fresh) {
     return cached;
 }
 
-bool scan(const discovery::Network &consented, std::vector<discovery::Device> &found, std::string &err, bool *heard_self) {
+bool scan_on(const discovery::Options &opt, ScanFn stand_in, std::vector<discovery::Device> &found, std::string &err,
+             bool *heard_self) {
     found.clear();
     if (heard_self) *heard_self = false;
-    const ScanFn stand_in_scan = test_scan();
-    if (!stand_in_scan && test_network()) { err = "Nothing is scanned while the test network is in use."; return false; }
     // Asked afresh before and after: a cached answer could still describe the network left a moment ago.
-    auto still_on = [&consented] {
+    auto still_on = [&opt] {
         const discovery::Network now = network_now(true);
-        return now.usable && now.id() == consented.id();
+        return now.usable && now.id() == opt.network_id;
     };
     if (!still_on()) {
         err = "This device is no longer on the network shown, so nothing was scanned. Open Smart home again to see the "
               "network it is on now.";
         return false;
     }
-    discovery::Options opt;
-    opt.network_id = consented.id();
-    if (!(stand_in_scan ? stand_in_scan(found) : discovery::scan(opt, found, err, heard_self))) return false;
+    if (!(stand_in ? stand_in(found) : discovery::scan(opt, found, err, heard_self))) return false;
     if (!still_on()) {
         found.clear();
         err = "The network changed during the scan, so nothing it found was saved. Open Smart home again to see the "
@@ -453,6 +450,18 @@ bool scan(const discovery::Network &consented, std::vector<discovery::Device> &f
         return false;
     }
     return true;
+}
+
+bool scan(const discovery::Network &consented, std::vector<discovery::Device> &found, std::string &err, bool *heard_self) {
+    const ScanFn stand_in_scan = test_scan();
+    if (!stand_in_scan && test_network()) {
+        found.clear();
+        err = "Nothing is scanned while the test network is in use.";
+        return false;
+    }
+    discovery::Options opt;
+    opt.network_id = consented.id();
+    return scan_on(opt, stand_in_scan, found, err, heard_self);
 }
 
 bool on_network(const std::string &network_id, std::string &why_not) {
