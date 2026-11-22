@@ -6,7 +6,7 @@
 # stream, the player's live mode), the keys (what each does on the chat screen, and the key guide),
 # when the screen dims and goes off, what the other tools stand on (calculator, dates, time
 # zones, helper programs), what every thread shares (one file saved by two threads, the settings,
-# all-day alerts when the clocks change) and the small shared helpers (failure shape, battery,
+# all-day alerts when the clocks change, the store's lock while its files are written) and the small shared helpers (failure shape, battery,
 # Wi-Fi list, default route, monotonic count, start of a day), the speaker stopped on another
 # thread, the microphone's route with a plug in the jack, the music player's MP3 path, which models
 # are chosen (ui/models.h), a streamed reply's parts (agent/llm_stream.h) and the diagnostics (the
@@ -121,10 +121,12 @@ $WRAP $CXX -o "$OUT/screen_idle_test" "$OUT/tests_unit_screen_idle_test.o" "$(ob
 $WRAP $CXX -o "$OUT/models_test" "$OUT/tests_unit_models_test.o"
 # A streamed chat reply: its lines across chunks, its answer cleared of thinking markers (agent/llm_stream.h: inline).
 $WRAP $CXX -o "$OUT/llm_stream_test" "$OUT/tests_unit_llm_stream_test.o"
-# Files saved by two threads at once, the settings shared between threads, all-day alerts when the clocks change.
+# Files saved by two threads at once, the settings shared between threads, all-day alerts when the clocks change,
+# the store's lock while its files are written (fsync wrapped, so the test can make a write slow).
 $WRAP $CXX -o "$OUT/core_test" "$OUT/tests_unit_core_test.o" "$(obj_of src/core/settings.cpp)" "$(obj_of src/core/store.cpp)" \
     "$(obj_of src/core/upgrade.cpp)" "$(obj_of src/core/util.cpp)" "$(obj_of src/platform/proc.cpp)" \
-    "$(obj_of src/platform/net_status.cpp)" "$(obj_of src/platform/power.cpp)" "$(obj_of src/platform/sys.cpp)" -lpthread
+    "$(obj_of src/platform/net_status.cpp)" "$(obj_of src/platform/power.cpp)" "$(obj_of src/platform/sys.cpp)" -lpthread \
+    -Wl,--wrap=fsync
 # DIAGNOSTICS (temporary): saved conversations.
 $WRAP $CXX -o "$OUT/activity_test" "$OUT/tests_unit_activity_test.o" "$(obj_of src/core/activity.cpp)" \
     "$(obj_of src/core/settings.cpp)" "$(obj_of src/core/util.cpp)" -lpthread
@@ -160,7 +162,7 @@ echo "=== model choice"
 "$OUT/models_test" || failed=1
 echo "=== a streamed reply: lines and thinking markers"
 "$OUT/llm_stream_test" || failed=1
-echo "=== core: files saved at once, settings shared between threads, all-day alerts and clock changes, an old drop-in"
+echo "=== core: files saved at once, settings shared between threads, all-day alerts and clock changes, the store's lock, an old drop-in"
 "$OUT/core_test" "$state/core" || failed=1
 echo "=== diagnostics: saved conversations (temporary)"
 "$OUT/activity_test" "$state/activity" || failed=1

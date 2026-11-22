@@ -125,9 +125,11 @@ them every tick and tools change them), the smart-home file (`store.cpp`: `g_mtx
 and the rate limit, `g_locks_mtx` and then one lock per device), the time zone (`g_tz_mtx` in
 util.cpp, under which `TZ` is switched), `uiq::mtx()` and curl's share locks (http.cpp). A
 descriptor or pointer read under a lock must not be used after it is let go if another thread may
-close or free it meanwhile (section 8, Audio). Still open: `Store` writes its files under the lock
-the UI takes every second (ZB-036), and `TZ` is switched with `setenv` while other threads may read
-it.
+close or free it meanwhile (section 8, Audio). `Store` writes no file with `Store::mtx_` held, which
+the UI thread takes every second: it queues a file's new contents under it and writes them once it is
+let go, before the change returns (a `WriteAfter` declared before the lock in every function that
+saves; `write_mtx_` makes writers take turns). Still open: `TZ` is switched with `setenv` while other
+threads may read it.
 
 State on disk (all under the user's home, mode 0600 where they hold secrets):
 `~/.config/zero-bot/settings.json`, `~/.config/zero-bot/radio.json` (the user's own stations,
@@ -380,7 +382,8 @@ What exists:
   mode against a stand-in `ffplay`), `tests/unit/tools_test.cpp` (the calculator, dates and
   zones that do not exist, helper programs: cancelling, time limits, no inherited descriptors),
   `tests/unit/core_test.cpp` (what every thread shares: one file saved by two threads, the settings
-  read and changed on several threads, all-day alerts when the clocks change; what an older version
+  read and changed on several threads, all-day alerts when the clocks change, the store read at once
+  while a slow write of its file is under way (fsync wrapped); what an older version
   left behind; and the shared helpers: failure shape, battery, Wi-Fi list, default route, monotonic
   count, start of a day), `tests/unit/speaker_test.cpp` (the speaker written on one thread and
   stopped or killed on another: nothing reaches a file opened after `stop()`, a stuck write is

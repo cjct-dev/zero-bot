@@ -3,6 +3,7 @@
 #include <atomic>
 #include <climits>
 #include <ctime>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -126,12 +127,21 @@ public:
     std::vector<std::string> take_due_alerts(time_t now);
 
 private:
+    // Saving. The UI thread takes mtx_ every second, and a card can take a long while to write to, so no
+    // file is written with mtx_ held: save_calendar() and the others (with it held) only queue the
+    // file's new contents, and the change's public function writes them once it has let go of mtx_ (a
+    // WriteAfter, declared before its lock). When that function returns, its change is in the file.
+    class WriteAfter;
     void save_calendar();
     void save_reminders();
     void save_memory();
+    void queue(const char *file, json contents);   // with mtx_ held
+    void write_queued();                           // without it
     void timers_changed();      // with mtx_ held
     time_t reckon_locked(time_t now, long long &offset_ms) const;
     std::mutex mtx_;
+    std::mutex write_mtx_;                         // one writer at a time, so the newest contents are written last
+    std::map<std::string, json> queued_;           // under mtx_: each file's newest contents not yet written
     std::vector<CalEvent> events_;
     std::vector<Reminder> reminders_;
     std::vector<Memory> memories_;

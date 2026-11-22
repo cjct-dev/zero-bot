@@ -69,6 +69,24 @@ std::vector<std::string> names_in(const std::string &dir) {
     return out;
 }
 
+// fsync, held up on request (-Wl,--wrap=fsync in run_unit.sh): a file then takes as long to write
+// as on a slow card.
+std::atomic<int> g_fsync_delay_ms{0};
+std::atomic<int> g_fsyncs_under_way{0};
+
+}  // namespace
+
+extern "C" int __real_fsync(int fd);
+extern "C" int __wrap_fsync(int fd) {
+    ++g_fsyncs_under_way;
+    if (const int ms = g_fsync_delay_ms) usleep(static_cast<useconds_t>(ms) * 1000);
+    const int r = __real_fsync(fd);
+    --g_fsyncs_under_way;
+    return r;
+}
+
+namespace {
+
 // ---------------------------------------------------------------- one file saved by two threads
 // Both threads once wrote the same NAME.tmp: one could rename the other's half-written copy into
 // place, and the other's rename then failed. Each save now has a temporary file of its own.
@@ -224,6 +242,39 @@ void test_all_day_alerts(const std::string &root) {
     store.clear_events();
     util::apply_timezone("");
     (void)root;
+}
+
+// ---------------------------------------------------------------- the store's lock, while a file is written
+// The UI thread reads the store every second (take_due_alerts, timers) and waited for every file a tool
+// saved, fsync and all, since the store wrote with its lock held (ZB-036). Now a change's file is written
+// after the lock is let go, yet before the change returns; changes saved at once all reach the file.
+void test_store_writes_unlocked() {
+    g_test = "the store's files written outside its lock";
+    Store &store = Store::get();
+    store.load();
+    store.clear_memories();
+    const std::string file = util::data_dir() + "/memory.json";
+    g_fsync_delay_ms = 300;
+    std::thread saving([&store] { store.add_memory("Written slowly"); });
+    while (g_fsyncs_under_way == 0) usleep(1000);
+    const unsigned long t0 = sys::now_ms();
+    const std::vector<Memory> seen = store.memories();
+    store.take_due_alerts(time(nullptr));
+    store.timers();
+    const unsigned long waited = sys::now_ms() - t0;
+    CHECK(waited < 100);                                    // 300 ms and more when the write held the lock
+    CHECK(seen.size() == 1 && seen[0].text == "Written slowly");
+    saving.join();
+    CHECK_EQ(static_cast<long long>(util::load_json(file, json::array()).size()), 1);   // in the file once it returned
+
+    g_fsync_delay_ms = 50;
+    std::vector<std::thread> savers;
+    for (int i = 0; i < 4; ++i) savers.emplace_back([&store, i] { store.add_memory("At once " + std::to_string(i)); });
+    for (std::thread &t : savers) t.join();
+    g_fsync_delay_ms = 0;
+    CHECK_EQ(static_cast<long long>(util::load_json(file, json::array()).size()), 5);
+    store.clear_memories();
+    CHECK_EQ(static_cast<long long>(util::load_json(file, json::array()).size()), 0);
 }
 
 // ZB-085: "Start at power-on" is gone; the drop-in it wrote for the launcher is removed at start,
@@ -403,6 +454,7 @@ int main(int argc, char **argv) {
     test_atomic_writes(root);
     test_settings_threads(root);
     test_all_day_alerts(root);
+    test_store_writes_unlocked();
     test_power_on_leftover(root);
     const std::string helpers = root + "/helpers";
     util::make_dirs(helpers);
