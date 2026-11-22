@@ -787,8 +787,9 @@ def service_errors():
 @scenario
 def nested_too_deep():
     """JSON from the service nested deeper than util::kMaxJsonDepth (32) is not read (ZB-093): a stream's event, an
-    error's body, a tool call's arguments. Before the guard each was taken as it came; arguments nested 200,000
-    deep crashed the app (the key a failed call is remembered by was printed from the tree, a level a call)."""
+    error's body, a transcription, a tool call's arguments. Before the guard each was taken as it came; arguments
+    nested 200,000 deep crashed the app (the key a failed call is remembered by was printed from the tree, a level
+    a call, and so was a saved conversation)."""
     n = "nested too deep"
     r = run({"rules": [{"reply": {"text": "Words from a deep event.", "pad_depth": 32}, "times": 1}],
              "default": {"text": "Plain words."}}, ask="hi")
@@ -800,6 +801,12 @@ def nested_too_deep():
     r = run({"default": {"status": 400, "body": deep_error}}, ask="hi")
     check(n + ": an error's body is not read as the service's message, only quoted as any other text is",
           "[error] HTTP 400: " in r.out and "[error] words from a deep error" not in r.out and len(r.requests) == 1, r)
+    ears = {"stt_model": "scripted-ears"}
+    r = run(dict(LISBON, heard="what is the capital of portugal", heard_pad_depth=32), ask_wav=True, settings=ears)
+    check(n + ": a transcription at 33 levels is not read, and nothing is asked of the model",
+          "[error] Could not transcribe: unexpected reply from the speech service" in r.out and heard(r) == 1 and len(r.requests) == 1, r)
+    r = run(dict(LISBON, heard="what is the capital of portugal", heard_pad_depth=31), ask_wav=True, settings=ears)
+    check(n + ": at 32 levels it is", r.answer == "Lisbon is the capital of Portugal." and heard(r) == 1, r)
 
     deep_args = '{"expression": "2+2", "pad": ' + "[" * 200000 + "]" * 200000 + "}"
     script = {"rules": [{"when": {"results": 2}, "reply": {"text": "That did not work."}}],
