@@ -32,6 +32,10 @@ const char *const kNoAnswer = "the Kasa device did not answer";
 const char *const kRefused = "the Kasa device refused the connection";
 // "answers" is one of the words that make the app look for the device at a new address.
 const char *const kOtherDevice = "another Kasa device now answers at this one's saved address";
+const char *const kNoMac = "the device that answers at this Kasa device's saved address does not say which device it is";
+// None of those words: there is no address to look for it by.
+const char *const kNoIdentity = "no hardware address is saved for this Kasa device, so Zero Bot cannot make sure that the "
+                                "device at its address is still this one; scan the network again in Settings, Smart home";
 
 namespace {
 
@@ -335,25 +339,32 @@ public:
 
 private:
     // A Kasa device takes any command from anyone, so before a change the device at the saved
-    // address is asked who it is. After the router hands that address to another Kasa device, a
-    // plug's "on" would otherwise switch that one instead: every socket of a strip, or a heater
-    // whose "Ask before switching on" is never asked because the command was for another thing.
+    // address is asked who it is, and only one that names the MAC discovery saved it under is
+    // changed. After the router hands that address to another Kasa device, a plug's "on" would
+    // otherwise switch that one instead: every socket of a strip, or a heater whose "Ask before
+    // switching on" is never asked because the command was for another thing. An answer that names
+    // no MAC cannot be told apart from another device's, and a device saved without one cannot be
+    // checked at all: neither is changed.
     bool send_change(const home::Device &dev, const json &request, int deadline_ms, std::string &err) const {
         const Clock::time_point until = Clock::now() + std::chrono::milliseconds(std::max(1, deadline_ms));
-        json reply;
-        if (!detail::mac_digits(dev.mac).empty()) {
-            json sysinfo;
-            if (!ask(dev, {{kRelay, {{"get_sysinfo", json::object()}}}}, reply, until, err) ||
-                !sysinfo_in(dev, reply, sysinfo, err))
-                return false;
-            // A thing saved without a socket (read once when the strip listed none) is never
-            // switched as a whole strip.
-            if (!request.contains("context") && sysinfo.contains("children")) {
-                err = kStripWhole;
-                return false;
-            }
-            reply = json();
+        if (detail::needs_new_login(dev.info)) {   // the more useful sentence, and nothing is sent either way
+            err = new_login_error();
+            return false;
         }
+        if (detail::mac_digits(dev.mac).empty()) {
+            err = kNoIdentity;
+            return false;
+        }
+        json reply, sysinfo;
+        if (!ask(dev, {{kRelay, {{"get_sysinfo", json::object()}}}}, reply, until, err) || !sysinfo_in(dev, reply, sysinfo, err))
+            return false;
+        // A thing saved without a socket (read once when the strip listed none) is never
+        // switched as a whole strip.
+        if (!request.contains("context") && sysinfo.contains("children")) {
+            err = kStripWhole;
+            return false;
+        }
+        reply = json();
         if (!ask(dev, request, reply, until, err)) return false;
         return detail::reply_ok(request, reply, err);
     }
@@ -392,7 +403,8 @@ private:
         return false;
     }
 
-    // get_sysinfo from a reply, from the device that was saved (see send_change).
+    // get_sysinfo from a reply, from the device that was saved (see send_change). A device saved
+    // without a MAC can still be read (nothing to compare), never changed.
     static bool sysinfo_in(const home::Device &dev, const json &reply, json &sysinfo, std::string &err) {
         const json &s = member(member(reply, kRelay), "get_sysinfo");
         if (!s.is_object()) {
@@ -403,8 +415,9 @@ private:
             err = kCommandRefused;
             return false;
         }
-        if (!detail::same_device(dev.mac, s)) {
-            err = kOtherDevice;
+        if (!detail::mac_digits(dev.mac).empty() && !detail::same_device(dev.mac, s)) {
+            const bool named = !detail::mac_digits(text(s, "mac")).empty() || !detail::mac_digits(text(s, "mic_mac")).empty();
+            err = named ? kOtherDevice : kNoMac;
             return false;
         }
         sysinfo = s;
@@ -773,8 +786,7 @@ std::string mac_digits(const std::string &raw) { return support::mac_digits(raw)
 bool same_device(const std::string &saved_mac, const json &sysinfo) {
     const std::string saved = mac_digits(saved_mac);
     const std::string mac = mac_digits(text(sysinfo, "mac")), mic = mac_digits(text(sysinfo, "mic_mac"));
-    if (saved.empty() || (mac.empty() && mic.empty())) return true;   // nothing to compare
-    return saved == mac || saved == mic;
+    return !saved.empty() && (saved == mac || saved == mic);
 }
 
 // Discovery gives kind "tplink" the port that answered (9999) or 0. A device an earlier version

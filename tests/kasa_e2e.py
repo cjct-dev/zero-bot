@@ -3,8 +3,8 @@
 
 usage: tests/kasa_e2e.py [path/to/kasa_cli [path/to/zero_bot]] [group ...]
        (defaults: build/unit/kasa_cli, which tests/run_unit.sh builds, and build/cli/zero_bot)
-groups: discover enumerate apply read moved swap hostile app (default: all; "app" is skipped
-with a note when the command-line build is missing)
+groups: discover enumerate apply read moved swap identity hostile app (default: all; "app" is
+skipped with a note when the command-line build is missing)
 
 tests/mocks/kasa/mock_kasa.py runs a plug and a second plug with meters of the two hardware
 generations, a wall switch, a dimmer, a six-socket strip, a colour bulb, a light strip, a
@@ -31,8 +31,8 @@ import netguard   # noqa: E402
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
 paths = [a for a in sys.argv[1:] if os.sep in a or a.endswith("_cli") or a.endswith("zero_bot")]
-GROUPS = [a for a in sys.argv[1:] if a not in paths] or ["discover", "enumerate", "apply", "read", "moved", "swap", "hostile",
-                                                         "app"]
+GROUPS = [a for a in sys.argv[1:] if a not in paths] or ["discover", "enumerate", "apply", "read", "moved", "swap", "identity",
+                                                         "hostile", "app"]
 CLI = os.path.abspath(paths[0]) if paths else os.path.join(HERE, "..", "build", "unit", "kasa_cli")
 APP = os.path.abspath(paths[1]) if len(paths) > 1 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
 MOCK = os.path.join(HERE, "mocks", "kasa", "mock_kasa.py")
@@ -92,13 +92,18 @@ DEVICE_TYPES = {"plug": "IOT.SMARTPLUGSWITCH", "plug2": "IOT.SMARTPLUGSWITCH", "
                 "moved": "IOT.SMARTPLUGSWITCH"}
 # The MACs the simulated devices report (mock_kasa.py), as discovery would have saved them.
 MACS = {"plug": "50:c7:bf:00:00:01", "plug2": "c0:06:c3:00:00:02", "switch": "50:c7:bf:00:00:03",
-        "dimmer": "50:c7:bf:00:00:04", "strip": "c0:06:c3:00:00:05", "bulb": "1c:3b:f3:00:00:06"}
+        "dimmer": "50:c7:bf:00:00:04", "strip": "c0:06:c3:00:00:05", "bulb": "1c:3b:f3:00:00:06",
+        "lightstrip": "e8:48:b8:00:00:07", "edison": "1c:3b:f3:00:00:08", "camera": "50:c7:bf:00:00:09",
+        "moved": "cc:32:e5:00:00:0a"}
 
 
-def state_file(mock, name, scheme="XOR", port=None, fname=None, plug=False, mac=""):
+def state_file(mock, name, scheme="XOR", port=None, fname=None, plug=False, mac=None):
     """A saved device, as discovery and the app would have it, pointing at the mock's port; with
-    plug=True it already has the one thing a plug has (as if read before); with a MAC, the driver
-    checks that the device answering at the address is this one."""
+    plug=True it already has the one thing a plug has (as if read before). It is saved with the MAC
+    the device reports unless `mac` says otherwise: the driver changes only a device at the address
+    that names that MAC ("" for a record saved without one, which is never changed)."""
+    if mac is None:
+        mac = MACS.get(name, "")
     path = os.path.join(workdir, (fname or name) + ".json")
     if not os.path.exists(path):
         dev = {"id": "tplink:" + name, "kind": "tplink", "name": name, "model": "", "mac": mac, "ip": "127.0.0.1",
@@ -217,8 +222,9 @@ def test_apply(mock):
 
     rc, out, err, _ = apply("plug", "main", {"on": True})
     st = mock.stats("plug")
-    check("plug on: sent set_relay_state 1 and nothing else", rc == 0 and
-          st["requests"] == [{"system": {"set_relay_state": {"state": 1}}}] and st["state"]["relay_state"] == 1, (out, err, st))
+    check("plug on: asked who it is, then sent set_relay_state 1, and nothing else", rc == 0 and
+          st["requests"] == [GET_SYSINFO, {"system": {"set_relay_state": {"state": 1}}}] and st["state"]["relay_state"] == 1,
+          (out, err, st))
     rc, out, err, _ = apply("plug", "main", {"on": False})
     check("plug off", rc == 0 and mock.stats("plug")["state"]["relay_state"] == 0, (out, err))
     n = len(requests(mock, "plug"))
@@ -410,6 +416,35 @@ def test_swap(mock):
     mock.reset()
 
 
+# ---------------------------------------------------------------- a device that does not say who it is
+def test_identity(mock):
+    """A change goes only to a device that names the MAC the saved one was found with. One at the
+    saved address that names none (as another device could), or gives it empty, gets no change; nor
+    does a device saved without a MAC, which cannot be checked. Checked from the device's side."""
+    for mode in ("no_mac", "empty_mac"):
+        mock.reset()
+        mock.mode("plug", mode)
+        rc, out, err, _ = cli(state_file(mock, "plug", plug=True), "apply", "main", json.dumps({"on": True}))
+        st = mock.stats("plug")
+        check("%s: the change is refused, in words that make the app look for the device" % mode,
+              rc == 1 and "does not say which device it is" in err and "answers" in err, (rc, err))
+        check("%s: the device was only asked who it is, and is still off" % mode,
+              st["requests"] == [GET_SYSINFO] and st["state"]["relay_state"] == 0, (st["requests"], st["state"]))
+        rc, out, err, _ = cli(state_file(mock, "plug", plug=True), "enumerate")
+        check("%s: nor is it read as the saved plug" % mode, rc == 1 and "does not say which device it is" in err, (rc, err))
+    mock.reset()
+    # A record saved without a MAC: nothing at all is sent to change it.
+    bare = state_file(mock, "switch", fname="switch-bare", plug=True, mac="")
+    rc, out, err, _ = cli(bare, "apply", "main", json.dumps({"on": True}))
+    st = mock.stats("switch")
+    check("saved without a MAC: the change is refused and nothing reaches the device",
+          rc == 1 and "no hardware address is saved" in err and st["connections"] == 0 and st["requests"] == [] and
+          st["state"]["relay_state"] == 0, (rc, err, st))
+    rc, out, err, _ = cli(bare, "enumerate")
+    check("saved without a MAC: it can still be read", rc == 0 and things(out).get("main", {}).get("state") == {"on": False}, (rc, err))
+    mock.reset()
+
+
 # ---------------------------------------------------------------- hostile answers
 def test_hostile(mock):
     mock.reset()
@@ -545,6 +580,12 @@ def test_app(mock):
           not (isinstance(r, dict) and r.get("now") == "on") and "another Kasa device" in json.dumps(r) and
           mock.stats("plug")["state"]["relay_state"] == 0 and
           not any("set_relay_state" in json.dumps(q) for q in mock.stats("plug")["requests"]), r)
+    mock.mode("switch", "no_mac")
+    r = tool({"action": "on", "target": "Porch light"})
+    check("app: the porch light's 'on' does not reach a device at its address that does not say which it is",
+          isinstance(r, str) and r.startswith("ERROR") and mock.stats("switch")["state"]["relay_state"] == 0 and
+          not any("set_relay_state" in json.dumps(q) for q in mock.stats("switch")["requests"]), r)
+    mock.mode("switch", "normal")
     r = tool({"action": "on", "target": "Porch light"})
     check("app: the porch light switch goes on", r == {"now": "on", "target": "Porch light"} and
           mock.stats("switch")["state"]["relay_state"] == 1, r)

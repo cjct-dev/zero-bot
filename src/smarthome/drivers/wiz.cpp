@@ -43,6 +43,11 @@ const char *const kKeyRefused =
 const char *const kClockNotSet = "The clock here is not set yet, so a signed command cannot be sent. Try again in a minute.";
 const char *const kRefused = "The WiZ device refused the command.";
 const char *const kMoved = "Another WiZ device answered at this one's saved address, so it was left alone.";
+const char *const kNoMac =
+    "The device that answered at this WiZ device's saved address did not say which device it is, so it was left alone.";
+const char *const kNoIdentity =
+    "No hardware address is saved for this WiZ device, so Zero Bot cannot make sure that the device at its address is "
+    "still this one. Scan the network again in Settings, Smart home.";
 
 using home::Change;
 using home::Device;
@@ -186,15 +191,22 @@ std::string saved_mac(const Device &dev) {
     return from_id.empty() ? support::mac_digits(dev.mac) : from_id;
 }
 
-// Whether a getSystemConfig or getPilot result came from this device. Addresses are handed out
-// again (a router that loses its leases when it restarts, a bulb switched off at the wall for a
-// week), and WiZ devices have no key of their own that would fail at a different one: without this
-// a command for the bedroom lamp would switch whichever WiZ device now has its address, and a "yes"
-// asked for one thing would be spent on another. A result that names no MAC cannot be told apart.
+// Whether a getSystemConfig or getPilot result came from this device: it names the MAC the device
+// was saved under. Addresses are handed out again (a router that loses its leases when it restarts,
+// a bulb switched off at the wall for a week), and WiZ devices have no key of their own that would
+// fail at a different one: without this a command for the bedroom lamp would switch whichever WiZ
+// device now has its address, and a "yes" asked for one thing would be spent on another. Only a
+// match counts: a result that names no MAC cannot be told apart from another device's.
 bool same_device(const std::string &expected, const json &result) {
-    if (expected.empty()) return true;
-    const std::string got = support::mac_digits(jstr(result, "mac"));
-    return got.empty() ? !(result.is_object() && result.contains("mac")) : got == expected;
+    return !expected.empty() && support::mac_digits(jstr(result, "mac")) == expected;
+}
+
+// A result with no "mac", or an empty one: it says nothing of which device sent it (some firmware
+// leaves the MAC out of getPilot). Anything else in "mac" that is not this device's is another's.
+bool names_no_mac(const json &result) {
+    if (!result.is_object()) return true;
+    const auto it = result.find("mac");
+    return it == result.end() || (it->is_string() && it->get<std::string>().empty());
 }
 
 // Devices that turned down an unsigned command in this run, by device id: they want a key even
@@ -647,8 +659,9 @@ public:
             err = o == Outcome::NoAnswer ? kNoAnswerSetup : sentence(o);
             return false;
         }
-        if (!same_device(saved_mac(dev), sys)) {
-            err = kMoved;
+        const std::string expected = saved_mac(dev);
+        if (!expected.empty() && !same_device(expected, sys)) {   // one saved without a MAC may be read, never changed
+            err = names_no_mac(sys) ? kNoMac : kMoved;
             return false;
         }
         const std::string module = jstr(sys, "moduleName"), mac = jstr(sys, "mac");
@@ -695,10 +708,8 @@ public:
             err = sentence(o);
             return false;
         }
-        if (!same_device(saved_mac(dev), pilot)) {
-            err = kMoved;
-            return false;
-        }
+        const std::string expected = saved_mac(dev);
+        if (!expected.empty() && !confirm(t, expected, pilot, deadline, err)) return false;
         const bool wants_power = detail && std::any_of(things.begin(), things.end(), [](const Thing &th) {
                                      return jstr(th.ref, "k") == "plug" && (th.caps & home::kSensor);
                                  });
@@ -715,20 +726,20 @@ public:
         const long long deadline = now_ms() + std::clamp(deadline_ms <= 0 ? 2500 : deadline_ms, 100, 10000);
         Target t = target(dev);
         json result;
-        // First, that the device at the saved address is this one (same_device): a read, open on
-        // every firmware, with at most half the time.
+        // First, that the device at the saved address is this one (confirm): reads, open on every
+        // firmware, with at most half the time. A device saved without a MAC is never changed.
         const std::string expected = saved_mac(dev);
-        if (!expected.empty()) {
-            const Outcome seen = call(t, "getPilot", "{}", "", now_ms() + std::min(1250, left(deadline, 20000) / 2), result);
-            if (seen != Outcome::Ok) {
-                err = sentence(seen);
-                return false;
-            }
-            if (!same_device(expected, result)) {
-                err = kMoved;
-                return false;
-            }
+        if (expected.empty()) {
+            err = kNoIdentity;
+            return false;
         }
+        const long long checked_by = now_ms() + std::min(1250, left(deadline, 20000) / 2);
+        const Outcome seen = call(t, "getPilot", "{}", "", checked_by, result);
+        if (seen != Outcome::Ok) {
+            err = sentence(seen);
+            return false;
+        }
+        if (!confirm(t, expected, result, checked_by, err)) return false;
         const bool known_signed = jbool(thing.ref, "signed") || needs_key_now(dev);
         Outcome o;
         if (known_signed) {
@@ -778,6 +789,25 @@ private:
             }
         }
         return o;
+    }
+
+    // Whether the device that gave `pilot` is the one saved under `expected` (same_device). Firmware
+    // whose getPilot names no MAC is asked getSystemConfig, which names it, by `deadline`. False with
+    // kMoved when another MAC is named, kNoMac when none is.
+    static bool confirm(Target &t, const std::string &expected, const json &pilot, long long deadline, std::string &err) {
+        json sys;
+        const json *named = &pilot;
+        if (names_no_mac(pilot)) {
+            const Outcome o = call(t, "getSystemConfig", "{}", "", deadline, sys);
+            if (o != Outcome::Ok) {
+                err = sentence(o);
+                return false;
+            }
+            named = &sys;
+        }
+        if (same_device(expected, *named)) return true;
+        err = names_no_mac(*named) ? kNoMac : kMoved;
+        return false;
     }
 
     Target target(const Device &dev) const {

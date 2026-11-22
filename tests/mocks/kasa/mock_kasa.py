@@ -36,9 +36,12 @@ Modes (all but normal are for tests of the client's defences):
     many          a strip with 600 sockets
     no_sockets    a strip whose get_sysinfo lists no sockets (an empty "children")
     refuse        every set_* method answers err_code -3
-    unsupported   every method answers module not support (err_code -1)
+    unsupported   every method but get_sysinfo answers module not support (err_code -1): a change is
+                  asked who the device is first, and that answer stays as the device gives it
     energy        meter readings that are not plausible (strings, negative, enormous)
     probe_tapo    ("moved" only) the probe answer is a Tapo (SMART.) device's
+    no_mac        get_sysinfo leaves out "mac" and "mic_mac" (as a device that will not say who it is)
+    empty_mac     get_sysinfo gives "mac" and "mic_mac" as empty strings
     probe_silent  ("moved" only) the probe is not answered
 """
 import argparse
@@ -167,6 +170,11 @@ class Device:
             if "light_state" in info:
                 info["light_state"] = {"on_off": 1, "brightness": -40, "hue": "red", "saturation": 1e300,
                                        "color_temp": 0, "mode": "normal"}
+        for key in ("mac", "mic_mac"):
+            if key in info and self.mode == "no_mac":
+                del info[key]
+            elif key in info and self.mode == "empty_mac":
+                info[key] = ""
         if self.mode == "no_sockets" and "children" in info:
             info["children"] = []
         if self.mode == "many" and "children" in info:
@@ -257,7 +265,8 @@ class Device:
         for module, calls in request.items():
             if module == "context":
                 continue
-            if self.mode == "unsupported" or not isinstance(calls, dict):
+            asks_who = module == "system" and isinstance(calls, dict) and list(calls) == ["get_sysinfo"]
+            if (self.mode == "unsupported" and not asks_who) or not isinstance(calls, dict):
                 reply[module] = {"err_code": -1, "err_msg": "module not support"}
                 continue
             out = {}
