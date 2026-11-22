@@ -212,7 +212,6 @@ Bytes sanitize_utf8(const Bytes &in);           // invalid sequences become U+FF
 // Valid UTF-8, no control, format or invisible characters, Unicode spaces collapsed and trimmed,
 // at most 40 characters. May be empty: callers fall back to a name of their own.
 std::string clean_name(const std::string &raw);
-bool json_depth_ok(const Bytes &text, int max_depth);
 // False when the text has more than max_values '[', '{', ',' and ':' outside strings (what a
 // JSON tree's size grows with).
 bool json_values_ok(const Bytes &text, size_t max_values);

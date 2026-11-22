@@ -567,6 +567,15 @@ static void test_driver() {
             if (mode == "no success") return {reply(m, {{"success", false}})};
             if (mode == "result not object") return {R"({"method":"setPilot","result":[true]})"};
             if (mode == "deep") return {std::string(4000, '[') + std::string(4000, ']')};
+            // A whole, right answer with a nested "pad" in its result: {"result":{...}} is 2 levels, the pad
+            // the rest. Up to 32 levels in all it is read; one more and it is garbage (ZB-093), though it is JSON.
+            auto padded = [&](int levels) {
+                return R"({"method":"setPilot","env":"pro","result":{"success":true,"pad":)" + std::string(levels, '[') +
+                       std::string(levels, ']') + "}}";
+            };
+            if (mode == "nested 32 levels") return {padded(30)};
+            if (mode == "nested 33 levels") return {padded(31)};
+            if (mode == "nested 4000 levels") return {padded(3998)};
             return rgb_bulb(req, raw);
         });
         home::Device dev = at(odd.port());
@@ -587,6 +596,9 @@ static void test_driver() {
             {"no success", false, kRefused},
             {"result not object", false, kGarbled},
             {"deep", false, kGarbled},
+            {"nested 32 levels", true, ""},
+            {"nested 33 levels", false, kGarbled},
+            {"nested 4000 levels", false, kGarbled},
         };
         for (const Want &w : wants) {
             mode = w.mode;

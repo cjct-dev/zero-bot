@@ -84,6 +84,30 @@ bool save_json(const std::string &path, const json &value) {
     return write_file_atomic(path, value.dump(2, ' ', false, json::error_handler_t::replace));
 }
 
+bool json_too_deep(const std::string &text, int max) {
+    int depth = 0;
+    bool in_string = false, escaped = false;
+    for (const char c : text) {
+        if (in_string) {
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == '"') in_string = false;
+        } else if (c == '"') {
+            in_string = true;
+        } else if (c == '[' || c == '{') {
+            if (++depth > max) return true;
+        } else if (c == ']' || c == '}') {
+            --depth;
+        }
+    }
+    return false;
+}
+
+json parse_untrusted_json(const std::string &text, int max_depth) {
+    if (json_too_deep(text, max_depth)) return json(json::value_t::discarded);
+    return json::parse(text, nullptr, false);
+}
+
 std::string trim(const std::string &s) {
     size_t a = 0, b = s.size();
     while (a < b && isspace(static_cast<unsigned char>(s[a]))) ++a;

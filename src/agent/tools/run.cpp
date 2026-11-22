@@ -158,6 +158,11 @@ std::string run(const std::string &name, const std::string &raw_args, Context &c
     const Tool *tool = find(name);
     if (!tool) return no_such_tool(name);
     const std::string raw = util::trim(raw_args).empty() ? "{}" : raw_args;
+    // Nested deeper than any tool's arguments are: refused unread, as copying or printing them would
+    // recurse once a level (ZB-093).
+    if (util::json_too_deep(raw, util::kMaxJsonDepth))
+        return fail("the arguments nest lists or objects more than " + std::to_string(util::kMaxJsonDepth) +
+                    " deep, which no tool takes. Send the call again with one JSON object of named values, e.g. " + example_args(*tool));
     json args;
     try {
         args = json::parse(raw);

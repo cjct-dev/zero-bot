@@ -616,7 +616,7 @@ bool login_step(const std::string &host, const std::string &base, const json &pa
     Http h;
     const json body = {{"method", "login"}, {"params", params}};
     if (!http_post(host, base + "/", body.dump(), "application/json", "", h, err)) return false;
-    resp = h.status == 200 ? json::parse(h.body, nullptr, false) : json();
+    resp = h.status == 200 ? util::parse_untrusted_json(h.body) : json();
     long long code = 0;
     if (!get_int(resp, "error_code", code)) {
         err = "the plug answered the login unexpectedly (HTTP " + std::to_string(h.status) + ")";
@@ -834,7 +834,7 @@ Sent send(const std::string &host, Session &s, const std::string &plain, json &r
         opened = h.status == 200 && detail::tpap_open(s.keys, seq, h.body, text);
         if (!opened) {
             long long code = 0;
-            if ((get_int(json::parse(h.body, nullptr, false), "error_code", code) && code != 0) || h.status == 401 ||
+            if ((get_int(util::parse_untrusted_json(h.body), "error_code", code) && code != 0) || h.status == 401 ||
                 h.status == 403) {
                 err = detail::describe_error(-2402);
                 return Sent::lost;
@@ -859,7 +859,7 @@ Sent send(const std::string &host, Session &s, const std::string &plain, json &r
                               : "the plug's answer could not be decrypted";
         return Sent::failed;
     }
-    resp = json::parse(text, nullptr, false);
+    resp = util::parse_untrusted_json(text);
     long long code = 0;
     if (!get_int(resp, "error_code", code)) {
         err = "the plug's answer cannot be read";

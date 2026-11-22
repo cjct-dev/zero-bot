@@ -21,6 +21,18 @@ bool write_file_atomic(const std::string &path, const std::string &data, int mod
 json load_json(const std::string &path, const json &fallback);
 bool save_json(const std::string &path, const json &value);
 
+// JSON from another machine: a device, a web service, the AI service (ZB-093). The parser itself does
+// not recurse, but copying, comparing or printing the tree does, once a level, and each level costs
+// memory: a hostile answer of a megabyte of '[' would take the stack and tens of megabytes with it.
+// No device, service or model nests half as deep as this; the Hue driver allows 48, its own limit.
+constexpr int kMaxJsonDepth = 32;
+// Whether a JSON text nests arrays and objects deeper than `max` (strings and their escapes are
+// skipped; a closing bracket with nothing open counts the depth below zero). Read before parsing.
+bool json_too_deep(const std::string &text, int max);
+// The text parsed without throwing: discarded (is_discarded()) when it is not JSON or nests deeper than
+// `max_depth`, which is then not parsed at all. Callers treat both alike: an answer that cannot be read.
+json parse_untrusted_json(const std::string &text, int max_depth = kMaxJsonDepth);
+
 std::string trim(const std::string &s);
 // A number written out in plain decimal ("12", "-3.5", "1e3"), as a whole: spaces round it are allowed,
 // nothing else ("12oops", "20 minutes", "0x10" and "nan" are not numbers). Finite only. The one reading

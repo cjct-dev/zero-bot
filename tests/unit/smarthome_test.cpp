@@ -2675,6 +2675,49 @@ void test_wiz_discovery() {
     CHECK(!wiz->claims("tapo", {}) && !wiz->claims("homekit", {}));
 }
 
+// Nesting in the answers to the broadcasts (ZB-093): every family's UDP answer is read only when it nests
+// no deeper than util::kMaxJsonDepth (32), as every device reply is. Each answer below is a whole, valid
+// one with a nested "pad" beside its fields, which brings it to exactly 32 levels, or to 33; before the
+// guard, Tapo's and WiZ's at 33 (or 4000) were found like any other.
+void test_discovery_depth() {
+    Section s("discovery: a Tapo, Kasa or WiZ answer nested deeper than 32 levels is not read; one at 32 is");
+    auto pad = [](int levels) { return std::string(levels, '[') + std::string(levels, ']'); };
+    // {"result":{..., "pad": ...}}: 2 levels and the pad's.
+    auto tapo = [&](const std::string &mac, int levels) {
+        return std::string(16, '\0') + R"({"result":{"device_id":"80225A0B)" + mac + R"(","device_model":"P110","mac":")" + mac +
+               R"(","mgt_encrypt_schm":{"encrypt_type":"KLAP","http_port":80},"pad":)" + pad(levels) + "}}";
+    };
+    auto wiz = [&](const std::string &mac, int levels) {
+        return R"({"method":"registration","env":"pro","result":{"mac":")" + mac + R"(","success":true,"pad":)" + pad(levels) + "}}";
+    };
+    // {"system":{"get_sysinfo":{..., "pad": ...}}}: 3 levels and the pad's.
+    auto kasa = [&](const std::string &mac, int levels) {
+        return kasa_scrambled(R"({"system":{"get_sysinfo":{"type":"IOT.SMARTPLUGSWITCH","alias":"x","mac":")" + mac + R"(","pad":)" +
+                              pad(levels) + "}}}");
+    };
+    const auto found = discovery::devices_from({
+        {"tapo", "192.0.2.100", tapo("AA-BB-CC-00-01-00", 30)},
+        {"tapo", "192.0.2.101", tapo("AA-BB-CC-00-01-01", 31)},
+        {"tapo", "192.0.2.102", tapo("AA-BB-CC-00-01-02", 4000)},
+        {"wiz", "192.0.2.110", wiz("a8bb50000110", 30)},
+        {"wiz", "192.0.2.111", wiz("a8bb50000111", 31)},
+        {"wiz", "192.0.2.112", wiz("a8bb50000112", 4000)},
+        {"kasa", "192.0.2.120", kasa("50:C7:BF:00:01:20", 29)},
+        {"kasa", "192.0.2.121", kasa("50:C7:BF:00:01:21", 30)},
+    });
+    auto at = [&](const std::string &ip) -> const discovery::Device * {
+        for (const auto &d : found) if (d.ip == ip) return &d;
+        return nullptr;
+    };
+    const auto *tapo32 = at("192.0.2.100"), *wiz32 = at("192.0.2.110"), *kasa32 = at("192.0.2.120");
+    CHECK_MSG(tapo32 && tapo32->kind == "tapo" && tapo32->mac == "aa:bb:cc:00:01:00", tapo32 ? tapo32->kind : "no device");
+    CHECK_MSG(wiz32 && wiz32->kind == "wiz" && wiz32->id == "wiz:a8bb50000110", wiz32 ? wiz32->id : "no device");
+    CHECK_MSG(kasa32 && kasa32->kind == "tplink" && kasa32->mac == "50:c7:bf:00:01:20", kasa32 ? kasa32->kind : "no device");
+    for (const char *ip : {"192.0.2.101", "192.0.2.102", "192.0.2.111", "192.0.2.112", "192.0.2.121"})
+        CHECK_MSG(!at(ip), std::string(ip) + " nests 33 levels or more and is not a device");
+    CHECK_MSG(found.size() == 3, std::to_string(found.size()) + " devices");
+}
+
 void test_discovery_shelly() {
     Section s("discovery: Shelly Gen2+ (two services, one device, one id) and Gen1 (_http._tcp named shelly*); other web servers unseen");
     auto info = [](const discovery::Device &d, const char *key) {
@@ -3318,6 +3361,7 @@ int main(int argc, char **argv) {
     test_found_again();
     test_device_ids();
     test_wiz_discovery();
+    test_discovery_depth();
     test_discovery_shelly();
     test_discovery_every_family();
     test_names_and_colours();

@@ -35,7 +35,7 @@ json fetch_json(const std::string &url, std::string &err, Context &ctx, const st
         }
         return json();
     }
-    json j = json::parse(res.body, nullptr, false);
+    json j = util::parse_untrusted_json(res.body);
     if (j.is_discarded()) { err = "unexpected reply from the service"; return json(); }
     return j;
 }

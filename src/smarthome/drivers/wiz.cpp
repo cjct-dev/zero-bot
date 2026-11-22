@@ -175,7 +175,7 @@ Got udp_exchange(const std::string &ip, int port, const std::string &method, con
             got = Got::Garbage;
             continue;
         }
-        json j = json::parse(buf.begin(), buf.begin() + n, nullptr, false);
+        json j = util::parse_untrusted_json(buf.substr(0, static_cast<size_t>(n)));
         if (!j.is_object()) {
             got = Got::Garbage;
             continue;

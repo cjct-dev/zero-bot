@@ -550,12 +550,15 @@ static void test_text() {
               clean_name("\xEF\xBF\xBE\xEF\xB7\x90") == "");
     eq("names: other scripts and emoji are kept", clean_name("Caf\xC3\xA9 \xE7\x81\xAF \xF0\x9F\x92\xA1"),
        "Caf\xC3\xA9 \xE7\x81\xAF \xF0\x9F\x92\xA1");
-    Bytes deep32, deep33;
-    for (int i = 0; i < 32; i++) deep32 += "[";
-    for (int i = 0; i < 32; i++) deep32 += "]";
-    deep33 = "[" + deep32 + "]";
-    check("JSON nesting of 32 is accepted, 33 refused", json_depth_ok(deep32, 32) && !json_depth_ok(deep33, 32));
-    check("JSON brackets inside strings do not count", json_depth_ok("{\"a\":\"[[[[[[[[\\\"[[[[[\"}", 2));
+    // A reply's nesting is checked with support::json_too_deep before it is parsed. A stray closing bracket
+    // counts below zero there, but a text with one is no JSON, and is refused all the same.
+    const Bytes deep32 = std::string(32, '[') + std::string(32, ']'), deep33 = "[" + deep32 + "]";
+    const Bytes in_string = "{\"a\":\"" + std::string(40, '[') + "\\\"" + std::string(40, '{') + "\"}";
+    json reply;
+    check("JSON nesting of 32 is accepted, 33 refused", parse_reply_json(deep32, 1000, reply) && !parse_reply_json(deep33, 1000, reply));
+    check("JSON brackets inside strings do not count", parse_reply_json(in_string, 1000, reply) && reply.is_object());
+    check("a stray closing bracket does not raise the limit",
+          !parse_reply_json("]" + deep33, 1000, reply) && !parse_reply_json(deep33 + "]", 1000, reply));
     eq("short type of a full Apple UUID", short_type("0000004A-0000-1000-8000-0026BB765291"), "4A");
     eq("short type in lower case with leading zeros", short_type("0043"), "43");
     eq("short type of zero", short_type("00000000-0000-1000-8000-0026BB765291"), "0");

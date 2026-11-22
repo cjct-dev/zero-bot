@@ -57,6 +57,12 @@ class Mock:
         with urllib.request.urlopen("http://127.0.0.1:%d/mock/stats" % self.port, timeout=5) as r:
             return json.load(r)
 
+    def reset(self, cfg):
+        """The plug's test hook: its state and counters cleared, and the behaviour in `cfg` (mock_tapo.py)."""
+        req = urllib.request.Request("http://127.0.0.1:%d/mock/reset" % self.port, data=json.dumps(cfg).encode(), method="POST")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            r.read()
+
     def stop(self):
         self.proc.kill()
         self.proc.wait()
@@ -104,6 +110,48 @@ def old_file(network, plug_port, strip_port):
                 {"id": "tapo:p304m", "kind": "tapo", "name": "Tapo P304M", "model": "P304M(UK)", "mac": "AA-BB-CC-00-00-02", "last_ip": "127.0.0.1",
                  "port": strip_port, "info": {"scheme": "KLAP", "device_type": "SMART.TAPOPLUG", "owner": OWNER},
                  "found_by": ["tapo"], "enabled": True, "last_seen": 1, "switches": [], "problem": ""}]}}}
+
+
+def nested_too_deep(app, plug, network):
+    """Answers nested deeper than any plug's (ZB-093). Each is otherwise right, and before the guard was taken
+    as it came. None is read now: the plug answered wrongly (it is not gone), and no password is held against
+    it. The TPAP plug is left on, with normal answers."""
+    def saved_tpap(text):
+        root = app.load()
+        next(d for d in root["networks"][network]["devices"] if d["id"] == "tapo:p110")["info"]["tpap"] = text
+        app.save(root)
+
+    tpap = json.dumps({"tls": 0, "dac": 0, "noc": 0, "pake": [2], "port": 80})
+    saved_tpap(tpap[:-1] + ',"pad":' + "[" * 40 + "]" * 40 + "}")
+    before = plug.stats()["discover"]
+    r = app.tool({"action": "off", "target": PLUG})
+    check("a saved TPAP announcement nested too deep is not used: the plug is asked again, and switches",
+          r == {"now": "off", "target": PLUG} and plug.stats()["discover"] == before + 1 and plug.stats()["on"] is False,
+          (r, plug.stats()))
+    saved_tpap(tpap)
+    plug.reset({"deep": "login"})
+    r = app.tool({"action": "on", "target": PLUG})
+    st = plug.stats()
+    check("login answers nested too deep are not read: the login stops at its first step, nothing is switched",
+          isinstance(r, str) and "the plug answered the login unexpectedly" in r and st["pake_register"] == 1 and
+          st["pake_share"] == 0 and st["on"] is False and st["bad"] == [], (r, st))
+    check("that is no refusal of the password", app.load()["secrets"]["tapo"].get("refused") is None, app.load()["secrets"]["tapo"])
+    plug.reset({"deep": "reply"})
+    r = app.tool({"action": "on", "target": PLUG})
+    st = plug.stats()
+    check("command answers nested too deep are not read: after the first, nothing more is sent",
+          isinstance(r, str) and "the plug's answer cannot be read" in r and st["on"] is False and
+          set(st["methods"]) == {"get_device_info"}, (r, st))
+    plug.reset({"deep": "lost", "budget": [1, 5]})
+    r = app.tool({"action": "on", "target": PLUG})
+    st = plug.stats()
+    check("a 'session ended' notice nested too deep is not taken as one: no second login, nothing switched",
+          isinstance(r, str) and "the plug's answer could not be decrypted" in r and st["login_ok"] == 1 and st["gone"] == 1 and
+          st["on"] is False, (r, st))
+    plug.reset({})
+    r = app.tool({"action": "on", "target": PLUG})
+    check("answers as a plug sends them are read again at once", r == {"now": "on", "target": PLUG} and plug.stats()["on"] is True and
+          app.load()["secrets"]["tapo"].get("refused") is None, r)
 
 
 def main():
@@ -207,6 +255,8 @@ def main():
         app.save(root)
         r = app.tool({"action": "on", "target": PLUG})
         check("the plugs that are where they were saved still switch", r == {"now": "on", "target": PLUG} and plug.stats()["on"] is True, r)
+
+        nested_too_deep(app, plug, network)
 
         # A wrong password: tried once, by each plug's rules, and never again, even by a new run.
         before = (plug.stats()["pake_share"], strip.stats()["handshake1"])

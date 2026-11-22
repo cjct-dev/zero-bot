@@ -74,7 +74,9 @@ tapo::Device transport(const home::Device &d) {
     t.ip = d.ip;
     t.port = d.port > 0 ? d.port : 80;
     t.scheme = info_of(d, "scheme");
-    const json tpap = json::parse(info_of(d, "tpap"), nullptr, false);
+    // Saved from discovery's answer, which before ZB-093 could nest to any depth: one that cannot be read
+    // is not used, and the plug is asked for it again (tapo.h Device::tpap).
+    const json tpap = util::parse_untrusted_json(info_of(d, "tpap"));
     if (tpap.is_object()) t.tpap = tpap;
     t.owner = info_of(d, "owner");
     t.mac = d.mac;   // the plug discovery saved: another plug of the account at its address is refused

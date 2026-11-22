@@ -38,7 +38,7 @@ void add_note(json &messages, const std::string &note) {
 // What a tool call asked for, to recognise the same call again: the tool and its arguments in a
 // fixed order, without "say" (a reworded confirmation is still the same call).
 std::string call_key(const std::string &name, const std::string &raw_args) {
-    json a = json::parse(util::trim(raw_args).empty() ? "{}" : raw_args, nullptr, false);
+    json a = util::parse_untrusted_json(util::trim(raw_args).empty() ? "{}" : raw_args);
     if (!a.is_object()) return name + "\n" + raw_args;
     a.erase("say");
     return name + "\n" + a.dump(-1, ' ', false, json::error_handler_t::replace);

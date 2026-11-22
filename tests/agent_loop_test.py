@@ -25,7 +25,8 @@ size of the first request; smart-home questions and answers on a stand-in home; 
 ("/save", what SPACE twice does on the device; diagnostics, temporary); typed and spoken requests
 (--ask-wav, --steer-wav: a typed one is answered on the screen only, one with anything said aloud is
 spoken too, counted at the stand-in speech service, with a stand-in player that plays nothing; a spoken
-answer's end signalled at its own request's end); retired experiment variants.
+answer's end signalled at its own request's end); JSON from the service nested deeper than 32 levels (an
+event, an error's body, a transcription, a tool call's arguments) not read; retired experiment variants.
 
 Not covered (no command-line hook): cancel, context notes from the timer's alarm, music held for a
 spoken answer (dry run plays nothing and takes no hold).
@@ -781,6 +782,54 @@ def service_errors():
     # app's own, so the user is not left with silence (tests/selfheal_chat_e2e.py has the variants).
     r = run({"default": {"text": ""}}, ask="hi")
     check("service: an empty answer is reported", len(r.requests) == 2 and r.answer == "Sorry, I have no answer to that.", r)
+
+
+@scenario
+def nested_too_deep():
+    """JSON from the service nested deeper than util::kMaxJsonDepth (32) is not read (ZB-093): a stream's event, an
+    error's body, a transcription, a tool call's arguments. Before the guard each was taken as it came; arguments
+    nested 200,000 deep crashed the app (the key a failed call is remembered by was printed from the tree, a level
+    a call, and so was a saved conversation)."""
+    n = "nested too deep"
+    r = run({"rules": [{"reply": {"text": "Words from a deep event.", "pad_depth": 32}, "times": 1}],
+             "default": {"text": "Plain words."}}, ask="hi")
+    check(n + ": a stream's events at 33 levels are skipped, so the reply is empty and is asked for again",
+          r.answer == "Plain words." and "deep event" not in r.out and len(r.requests) == 2, r)
+    r = run({"default": {"text": "Words from a deep event.", "pad_depth": 31}}, ask="hi")
+    check(n + ": at 32 levels they are read", r.answer == "Words from a deep event." and len(r.requests) == 1, r)
+    deep_error = json.dumps({"error": {"message": "words from a deep error"}})[:-1] + ',"pad":' + "[" * 40 + "]" * 40 + "}"
+    r = run({"default": {"status": 400, "body": deep_error}}, ask="hi")
+    check(n + ": an error's body is not read as the service's message, only quoted as any other text is",
+          "[error] HTTP 400: " in r.out and "[error] words from a deep error" not in r.out and len(r.requests) == 1, r)
+    ears = {"stt_model": "scripted-ears"}
+    r = run(dict(LISBON, heard="what is the capital of portugal", heard_pad_depth=32), ask_wav=True, settings=ears)
+    check(n + ": a transcription at 33 levels is not read, and nothing is asked of the model",
+          "[error] Could not transcribe: unexpected reply from the speech service" in r.out and heard(r) == 1 and len(r.requests) == 1, r)
+    r = run(dict(LISBON, heard="what is the capital of portugal", heard_pad_depth=31), ask_wav=True, settings=ears)
+    check(n + ": at 32 levels it is", r.answer == "Lisbon is the capital of Portugal." and heard(r) == 1, r)
+
+    deep_args = '{"expression": "2+2", "pad": ' + "[" * 200000 + "]" * 200000 + "}"
+    script = {"rules": [{"when": {"results": 2}, "reply": {"text": "That did not work."}}],
+              "default": {"calls": [{"name": "calculator", "args": deep_args}]}}
+    seen = {}
+
+    def look(state):
+        folder = state + "/data/zero-bot/conversations"
+        files = sorted(os.listdir(folder)) if os.path.isdir(folder) else []
+        seen["record"] = json.load(open(os.path.join(folder, files[-1]), encoding="utf-8")) if files else {}
+
+    r = run(script, said=["what is two and two", "/save"], inspect=look)
+    res = [text_of(m) for m in r.messages(3) if m.get("role") == "tool"] if len(r.requests) > 2 else []
+    check(n + ": arguments nested 200,000 deep are refused unread, with what to send instead",
+          len(res) == 2 and res[0].startswith("ERROR: the arguments nest lists or objects more than 32 deep") and
+          'e.g. {"expression": "..."}' in res[0], [x[:200] for x in res])
+    check(n + ": the same call again is known as the one that failed", len(res) == 2 and
+          res[1].startswith("ERROR: this exact call already failed in this request"), [x[:200] for x in res])
+    check(n + ": the app goes on to the model's answer", r.answer == "That did not work.", r.answer)
+    saved = [c for m in seen.get("record", {}).get("messages", []) for c in m.get("tool_calls", [])]
+    check(n + ": a saved conversation keeps such arguments as text, cut short", "[Conversation saved] " in r.out and len(saved) == 2 and
+          all(isinstance(c["arguments"], str) and len(c["arguments"]) < 10000 for c in saved),
+          [type(c.get("arguments")).__name__ for c in saved])
 
 
 @scenario

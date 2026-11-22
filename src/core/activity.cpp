@@ -210,7 +210,7 @@ json conversation_record(const json &messages, size_t dropped, time_t now, const
                 const json fn = c.is_object() ? c.value("function", json::object()) : json::object();
                 json call = {{"tool", util::jget(fn, "name", std::string())}};
                 const std::string raw = util::jget(fn, "arguments", std::string());
-                json args = json::parse(util::trim(raw).empty() ? "{}" : raw, nullptr, false);
+                json args = util::parse_untrusted_json(util::trim(raw).empty() ? "{}" : raw);
                 call["arguments"] = args.is_discarded() ? json(shorten(raw, kArgsBytes)) : args;
                 const auto r = results.find(util::jget(c, "id", std::string()));
                 if (r != results.end()) result_of(*r->second, call);

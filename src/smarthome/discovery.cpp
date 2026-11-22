@@ -254,9 +254,15 @@ void parse_mdns(const unsigned char *buf, size_t len, const std::string &src, Se
     }
 }
 
+// The JSON in a datagram; discarded when it is not JSON or nests deeper than any device's answer does, so
+// that a hostile datagram cannot make copying or saving it recurse without end (ZB-093).
+json datagram_json(const unsigned char *buf, size_t len) {
+    return util::parse_untrusted_json(std::string(reinterpret_cast<const char *>(buf), len));
+}
+
 void parse_tapo(const unsigned char *buf, size_t len, const std::string &src, Seen &seen) {
     if (len <= 16 || len > kMaxPacket) return;
-    const json j = json::parse(buf + 16, buf + len, nullptr, false);
+    const json j = datagram_json(buf + 16, len - 16);
     if (!j.is_object() || !j.contains("result") || !j["result"].is_object()) return;
     seen.tapo[src] = j["result"];
 }
@@ -269,9 +275,7 @@ void parse_kasa(const unsigned char *buf, size_t len, const std::string &src, Se
     if (len == 0 || len > kMaxPacket) return;
     if (seen.kasa.size() >= kMaxKasaAnswers && !seen.kasa.count(src)) return;
     const std::string text = kasa_unscramble(buf, len);
-    // Nesting checked before parsing, so that a hostile datagram cannot make copying it recurse without end.
-    if (support::json_too_deep(text, 32)) return;
-    const json j = json::parse(text, nullptr, false);
+    const json j = util::parse_untrusted_json(text);
     if (!j.is_object() || !j.contains("system") || !j["system"].is_object()) return;
     const json &sys = j["system"];
     if (!sys.contains("get_sysinfo") || !sys["get_sysinfo"].is_object()) return;
@@ -294,7 +298,7 @@ std::string wiz_mac(const json &result) {
 
 void parse_wiz(const unsigned char *buf, size_t len, const std::string &src, Seen &seen) {
     if (len < 2 || len > kMaxPacket) return;
-    const json j = json::parse(buf, buf + len, nullptr, false);
+    const json j = datagram_json(buf, len);
     if (!j.is_object() || !j.contains("result") || !j["result"].is_object() || wiz_mac(j["result"]).empty()) return;
     if (!seen.wiz.count(src)) seen.wiz[src] = j["result"];
 }

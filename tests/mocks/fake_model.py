@@ -40,6 +40,8 @@ REPLY:
   "chunk_ms": N                         wait this long before each piece of text after the first, so the app
                                         has the first piece well before the next is sent
   "no_ids": true                        tool calls without ids (some services omit them)
+  "pad_depth": N                        every event of the stream gets "pad": [[...]] nested N levels as its last
+                                        member, so the event nests N + 1 deep (the app reads no more than 32)
 
 A request that asks for token counts gets them in a last event with no choices, as the services do:
 prompt_tokens about a quarter of the body's bytes, completion_tokens a quarter of the reply's, and
@@ -49,7 +51,8 @@ POST .../audio/speech (the speech service) answers 200 with 0.1 s of silent 24 k
 with "rule": "speech".
 POST .../audio/transcriptions (speech to text) answers {"text": ...} with the script's top-level "heard"
 (a string, or a list used one per recording in turn, the last repeating; default "hello"), logged with
-"rule": "transcription" and the size of what was sent in place of its body.
+"rule": "transcription" and the size of what was sent in place of its body. The script's top-level
+"heard_pad_depth": N adds a "pad" nested N levels to that answer, as "pad_depth" does to a stream's events.
 
 LOG gets one JSON object per request: {"n": 1, "rule": index or "default", "body": {...}}.
 """
@@ -120,6 +123,12 @@ def decide(body):
     return "default", SCRIPT.get("default", {"text": "OK."})
 
 
+def json_text(value, pad):
+    """An object's JSON text; with `pad`, "pad" nested that many levels is added as its last member."""
+    text = json.dumps(value, ensure_ascii=False)
+    return text[:-1] + ',"pad":' + "[" * pad + "]" * pad + "}" if pad else text
+
+
 def events(reply, body):
     out = []
     pieces = reply.get("chunks") or ([reply["text"]] if reply.get("text") else [])
@@ -162,7 +171,7 @@ class Handler(BaseHTTPRequestHandler):
                 HEARD[0] += 1
                 with open(LOG, "a") as f:
                     f.write(json.dumps({"n": COUNT[0], "rule": "transcription", "body": {"bytes": len(raw_body)}}) + "\n")
-            raw = json.dumps({"text": heard}).encode()
+            raw = json_text({"text": heard}, SCRIPT.get("heard_pad_depth")).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(raw)))
@@ -199,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(reply["status"])
             self.send_header("Content-Type", reply.get("content_type", "application/json"))
         else:
-            parts = [(("data: %s\n\n" % json.dumps(e, ensure_ascii=False)).encode(),
+            parts = [(("data: %s\n\n" % json_text(e, reply.get("pad_depth"))).encode(),
                       bool(e.get("choices") and e["choices"][0].get("delta", {}).get("content"))) for e in events(reply, body)]
             parts.append((b"data: [DONE]\n\n", False))
             raw = b"".join(p for p, _ in parts)
