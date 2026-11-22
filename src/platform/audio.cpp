@@ -510,62 +510,78 @@ void Music::play(std::vector<std::string> paths) {
     holds_ &= ~kUser;   // asking for music ends a pause the user set earlier
     const int gen = ++generation_;
     if (thread_.joinable()) thread_.join();
-    thread_ = std::thread([this, gen]() {
-        while (running_ && generation_ == gen) {
-            // Wait for quiet before starting a track: the reply is still to be spoken, or the
-            // microphone is open.
-            if (holds_ != 0) { usleep(50 * 1000); continue; }
-            std::string path;
-            std::thread feeder;
-            {
-                std::lock_guard<std::mutex> lk(mtx_);
-                if (holds_ != 0) continue;
-                if (index_ >= queue_.size()) break;
-                path = queue_[index_++];
-                current_ = path;
-                // An MP3 is decoded here (libmpg123) and played by pacat, about 5 MB in all. ffplay
-                // held some 50 MB per track on a device with 350 MB: by the second track the system
-                // was swapping, and the player stalled now and then (heard as skips, which the sound
-                // graph never counted, since ffplay kept handing it silence). pacat goes through the
-                // same PulseAudio layer as ffplay did, so a held track (SIGSTOP) stalls nothing else.
-                // Anything else, or without libmpg123 or pacat, is played by ffplay as before.
-                auto mp3 = std::make_shared<codec::Mp3File>();
-                if (is_mp3(path) && proc::have("pacat") && mp3->open(path)) {
-                    child_ = proc::spawn({"pacat", "--playback", "--raw", "--format=s16le", "--rate=" + std::to_string(mp3->rate()),
-                                          "--channels=" + std::to_string(mp3->channels()), "--latency-msec=300",
-                                          "--client-name=Zero Bot", "--stream-name=Music"},
-                                         true, false);
-                    // Close-on-exec, so that no other program the app starts holds the track open.
-                    const int fd = child_.in >= 0 ? fcntl(child_.in, F_DUPFD_CLOEXEC, 0) : -1;
-                    proc::close_in(child_);   // the feeder holds the only write end: its close ends the track
-                    if (fd >= 0) feeder = std::thread(feed_player, mp3, fd);
-                } else {
-                    // The player's own audio buffer is about 12 ms, which any busy moment elsewhere on a
-                    // small processor outruns: measured on a CardputerZero, playback skipped under load
-                    // with the default and held steady with 300 ms. Music does not need low latency.
-                    child_ = proc::spawn({"env", "PULSE_LATENCY_MSEC=300", "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path},
-                                         false, false);
-                }
-                stopped_ = false;
-            }
-            skip_ = false;
-            for (;;) {
-                usleep(100 * 1000);
-                std::lock_guard<std::mutex> lk(mtx_);
-                if (!running_ || generation_ != gen || skip_) {
-                    if (stopped_) { proc::signal_group(child_, SIGCONT); stopped_ = false; }
-                    proc::stop(child_, SIGTERM);
-                    break;
-                }
-                if (!proc::alive(child_)) break;
-            }
-            // The player has ended (or been stopped, so the feeder's next write fails): the feeder
-            // finishes too. Joined outside mtx_, which hold() takes.
-            if (feeder.joinable()) feeder.join();
+    thread_ = std::thread([this, gen] { run_queue(gen); });
+}
+
+// The queue's thread: its tracks in turn, each once nothing holds the music, until the queue ends or
+// another play, play_live or stop begins a new generation.
+void Music::run_queue(int gen) {
+    while (running_ && generation_ == gen) {
+        // Wait for quiet before starting a track: the reply is still to be spoken, or the
+        // microphone is open.
+        if (holds_ != 0) { usleep(50 * 1000); continue; }
+        std::thread feeder;
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            if (holds_ != 0) continue;
+            if (index_ >= queue_.size()) break;
+            const std::string path = queue_[index_++];
+            current_ = path;
+            feeder = start_player(path);
         }
+        skip_ = false;
+        wait_player(gen);
+        // The player has ended (or been stopped, so the feeder's next write fails): the feeder
+        // finishes too. Joined outside mtx_, which hold() takes.
+        if (feeder.joinable()) feeder.join();
+    }
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (generation_ == gen) { current_.clear(); running_ = false; }
+}
+
+// One track's player, started with mtx_ held; the thread that feeds it, for an MP3 decoded here.
+std::thread Music::start_player(const std::string &path) {
+    std::thread feeder;
+    // An MP3 is decoded here (libmpg123) and played by pacat, about 5 MB in all. ffplay
+    // held some 50 MB per track on a device with 350 MB: by the second track the system
+    // was swapping, and the player stalled now and then (heard as skips, which the sound
+    // graph never counted, since ffplay kept handing it silence). pacat goes through the
+    // same PulseAudio layer as ffplay did, so a held track (SIGSTOP) stalls nothing else.
+    // Anything else, or without libmpg123 or pacat, is played by ffplay as before.
+    auto mp3 = std::make_shared<codec::Mp3File>();
+    if (is_mp3(path) && proc::have("pacat") && mp3->open(path)) {
+        child_ = proc::spawn({"pacat", "--playback", "--raw", "--format=s16le", "--rate=" + std::to_string(mp3->rate()),
+                              "--channels=" + std::to_string(mp3->channels()), "--latency-msec=300",
+                              "--client-name=Zero Bot", "--stream-name=Music"},
+                             true, false);
+        // Close-on-exec, so that no other program the app starts holds the track open.
+        const int fd = child_.in >= 0 ? fcntl(child_.in, F_DUPFD_CLOEXEC, 0) : -1;
+        proc::close_in(child_);   // the feeder holds the only write end: its close ends the track
+        if (fd >= 0) feeder = std::thread(feed_player, mp3, fd);
+    } else {
+        // The player's own audio buffer is about 12 ms, which any busy moment elsewhere on a
+        // small processor outruns: measured on a CardputerZero, playback skipped under load
+        // with the default and held steady with 300 ms. Music does not need low latency.
+        child_ = proc::spawn({"env", "PULSE_LATENCY_MSEC=300", "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path},
+                             false, false);
+    }
+    stopped_ = false;
+    return feeder;
+}
+
+// Until the track's player ends by itself, or is ended here: the queue was stopped or replaced, or
+// the track skipped.
+void Music::wait_player(int gen) {
+    for (;;) {
+        usleep(100 * 1000);
         std::lock_guard<std::mutex> lk(mtx_);
-        if (generation_ == gen) { current_.clear(); running_ = false; }
-    });
+        if (!running_ || generation_ != gen || skip_) {
+            if (stopped_) { proc::signal_group(child_, SIGCONT); stopped_ = false; }
+            proc::stop(child_, SIGTERM);
+            return;
+        }
+        if (!proc::alive(child_)) return;
+    }
 }
 
 void Music::stop() {
