@@ -212,6 +212,7 @@ int App::render_shots(const std::string &dir) {
     util::make_dirs(dir);
     Shots shots{*this, dir};
     shots_chat(shots);
+    if (!image_decodes()) shots.failed = true;
     shots_dark_chat(shots);
     shots_keys(shots);
     shots_volume(shots);
@@ -268,7 +269,6 @@ void App::shots_chat(Shots &shots) {
             failed = true;
         }
     }
-    if (!image_decodes()) failed = true;
     chat.add_note("Press TAB to talk, press it again when you have finished. Or press ENTER and type.", theme::kDim);
     snap("welcome");
     {

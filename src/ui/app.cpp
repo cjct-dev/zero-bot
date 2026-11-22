@@ -219,6 +219,28 @@ void App::run_setup() {
     });
 }
 
+namespace {
+
+// The main loop: keys, what the worker threads posted, the periodic work and LVGL; then asleep until
+// LVGL's next timer (an animation, a redraw) or the app's next periodic work, whichever is sooner,
+// unless a key or something posted wakes it first. SIGTERM's g_exit is seen at the next wake, within
+// a second.
+void run_until_exit(App &app) {
+    while (!g_exit) {
+        KeyEvent ev;
+        while (input::poll(ev)) {
+            app.handle_key(ev);
+            app.note_activity();
+        }
+        if (uiq::drain()) app.note_activity();
+        app.periodic();
+        const unsigned long lvgl = lv_timer_handler();
+        uiq::wait(std::max(2ul, std::min(lvgl, app.sleep_ms(sys::now_ms()))));
+    }
+}
+
+}  // namespace
+
 int run_app(const std::string &shots_dir, bool keydump) {
     const bool shots = !shots_dir.empty();
 #if ZB_DESKTOP
@@ -258,20 +280,7 @@ int run_app(const std::string &shots_dir, bool keydump) {
     input::start(uiq::wake);
     app.idle.use(sys::now_ms());
 
-    while (!g_exit) {
-        KeyEvent ev;
-        while (input::poll(ev)) {
-            app.handle_key(ev);
-            app.note_activity();
-        }
-        if (uiq::drain()) app.note_activity();
-        app.periodic();
-        // Asleep until LVGL's next timer (an animation, a redraw) or the app's next periodic work,
-        // whichever is sooner, unless a key or something posted wakes it first. SIGTERM's g_exit is
-        // seen at the next wake, within a second.
-        const unsigned long lvgl = lv_timer_handler();
-        uiq::wait(std::max(2ul, std::min(lvgl, app.sleep_ms(sys::now_ms()))));
-    }
+    run_until_exit(app);
 
     app.alarm.stop();                              // lets go of the music
     audio::AlarmSound::get().stop_and_wait();      // a player left running would ring on after the app
