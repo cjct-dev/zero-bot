@@ -668,15 +668,42 @@ static void test_driver() {
 }
 
 // ---------------------------------------------------------------- refusals at the same moment
-// A responder on 127.0.0.1 that plays a Gen1 Shelly whose login refuses everything: /shelly
-// answers (it needs no password), everything else is 401, with `body_401` bytes of body. Each
-// connection gets a thread, so that many devices' refusals arrive together.
+// A responder on 127.0.0.1 that plays a Shelly whose login refuses everything: /shelly answers (it
+// needs no password), everything else is 401, with `body_401` bytes of body. A Gen1 (basic
+// authentication) by default; with `gen2` a Gen2+, which challenges a request without the login
+// (digest) before refusing the one with it. With `cut_challenge` or `cut_refusal` that 401 promises
+// more body than it sends before the connection closes. Each connection gets a thread, so that many
+// devices' refusals arrive together; logins are counted as they arrive.
 struct Refuser {
     int fd = -1, port = 0;
-    std::atomic<bool> stop{false};
+    std::atomic<bool> stop{false}, gen2{false}, cut_challenge{false}, cut_refusal{false};
     std::atomic<int> logins{0};
     std::atomic<size_t> body_401{0};
     std::thread loop;
+    // A 401 with `challenge`; `cut` promises 1000 bytes of body and sends ten. A challenge cut short says
+    // nothing of closing the connection: libcurl then reads on for the rest of it and stops there, where on a
+    // connection it is told will close it leaves the body and sends the login on a new one.
+    std::string unauthorized(const std::string &challenge, bool cut, bool kept_open = false) const {
+        const size_t body = cut ? 1000 : body_401.load();
+        return "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: " + challenge + (kept_open ? "" : "\r\nConnection: close") +
+               "\r\nContent-Length: " + std::to_string(body) + "\r\n\r\n" + std::string(cut ? 10 : body, 'x');
+    }
+    std::string answer(const std::string &req) {
+        if (req.compare(0, 12, "GET /shelly ") == 0) {
+            const std::string body = gen2 ? R"({"id":"shellyplus1pm-a8032ab12345","mac":"A8032AB12345","gen":2,"app":"Plus1PM","auth_en":true})"
+                                          : R"({"type":"SHSW-1","mac":"A4CF12F45378","auth":true})";
+            return "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
+                   std::to_string(body.size()) + "\r\n\r\n" + body;
+        }
+        if (!gen2) {
+            if (req.find("Authorization: Basic ") != std::string::npos) ++logins;
+            return unauthorized("Basic realm=\"x\"", cut_refusal);
+        }
+        const std::string digest = R"(Digest qop="auth", realm="shellyplus1pm-a8032ab12345", nonce="n1", algorithm=SHA-256)";
+        if (req.find("Authorization: Digest ") == std::string::npos) return unauthorized(digest, cut_challenge, cut_challenge);
+        ++logins;
+        return unauthorized(digest, cut_refusal);
+    }
     Refuser() {
         fd = socket(AF_INET, SOCK_STREAM, 0);
         sockaddr_in a{};
@@ -699,16 +726,7 @@ struct Refuser {
                         if (n <= 0) break;
                         req.append(buf, static_cast<size_t>(n));
                     }
-                    std::string reply;
-                    if (req.compare(0, 12, "GET /shelly ") == 0) {
-                        const std::string body = R"({"type":"SHSW-1","mac":"A4CF12F45378","auth":true})";
-                        reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
-                                std::to_string(body.size()) + "\r\n\r\n" + body;
-                    } else {
-                        if (req.find("Authorization: Basic ") != std::string::npos) ++logins;
-                        reply = "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"x\"\r\nConnection: close\r\nContent-Length: " +
-                                std::to_string(body_401.load()) + "\r\n\r\n" + std::string(body_401.load(), 'x');
-                    }
+                    const std::string reply = answer(req);
                     send(c, reply.data(), reply.size(), MSG_NOSIGNAL);
                     close(c);
                 }).detach();
@@ -843,42 +861,79 @@ static void test_refused_while_pairing() {
     CHECK(!drv->apply(on_file, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 1);
 }
 
-// A 401 is a refusal however long the body that comes with it (fix round 3, D7): one over the 256 KiB a
-// reply may have, while pairing or while reading, is kept like any other, and the password is not sent again.
-static void test_long_refusal() {
-    Refuser dev_side;
-    dev_side.body_401 = 300 * 1024;
-    auto drv = make_shelly_driver();
-    MemSecrets sec;
-    drv->attach(&sec);
-    home::Thing relay = thing_of({{"gen", 1}, {"comp", "relay"}, {"id", 0}, {"dev", "a4cf12f45378"}}, home::kPower);
-    relay.id = "relay:0";
+// A Shelly of generation `gen` at `dev_side`, saved as `id`, known to ask for a password: its switch, or
+// its relay for Gen1.
+static home::Device locked_shelly(const Refuser &dev_side, int gen, const std::string &id, MemSecrets &sec) {
+    home::Thing th = gen >= 2 ? thing_of({{"gen", 2}, {"comp", "switch"}, {"id", 0}, {"dev", "shellyplus1pm-a8032ab12345"}}, home::kPower)
+                              : thing_of({{"gen", 1}, {"comp", "relay"}, {"id", 0}, {"dev", "a4cf12f45378"}}, home::kPower);
+    th.id = gen >= 2 ? "switch:0" : "relay:0";
     home::Device dev;
-    dev.id = "shelly:shelly1-long";
+    dev.id = id;
     dev.kind = "shelly";
     dev.ip = "127.0.0.1";
     dev.port = dev_side.port;
-    dev.things = {relay};
+    dev.things = {th};
     dev.auth = {{"user", "admin"}};
-    sec.all = {{"shelly", {{"locked", {{dev.id, 1}}}}}};
+    sec.all["shelly"]["locked"][id] = gen;
+    return dev;
+}
+
+// The device at `dev_side` refuses every login: typed while pairing, or saved and refused while reading, the
+// password is refused once and never sent again.
+static void refusal_kept(Refuser &dev_side, int gen, const std::string &id) {
+    auto drv = make_shelly_driver();
+    MemSecrets sec;
+    drv->attach(&sec);
+    home::Device dev = locked_shelly(dev_side, gen, id, sec);
     home::Device on_file = dev;   // what the record holds until the outcome is written
     on_file.auth["password"] = "pw";
     std::string err;
     CHECK(drv->next_step(dev).kind == home::Pairing::Password);
     CHECK_MSG(!drv->pair(dev, "pw", err) && dev_side.logins == 1 && !dev.auth.contains("password") &&
                   err.find("did not accept") != std::string::npos,
-              err);
+              id + ": " + err);
     home::Change on;
     on.on = true;
-    CHECK_MSG(!drv->apply(on_file, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 1,
-              std::to_string(dev_side.logins) + " logins: " + err);
+    CHECK_MSG(!drv->apply(on_file, dev.things[0], on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 1,
+              id + ": " + std::to_string(dev_side.logins) + " logins: " + err);
     // A saved password refused so while reading.
-    home::Device saved = dev;
-    saved.id = "shelly:shelly1-long-saved";
-    saved.auth = {{"user", "admin"}, {"password", "pw2"}};
-    CHECK_MSG(!drv->apply(saved, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 2, err);
-    CHECK_MSG(!drv->apply(saved, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 2,
-              std::to_string(dev_side.logins) + " logins: " + err);
+    home::Device saved = locked_shelly(dev_side, gen, id + "-saved", sec);
+    saved.auth["password"] = "pw2";
+    CHECK_MSG(!drv->apply(saved, saved.things[0], on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 2, id + ": " + err);
+    CHECK_MSG(!drv->apply(saved, saved.things[0], on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 2,
+              id + ": " + std::to_string(dev_side.logins) + " logins: " + err);
+}
+
+// A 401 to the login is a refusal however long the body that comes with it (fix round 3, D7: over the
+// 256 KiB a reply may have), and however much of it came (fix round 4, E5: the connection dropped part
+// way through it), for a Gen1 login and for a Gen2+ one, which the device challenges first. A refusal
+// cut short was first taken for no answer: the password was kept, and sent again by the next read.
+static void test_long_refusal() {
+    Refuser long_body, cut, cut_gen2;
+    long_body.body_401 = 300 * 1024;
+    refusal_kept(long_body, 1, "shelly:shelly1-long");
+    cut.cut_refusal = true;
+    refusal_kept(cut, 1, "shelly:shelly1-cut");
+    cut_gen2.gen2 = true;
+    cut_gen2.cut_refusal = true;
+    refusal_kept(cut_gen2, 2, "shelly:shellyplus1pm-cut");
+}
+
+// A Gen2+ device's challenge, the 401 before libcurl sends the login, refused nothing, also when its body
+// is cut short (fix round 4, E5): the password typed is kept, unsent, and not held as refused.
+static void test_cut_challenge() {
+    Refuser dev_side;
+    dev_side.gen2 = true;
+    dev_side.cut_challenge = true;
+    auto drv = make_shelly_driver();
+    MemSecrets sec;
+    drv->attach(&sec);
+    home::Device dev = locked_shelly(dev_side, 2, "shelly:shellyplus1pm-challenge", sec);
+    std::string err;
+    CHECK_MSG(!drv->pair(dev, "pw", err) && dev_side.logins == 0 && err.find("did not answer") != std::string::npos &&
+                  dev.auth.value("password", "") == "pw" && !sec.get("shelly").contains("refused"),
+              err + " " + sec.get("shelly").dump());
+    CHECK(drv->next_step(dev).kind == home::Pairing::None);
 }
 
 static void test_refusals_together() {
@@ -933,6 +988,7 @@ int main() {
     test_storage();
     test_refused_while_pairing();
     test_long_refusal();
+    test_cut_challenge();
     curl_global_cleanup();
     printf("shelly: %d checks, %d failed\n", g_run, g_failed);
     return g_failed ? 1 : 0;

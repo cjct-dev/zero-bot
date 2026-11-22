@@ -672,6 +672,13 @@ key, real audio), say so plainly rather than implying it was.
   device that asks for no password takes that empty request as the call. The Shelly driver
   therefore makes its digest calls as GET (Shelly's `/rpc/<Method>?<params>`); a mock that
   parses the body before checking the login hides the problem.
+- A 401 to a login is the device's answer whatever then happens to its body. One whose connection
+  dropped part way through the body made libcurl report a transfer error, which the Shelly driver
+  took for no answer: it kept the password and sent it again. `http::Response` keeps the status of
+  an answer whose body failed, and says whether a digest login was answered (`digest_answered`):
+  the 401 that only challenges, before libcurl sends the login, refused nothing, even cut short.
+  (Told that the connection closes, libcurl leaves a challenge's body unread and sends the login on a
+  new connection; otherwise it reads on, and a challenge cut short ends the request there.)
 - A garage-door exclusion that read only the channel's name missed the usual set-up: the owner
   names the device ("Garage door") and leaves its relay unnamed, and a Gen1 blind has no name at
   all. Check the name the thing will be called by, and what the wiring says (a relay that switches

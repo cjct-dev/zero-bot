@@ -867,9 +867,15 @@ struct Login {
 };
 
 struct Reply {
-    long status = 0;
+    long status = 0;   // also when the body that came with it was cut short (`answered` false)
     std::string body;
     bool answered = false, too_long = false, no_time = false, sent_login = false;
+    // The answer (`status`) is to a request that carried the login: with basic authentication (Gen1)
+    // every request does; with digest (Gen2+) only the one libcurl sends after the device's challenge.
+    bool to_login = false;
+    // A 401 that answered the login refused it, whatever happened to its body; the challenge before
+    // one refused nothing.
+    bool refused() const { return to_login && status == 401; }
 };
 
 std::string device_key(const home::Device &dev) { return dev.id.empty() ? dev.ip : dev.id; }
@@ -930,6 +936,7 @@ Reply exchange(const Target &t, const char *method, const std::string &path, con
     };
     const http::Response res = http::send(req);
     r.status = res.status;
+    r.to_login = r.sent_login && (gen < 2 || res.digest_answered);
     r.too_long = too_long || res.body.size() > kMaxBody;
     r.answered = res.error.empty() || too_long;
     if (r.answered) r.body = res.status >= 200 && res.status < 300 ? collected : res.body;
@@ -1188,7 +1195,7 @@ private:
         }
         const Reply r = exchange(t, "GET", gen >= 2 ? detail::rpc_path("Shelly.GetStatus", json()) : std::string("/status"), "", gen,
                                  &login, dl);
-        if (r.answered && r.status == 401) {   // however long the body that came with it
+        if (r.refused()) {   // however long the body that came with it, and however much of it came
             // Kept refused (its trial stays too) until the same write that drops it from the device's
             // record reaches the file: should that write fail, the record still holds it.
             const bool noted = keep_refusal(t.key, login);
@@ -1405,13 +1412,17 @@ private:
     }
 
     // Turns a reply into an error sentence and remembers what it says about the login. True for a
-    // 2xx answer that fits in memory. A 401 is the device's answer to the login whatever came with it,
-    // so it is read before the body's length: one sent with a body too long to read is still a refusal.
+    // 2xx answer that fits in memory. A 401 to the login is the device's answer whatever came with it,
+    // so it is read before the body: one with a body too long to read, or cut short, is still a refusal.
+    // A 401 to a request without the login (or a Gen2+ challenge, before libcurl sent it) asks for one.
     bool settle(const Target &t, int gen, const Login &login, const Reply &r, std::string &err) {
         if (r.no_time) { err = "There was no time left to ask the Shelly. Try again in a moment."; return false; }
+        if (r.refused()) {
+            note("locked", t.key, gen);
+            return refused_error(err, keep_refusal(t.key, login));
+        }
         if (r.answered && r.status == 401) {
             note("locked", t.key, gen);
-            if (r.sent_login) return refused_error(err, keep_refusal(t.key, login));
             err = std::string(kNeedsPassword) + kTypeIt;
             return false;
         }

@@ -60,14 +60,23 @@ int main(int argc, char **argv) {
     r = http::Request();
     r.url = plain + "/digest";
     res = http::send(r);
-    check(res.status == 401, "the digest page refuses a request without credentials", seen(res));
+    check(res.status == 401 && !res.digest_answered, "the digest page refuses a request without credentials", seen(res));
     r.digest_user = "user";
     r.digest_pass = "pass word";
     res = http::send(r);
-    check(res.status == 200 && res.body == "digest ok", "digest credentials are accepted", seen(res));
+    check(res.status == 200 && res.body == "digest ok" && res.digest_answered, "digest credentials are accepted", seen(res));
     r.digest_pass = "wrong";
     res = http::send(r);
-    check(res.status == 401, "wrong digest credentials are refused", seen(res));
+    check(res.status == 401 && res.digest_answered, "wrong digest credentials are refused", seen(res));
+    // A 401 whose body is cut short keeps its status (a device's refusal is one whatever came with it), and
+    // says whether it answered the login or was the challenge before it, which refused nothing.
+    r.url = plain + "/digest-cut";
+    res = http::send(r);
+    check(res.status == 401 && !res.error.empty() && res.digest_answered, "a refusal of the login cut short is still a 401 to it",
+          seen(res));
+    r.url = plain + "/challenge-cut";
+    res = http::send(r);
+    check(res.status == 401 && !res.error.empty() && !res.digest_answered, "a challenge cut short answered no login", seen(res));
 
     r = http::Request();
     r.url = tls + "/hello";

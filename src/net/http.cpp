@@ -17,6 +17,7 @@ namespace {
 struct Ctx {
     const Request *req;
     Response *res;
+    int answers = 0;   // final (not 1xx) status lines received: a digest challenge and the answer to the login make two
 };
 
 size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
@@ -38,6 +39,7 @@ size_t header_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
     if (n > 12 && !strncmp(ptr, "HTTP/", 5)) {
         const char *sp = static_cast<const char *>(memchr(ptr, ' ', n));
         const int code = sp ? atoi(sp + 1) : 0;
+        if (code >= 200) ++ctx->answers;
         ctx->res->status = (code >= 200 && code < 300) ? -1 : -2;
     }
     return n;
@@ -177,10 +179,13 @@ void set_payload(CURL *curl, const Request &req, curl_slist *&headers, curl_mime
 
 // What came back besides the body: the status, whether the peer can have seen the request, a failure
 // in words, the content type, and the peer's certificate when it was asked for.
-void read_outcome(CURL *curl, CURLcode rc, const Request &req, Response &res) {
+void read_outcome(CURL *curl, CURLcode rc, const Ctx &ctx) {
+    const Request &req = *ctx.req;
+    Response &res = *ctx.res;
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-    res.status = status;
+    res.status = status;   // also when the transfer failed after it: a 401 whose body was cut short is still a 401
+    res.digest_answered = !req.digest_user.empty() && ctx.answers > 1;   // the challenge, then the answer to the login
     // Whether the peer can have seen the request: bytes of it went out, or a connection to it was
     // made (a TLS set-up that then failed counts too, to be safe). A request that never got that
     // far may be sent again whatever it was. (The pre-transfer time is no guide: curl reports one
@@ -225,7 +230,7 @@ Response send(const Request &req) {
     curl_mime *mime = nullptr;
     set_payload(curl, req, headers, mime);
 
-    read_outcome(curl, curl_easy_perform(curl), req, res);
+    read_outcome(curl, curl_easy_perform(curl), ctx);
     if (mime) curl_mime_free(mime);
     if (headers) curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
