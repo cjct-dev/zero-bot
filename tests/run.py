@@ -274,12 +274,13 @@ PATH_RULES = [
 ]
 
 # Changes to what the model is told: which live cases to run five times. A rule gives suite tags, or
-# {"scored": [...]} for scored-set names (--scored-only); "scan" reads the changed lines (and the function
-# each change is in) for the tools they touch; "all" means a sample of every suite category.
+# {"scored": [...]} for scored-set names (--scored-only); "scan" reads the path, the changed lines and the
+# function each change is in for the tools they touch (a tool is one file, src/agent/tools/<name>.cpp); "all"
+# means a sample of every suite category.
 MODEL_FACING = [
     (r"^src/agent/prompt\.cpp$", "all"),
     (r"^src/agent/(agent|llm|guards|controls)\.cpp$", "all"),
-    (r"^src/agent/tools\.cpp$", "scan"),
+    (r"^src/agent/tools/", "scan"),
     (r"^src/smarthome/(tool|control)\.cpp$", ["home", "tv"]),   # the schema; the sentences results carry
     (r"^src/core/timers\.cpp$", ["timer", "countdown"]),
     (r"^src/core/radio\.cpp$", {"scored": ["radio_"]}),        # the suite has no radio case; the scored set's radio_*
@@ -334,7 +335,7 @@ def model_facing_tags(paths, diff_text_of=None, categories=None):
             if rule == "all":
                 everything = True
             elif rule == "scan":
-                text = (diff_text_of(p) if diff_text_of else "").lower()
+                text = (p + "\n" + (diff_text_of(p) if diff_text_of else "")).lower()
                 found = [t for t, words in TAG_WORDS if re.search(words, text)]
                 names = [n for n, words in SCORED_WORDS if re.search(words, text)]
                 tags.update(found)
@@ -1301,12 +1302,19 @@ def self_test():
     check("prompt.cpp asks for a sample of everything", tags == "all" and hit == ["src/agent/prompt.cpp"], (tags, hit))
     tags, hit, _ = model_facing_tags(["src/agent/guards.cpp", "src/agent/controls.cpp"])
     check("the loop's guards and controls ask for a sample of everything", tags == "all" and len(hit) == 2, (tags, hit))
-    tags, _, _ = model_facing_tags(["src/agent/tools.cpp"], lambda p: "@@ static std::string t_timer(...)\n+  remind")
-    check("tools.cpp: the tools its changed lines touch", tags == ["reminder", "timer"], tags)
+    tags, _, _ = model_facing_tags(["src/agent/tools/registry.cpp"], lambda p: "@@ static std::string t_timer(...)\n+  remind")
+    check("the tools' registry: the tools its changed lines touch", tags == ["reminder", "timer"], tags)
+    tags, hit, _ = model_facing_tags(["src/agent/tools/weather.cpp"], lambda p: "+ a line")
+    check("a tool's own file: the tool it is named after", tags == ["weather"] and hit == ["src/agent/tools/weather.cpp"], (tags, hit))
+    tags, _, _ = model_facing_tags(["src/agent/tools/common.cpp"], lambda p: "+ a line")
+    check("the tools' shared code, naming no tool: a sample of everything", tags == "all", tags)
+    check("the tools' interface (tools.h) is not model-facing", model_facing_tags(["src/agent/tools.h"])[1] == [])
     tags, _, scored = model_facing_tags(["src/core/radio.cpp"])
     check("radio.cpp: the scored set's radio cases, no suite tag", tags == [] and scored == ["radio_"], (tags, scored))
-    tags, _, scored = model_facing_tags(["src/agent/tools.cpp"], lambda p: "+ the radio station list")
-    check("tools.cpp: a radio change asks for the scored set's radio cases", tags == [] and scored == ["radio_"], (tags, scored))
+    tags, _, scored = model_facing_tags(["src/agent/tools/registry.cpp"], lambda p: "+ the radio station list")
+    check("the tools' registry: a radio change asks for the scored set's radio cases", tags == [] and scored == ["radio_"], (tags, scored))
+    tags, _, scored = model_facing_tags(["src/agent/tools/radio.cpp"], lambda p: "+ a line")
+    check("the radio tool's file asks for the scored set's radio cases", tags == [] and scored == ["radio_"], (tags, scored))
     tags, _, _ = model_facing_tags(["src/smarthome/tool.cpp"], categories={"home", "timer"})
     check("tags only from the suite's own", tags == ["home"], tags)
     check("ui is not model-facing", model_facing_tags(["src/ui/app.cpp"])[1] == [])

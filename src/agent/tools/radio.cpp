@@ -1,0 +1,33 @@
+// The radio tool: the user's own radio stations.
+#include "agent/tools/common.h"
+
+#include "core/radio.h"
+#include "core/settings.h"
+
+namespace tools {
+
+namespace {
+
+// The stations, the check of a stream and the tool's wording are in core/radio.
+std::string t_radio(const json &a, Context &ctx) {
+    radio::ToolEnv env;
+    env.dry_run = dry_run();
+    env.in_conversation = ctx.in_conversation;
+    env.cancel = ctx.cancel;
+    return radio::run_tool(a, env);
+}
+
+// A warning about mobile data has to be passed on in the model's own words.
+bool say_confirms(const json &, const std::string &result) { return result.find("\"note\"") == std::string::npos; }
+
+}  // namespace
+
+Tool make_radio() {
+    Tool t{"radio", "Tuning in", "", obj({}), t_radio, takes_say("", say_confirms)};
+    // Description and parameters are made from the user's station list (radio::tool_spec), with its say. Radio
+    // exists only once the user has listed stations; the file is read again when it changes.
+    t.spec = [] { return radio::tool_spec(!Settings::get().search_key.empty()); };
+    return t;
+}
+
+}  // namespace tools

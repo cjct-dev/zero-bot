@@ -30,7 +30,8 @@ HOSTS = ("geocoding-api.open-meteo.com", "api.open-meteo.com", "open.er-api.com"
 FORECAST = ("https://api.open-meteo.com/v1/forecast?latitude=51.5085&longitude=-0.1257&timezone=auto&forecast_days=3"
             "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m"
             "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset")
-# (what, the request as the app makes it (src/agent/tools.cpp), the fields the app reads with what each must be:
+# (what, the request as the app makes it (src/agent/tools/: places.cpp, weather.cpp, convert_currency.cpp,
+# stock_price.cpp), the fields the app reads with what each must be:
 # "number", "text", "object"; "?" may be null; "*" may be absent (the app reads it when it is there); "[T]" a list,
 # never empty, of T ("[number?]": nulls allowed in it))
 REQUESTS = [
@@ -206,9 +207,10 @@ def self_test():
     check("null where none may be", not meets(None, "[number]") and not meets([1, None], "[number]") and not meets(None, "number"))
     check("null where the app takes it", meets([1, None], "[number?]") and meets(None, "text?"))
     check("a type that disagrees", not meets("12", "number"))
-    # Round 2, W12: every stock field the app reads is in the contract (src/agent/tools.cpp t_stock reads them by name).
-    app = open(os.path.join(HERE, "..", "src", "agent", "tools.cpp"), encoding="utf-8").read()
-    body = app[app.index("std::string t_stock("):app.index("// ---------------------------------------------------------------- time")]
+    # Round 2, W12: every stock field the app reads is in the contract (src/agent/tools/stock_price.cpp: t_stock
+    # reads them by name).
+    app = open(os.path.join(HERE, "..", "src", "agent", "tools", "stock_price.cpp"), encoding="utf-8").read()
+    body = app[app.index("std::string t_stock("):app.index("Tool make_stock_price(")]
     read = set(re.findall(r'jget\(m, "(\w+)"', body)) | set(re.findall(r'm\.contains\("(\w+)"\)', body))
     stock = next(r for w, _, r in REQUESTS if w == "stock price")
     missing = sorted(f for f in read if "chart.result.0.meta." + f not in stock)
