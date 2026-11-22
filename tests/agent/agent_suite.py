@@ -20,7 +20,7 @@ the turns checks look at, homes, the stand-in web's fixtures) and exits non-zero
 ZB_API_BASE and ZB_API_KEY (and model names in ZB_EVAL_LLM_MODEL etc.); no search key: every case's
 web reads (search included) go to the stand-in web, as in the scored set, and a run refuses to start if a
 case could reach a real web service (tests/agent/agent_eval.py preflight). Every case starts from an empty state with ZB_DRY_RUN, as in the
-scored set, and a small stand-in music library (MUSIC_LIBRARY: tags only, no sound) unless
+scored set, and a small stand-in music library (tests/lib/music.py: tags only, no sound) unless
 ZB_EVAL_MUSIC_DIR names a folder; ZB_EVAL_MUSIC_DIR= (empty) gives an empty library, as runs before
 2026-11-19 had. The summary gives the pass rate per tag and the slowest cases.
 
@@ -92,10 +92,6 @@ def stamps_for(day, times):
             out.append((t if t > now else t + datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M"))
         return out
     return [s for hhmm in times for s in ev.stamps(days_for(day), hhmm)]
-
-
-# The music library every case sees: tests/agent/agent_eval.py's (MUSIC_LIBRARY there), shared by both sets.
-MUSIC_LIBRARY = ev.MUSIC_LIBRARY
 
 
 def says_date(text, d):
