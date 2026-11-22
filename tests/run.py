@@ -396,12 +396,20 @@ def diff_reader(fork):
 PER_CASE = 3.6   # seconds a live case takes at --jobs 1 (whole runs: 480 s for 123, 2100 s for 601)
 
 
+def suite_selected(o):
+    """The suite's cases these options pick, chosen by the suite's own runner (agent_suite.selected)."""
+    import agent_suite as su
+    with open(os.path.join(AGENT, "suite", "cases.json"), encoding="utf-8") as f:
+        cases = json.load(f)
+    return su.selected(cases, argparse.Namespace(tags=o.tags, skip_tags=o.skip_tags, only=o.only, sample=o.sample, seed=o.seed))
+
+
 def live_count(name, o):
     """How many cases a live group will run with these options, or None when that cannot be told."""
     sys.path.insert(0, AGENT)
     try:
         if name == "live-suite":
-            return len(suite_selected(o, o.skip_tags))
+            return len(suite_selected(o))
         only = scored_only(o)
         import agent_eval as ev
         words = [w for w in only.split(",") if w]
@@ -1447,10 +1455,16 @@ def self_test():
               (suite_command(b, "/r"), eval_command(b, "/r"), gate_command(b, "<run>")))
     check("--no-search says it changes nothing", any("changes nothing" in n for n in live_notes(b, LIVE)))
 
+    # The suite's time is worked out from the cases chosen (agent_suite.selected), not the table's whole run.
     n = live_count("live-suite", parse(["--only", "timer-001,calc-001"]))
-    check("a live subset's size", n in (None, 2), n)
-    if n is not None:
-        check("a live subset's time", group_secs("live-suite", parse(["--only", "timer-001", "--repeat", "3"])) < 60)
+    check("a live subset's size", n == 2, n)
+    check("a live subset's time", group_secs("live-suite", parse(["--only", "timer-001", "--repeat", "3"])) < 60)
+    tagged, whole = live_count("live-suite", parse(["--tags", "timer"])), live_count("live-suite", parse([]))
+    check("the suite's cases by tag are counted", isinstance(tagged, int) and 0 < tagged < 200, tagged)
+    check("the suite's whole run is counted", isinstance(whole, int) and whole > 500, whole)
+    check("the suite's time comes from its count, not the table", isinstance(whole, int) and
+          group_secs("live-suite", parse([])) == whole * PER_CASE, group_secs("live-suite", parse([])))
+    check("a sample is counted as its size", live_count("live-suite", parse(["--sample", "9"])) == 9)
 
     # What a group inherits: no switch that changes what it tests; the runner's own; --exp for live runs.
     keys = ("ZB_UPDATE_SHOTS", "ZB_UPDATE_SNAPSHOTS", "ZB_UNIT_BUILD_ONLY", "ZB_UNIT_SKIP_SCRIPTS", "ZB_EXP_OFF", "HUE_E2E_ONLY",
