@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A simulated Shelly device on 127.0.0.1, for tests/shelly_e2e.py. Standard library only.
+"""A simulated Shelly device on 127.0.0.1, for tests/sim/shelly_e2e.py. Standard library only.
 
 usage: mock_shelly.py --port 0 --model MODEL [--password PW] [--user NAME] [--id ID] [--mac MAC]
        mock_shelly.py --selftest

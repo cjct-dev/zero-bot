@@ -271,7 +271,7 @@ int run_cli(const Args &a) {
     ev.error = [](const std::string &m) { printf("[error] %s\n", m.c_str()); };
     ev.image = [](const std::string &p) { printf("[photo] %s\n", p.c_str()); };
 #if ZB_EXPERIMENTS
-    // The evaluator's records (tests/agent_eval.py; cli build only). With ZB_EVAL_RECORDS=FILE they go to
+    // The evaluator's records (tests/agent/agent_eval.py; cli build only). With ZB_EVAL_RECORDS=FILE they go to
     // that file, a channel of their own, one JSON object a line, so nothing the model says can pass for
     // one: each request's start and end (its number, the times, the answer), every tool call of it as the
     // call finishes, whole (from the request's own events: trimming the history hides none, nothing is
@@ -351,7 +351,7 @@ int run_cli(const Args &a) {
         if (records) record({{"ev", "state"}, {"turn", request_no}, {"state", st}});
         else printf("[state] %s\n", st.dump(-1, ' ', false, json::error_handler_t::replace).c_str());
     };
-    // What this build can do for the test runners, which refuse a binary without it (tests/agent_eval.py
+    // What this build can do for the test runners, which refuse a binary without it (tests/agent/agent_eval.py
     // probe_binary): these records, the stand-in web (ZB_EXP_WEB), every tool's web read sent to it ("web_all":
     // search, forecasts, places, exchange rates and prices), and refusing hardware (ZB_EXP_NO_HARDWARE).
     if (records) record({{"ev", "start"}, {"caps", {"records", "web", "web_all", "no_hardware", "net"}}});   // net: ZB_EXP_NET

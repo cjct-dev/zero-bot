@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Golden screenshots: renders every screen with the simulator build (zero_bot --shots) into a
-temporary folder and compares each image with tests/golden/shots/, with a small tolerance.
+temporary folder and compares each image with tests/sim/screens/golden/, with a small tolerance.
 
-    tests/shots_compare.py [path/to/sim/zero_bot]      compare (default build/sim/zero_bot)
-    ZB_UPDATE_SHOTS=1 tests/shots_compare.py           replace the stored images with this render
+    tests/sim/screens/shots_compare.py [path/to/sim/zero_bot]      compare (default build/sim/zero_bot)
+    ZB_UPDATE_SHOTS=1 tests/sim/screens/shots_compare.py           replace the stored images with this render
 
 Run it before and after a UI change; after an intended change, refresh the images and look at the
 diff of every changed PNG before committing it. Images are matched by name without their number,
@@ -11,7 +11,7 @@ so a new screen in the middle only adds an image. Where they differ, a picture o
 (red where pixels changed) is written to build/shots-diff/.
 
 To make renders repeatable and harmless:
-  - the wall clock starts at a fixed moment (tests/shots/fixclock.c, built here with cc and loaded
+  - the wall clock starts at a fixed moment (tests/sim/screens/fixclock.c, built here with cc and loaded
     with LD_PRELOAD), so dates on the calendar pages and countdowns do not change from day to day;
   - the helper programs the app starts (audio, volume, network tools) are replaced on PATH by
     stand-ins that do nothing, so no sound is played and no setting of this PC is changed; their
@@ -22,7 +22,7 @@ made them: refresh them on a new machine before relying on the comparison.
 
 A pixel counts as changed when a colour channel differs by more than THRESHOLD; an image fails
 when more than TOLERANCE of its pixels changed (outside the areas masked for it in
-tests/golden/shots/masks.json, for parts that move with real time). Standard library only.
+tests/sim/screens/golden/masks.json, for parts that move with real time). Standard library only.
 """
 import json
 import os
@@ -33,10 +33,10 @@ import sys
 import tempfile
 import zlib
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
+HERE = os.path.dirname(os.path.abspath(__file__))   # tests/sim/screens: golden/, fixclock.c
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(ROOT, "build", "sim", "zero_bot")
-GOLDEN = os.path.join(HERE, "golden", "shots")
+GOLDEN = os.path.join(HERE, "golden")
 DIFFS = os.path.join(ROOT, "build", "shots-diff")
 FIXED_TIME = 1795003200          # Wed 18 Nov 2026 12:00 in London
 THRESHOLD = 24                   # per colour channel, 0..255
@@ -123,7 +123,7 @@ def render(out):
     env["ZB_TEST_NETWORK"] = "1"   # the stand-in network from the start: the real one is never identified
     shim = os.path.join(tmp, "fixclock.so")
     cc = shutil.which(os.environ.get("CC", "cc")) or shutil.which("gcc")
-    if cc and subprocess.run([cc, "-shared", "-fPIC", "-O2", "-o", shim, os.path.join(HERE, "shots", "fixclock.c"), "-ldl"]).returncode == 0:
+    if cc and subprocess.run([cc, "-shared", "-fPIC", "-O2", "-o", shim, os.path.join(HERE, "fixclock.c"), "-ldl"]).returncode == 0:
         env["LD_PRELOAD"] = shim
     else:
         print("warning: no C compiler for the clock shim; screens with dates will differ from day to day")

@@ -11,7 +11,7 @@ a photo, as a confused or manipulated model might; what decides is the app's own
 question was put (a reply that asks, naming the thing in any words that pick it out) and that the
 very next message is a plain yes. The devices' own state shows whether they were switched.
 
-usage: tests/home_chat_e2e.py [path/to/zero_bot]          (default: build/cli/zero_bot)
+usage: tests/sim/home_chat_e2e.py [path/to/zero_bot]          (default: build/cli/zero_bot)
 """
 import hashlib
 import json
@@ -21,11 +21,11 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
+sys.path.insert(0, TESTS)
 import netguard   # noqa: E402  the network boundary (tests/netguard.py)
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
+APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "cli", "zero_bot")
 EMAIL, PASSWORD = "user@example.com", "hunter2"
 SHA1 = hashlib.sha1(PASSWORD.encode()).hexdigest()
 OWNER = hashlib.md5(EMAIL.encode()).hexdigest().upper()
@@ -75,7 +75,7 @@ def converse(name, plugs, adjust, script, said, photo=False):
     try:
         ports = []
         for mode, model in plugs:
-            p, port = start([sys.executable, "-I", os.path.join(HERE, "mocks", "mock_tapo.py"), "--port", "0", "--mode", mode,
+            p, port = start([sys.executable, "-I", os.path.join(TESTS, "mocks", "mock_tapo.py"), "--port", "0", "--mode", mode,
                              "--model", model, "--email", EMAIL, "--password", PASSWORD, "--stdin-lifeline"], "MOCK")
             procs.append(p)
             ports.append(port)
@@ -112,7 +112,7 @@ def converse(name, plugs, adjust, script, said, photo=False):
 
         json.dump(script, open(state + "/script.json", "w"))
         log = state + "/requests.jsonl"
-        chat, chat_port = start([sys.executable, "-I", os.path.join(HERE, "mocks", "mock_chat.py"), state + "/script.json", log], "CHAT")
+        chat, chat_port = start([sys.executable, "-I", os.path.join(TESTS, "mocks", "mock_chat.py"), state + "/script.json", log], "CHAT")
         procs.append(chat)
         env["ZB_API_BASE"] = "http://127.0.0.1:%d/v1" % chat_port
         p = subprocess.run([APP, "--chat"], input="\n".join(said) + "\n", env=env, capture_output=True, text=True, timeout=180)

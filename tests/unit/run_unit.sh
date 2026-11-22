@@ -14,21 +14,21 @@
 # activity log and saved conversations; temporary). Nothing but 127.0.0.1 is contacted, and no AI
 # service, sound or screen is needed (stand-ins take the place of pw-cat, pacat, amixer and ffplay).
 #
-#   tests/run_unit.sh                   build into build/unit and run
-#   ZB_UPDATE_SNAPSHOTS=1 tests/run_unit.sh    rewrite tests/snapshots/*.json from the current schema
-#   ZB_BUILD_WRAPPER=cmd tests/run_unit.sh     run each compile through cmd (e.g. a lock on a shared machine)
-#   ZB_UNIT_BUILD_ONLY=1 tests/run_unit.sh     build the test programs (the drivers' *_cli too) and stop
-#   ZB_UNIT_SKIP_SCRIPTS=1 tests/run_unit.sh   leave out tests/tools_cli.py and tests/agent_loop_test.py
-#                                              (tests/run.py runs them as groups of their own)
+#   tests/unit/run_unit.sh                          build into build/unit and run
+#   ZB_UPDATE_SNAPSHOTS=1 tests/unit/run_unit.sh    rewrite tests/unit/snapshots/*.json from the current schema
+#   ZB_BUILD_WRAPPER=cmd tests/unit/run_unit.sh     run each compile through cmd (e.g. a lock on a shared machine)
+#   ZB_UNIT_BUILD_ONLY=1 tests/unit/run_unit.sh     build the test programs (the drivers' *_cli too) and stop
+#   ZB_UNIT_SKIP_SCRIPTS=1 tests/unit/run_unit.sh   leave out tests/sim/tools_cli.py and tests/sim/agent_loop_test.py
+#                                                   (tests/run.py runs them as groups of their own)
 #
 # When the command-line build exists (build/cli/zero_bot), the timer and radio tools are also run
 # through it, zero_bot --tool timer '{...}', with a fresh, temporary state folder, the system
 # prompt and tool list are checked to say nothing of radio until stations are listed, the other
-# tools that need no network are run too (tests/tools_cli.py: good, wrong and hostile arguments),
-# and the request loop is run against a scripted chat service (tests/agent_loop_test.py). CXX
+# tools that need no network are run too (tests/sim/tools_cli.py: good, wrong and hostile arguments),
+# and the request loop is run against a scripted chat service (tests/sim/agent_loop_test.py). CXX
 # picks the compiler (default g++). Exits non-zero when anything fails.
 set -eu
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."   # the repository: every path below is from there
 OUT=build/unit
 mkdir -p "$OUT"
 CXX="${CXX:-g++}"
@@ -93,22 +93,22 @@ for src in $RADIO; do radio_objs="$radio_objs $(obj_of "$src")"; done
 $WRAP $CXX -o "$OUT/radio_test" "$OUT/tests_unit_radio_test.o" $radio_objs $objs -lcurl -lcrypto -ldl -lpthread
 $WRAP $CXX -o "$OUT/tools_test" "$OUT/tests_unit_tools_test.o" "$(obj_of src/agent/calc.cpp)" "$(obj_of src/core/util.cpp)" \
     "$(obj_of src/platform/proc.cpp)" -lpthread
-# The Fire TV driver's own tests; firetv_cli is what tests/firetv_e2e.py drives against its mock.
+# The Fire TV driver's own tests; firetv_cli is what tests/sim/firetv_e2e.py drives against its mock.
 $WRAP $CXX -o "$OUT/firetv_test" "$OUT/tests_unit_firetv_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/firetv_cli" "$OUT/tests_unit_firetv_cli.o" $objs -lcurl -lcrypto -lpthread
-# The same for the HomeKit driver (tests/homekit_e2e.py drives homekit_cli).
+# The same for the HomeKit driver (tests/sim/homekit_e2e.py drives homekit_cli).
 $WRAP $CXX -o "$OUT/homekit_test" "$OUT/tests_unit_homekit_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/homekit_cli" "$OUT/tests_unit_homekit_cli.o" $objs -lcurl -lcrypto -lpthread
-# The same for the Hue driver (tests/hue_e2e.py drives hue_cli).
+# The same for the Hue driver (tests/sim/hue_e2e.py drives hue_cli).
 $WRAP $CXX -o "$OUT/hue_test" "$OUT/tests_unit_hue_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/hue_cli" "$OUT/tests_unit_hue_cli.o" $objs -lcurl -lcrypto -lpthread
-# The same for the Kasa driver (tests/kasa_e2e.py drives kasa_cli).
+# The same for the Kasa driver (tests/sim/kasa_e2e.py drives kasa_cli).
 $WRAP $CXX -o "$OUT/kasa_test" "$OUT/tests_unit_kasa_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/kasa_cli" "$OUT/tests_unit_kasa_cli.o" $objs -lcurl -lcrypto -lpthread
-# The same for the WiZ driver (tests/wiz_e2e.py drives wiz_cli).
+# The same for the WiZ driver (tests/sim/wiz_e2e.py drives wiz_cli).
 $WRAP $CXX -o "$OUT/wiz_test" "$OUT/tests_unit_wiz_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/wiz_cli" "$OUT/tests_unit_wiz_cli.o" $objs -lcurl -lcrypto -lpthread
-# The same for the Shelly driver (tests/shelly_e2e.py drives shelly_cli).
+# The same for the Shelly driver (tests/sim/shelly_e2e.py drives shelly_cli).
 $WRAP $CXX -o "$OUT/shelly_test" "$OUT/tests_unit_shelly_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/shelly_cli" "$OUT/tests_unit_shelly_cli.o" $objs -lcurl -lcrypto -lpthread
 # The helpers the drivers share (drivers/support): JSON depth, UTF-8, MAC digits, hex, digests, certificates.
@@ -139,7 +139,7 @@ fi
 
 failed=0
 echo "=== smart home"
-"$OUT/smarthome_test" tests/snapshots || failed=1
+"$OUT/smarthome_test" tests/unit/snapshots || failed=1
 echo "=== http options"
 python3 -I tests/unit/http_peer.py "$OUT/http_test" || failed=1
 echo "=== Fire TV driver"
@@ -289,13 +289,13 @@ echo "radio through the command-line build: $passed passed, $radio_failed failed
 [ "$radio_failed" -eq 0 ] || failed=1
 
 if [ "${ZB_UNIT_SKIP_SCRIPTS:-}" = 1 ]; then
-    echo "=== tests/tools_cli.py and tests/agent_loop_test.py left out (ZB_UNIT_SKIP_SCRIPTS=1)"
+    echo "=== tests/sim/tools_cli.py and tests/sim/agent_loop_test.py left out (ZB_UNIT_SKIP_SCRIPTS=1)"
     exit $failed
 fi
 
 echo "=== the other tools that need no network, through the command-line build"
-python3 -I tests/tools_cli.py "$cli" || failed=1
+python3 -I tests/sim/tools_cli.py "$cli" || failed=1
 
 echo "=== the request loop against a scripted chat service"
-python3 -I tests/agent_loop_test.py -q "$cli" || failed=1
+python3 -I tests/sim/agent_loop_test.py -q "$cli" || failed=1
 exit $failed

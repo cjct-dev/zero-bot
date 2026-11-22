@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Runs firetv_cli against mock_firetv.py on 127.0.0.1 and checks what the mock saw.
 
-usage: firetv_e2e.py [path/to/firetv_cli] [group ...]   (default: build/unit/firetv_cli, which
-tests/run_unit.sh builds; every group)
+usage: tests/sim/firetv_e2e.py [path/to/firetv_cli] [group ...]   (default: build/unit/firetv_cli, which
+tests/unit/run_unit.sh builds; every group)
 groups: wrong_code command capability wake starting off auth hostile unknown (pairing and enumerate always
 run; naming groups is for quick checks of one area, e.g. of a deliberately broken build)
 
@@ -21,13 +21,13 @@ import tempfile
 import time
 import urllib.request
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
+sys.path.insert(0, TESTS)
 import netguard   # noqa: E402
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
-CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "unit", "firetv_cli")
-MOCK = os.path.join(HERE, "mocks", "firetv", "mock_firetv.py")
+CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "unit", "firetv_cli")
+MOCK = os.path.join(TESTS, "mocks", "firetv", "mock_firetv.py")
 MAC = "00:00:5e:00:53:01"
 OTHER_MAC = "00:00:5e:00:53:02"
 API_KEY = "0987654321"
@@ -1316,7 +1316,7 @@ def unknown_device_tests(m, tv):
 
 def main():
     if not os.access(CLI, os.X_OK):
-        sys.exit("no firetv_cli at %s (run tests/run_unit.sh first)" % CLI)
+        sys.exit("no firetv_cli at %s (run tests/unit/run_unit.sh first)" % CLI)
     groups = sys.argv[2:]
     wanted = lambda name: not groups or name in groups
     m = Mock()

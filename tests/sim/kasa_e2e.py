@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Kasa end to end: the driver, and the app, against simulated Kasa devices on 127.0.0.1.
 
-usage: tests/kasa_e2e.py [path/to/kasa_cli [path/to/zero_bot]] [group ...]
-       (defaults: build/unit/kasa_cli, which tests/run_unit.sh builds, and build/cli/zero_bot)
+usage: tests/sim/kasa_e2e.py [path/to/kasa_cli [path/to/zero_bot]] [group ...]
+       (defaults: build/unit/kasa_cli, which tests/unit/run_unit.sh builds, and build/cli/zero_bot)
 groups: discover enumerate apply read moved swap identity hostile app (default: all; "app" is
 skipped with a note when the command-line build is missing)
 
@@ -25,17 +25,17 @@ import tempfile
 import time
 import urllib.request
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
+sys.path.insert(0, TESTS)
 import netguard   # noqa: E402
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
 paths = [a for a in sys.argv[1:] if os.sep in a or a.endswith("_cli") or a.endswith("zero_bot")]
 GROUPS = [a for a in sys.argv[1:] if a not in paths] or ["discover", "enumerate", "apply", "read", "moved", "swap", "identity",
                                                          "hostile", "app"]
-CLI = os.path.abspath(paths[0]) if paths else os.path.join(HERE, "..", "build", "unit", "kasa_cli")
-APP = os.path.abspath(paths[1]) if len(paths) > 1 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
-MOCK = os.path.join(HERE, "mocks", "kasa", "mock_kasa.py")
+CLI = os.path.abspath(paths[0]) if paths else os.path.join(TESTS, "..", "build", "unit", "kasa_cli")
+APP = os.path.abspath(paths[1]) if len(paths) > 1 else os.path.join(TESTS, "..", "build", "cli", "zero_bot")
+MOCK = os.path.join(TESTS, "mocks", "kasa", "mock_kasa.py")
 NEW_LOGIN = "moved to TP-Link's newer login"
 
 checks = failed = 0
@@ -617,7 +617,7 @@ def test_app(mock):
 
 def main():
     if not os.access(CLI, os.X_OK):
-        sys.exit("no kasa_cli at %s (run tests/run_unit.sh first)" % CLI)
+        sys.exit("no kasa_cli at %s (run tests/unit/run_unit.sh first)" % CLI)
     mock = Mock()
     try:
         for group in GROUPS:

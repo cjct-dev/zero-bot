@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Summarises results files written by tests/agent_eval.py or tests/agent_suite.py with --json (and,
+"""Summarises results files written by tests/agent/agent_eval.py or tests/agent/agent_suite.py with --json (and,
 for the model-call figures, --trace): pass rates overall and by tag, latency, model calls, tokens and
 upload per request, the second look and the guards, tool errors, answer lengths, and the cases whose
 result differs between files (flaky). Standard library only; reads files, calls nothing.
 
-usage: tests/exp_report.py RUN.json [RUN.json ...] [--tags] [--cases N] [--markdown]
+usage: tests/agent/exp_report.py RUN.json [RUN.json ...] [--tags] [--cases N] [--markdown]
 
   --tags       pass rates per tag (suite files carry tags; a scored-set file has none)
   --cases N    list up to N failing cases per file with their problems (default 0)
@@ -16,7 +16,7 @@ cases that passed in one file and failed in another are listed as flaky.
 Every latency figure has the completion rate beside it: a turn counts as completed when it started,
 did not time out and ended with an answer and a time. A percentile is taken over the completed turns
 only, so a variant that loses its slowest requests to time-outs reads faster than it is; read the
-"completed" column with it (tests/exp_compare.py compares latency on the turns completed on both sides).
+"completed" column with it (tests/agent/exp_compare.py compares latency on the turns completed on both sides).
 """
 import argparse
 import json

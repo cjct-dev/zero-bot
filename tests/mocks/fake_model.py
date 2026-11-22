@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """A scripted stand-in for the chat-completions service, for tests of the request loop itself
-(tests/agent_loop_test.py). Richer than mock_chat.py: rules match on more than the newest
+(tests/sim/agent_loop_test.py). Richer than mock_chat.py: rules match on more than the newest
 message, a reply can be split into pieces, carry several tool calls, fail with an HTTP status,
 or arrive late, and every request is logged with the rule that answered it.
 

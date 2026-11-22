@@ -1,9 +1,9 @@
-/* Test helper for tests/shots_compare.py, loaded with LD_PRELOAD into `zero_bot --shots`: the wall
+/* Test helper for tests/sim/screens/shots_compare.py, loaded with LD_PRELOAD into `zero_bot --shots`: the wall
  * clock starts at ZB_FIXED_TIME (seconds since 1970) and runs on from there, so screens that show
  * "today", a date a few days away or a countdown come out the same on every run. The monotonic
  * clock (LVGL's tick, animations) is left alone. Without ZB_FIXED_TIME it changes nothing.
  *
- *   cc -shared -fPIC -O2 -o fixclock.so tests/shots/fixclock.c -ldl
+ *   cc -shared -fPIC -O2 -o fixclock.so tests/sim/screens/fixclock.c -ldl
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>

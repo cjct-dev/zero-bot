@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """WiZ end to end: the driver (through wiz_cli) and the app (zero_bot) against simulated WiZ devices.
 
-usage: tests/wiz_e2e.py [path/to/wiz_cli [path/to/zero_bot]]
-       (defaults: build/unit/wiz_cli, which tests/run_unit.sh builds, and build/cli/zero_bot)
+usage: tests/sim/wiz_e2e.py [path/to/wiz_cli [path/to/zero_bot]]
+       (defaults: build/unit/wiz_cli, which tests/unit/run_unit.sh builds, and build/cli/zero_bot)
 
 Every device is tests/mocks/wiz/mock_wiz.py on 127.0.0.1, on ports the system picks; its counters
 (GET /mock/stats) show what reached it, so "sent once", "not sent again" and "signed with the
@@ -22,13 +22,13 @@ import tempfile
 import time
 import urllib.request
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
+sys.path.insert(0, TESTS)
 import netguard   # noqa: E402
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
-CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "unit", "wiz_cli")
-APP = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
+CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "unit", "wiz_cli")
+APP = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else os.path.join(TESTS, "..", "build", "cli", "zero_bot")
 KEY = "00112233445566778899aabbccddeeff"
 WRONG = "ffeeddccbbaa99887766554433221100"
 TMP = tempfile.mkdtemp(prefix="wiz-e2e-")
@@ -69,7 +69,7 @@ def unreachable(text):
 
 class Mock:
     def __init__(self, model, key=""):
-        args = [sys.executable, "-I", os.path.join(HERE, "mocks", "wiz", "mock_wiz.py"), "--port", "0", "--model", model,
+        args = [sys.executable, "-I", os.path.join(TESTS, "mocks", "wiz", "mock_wiz.py"), "--port", "0", "--model", model,
                 "--stdin-lifeline"] + (["--key", key] if key else [])
         self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, start_new_session=True,
                                      env=netguard.mock_env())
@@ -173,7 +173,7 @@ def enumerate_case(model, want):
 
 def driver_tests():
     if not os.access(CLI, os.X_OK):
-        check("wiz_cli is built (tests/run_unit.sh builds it)", False, CLI)
+        check("wiz_cli is built (tests/unit/run_unit.sh builds it)", False, CLI)
         return
 
     # ---- what each kind of device yields

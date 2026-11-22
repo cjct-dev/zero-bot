@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Compares a variant's results with a baseline's, case by case, for the no-regression gate (ZB-033,
-ZB-077): results files written by tests/agent_eval.py (the scored set) or tests/agent_suite.py (the
+ZB-077): results files written by tests/agent/agent_eval.py (the scored set) or tests/agent/agent_suite.py (the
 suite) with --json. Standard library only; reads files (and, for --release, the case definitions in
 this tree), calls nothing.
 
-usage: tests/exp_compare.py --base A.json[,B.json...] --variant C.json[,D.json...] [--tags] [--markdown]
+usage: tests/agent/exp_compare.py --base A.json[,B.json...] --variant C.json[,D.json...] [--tags] [--markdown]
                             [--min-tag N] [--seed S] [--skip-tags a,b] [--tolerance 1.5]
                             [--require scored,suite] [--release] [--not-run a,b] [--verdict OUT.json]
-       tests/exp_compare.py --self-test
+       tests/agent/exp_compare.py --self-test
 
 Every file on one side is pooled: a case run several times (two scored-set runs, --repeat) gets the share
 of its scorable runs that passed. Each record is checked first: it needs a case name, a list of turns and
@@ -28,7 +28,7 @@ manifest are compared by name only, which the report says; the generated suite's
 runs the live sets with --trace, so a baseline for the gate must be traced too.
 
 A release (--release, what tests/run.py's release mode passes) is judged against the roster: every case
-defined in this tree (tests/agent_eval.py's CASES and tests/suite/cases.json), by name and current
+defined in this tree (tests/agent/agent_eval.py's CASES and tests/agent/suite/cases.json), by name and current
 case_hash, and the critical cases among them, read from the definitions, not from the results. The
 variant must have run every case of the roster as it is now defined (but those --not-run names, which
 cannot include a critical case) with the current scorer; at least --min-coverage (90%) of each set must
@@ -134,7 +134,7 @@ def critical(name, tags):
 # ---------------------------------------------------------------- the roster
 def load_roster(seed=None, date=None):
     """Every case defined in this tree: {"scorer": the current scorer, "seed": the stand-in's seed, "sets": {set: {name:
-    {"hash", "tags", "web"}}}}, from tests/agent_eval.py's CASES and tests/suite/cases.json, hashed as the runners
+    {"hash", "tags", "web"}}}}, from tests/agent/agent_eval.py's CASES and tests/agent/suite/cases.json, hashed as the runners
     hash them with SEED (default: the runners' own, the everyday one). "web": the case rests on a web service."""
     import agent_eval as ev
     import agent_suite as su

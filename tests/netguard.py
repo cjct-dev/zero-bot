@@ -270,7 +270,7 @@ def self_test():
         check("probe: a build without web_all lacks it", missing_caps(os.path.join(folder, "old")) == ["web_all", "net"])
         check("probe: a build without the network pin (round 2) lacks it", missing_caps(os.path.join(folder, "nonet")) == ["net"])
         check("probe: a build with all of them lacks nothing", missing_caps(os.path.join(folder, "good")) == [])
-        for script in ("tools_cli.py", "agent_loop_test.py", "home_chat_e2e.py", "selfheal_chat_e2e.py"):
+        for script in ("sim/tools_cli.py", "sim/agent_loop_test.py", "sim/home_chat_e2e.py", "sim/selfheal_chat_e2e.py"):
             log = os.path.join(folder, "calls.log")   # the fake app's own (the probe gives it no environment of ours)
             if os.path.exists(log):
                 os.remove(log)
@@ -285,8 +285,9 @@ def self_test():
     # Every script that starts the app or a mock builds their environments here (round 2, W4): the standalone
     # device tests sanitize their own environment first, and every mock they start gets mock_env.
     import re
-    for script in ("tapo_e2e.py", "kasa_e2e.py", "wiz_e2e.py", "shelly_e2e.py", "hue_e2e.py", "homekit_e2e.py", "firetv_e2e.py",
-                   "home_chat_e2e.py", "selfheal_chat_e2e.py", "agent_loop_test.py", "tools_cli.py", "web_contract.py"):
+    for script in ("sim/tapo_e2e.py", "sim/kasa_e2e.py", "sim/wiz_e2e.py", "sim/shelly_e2e.py", "sim/hue_e2e.py", "sim/homekit_e2e.py",
+                   "sim/firetv_e2e.py", "sim/home_chat_e2e.py", "sim/selfheal_chat_e2e.py", "sim/agent_loop_test.py",
+                   "sim/tools_cli.py", "tools/web_contract.py"):
         with open(os.path.join(here, script), encoding="utf-8") as f:
             text = f.read()
         popens = [m.start() for m in re.finditer(r"subprocess\.Popen\(", text)]
@@ -301,7 +302,7 @@ def self_test():
             if ("mock" in call.lower() or "fake_" in call) and "netguard.mock_env()" not in call:
                 bare.append(call[:80])
         check("%s starts every mock with mock_env" % script, not bare, bare)
-        if script.endswith("_e2e.py") and script not in ("home_chat_e2e.py", "selfheal_chat_e2e.py"):
+        if script.endswith("_e2e.py") and script not in ("sim/home_chat_e2e.py", "sim/selfheal_chat_e2e.py"):
             check("%s sanitizes its own environment first" % script, "netguard.sanitize()" in text)
     # local_opener reaches 127.x whatever proxy the environment names; the trap sees nothing.
     class Quiet(http.server.BaseHTTPRequestHandler):

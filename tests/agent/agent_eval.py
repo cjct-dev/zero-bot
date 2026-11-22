@@ -10,11 +10,11 @@ the loop can be compared run against run.
 
 Usage:
     . path/to/env.sh            # sets ZB_API_BASE and ZB_API_KEY (the AI service; nothing else)
-    tests/agent_eval.py [--bin build/cli/zero_bot] [--repeat N] [--only substring[,substring]]
+    tests/agent/agent_eval.py [--bin build/cli/zero_bot] [--repeat N] [--only substring[,substring]]
                         [--fast 0|1] [--jobs N] [--json out.json] [--rescore out.json] [--trace]
 
 --trace records the experiments' trace (src/agent/experiment.h, cli build) of every turn into
---json: model calls with their timings and token counts, tools, guards. tests/exp_report.py
+--json: model calls with their timings and token counts, tools, guards. tests/agent/exp_report.py
 summarises such files. --validate checks the cases as written and runs nothing.
 
 Side effects are disabled (ZB_DRY_RUN): no music plays, no infrared is sent and no smart-home
@@ -36,7 +36,9 @@ before a field existed) is never a pass. Every result carries case_hash, scorer 
 trace, so that a comparison knows which results it may set side by side.
 """
 import argparse, concurrent.futures, datetime, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
+MOCKS = os.path.join(TESTS, "mocks")
+sys.path.insert(0, TESTS)
 import netguard   # noqa: E402  the network boundary of every child process (tests/netguard.py)
 
 # ---------------------------------------------------------------- helpers for checks
@@ -744,7 +746,7 @@ def set_web_seed(seed, held_out=False):
     if _web: sys.exit("the seed is set before the stand-in web starts")
     WEB_SEED = seed
 _web = {}
-WEB_LOG = None   # a file for the stand-in's request log (tests/tools_cli.py no_real_web)
+WEB_LOG = None   # a file for the stand-in's request log (tests/sim/tools_cli.py no_real_web)
 WEB_DATE = None  # the run's date, frozen when the stand-in starts (fake_web.py --date) and recorded in each turn and result
 # Keys for web services that a run must never pass on (read before isolated_env removes them): web_guard
 # refuses a case whose environment holds one anywhere.
@@ -824,7 +826,7 @@ def web_base():
         if "base" not in _web:
             global WEB_DATE
             WEB_DATE = WEB_DATE or datetime.date.today().isoformat()
-            cmd = [sys.executable, "-I", os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks", "fake_web.py"),
+            cmd = [sys.executable, "-I", os.path.join(MOCKS, "fake_web.py"),
                    "--seed", str(WEB_SEED), "--date", WEB_DATE] + (["--log", WEB_LOG] if WEB_LOG else [])
             # A mock's own environment: nothing of the runner's, so no key of any kind reaches it.
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
@@ -870,7 +872,7 @@ def _refusing_tv_home():
     the runner sets beside each turn's start and end ("device_log" of each turn; "device_log_between" in the
     last turn for any that fell between turns)."""
     import types
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks", "firetv"))
+    sys.path.insert(0, os.path.join(MOCKS, "firetv"))
     sys.dont_write_bytecode = True   # no __pycache__ beside the mock
     import mock_firetv
     tv = mock_firetv.Tv(types.SimpleNamespace(state="awake", caps="tv", cert="a", mac=mock_firetv.DEFAULT_MAC, wake_delay=0.9,
@@ -1042,7 +1044,7 @@ def chk_forecast_seen(days, rain):
 
 # ---------------------------------------------------------------- what the stand-in web served
 def _fake_web():
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks"))
+    sys.path.insert(0, MOCKS)
     sys.dont_write_bytecode = True   # no __pycache__ beside the mocks
     import fake_web
     return fake_web
@@ -2095,7 +2097,7 @@ def turns_from_records(text, c, process):
 
 # The camera every case sees (ZB_FAKE_CAMERA; ZB_EVAL_CAMERA names another): a photo of a sign, so that
 # nothing a test asks for ever reaches a real camera (ZB_EXP_NO_HARDWARE stops the rest).
-CAMERA_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks", "camera", "sign.jpg")
+CAMERA_FIXTURE = os.path.join(MOCKS, "camera", "sign.jpg")
 
 def camera_path():
     """The picture every case's camera gives (ZB_EVAL_CAMERA, else the fixture): the one run_case uses and the one
@@ -2459,7 +2461,6 @@ def fixtures_of(c):
     """What the fixtures a case runs against hold, each as a sha1: the music library and the camera's
     picture, the stand-in web (its code and data: every case runs against it) and its seed, the simulated Fire TV (a case whose home starts one)."""
     import inspect
-    here = os.path.dirname(os.path.abspath(__file__))
     out = {"music": _sha1(json.dumps(MUSIC_LIBRARY)), "camera": _sha1(open(camera_path(), "rb").read()), "web": web_version(),
            "web_seed": WEB_SEED}
     workload = date_workload(c)
@@ -2468,7 +2469,7 @@ def fixtures_of(c):
     if callable(home):
         try: src = inspect.getsource(home)
         except (OSError, TypeError): src = ""
-        if "mock_firetv" in src: out["firetv"] = _sha1(open(os.path.join(here, "mocks", "firetv", "mock_firetv.py"), "rb").read())
+        if "mock_firetv" in src: out["firetv"] = _sha1(open(os.path.join(MOCKS, "firetv", "mock_firetv.py"), "rb").read())
     return out
 
 def date_workload(c):
@@ -2504,9 +2505,8 @@ def date_workload(c):
 
 def web_version():
     """The stand-in web every case runs against: its code and every data file beside it (tests/mocks/web/)."""
-    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks")
-    data = os.path.join(here, "web")
-    parts = [open(os.path.join(here, "fake_web.py"), "rb").read()] + \
+    data = os.path.join(MOCKS, "web")
+    parts = [open(os.path.join(MOCKS, "fake_web.py"), "rb").read()] + \
             [name.encode() + open(os.path.join(data, name), "rb").read() for name in sorted(os.listdir(data))]
     return _sha1(b"\0".join(parts))
 
@@ -2578,7 +2578,7 @@ def probe_binary(binary):
 def validate(cases):
     """Problems with the cases as written: names, turns, tools, env, the turn each check looks at, and the
     stand-in web's fixtures. Run with --validate; no service needed."""
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "mocks"))
+    sys.path.insert(0, MOCKS)
     sys.dont_write_bytecode = True   # no __pycache__ beside the mocks
     import fake_web
     errors, names = [], set()

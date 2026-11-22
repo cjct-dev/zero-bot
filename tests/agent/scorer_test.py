@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests the scorer of the agent test sets (tests/agent_eval.py, tests/agent_suite.py) offline: no
+"""Tests the scorer of the agent test sets (tests/agent/agent_eval.py, tests/agent/agent_suite.py) offline: no
 service, no app, standard library only. Deliberately wrong runs must fail (or, where the evidence is
 missing, be unscorable) and right ones must pass, so a change to the scorer is known to reject bad
 behaviour before a live run is spent on it.
@@ -14,7 +14,7 @@ reported as done, a later turn hiding an earlier mistake, a long result cut shor
 time that still matched, a timeout counted once per missing turn, an answer quoting the evaluator's
 own records, missing evidence taken for a pass.
 
-usage: tests/scorer_test.py [-v]
+usage: tests/agent/scorer_test.py [-v]
 """
 import contextlib
 import datetime
@@ -28,9 +28,10 @@ import subprocess
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-sys.dont_write_bytecode = True   # importing the runners leaves no __pycache__ in tests/
+HERE = os.path.dirname(os.path.abspath(__file__))   # tests/agent: the runners, suite/
+TESTS = os.path.dirname(HERE)                         # tests/: netguard.py
+sys.path[0:0] = [HERE, TESTS]
+sys.dont_write_bytecode = True   # importing the runners leaves no __pycache__ in tests/agent/
 import agent_eval as ev   # noqa: E402
 import netguard   # noqa: E402
 import agent_suite as suite   # noqa: E402
@@ -1021,7 +1022,7 @@ def served_checks():
     trips("served (r3): a fact past the model's cut credits nothing", wimbledon,
           [{"calls": [("web_search", {"query": "wimbledon mens singles winner"}, long_body)], "answer": "%s won it." % winner}], "did not show")
     check("served (r3): the scorer's cut is the loop's (src/agent/agent.cpp kMaxToolResult)",
-          "kMaxToolResult = %d;" % ev.MODEL_RESULT_LIMIT in open(os.path.join(HERE, "..", "src", "agent", "agent.cpp")).read())
+          "kMaxToolResult = %d;" % ev.MODEL_RESULT_LIMIT in open(os.path.join(TESTS, "..", "src", "agent", "agent.cpp")).read())
     # Round 3, item 4: the problem's kind is a flag, never read from its text.
     def says_unscorable(t): return ["unscorable: this is only text"]
     check("verdict (r3): a problem that merely reads 'unscorable:' is a failure",

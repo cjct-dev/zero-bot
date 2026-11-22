@@ -14,7 +14,7 @@ reads are tried again only when that is safe; the same failed change is never se
 twice in one request (only once the user has asked again); and every failure ends in something
 the user is told.
 
-usage: tests/selfheal_chat_e2e.py [path/to/zero_bot]          (default: build/cli/zero_bot)
+usage: tests/sim/selfheal_chat_e2e.py [path/to/zero_bot]          (default: build/cli/zero_bot)
 """
 import hashlib
 import json
@@ -25,11 +25,11 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
+sys.path.insert(0, TESTS)
 import netguard   # noqa: E402  the network boundary (tests/netguard.py)
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
+APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "cli", "zero_bot")
 EMAIL, PASSWORD = "user@example.com", "hunter2"
 LAMP_ON = {"action": "on", "target": "Desk lamp", "say": "The desk lamp is on."}
 LOST = "I lost the connection to the AI service before I could finish, so please ask again."
@@ -96,7 +96,7 @@ def converse(script, said, plug=False, refuse=False, ask_first=False, stations=N
             os.makedirs(os.path.join(state, d))
         plug_port = None
         if plug:
-            p, plug_port = start([sys.executable, "-I", os.path.join(HERE, "mocks", "mock_tapo.py"), "--port", "0", "--mode", "tpap",
+            p, plug_port = start([sys.executable, "-I", os.path.join(TESTS, "mocks", "mock_tapo.py"), "--port", "0", "--mode", "tpap",
                                   "--model", "p110", "--email", EMAIL, "--password", PASSWORD, "--stdin-lifeline"], "MOCK")
             procs.append(p)
             out = subprocess.run([APP, "--home-refresh"], env=env, capture_output=True, text=True, timeout=60).stdout
@@ -123,7 +123,7 @@ def converse(script, said, plug=False, refuse=False, ask_first=False, stations=N
             json.dump({"stations": stations}, open(state + "/config/zero-bot/radio.json", "w"))
         json.dump(script, open(state + "/script.json", "w"))
         log = state + "/requests.jsonl"
-        chat, chat_port = start([sys.executable, "-I", os.path.join(HERE, "mocks", "mock_chat.py"), state + "/script.json", log], "CHAT")
+        chat, chat_port = start([sys.executable, "-I", os.path.join(TESTS, "mocks", "mock_chat.py"), state + "/script.json", log], "CHAT")
         procs.append(chat)
         env["ZB_API_BASE"] = "http://127.0.0.1:%d/v1" % chat_port
         p = subprocess.run([APP, "--chat"], input="\n".join(said) + "\n", env=env, capture_output=True, text=True, timeout=180)

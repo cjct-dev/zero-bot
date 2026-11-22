@@ -5,7 +5,7 @@
     mock_hue.py --selftest                         check the mock itself
     mock_hue.py --dump                             print the resources as JSON
 
-tests/hue_e2e.py starts it, for build/unit/hue_cli and for the command-line build of the app. The
+tests/sim/hue_e2e.py starts it, for build/unit/hue_cli and for the command-line build of the app. The
 certificates it presents are in certs/ beside it (test fixtures made by make_certs.sh, not secrets).
 
 Listens on 127.0.0.1, port 0 (the system picks a free one), and exits when its standard input

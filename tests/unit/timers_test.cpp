@@ -2,7 +2,7 @@
 // store (and old data files), the countdown text and the alarm (ringing, keys, the time limit,
 // waiting while the microphone is open, holding the music). No screen, no sound, no network.
 //
-// Built and run by tests/run_unit.sh. Whoever runs it, everything it writes goes to a
+// Built and run by tests/unit/run_unit.sh. Whoever runs it, everything it writes goes to a
 // temporary folder of its own (main() points HOME and the XDG folders there), so the real
 // calendar, memory and reminders are never touched.
 #include <algorithm>

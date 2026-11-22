@@ -8,8 +8,8 @@ Each scenario scripts what the "model" answers and then checks two things: what 
 notes it adds, the second look, retries, which messages are kept). Only local tools are scripted
 (timer, calendar, date_info, memory, smart_home on a stand-in home), so nothing leaves this PC.
 
-usage: tests/agent_loop_test.py [path/to/zero_bot] [--only substring[,substring]] [-v] [-q]
-(tests/run_unit.sh runs it when build/cli/zero_bot exists; about 15 seconds)
+usage: tests/sim/agent_loop_test.py [path/to/zero_bot] [--only substring[,substring]] [-v] [-q]
+(tests/unit/run_unit.sh runs it when build/cli/zero_bot exists; about 15 seconds)
 
 Covered: plain answers; fast mode's held draft, the note on the newest message and the second
 look (released on OK, or turned into the tool call it asks for); the unbacked-claim guard in
@@ -41,7 +41,8 @@ import argparse
 import json
 import os
 import sys as _sys
-_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/, agent/
+_sys.path.insert(0, TESTS)
 import netguard   # noqa: E402  the network boundary (tests/netguard.py)
 import re
 import shutil
@@ -49,13 +50,12 @@ import subprocess
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-sys.dont_write_bytecode = True   # importing agent_eval leaves no __pycache__ in tests/
+sys.path.insert(0, os.path.join(TESTS, "agent"))
+sys.dont_write_bytecode = True   # importing agent_eval leaves no __pycache__ in tests/agent/
 from agent_eval import TURN_RE, parse_turn, turns_from_records   # noqa: E402  (the scored set's parsers)
 
 _ap = argparse.ArgumentParser(description="The request loop against a scripted chat service.")
-_ap.add_argument("app", nargs="?", default=os.path.join(HERE, "..", "build", "cli", "zero_bot"))
+_ap.add_argument("app", nargs="?", default=os.path.join(TESTS, "..", "build", "cli", "zero_bot"))
 _ap.add_argument("--only", default="", help="run scenarios whose name contains this (comma-separated alternatives)")
 _ap.add_argument("-v", action="store_true", help="print every run's output and the rules that answered")
 _ap.add_argument("-q", action="store_true", help="print only failures and the count")
@@ -128,7 +128,7 @@ def text_of(m):
     return " ".join(p.get("text", "") for p in c if isinstance(p, dict)) if isinstance(c, list) else c
 
 
-# A stand-in home for the smart-home scenarios, on the test network (ids as in tests/agent_eval.py).
+# A stand-in home for the smart-home scenarios, on the test network (ids as in tests/agent/agent_eval.py).
 TEST_NETWORK = "net-58678b031ae6e411"
 
 
@@ -180,7 +180,7 @@ def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, 
             json.dump({"stations": radio}, open(state + "/config/zero-bot/radio.json", "w"))
         json.dump(script, open(state + "/script.json", "w"))
         log = state + "/requests.jsonl"
-        model = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "fake_model.py"), state + "/script.json", log],
+        model = subprocess.Popen([sys.executable, "-I", os.path.join(TESTS, "mocks", "fake_model.py"), state + "/script.json", log],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
         line = model.stdout.readline().split()
         if line[:2] != ["MODEL", "listening"]:
@@ -963,7 +963,7 @@ def service_errors():
     r = run({"default": {"stream_error": "model overloaded"}}, ask="hi")
     check("service: an error inside the stream is shown", "[error] model overloaded" in r.out, r)
     # An empty reply goes back to the model once; a second one is answered with a sentence of the
-    # app's own, so the user is not left with silence (tests/selfheal_chat_e2e.py has the variants).
+    # app's own, so the user is not left with silence (tests/sim/selfheal_chat_e2e.py has the variants).
     r = run({"default": {"text": ""}}, ask="hi")
     check("service: an empty answer is reported", len(r.requests) == 2 and r.answer == "Sorry, I have no answer to that.", r)
 
@@ -1169,12 +1169,12 @@ def conversation_saved():
     check(n + ": the service key is blanked out", "test-key-0123" not in seen["text"] and "my key is [removed]" in seen["text"], "")
     check(n + ": what the app was set to", rec.get("fast_mode") is False and rec.get("app_version") and rec.get("format") == 1, rec.keys())
 
-    # tests/suite/from_conversation.py drafts a case from it: the user's words without what the app added.
+    # tests/agent/suite/from_conversation.py drafts a case from it: the user's words without what the app added.
     folder = tempfile.mkdtemp(prefix="zb-conv-")
     try:
         path = os.path.join(folder, "saved.json")
         open(path, "w", encoding="utf-8").write(seen["text"])
-        tool = os.path.join(HERE, "suite", "from_conversation.py")
+        tool = os.path.join(TESTS, "agent", "suite", "from_conversation.py")
         out = subprocess.run([sys.executable, "-I", tool, path], capture_output=True, text=True, timeout=30)
         js = subprocess.run([sys.executable, "-I", tool, path, "--json"], capture_output=True, text=True, timeout=30)
         entry = json.loads(js.stdout) if js.returncode == 0 else {}

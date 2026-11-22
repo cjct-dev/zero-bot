@@ -4,7 +4,7 @@
 // failure shape, the battery, the Wi-Fi list, the default route, the monotonic count and the start of
 // a day, on known inputs.
 //
-// Built and run by tests/run_unit.sh with a state folder; everything it writes goes there (main()
+// Built and run by tests/unit/run_unit.sh with a state folder; everything it writes goes there (main()
 // points HOME and the XDG folders at it).
 #include <atomic>
 #include <cstdio>
