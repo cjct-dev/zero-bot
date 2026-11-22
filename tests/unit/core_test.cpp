@@ -355,6 +355,16 @@ void test_result() {
     for (const char *no : {"{\"errors\": [1]}", "{\"note\": \"error\"}", "{\"x\": {\"error\": 1}}", "[\"error\"]",
                            "{\"error", "{x \"error\": 1}", " {\"error\": 1}"})
         CHECK(!result::failed(no));
+    // The key as JSON decodes it, however it is written: an escaped letter once passed as a success, because only
+    // text holding the bytes "error" was parsed. Not the word as a value, or a key that decodes to another word.
+    for (const char *yes : {"{\"err\\u006fr\": \"x\"}", "{\"\\u0065\\u0072\\u0072\\u006F\\u0072\": 5}", "{\"ok\": 1, \"erro\\u0072\": null}"})
+        CHECK(result::failed(yes));
+    for (const char *no : {"{\"note\": \"err\\u006fr\"}", "{\"err\\u006frs\": 1}", "{\"err\\u006fr\": 1"})
+        CHECK(!result::failed(no));
+    nlohmann::json decoded;   // decoded once: what the caller gets to shape it from
+    CHECK(result::failed("{\"err\\u006fr\": \"disk full\", \"n\": 2}", &decoded) && decoded.is_object() &&
+          decoded.value("error", "") == "disk full" && decoded.value("n", 0) == 2);
+    CHECK(result::failed("{\"error\": 5", &decoded) && decoded.is_discarded());   // begins like one, is no JSON
     CHECK_EQ(result::words("ERROR: no such timer"), "no such timer");
     CHECK_EQ(result::words("ERROR:  two"), " two");
     CHECK_EQ(result::words("ERROR:no"), "ERROR:no");          // only the exact prefix goes

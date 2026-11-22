@@ -5,6 +5,7 @@
 #include <cstring>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <sys/stat.h>
@@ -70,9 +71,10 @@ const Option kOptions[] = {
      [](Args &a, char **, int &, int) { a.home_refresh = true; }},
     {"--discover", "", 0, "look for smart-home devices on this network (discovery only) and list them",
      [](Args &a, char **, int &, int) { a.discover = true; }},
-    {"--talk-over", "MS[:text]", 1, "with --ask: hold the microphone open for MS ms from the start of the request\n"
-                                    "(or the moment --talk-at names), then hand over `text` as what was said (or\n"
-                                    "nothing, as if cancelled)",
+    {"--talk-over", "MS[+LATE][:text]", 1, "with --ask: hold the microphone open for MS ms from the start of the request\n"
+                                           "(or the moment --talk-at names), then hand over `text` as what was said (or\n"
+                                           "nothing, as if cancelled); with +LATE, LATE ms after the microphone closes, as\n"
+                                           "the app does when it first connects to the phone",
      [](Args &a, char **v, int &i, int) { a.talk_over = v[++i]; }},
     {"--talk-at", "start|tool|answer", 1, "with --talk-over: open the microphone at the start of the request (the default),\n"
                                           "as its first tool starts, or once its answer has begun; the last two press\n"
@@ -129,6 +131,81 @@ bool read_speech(const std::string &path, std::vector<int16_t> &pcm) {
     return false;
 }
 
+// ---------------------------------------------------------------- what the command line times
+using Clock = std::chrono::steady_clock;
+
+// When the request under way began, set as each one begins (run_cli). A thread that outlives a request
+// takes it once, for what it times from that request: the next one may begin meanwhile.
+std::atomic<Clock::rep> g_began{0};
+
+double seconds_since(Clock::rep began) {
+    return std::chrono::duration<double>(Clock::now() - Clock::time_point(Clock::duration(began))).count();
+}
+
+// With speech allowed (ZB_NO_AUDIO=0, which the tests use with a stand-in player), the command line says
+// when each spoken answer has played out, and when music held for a spoken request comes back, each timed
+// from its own request, to set beside when that one was answered.
+bool audio_observed() {
+    static const bool on = [] {
+        const char *v = getenv("ZB_NO_AUDIO");
+        return v && strcmp(v, "0") == 0;
+    }();
+    return on;
+}
+
+std::mutex g_speech_mtx;
+Clock::rep g_spoken_for = 0;   // the request the speech under way answers; 0 for none (g_speech_mtx)
+std::atomic<Clock::rep> g_music_held_for{0};   // the request music was held for (hold_music); 0 for none
+
+// Speech is tied to the request under way when it is first noticed: by observe_audio's thread, or by the
+// request itself as it ends, before the next one can begin.
+void notice_speech() {
+    std::lock_guard<std::mutex> lk(g_speech_mtx);
+    const bool active = SpeechQueue::get().active();
+    if (g_spoken_for && !active) printf("[speech done +%.1fs]\n", seconds_since(g_spoken_for));
+    if (!active) g_spoken_for = 0;
+    else if (!g_spoken_for) g_spoken_for = g_began;
+}
+
+// A recording handed over as the app hands one over (App::finish_recording): music already playing is held
+// until the agent knows whether the answer will be heard.
+void hold_music() {
+    audio::Music::get().hold(audio::Music::kExchange, true);
+    if (!audio_observed()) return;
+    g_music_held_for = g_began.load();
+    printf("[music held +%.1fs]\n", seconds_since(g_began));
+}
+
+// Looks at the speech and the music every 10 ms, for the rest of the run.
+void observe_audio() {
+    std::thread([] {
+        for (;; usleep(10 * 1000)) {
+            notice_speech();
+            Clock::rep held = g_music_held_for;
+            if (held && !audio::Music::get().holding(audio::Music::kExchange) && g_music_held_for.compare_exchange_strong(held, 0))
+                printf("[music free +%.1fs]\n", seconds_since(held));
+        }
+    }).detach();
+}
+
+// --talk-over's microphone closes. What was said (none: as if cancelled) is handed over at once, or `late`
+// ms after, as App::when_online does while it connects to the phone.
+void close_microphone(Agent &agent, const std::optional<std::string> &words, int late) {
+    if (words && late > 0) {
+        agent.set_input_coming(true);
+        printf("[mic closed +%.1fs] (words on their way)\n", seconds_since(g_began));
+        agent.set_listening(false);
+        usleep(late * 1000);
+        agent.submit_text(*words);
+        printf("[words handed over +%.1fs]\n", seconds_since(g_began));
+        agent.set_input_coming(false);
+        return;
+    }
+    if (words) agent.submit_text(*words);
+    printf("[mic closed +%.1fs]%s\n", seconds_since(g_began), words ? " (words handed over)" : " (cancelled)");
+    agent.set_listening(false);
+}
+
 // Terminal front end used for testing and tuning the agent without the screen (--ask, --ask-wav,
 // --chat). A request is typed (--ask, --chat) or spoken (--ask-wav: a recording); so is what
 // --steer/--steer-wav add.
@@ -155,20 +232,10 @@ int run_cli(const Args &a) {
     if (!steer_wav.empty() && !read_speech(steer_wav, steer_pcm)) return 2;
     AgentEvents ev;
     ev.user_message = [](const std::string &t, bool steering) { printf("%s %s\n", steering ? "[steer]" : "[user]", t.c_str()); };
-    static std::chrono::steady_clock::time_point t0;
     static bool first_text;
     static double first_at;
-    auto since = [] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
-    // With speech allowed (ZB_NO_AUDIO=0, which the tests use with a stand-in player): when each spoken answer
-    // has played out, so that it can be set beside when its request was answered.
-    if (const char *v = getenv("ZB_NO_AUDIO"); v && strcmp(v, "0") == 0)
-        std::thread([since] {
-            for (bool was = false;; usleep(10 * 1000)) {
-                const bool now = SpeechQueue::get().active();
-                if (was && !now) printf("[speech done +%.1fs]\n", since());
-                was = now;
-            }
-        }).detach();
+    auto since = [] { return seconds_since(g_began); };
+    if (audio_observed()) observe_audio();
     // Stands in for the user speaking again mid-request, so the steering path can be tested.
     static std::string steer;
     steer = steer_text;
@@ -181,7 +248,11 @@ int run_cli(const Args &a) {
             printf("[mic open +%.1fs]\n", since());
         }
         if (!steer.empty()) { Agent::get().submit_text(steer); steer.clear(); }
-        if (!steer_pcm.empty()) { Agent::get().submit_audio(std::move(steer_pcm)); steer_pcm.clear(); }
+        if (!steer_pcm.empty()) {
+            hold_music();
+            Agent::get().submit_audio(std::move(steer_pcm));
+            steer_pcm.clear();
+        }
     };
     // Follow-ups queued while an answer is arriving are picked up by the same run.
     static std::vector<std::string> chain;
@@ -299,7 +370,7 @@ int run_cli(const Args &a) {
         call_no = 0;
         if (records) record({{"ev", "turn_start"}, {"turn", request_no}, {"text", text}});
 #endif
-        t0 = std::chrono::steady_clock::now();
+        g_began = Clock::now().time_since_epoch().count();
         first_text = false;
         first_at = -1;
         // Stands in for the user pressing the talk key while the request is being worked on (--talk-over, at the
@@ -329,7 +400,7 @@ int run_cli(const Args &a) {
                 }
                 while (!mic_opened && !over) usleep(5 * 1000);
                 if (!mic_opened) return;
-                const size_t colon = talk_over.find(':');
+                const size_t colon = talk_over.find(':'), plus = talk_over.substr(0, colon).find('+');
                 const int ms = atoi(talk_over.substr(0, colon).c_str());
                 // Nothing new is given (spoken, or shown as an answer) while the microphone is open; an answer
                 // already under way when the key was pressed is not news.
@@ -338,12 +409,13 @@ int run_cli(const Args &a) {
                     usleep(20 * 1000);
                     if (!told && giving()) { told = true; printf("[SPEAKING WHILE THE MIC IS OPEN +%.1fs]\n", since()); }
                 }
-                if (colon != std::string::npos) agent.submit_text(talk_over.substr(colon + 1));
-                printf("[mic closed +%.1fs]%s\n", since(), colon != std::string::npos ? " (words handed over)" : " (cancelled)");
-                agent.set_listening(false);
+                close_microphone(agent, colon == std::string::npos ? std::nullopt : std::optional(talk_over.substr(colon + 1)),
+                                 plus == std::string::npos ? 0 : atoi(talk_over.substr(plus + 1).c_str()));
             });
         }
+        if (!pcm.empty()) hold_music();
         const std::string answer = pcm.empty() ? agent.run_blocking(text) : agent.run_blocking(std::move(pcm));
+        if (audio_observed()) notice_speech();   // its answer's speech, if any is still to play, is timed from this request
         over = true;
         if (talker.joinable()) talker.join();
         const double total = since();

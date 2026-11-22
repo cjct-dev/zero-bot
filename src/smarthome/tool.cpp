@@ -32,24 +32,31 @@ std::string text_arg(const json &a, const char *key) {
     return it != a.end() && it->is_string() ? util::trim(it->get<std::string>()) : std::string();
 }
 
-// Models sometimes send numbers as strings; accept both.
-bool number_arg(const json &a, const char *key, double &out) {
+// A number argument, as models send them: a number, or text that is one as a whole (util::to_number:
+// "40oops" is not 40), with its sign for a percentage ("40%" is 40). Not given (absent, null or empty
+// text): nullopt. Given but no number: nullopt, and `bad` (when still empty) says so, so that the call
+// is refused before any target is chosen.
+std::optional<double> number_arg(const json &a, const char *key, bool percent, std::string &bad) {
     const auto it = a.find(key);
-    if (it == a.end() || it->is_null()) return false;
-    if (it->is_number()) { out = it->get<double>(); return std::isfinite(out); }
+    if (it == a.end() || it->is_null()) return std::nullopt;
+    double v = 0;
+    if (it->is_number() && std::isfinite(v = it->get<double>())) return v;
     if (it->is_string()) {
-        const std::string s = it->get<std::string>();
-        char *end = nullptr;
-        out = strtod(s.c_str(), &end);
-        return end != s.c_str() && std::isfinite(out);
+        std::string s = util::trim(it->get<std::string>());
+        if (s.empty()) return std::nullopt;
+        if (percent && s.back() == '%') s.pop_back();
+        if (util::to_number(s, v)) return v;
     }
-    return false;
+    if (bad.empty())
+        bad = std::string(key) + " must be a number, such as " + (percent ? "40" : "5") + "; " +
+              util::truncate_utf8(it->dump(-1, ' ', false, json::error_handler_t::replace), 40) + " is not one";
+    return std::nullopt;
 }
 
-std::optional<int> int_arg(const json &a, const char *key) {
-    double v;
-    if (!number_arg(a, key, v)) return std::nullopt;
-    return static_cast<int>(std::lround(std::max(-1e6, std::min(1e6, v))));
+std::optional<int> int_arg(const json &a, const char *key, bool percent, std::string &bad) {
+    const std::optional<double> v = number_arg(a, key, percent, bad);
+    if (!v) return std::nullopt;
+    return static_cast<int>(std::lround(std::max(-1e6, std::min(1e6, *v))));
 }
 
 std::string joined(const std::vector<std::string> &parts) {
@@ -162,13 +169,14 @@ std::string tool_run(const json &args, bool dry_run) {
     c.action = text_arg(args, "action");
     c.target = text_arg(args, "target");
     if (c.target.empty()) c.target = text_arg(args, "device");   // the parameter's earlier name
-    c.brightness = int_arg(args, "brightness");
-    c.position = int_arg(args, "position");
-    c.volume = int_arg(args, "volume");
-    c.volume_step = int_arg(args, "volume_step");
+    std::string bad;   // the first number given that is no number
+    c.brightness = int_arg(args, "brightness", true, bad);
+    c.position = int_arg(args, "position", true, bad);
+    c.volume = int_arg(args, "volume", true, bad);
+    c.volume_step = int_arg(args, "volume_step", false, bad);
+    c.temperature = number_arg(args, "temperature", false, bad);
+    if (!bad.empty()) return result::fail(bad);
     c.key = text_arg(args, "key");
-    double t;
-    if (number_arg(args, "temperature", t)) c.temperature = t;
     c.color = text_arg(args, "color");
     if (c.color.empty()) c.color = text_arg(args, "colour");
     c.source = text_arg(args, "source");

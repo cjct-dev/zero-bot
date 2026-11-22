@@ -11,14 +11,18 @@ namespace result {
 inline std::string fail(const std::string &msg) { return "ERROR: " + msg; }
 
 // Whether a tool's result is a failure: it starts with "ERROR" (with or without the ": "), or it is a
-// JSON object holding "error", whatever its value ({"error": 5}, {"error": ""}). Text that begins
-// {"error" counts too, JSON or not. Only text that begins with "{" and names "error" is parsed.
-// tools::run gives every failure a tool returns the "ERROR: ..." shape before passing it on.
-inline bool failed(const std::string &text) {
-    if (text.compare(0, 5, "ERROR") == 0 || text.compare(0, 8, "{\"error\"") == 0) return true;
-    if (text.empty() || text[0] != '{' || text.find("\"error\"") == std::string::npos) return false;
-    const nlohmann::json j = nlohmann::json::parse(text, nullptr, false);
-    return j.is_object() && j.contains("error");
+// JSON object holding "error" as JSON reads the key (a letter of it escaped too), whatever its value
+// ({"error": 5}, {"error": ""}). Text that begins {"error" counts too, JSON or not. Text that begins with
+// "{" is parsed, once: `decoded`, when given, gets what that gave (a discarded value for text that is not
+// JSON), so a caller can shape the failure without parsing it again. tools::run gives every failure a
+// tool returns the "ERROR: ..." shape before passing it on.
+inline bool failed(const std::string &text, nlohmann::json *decoded = nullptr) {
+    if (text.compare(0, 5, "ERROR") == 0) return true;
+    if (text.empty() || text[0] != '{') return false;
+    nlohmann::json j = nlohmann::json::parse(text, nullptr, false);
+    const bool failure = j.is_object() ? j.contains("error") : text.compare(0, 8, "{\"error\"") == 0;
+    if (decoded) *decoded = std::move(j);
+    return failure;
 }
 
 // A failure's words without the "ERROR: " in front, to quote or show; any other text unchanged.

@@ -45,7 +45,7 @@ needs a [Tavily](https://tavily.com) key.
 
 | Key | What it does |
 |---|---|
-| **TAB** | Start talking. Press **TAB** again when you have finished. The answer is spoken and shown on the screen; if something goes wrong (the AI service fails, or no words were heard), a short sentence says so and the reason is shown. Pressed while an answer is being spoken, it stops the answer and listens; the answer to a typed message is not stopped. |
+| **TAB** | Start talking. Press **TAB** again when you have finished. The answer is spoken and shown on the screen; if something goes wrong (the AI service fails, or no words were heard), a short sentence says so and the reason is shown. Pressed while an answer is being spoken, it stops the answer and listens; an answer that is only shown (to a typed message, or with spoken replies off) is not stopped. |
 | **SPACE** | Open settings (**TAB** twice quickly does the same). **SPACE** or **TAB** closes them again. |
 | **SPACE** twice quickly | Save this conversation, to help diagnose and improve the assistant (see [Diagnostics (temporary)](#diagnostics-temporary)). Because of this, one **SPACE** opens settings a moment later, once no second press has come (at once if another key follows it). |
 | **ENTER** | Start typing a message; **ENTER** again sends it. A typed message is answered on the screen only, without speaking (anything you say while it is worked on makes the answer spoken too). |
@@ -68,8 +68,8 @@ You do not have to wait for it to finish:
 - **While it is still working** (thinking, or using a tool), anything you say or type is added
   to the same request, so you can correct or refine it before it answers.
 - **While it is speaking**, typing leaves the speech playing; pressing **TAB** stops it at once
-  and starts listening. The answer to a typed message is only shown, so **TAB** starts listening
-  and leaves that answer as it is.
+  and starts listening. The answer to a typed message (and every answer, with spoken replies
+  off) is only shown, so **TAB** starts listening and leaves that answer as it is.
 
 The dot in the top-left corner shows what it is doing: red while the microphone is live, amber
 while it is working, teal while it is answering. The screen dims after 45 seconds without use
@@ -558,7 +558,7 @@ smart-home devices. Besides those above, the options are:
 |---|---|
 | `--ask-wav FILE.wav` | One spoken request: the recording (16-bit mono, 16 kHz) is transcribed by the service, as on the device |
 | `--steer "text"`, `--steer-wav FILE.wav` | With `--ask`, `--ask-wav` or `--chat`: add this while the first tool of the first request runs |
-| `--talk-over MS[:text]`, `--talk-at start\|tool\|answer` | With `--ask`: hold the microphone open for a while during the request, as **TAB** does |
+| `--talk-over MS[+LATE][:text]`, `--talk-at start\|tool\|answer` | With `--ask`: hold the microphone open for a while during the request, as **TAB** does (with `+LATE`, the words arrive that much later, as when the app first connects to the phone) |
 | `--follow-ups "a\|b\|c"` | With `--ask`: send each of these as the previous answer begins, all inside one run |
 | `--prompt`, `--schema` | Print the system prompt and the tools a request would be given right now (radio, web search and the smart home appear only once they are set up) |
 | `--home-refresh` | Read the smart-home devices saved for the current network |

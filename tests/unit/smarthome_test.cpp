@@ -996,6 +996,28 @@ void test_commands() {
     CHECK_MSG(starts(r, "ERROR: \"plaid\" is not a colour"), r);
     r = run({{"action", "set"}, {"target", "Bedroom lamp"}, {"color", "blue"}});
     CHECK_MSG(starts(r, "ERROR: \"Bedroom lamp\" cannot do that: it can only be set to shades of white"), r);
+    // A number is one as a whole: "40oops" is not 40 (its digits were once read), and is refused before any target is
+    // chosen, so nothing is applied, even for a target that does not exist. A percentage may carry its sign ("40%" is
+    // 40); a temperature or a key count may not. Empty text is not given.
+    g_clock += 60000;   // a fresh minute for the rate limit
+    const size_t applied = g_fake->applied();
+    const json bad_numbers[] = {{{"brightness", "40oops"}}, {{"brightness", "4 0"}}, {{"brightness", true}}, {{"volume", "loud"}},
+                                {{"position", json::array({40})}}, {{"temperature", "21%"}}, {{"temperature", "20oops"}},
+                                {{"volume_step", "3 presses"}}};
+    for (const json &bad : bad_numbers)
+        for (const char *target : {"Floor lamp", "No such thing"}) {
+            json args = {{"action", "set"}, {"target", target}};
+            args.update(bad);
+            r = run(args);
+            CHECK_MSG(starts(r, "ERROR: " + bad.begin().key() + " must be a number"), r);
+        }
+    CHECK(g_fake->applied() == applied);
+    r = run({{"action", "set"}, {"target", "Floor lamp"}, {"brightness", "40%"}});
+    CHECK_MSG(has(r, R"("brightness":40)") && g_fake->log.back() == R"(apply fake:bridge/3 {"brightness":40,"on":true})", r);
+    r = run({{"action", "set"}, {"target", "Floor lamp"}, {"brightness", " 45 % "}});
+    CHECK_MSG(has(r, R"("brightness":45)"), r);
+    r = run({{"action", "set"}, {"target", "Floor lamp"}, {"brightness", ""}});
+    CHECK_MSG(starts(r, "ERROR: set needs a value"), r);
     // The say sentence may be spoken for plain successes only.
     CHECK(home::tool_say_ok({{"action", "on"}}, R"({"now":"on","target":"Floor lamp"})"));
     CHECK(!home::tool_say_ok({{"action", "status"}}, R"({"target":"Floor lamp","state":{}})"));

@@ -54,7 +54,8 @@ POST .../audio/transcriptions (speech to text) answers {"text": ...} with the sc
 "rule": "transcription" and the size of what was sent in place of its body. The script's top-level
 "heard_pad_depth": N adds a "pad" nested N levels to that answer, as "pad_depth" does to a stream's events.
 The script's top-level "speech_error" and "transcription_error" ({"status": N, "body": "..."}, with
-"delay_ms" if wanted) make every request to that service fail so instead; each is still logged.
+"delay_ms" if wanted) make every request to that service fail so instead; each is still logged. Its
+top-level "speech_delay_ms": N makes the speech service wait that long before it answers.
 
 LOG gets one JSON object per request: {"n": 1, "rule": index or "default", "body": {...}}.
 """
@@ -203,6 +204,7 @@ class Handler(BaseHTTPRequestHandler):
                 COUNT[0] += 1
                 with open(LOG, "a") as f:
                     f.write(json.dumps({"n": COUNT[0], "rule": "speech", "body": body}, ensure_ascii=False) + "\n")
+            time.sleep(SCRIPT.get("speech_delay_ms", 0) / 1000.0)
             self.speech_service("speech_error", "audio/pcm", b"\0" * 4800)
             return
         with LOCK:

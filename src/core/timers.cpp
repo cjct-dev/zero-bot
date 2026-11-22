@@ -39,6 +39,26 @@ bool num_arg(const json &a, const char *key, double &out) {
     return false;
 }
 
+// Whether the arguments give a value for `key`: null and empty text are none, as the tool runner counts them.
+bool given(const json &a, const char *key) {
+    const auto it = a.find(key);
+    return it != a.end() && !it->is_null() && !(it->is_string() && util::trim(it->get<std::string>()).empty());
+}
+
+// The first number given that is not one ("1oops", "1 hour", true), as what to send instead; "" when there is
+// none. Checked before anything is chosen: an id that was no number once fell through to the label, and with one
+// timer running, to that one.
+std::string not_a_number(const json &a) {
+    for (const char *key : {"id", "hours", "minutes", "seconds"}) {
+        double v = 0;
+        if (!given(a, key) || num_arg(a, key, v)) continue;
+        const std::string must = std::string(key) == "id" ? " must be a whole number such as 3, from a running timer"
+                                                          : " must be a number, such as 5";
+        return key + must + "; " + util::truncate_utf8(reply(a.at(key)), 40) + " is not one";
+    }
+    return "";
+}
+
 bool bool_arg(const json &a, const char *key) {
     auto it = a.find(key);
     if (it == a.end()) return false;
@@ -253,7 +273,7 @@ std::string cancel(const json &a, time_t now) {
         for (auto &r : running) names.push_back(r.text);
         return reply(json{{"cancelled", names}});
     }
-    if (running.size() > 1 && significant(str_arg(a, "label")).empty() && !a.contains("id"))
+    if (running.size() > 1 && significant(str_arg(a, "label")).empty() && !given(a, "id"))
         return fail(std::to_string(running.size()) + " timers are running: " + summary(running, now) +
                     ". Ask the user which one to cancel, or whether to cancel all of them (all: true)");
     Reminder t;
@@ -287,7 +307,7 @@ std::string add_time(const json &a, time_t now, long long offset_ms) {
     };
     Reminder again;
     bool restart = false;
-    if (!a.contains("id")) {
+    if (!given(a, "id")) {
         if (wanted.empty()) {
             if (!recent.empty() && now - recent.front().due <= kJustEnded) {
                 again = recent.front();
@@ -425,6 +445,7 @@ std::string run_tool(const json &args, time_t now, long long offset_ms) {
     // what has just ended then still compare like with like, and a timer started now is added by
     // the clock the others go by, whichever that is by then.
     now = Store::get().reckon(now, offset_ms);
+    if (const std::string bad = not_a_number(args); !bad.empty()) return fail(bad);
     const std::string action = util::lower(str_arg(args, "action"));
     if (action == "start") return start(args, now, offset_ms);
     if (action == "cancel") return cancel(args, now);
