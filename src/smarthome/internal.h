@@ -11,8 +11,12 @@
 namespace home {
 
 // Loads the network's entry, lets `change` edit it and saves it, all under the file lock.
-// Returns false when the network is not saved. `change` must not call back into this layer.
+// Returns false when the network is not saved, or the file could not be written. `change` must
+// not call back into this layer.
 bool modify_entry(const std::string &network_id, const std::function<void(NetworkEntry &)> &change);
+
+// Different on every start of the app: what a mark written by this run carries (driver.h trial).
+std::string run_id();
 
 // One conversation with a device at a time; different devices do not wait for each other.
 std::mutex &device_lock(const std::string &device_id);
@@ -80,6 +84,7 @@ void reset_control();                                      // forgets pending qu
 // stand-in network too; nullptr restores the real scan.
 void set_scan(bool (*scan)(std::vector<discovery::Device> &found));
 void clear_drivers();                                      // empties the driver table (and stops the built-in list loading)
+void new_run();                                            // run_id() changes, as when the app starts again
 }  // namespace testing
 
 }  // namespace home

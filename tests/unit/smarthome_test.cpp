@@ -5,7 +5,11 @@
 // network is a stand-in. Built and run by tests/run_unit.sh.
 //
 //   smarthome_test SNAPSHOT_DIR        ZB_UPDATE_SNAPSHOTS=1 rewrites the snapshots
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -105,6 +109,7 @@ struct FakeDriver : home::Driver {
     std::string slow_device;                                   // enumerate() of this device takes slow_ms
     int slow_ms = 0;
     std::atomic<int> active{0}, most{0};
+    std::atomic<int> pairs{0};                                 // calls of pair(), with anything typed
     std::map<std::string, int> device_active;
     int device_most = 0;
     // Called as each request reaches a device (enumerate, read, apply), before it is answered;
@@ -132,6 +137,7 @@ struct FakeDriver : home::Driver {
         return s;
     }
     bool pair(home::Device &d, const std::string &input, std::string &err) override {
+        ++pairs;
         if (input == reject) { err = "The device did not accept that code."; return false; }
         if (account_pairing) secrets_->set("fake", {{"key", "secret-" + input}});
         else d.auth["key"] = "secret-" + input;
@@ -218,6 +224,7 @@ struct FakeDriver : home::Driver {
         slow_device.clear(); slow_ms = 0;
         active = 0; most = 0; device_active.clear(); device_most = 0;
         on_contact = nullptr; call_ms = 0; calls.clear();
+        pairs = 0;
     }
     size_t applied() {
         std::lock_guard<std::mutex> lk(mtx);
@@ -1746,6 +1753,117 @@ void test_tapo_driver() {
     home::set_tapo_account("", "");
 }
 
+// ---------------------------------------------------------------- a file that cannot be written
+// A port on 127.0.0.1 that counts the connections made to it, never answering: "nothing was sent"
+// is judged from the device's side.
+struct Listener {
+    int fd = -1, port = 0;
+    Listener() {
+        fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        socklen_t len = sizeof(a);
+        bind(fd, reinterpret_cast<sockaddr *>(&a), sizeof(a));
+        listen(fd, 8);
+        getsockname(fd, reinterpret_cast<sockaddr *>(&a), &len);
+        port = ntohs(a.sin_port);
+    }
+    ~Listener() { close(fd); }
+    bool contacted(int wait_ms = 200) {
+        pollfd p{fd, POLLIN, 0};
+        return poll(&p, 1, wait_ms) > 0;
+    }
+};
+
+// The smart-home file cannot be written (a full or read-only store): every change says so, and no
+// code or password typed is sent, by the shared layer or by the Tapo driver itself. And a password
+// on trial (driver.h home::trial): tried by a run that stopped before it knew whether a plug took it,
+// it counts as refused until it is typed again (refactor review B6).
+void test_storage() {
+    Section s("store: a file that cannot be written is said, and nothing typed is sent; an unconfirmed try counts as refused");
+    g_fake->reset();
+    g_fake->wants_pairing = true;
+    Listener plug_side;
+    json plug = {{"id", "tapo:p"}, {"kind", "tapo"}, {"name", "Tapo P110"}, {"model", "P110"}, {"last_ip", "127.0.0.1"},
+                 {"port", plug_side.port},
+                 {"info", {{"scheme", "KLAP"}, {"device_type", "SMART.TAPOPLUG"}, {"owner", "B58996C504C5638798EB6B511E6F49AF"}}},
+                 {"things", json::array({thing("main", "Lamp", "plug", home::kPower)})}};
+    write_home({device("fake:tv", {thing("tv", "Lounge TV", "tv", home::kPower)}), plug},
+               {{"tapo", {{"email", "user@example.com"}}}});
+    const std::string dir = util::data_dir();
+    chmod(dir.c_str(), 0500);
+    if (util::write_file_atomic(dir + "/probe", "x")) {   // a user who may write anywhere: nothing to test here
+        printf("note: this user can write to a read-only folder; the checks of a store that cannot be written were skipped\n");
+        unlink((dir + "/probe").c_str());
+        chmod(dir.c_str(), 0700);
+    } else {
+        std::string err;
+        CHECK(!home::pairing_submit(g_net.id(), "fake:tv", "1234", err) && g_fake->pairs == 0);
+        CHECK_MSG(has(err, "Nothing was sent") && has(err, "could not be saved"), err);
+        CHECK(home::pairing_step(g_net.id(), "tapo:p").kind == home::Pairing::Password);
+        CHECK(!home::pairing_submit(g_net.id(), "tapo:p", "hunter2", err) && !plug_side.contacted());
+        CHECK_MSG(has(err, "Nothing was sent"), err);
+        // The Tapo driver keeps the rule by itself as well: its password and trial are written before
+        // the one login that checks it, or nothing is sent.
+        home::Driver *tapo = home::driver_for("tapo");
+        home::Saved saved_plug;
+        for (const auto &d : home::entry(g_net.id()).devices)
+            if (d.id == "tapo:p") saved_plug = d;
+        CHECK(tapo && !tapo->pair(saved_plug, "hunter2", err) && !plug_side.contacted());
+        CHECK_MSG(has(err, "could not be saved") && has(err, "not sent"), err);
+        CHECK(!home::tapo_account().password_saved);
+        // What the settings page changes says that it was not saved.
+        CHECK(!home::set_tapo_account("user@example.com", "hunter2") && !home::tapo_account().password_saved);
+        CHECK(!home::set_thing_enabled(g_net.id(), "fake:tv", "tv", false));
+        CHECK(!home::set_thing_alias(g_net.id(), "fake:tv", "tv", "Telly"));
+        CHECK(!home::set_enabled(g_net.id(), "fake:tv", false));
+        CHECK(!home::remove_device(g_net.id(), "fake:tv"));
+        CHECK(!home::forget_network(g_net.id()));
+        discovery::Device found;
+        found.id = "fake:new";
+        found.kind = "fake";
+        found.ip = "127.0.0.8";
+        CHECK(home::remember_scan(g_net, {found}) == -1);
+        CHECK_MSG(has(home::refresh(g_net.id(), "fake:tv"), "could not be saved"), home::refresh(g_net.id(), "fake:tv"));
+        chmod(dir.c_str(), 0700);
+        const home::NetworkEntry e = home::entry(g_net.id());
+        CHECK(e.devices.size() == 2 && e.devices[0].enabled && e.devices[0].things[0].enabled);
+    }
+    g_fake->wants_pairing = false;
+
+    // The Tapo password's trial. Typed on the settings page, it is tried by nothing yet: a restart
+    // leaves it as it was.
+    CHECK(home::set_tapo_account("user@example.com", "first"));
+    home::testing::new_run();
+    CHECK(!home::tapo_account().refused && home::pairing_step(g_net.id(), "tapo:p").kind == home::Pairing::None);
+    // Its first login writes the trial down first. The plug takes the connection and never answers;
+    // the app stops before it knows.
+    home::Driver *tapo = home::driver_for("tapo");
+    home::Saved saved_plug;
+    for (const auto &d : home::entry(g_net.id()).devices)
+        if (d.id == "tapo:p") saved_plug = d;
+    std::vector<home::Thing> things;
+    std::string err;
+    CHECK(tapo && !tapo->enumerate(saved_plug, things, err) && plug_side.contacted());
+    CHECK(!home::tapo_account().refused);   // in this run it may be tried again: the transport keeps any refusal
+    home::testing::new_run();
+    const home::TapoAccount account = home::tapo_account();
+    CHECK(account.refused && account.unconfirmed && account.password_saved);
+    const home::PairStep step = home::pairing_step(g_net.id(), "tapo:p");
+    CHECK_MSG(step.kind == home::Pairing::Password && has(step.prompt, "confirmed"), step.prompt);
+    Listener quiet;
+    saved_plug.port = quiet.port;
+    CHECK(!tapo->enumerate(saved_plug, things, err) && !quiet.contacted());
+    CHECK_MSG(has(err, "confirmed") && !has(err, "connect"), err);
+    home::Change on;
+    on.on = true;
+    CHECK(!tapo->apply(saved_plug, saved_plug.things[0], on, 2500, err) && !quiet.contacted());
+    // Typed again: a fresh trial, tried again.
+    CHECK(home::set_tapo_account("user@example.com", "second") && !home::tapo_account().refused);
+    home::set_tapo_account("", "");
+}
+
 // ---------------------------------------------------------------- the stand-in test network
 void test_stand_in() {
     Section s("test network: ZB_TEST_NETWORK stands in, contacts 127.x only and never scans");
@@ -3185,6 +3303,7 @@ int main(int argc, char **argv) {
     test_stalled_device();
     test_pairing();
     test_tapo_driver();
+    test_storage();
     test_stand_in();
     test_scan_binding();
     test_network_gate();

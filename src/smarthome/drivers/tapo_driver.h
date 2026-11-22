@@ -17,13 +17,15 @@ namespace home {
 struct TapoAccount {
     std::string email;
     bool password_saved = false;
-    bool refused = false;   // a plug rejected it or locked itself: nothing is sent until it is typed again
+    bool refused = false;       // a plug rejected it or locked itself: nothing is sent until it is typed again
+    bool unconfirmed = false;   // also refused: tried by a run that stopped before it knew whether a plug took it
     bool set() const { return !email.empty() && password_saved; }
 };
 TapoAccount tapo_account();
 // An empty password keeps the saved one, unless the e-mail changes: a different address is a
 // different account, whose password has to be typed. An empty e-mail forgets the account. Either
-// change lets the plugs be tried afresh.
-void set_tapo_account(const std::string &email, const std::string &password);
+// change lets the plugs be tried afresh. False when it could not be saved (a full store): nothing
+// was changed then.
+bool set_tapo_account(const std::string &email, const std::string &password);
 
 }  // namespace home

@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cmath>
 #include <ctime>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <set>
@@ -41,6 +42,11 @@ const char *const kKeyRefused =
     "A WiZ device did not accept the signing key, so it is not sent again. Type the key again in Settings, Smart home, "
     "on the device's page.";
 const char *const kClockNotSet = "The clock here is not set yet, so a signed command cannot be sent. Try again in a minute.";
+const char *const kKeyNotSaved =
+    "The WiZ signing key's first use could not be noted on this device (its storage may be full), so nothing was sent.";
+const char *const kKeyUnconfirmed =
+    "No WiZ device has confirmed the signing key typed last (Zero Bot stopped before it knew), so it is not sent again. Type "
+    "the key again in Settings, Smart home, on the device's page.";
 const char *const kRefused = "The WiZ device refused the command.";
 const char *const kMoved = "Another WiZ device answered at this one's saved address, so it was left alone.";
 const char *const kNoMac =
@@ -209,6 +215,10 @@ bool names_no_mac(const json &result) {
     return it == result.end() || (it->is_string() && it->get<std::string>().empty());
 }
 
+// The family's secrets are read, changed and written back by changes to several devices at once:
+// one at a time, so that a refusal kept by one is not overwritten by another's trial.
+std::mutex g_key_mtx;
+
 // Devices that turned down an unsigned command in this run, by device id: they want a key even
 // before a read has marked their things as signed.
 std::mutex g_mtx;
@@ -220,7 +230,7 @@ bool needs_key_now(const Device &dev) {
     return g_needs_key.count(memory_id(dev)) > 0;
 }
 
-enum class Outcome { Ok, NoAnswer, Garbled, NoSuchMethod, NeedsKey, KeyRefused, ClockNotSet, Refused };
+enum class Outcome { Ok, NoAnswer, Garbled, NoSuchMethod, NeedsKey, KeyRefused, KeyUnconfirmed, KeyNotSaved, ClockNotSet, Refused };
 
 const char *sentence(Outcome o) {
     switch (o) {
@@ -228,6 +238,8 @@ const char *sentence(Outcome o) {
         case Outcome::Garbled: return kGarbled;
         case Outcome::NeedsKey: return kNeedsKey;
         case Outcome::KeyRefused: return kKeyRefused;
+        case Outcome::KeyUnconfirmed: return kKeyUnconfirmed;
+        case Outcome::KeyNotSaved: return kKeyNotSaved;
         case Outcome::ClockNotSet: return kClockNotSet;
         default: return kRefused;
     }
@@ -618,7 +630,11 @@ public:
         home::PairStep step;
         step.kind = home::Pairing::Token;
         step.field = "WiZ signing key";
-        step.prompt = k.refused
+        step.prompt = k.unconfirmed
+                          ? "No WiZ device has confirmed the signing key typed last (Zero Bot stopped before it knew), so it is "
+                            "not sent again. Type the udp_signing_key from the WiZ app's export for local integration again: 32 "
+                            "characters, 0 to 9 and a to f."
+                      : k.refused
                           ? "A WiZ device did not accept the saved signing key, so it is not sent again. Type the "
                             "udp_signing_key from the WiZ app's export for local integration again: 32 characters, 0 to 9 "
                             "and a to f."
@@ -643,8 +659,15 @@ public:
                           : "That is not a WiZ signing key: it is 32 characters, each 0 to 9 or a to f.";
             return false;
         }
-        // Typed again: one more try, even for the key that was refused.
-        secrets_->set(kFamily, json{{"signing_key", support::hex(key)}});
+        // Typed again: one more try, even for the key that was refused. It is on trial until a device
+        // takes it (driver.h home::trial): its first signed command writes that down first.
+        json j{{"signing_key", support::hex(key)}};
+        home::trial::typed(j);
+        std::lock_guard<std::mutex> lock(g_key_mtx);
+        if (!secrets_->put(kFamily, j)) {
+            err = "The key could not be saved on this device; its storage may be full.";
+            return false;
+        }
         return true;
     }
 
@@ -756,8 +779,9 @@ public:
 
 private:
     struct Key {
-        std::string bytes;      // 16 bytes; empty when none is saved
-        bool refused = false;   // a device turned it down: it is not sent again
+        std::string bytes;          // 16 bytes; empty when none is saved
+        bool refused = false;       // a device turned it down: it is not sent again
+        bool unconfirmed = false;   // also refused: sent by a run that stopped before it knew the outcome
     };
 
     Key family_key() const {
@@ -765,8 +789,19 @@ private:
         if (!secrets_) return k;
         const json j = secrets_->get(kFamily);
         if (!detail::parse_key(jstr(j, "signing_key"), k.bytes)) return {};
-        k.refused = jbool(j, "refused");
+        k.unconfirmed = !jbool(j, "refused") && home::trial::stale(j);   // a refusal kept says more
+        k.refused = jbool(j, "refused") || k.unconfirmed;
         return k;
+    }
+
+    // Writes `change` to the family's secrets when they still hold `key`; false when that write
+    // was wanted and failed.
+    bool note_key(const std::string &key, const std::function<bool(json &)> &change) {
+        std::lock_guard<std::mutex> lock(g_key_mtx);
+        json j = secrets_->get(kFamily);
+        std::string saved;
+        if (!detail::parse_key(jstr(j, "signing_key"), saved) || saved != key || !change(j)) return true;
+        return secrets_->put(kFamily, j);
     }
 
     // setPilot signed with the family's key, when there is one that no device has refused and the
@@ -774,20 +809,18 @@ private:
     Outcome signed_set(Target &t, const std::string &params, long long deadline, json &result) {
         const Key k = family_key();
         if (k.bytes.empty()) return Outcome::NeedsKey;
+        if (k.unconfirmed) return Outcome::KeyUnconfirmed;
         if (k.refused) return Outcome::KeyRefused;
         // A test's own clock counts as set.
         const bool synced = g_unix_clock != system_unix_time || kernel_clock_synced();
         if (!detail::signing_clock_ok(unix_now(), synced, uptime_s())) return Outcome::ClockNotSet;
+        // A key's first use is written down before it is sent: a refusal that could not be kept
+        // still stops the next run.
+        if (!note_key(k.bytes, [](json &j) { return home::trial::begin(j); })) return Outcome::KeyNotSaved;
         const Outcome o = call(t, "setPilot", params, k.bytes, deadline, result);
-        if (o == Outcome::KeyRefused) {
-            // Only the key that was sent is marked: one typed meanwhile gets its own try.
-            json j = secrets_->get(kFamily);
-            std::string saved;
-            if (detail::parse_key(jstr(j, "signing_key"), saved) && saved == k.bytes) {
-                j["refused"] = true;
-                secrets_->set(kFamily, j);
-            }
-        }
+        // Only the key that was sent is marked: one typed meanwhile gets its own try.
+        if (o == Outcome::KeyRefused) note_key(k.bytes, [](json &j) { j["refused"] = true; return true; });
+        if (o == Outcome::Ok) note_key(k.bytes, [](json &j) { return home::trial::end(j); });
         return o;
     }
 

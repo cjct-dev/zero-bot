@@ -326,7 +326,8 @@ def signed_tests():
     check("something that is not a key is refused, nothing saved", rc == 1 and "32 characters" in err and st.secrets() == {}, err)
 
     rc, out, err = st.run("pair", WRONG)
-    check("a wrong key is saved; nothing is sent when it is typed", rc == 0 and st.secrets().get("wiz") == {"signing_key": WRONG} and
+    check("a wrong key is saved, on trial; nothing is sent when it is typed",
+          rc == 0 and st.secrets().get("wiz") == {"signing_key": WRONG, "trial": "typed"} and
           not dev.requests("setPilot"), (rc, err, st.secrets()))
     rc, step, err = st.run("step")
     check("then no step is asked", step.get("kind") == "none", step)
@@ -351,7 +352,8 @@ def signed_tests():
 
     export = json.dumps({"homes": [{"name": "Home", "udp_signing_key": KEY.upper()}]})
     rc, out, err = st.run("pair", export)
-    check("the right key, pasted as the exported file", rc == 0 and st.secrets().get("wiz") == {"signing_key": KEY}, (rc, err, st.secrets()))
+    check("the right key, pasted as the exported file", rc == 0 and st.secrets().get("wiz") == {"signing_key": KEY, "trial": "typed"},
+          (rc, err, st.secrets()))
     rc, out, err = st.run("apply", "light", '{"on":true,"brightness":50}')
     sent = dev.requests("setPilot")
     check("a signed change goes through", rc == 0, err)
@@ -359,6 +361,7 @@ def signed_tests():
           len(sent) == 2 and sent[-1]["sig_ok"] is True and {k: v for k, v in sent[-1]["params"].items() if k != "sigTs"} ==
           {"state": True, "dimming": 50} and json.loads(sent[-1]["raw"]).get("env") == "pro", sent[-1:])
     check("and it did it", dev.stats()["pilot"]["state"] is True and dev.stats()["pilot"]["dimming"] == 50, dev.stats()["pilot"])
+    check("and the key, taken, is no longer on trial", st.secrets().get("wiz") == {"signing_key": KEY}, st.secrets())
     rc, out, err = st.run("read")
     check("read after signing", rc == 0 and first_state(out).get("on") is True, (rc, err))
 

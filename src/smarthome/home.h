@@ -41,6 +41,7 @@ struct ThingMeta {
 
 struct Saved : Device {
     std::vector<std::string> found_by;
+    std::string trying;          // a code or password typed for it was being handed to its driver (pairing_submit)
     bool enabled = true;         // the assistant may use it
     bool needs_setup = false;    // its driver wants pairing before anything else
     time_t last_seen = 0;
@@ -73,6 +74,9 @@ void register_builtin_drivers();
 // Secrets shared by a family (an account, this controller's own key pair), kept in the same file.
 Secrets &secrets();
 
+// Said when the smart-home file could not be written (a full or read-only store).
+extern const char *const kNotSaved;
+
 // ---- the network the device is on, looked up at most every few seconds
 discovery::Network network_now(bool fresh = false);
 // ZB_TEST_NETWORK is set: network_now() is a stand-in ("Test network") instead of the real one.
@@ -89,23 +93,27 @@ bool scan(const discovery::Network &consented, std::vector<discovery::Device> &f
 bool scanned(const std::string &network_id);
 NetworkEntry entry(const std::string &network_id);
 // Folds one scan into what is saved for the network: new devices are added, known ones keep
-// their settings and things and get their current address. Returns how many were new.
+// their settings and things and get their current address. Returns how many were new, or -1 when
+// the file could not be written.
 int remember_scan(const discovery::Network &net, const std::vector<discovery::Device> &found);
-void set_enabled(const std::string &network_id, const std::string &device_id, bool on);
-void remove_device(const std::string &network_id, const std::string &device_id);
-void forget_network(const std::string &network_id);
+// These return false when nothing was saved: the network is not saved, or the file could not be
+// written (kNotSaved says so).
+bool set_enabled(const std::string &network_id, const std::string &device_id, bool on);
+bool remove_device(const std::string &network_id, const std::string &device_id);
+bool forget_network(const std::string &network_id);
 // What the user decides about one thing. These survive every later read of the device.
-void set_thing_alias(const std::string &network_id, const std::string &device_id, const std::string &thing_id, const std::string &alias);
-void set_thing_room(const std::string &network_id, const std::string &device_id, const std::string &thing_id, const std::string &room);
-void set_thing_enabled(const std::string &network_id, const std::string &device_id, const std::string &thing_id, bool on);
-void set_thing_ask_first(const std::string &network_id, const std::string &device_id, const std::string &thing_id, bool on);
+bool set_thing_alias(const std::string &network_id, const std::string &device_id, const std::string &thing_id, const std::string &alias);
+bool set_thing_room(const std::string &network_id, const std::string &device_id, const std::string &thing_id, const std::string &room);
+bool set_thing_enabled(const std::string &network_id, const std::string &device_id, const std::string &thing_id, bool on);
+bool set_thing_ask_first(const std::string &network_id, const std::string &device_id, const std::string &thing_id, bool on);
 std::vector<std::string> rooms(const std::string &network_id);   // every room in use, for the settings page
 
 // ---- pairing, driven from the settings page. All of it applies to the current network only.
 // What the device's driver wants next; kind None when it is ready (or cannot be asked).
 PairStep pairing_step(const std::string &network_id, const std::string &device_id);
 // Hands the driver what the user typed ("" for a button or prompt step). A refusal is reported
-// and never tried again by itself.
+// and never tried again by itself. What was typed goes to the driver only after the file has taken
+// a note that it is being tried; when the file cannot be written nothing is sent (kNotSaved).
 bool pairing_submit(const std::string &network_id, const std::string &device_id, const std::string &input, std::string &err);
 // "" once the pairing is gone; otherwise why it is kept (the device could not be told).
 std::string unpair(const std::string &network_id, const std::string &device_id);

@@ -1313,7 +1313,7 @@ std::string refresh_where(const std::string &network_id, const std::function<boo
         }
     }
     const time_t now = time(nullptr);
-    modify_entry(network_id, [&](NetworkEntry &en) {
+    const bool kept = modify_entry(network_id, [&](NetworkEntry &en) {
         for (const auto &o : outs)
             for (auto &d : en.devices) {
                 if (d.id != o.saved->id || o.not_asked) continue;
@@ -1340,8 +1340,10 @@ std::string refresh_where(const std::string &network_id, const std::function<boo
         else { ++failed; if (first_problem.empty()) first_problem = o.problem; }
     }
     if (outs.empty()) return "Nothing here can be controlled yet.";
-    if (failed == 0) return std::to_string(ready) + (ready == 1 ? " device ready." : " devices ready.");
-    return std::to_string(ready) + " ready, " + std::to_string(failed) + " not: " + first_problem;
+    std::string summary = failed == 0 ? std::to_string(ready) + (ready == 1 ? " device ready." : " devices ready.")
+                                      : std::to_string(ready) + " ready, " + std::to_string(failed) + " not: " + first_problem;
+    if (!kept) summary = clause(summary) + ". What was read could not be saved on this device: its storage may be full.";
+    return summary;
 }
 
 }  // namespace
@@ -1385,6 +1387,16 @@ bool pairing_submit(const std::string &network_id, const std::string &device_id,
     Driver *drv = driver_for(saved);
     if (!drv) { err = "This kind of device cannot be set up here."; return false; }
     if (!may_contact(saved, err)) return false;
+    // What was typed goes to the driver only once the file has taken a note that it is being tried:
+    // the driver keeps its refusal there, and one it could not keep would be sent again by a later
+    // run (a Tapo plug locks itself after a few). The note goes with the write of the outcome.
+    if (!input.empty() && !modify_entry(network_id, [&](NetworkEntry &e) {
+            for (auto &d : e.devices)
+                if (d.id == device_id) d.trying = run_id();
+        })) {
+        err = std::string("Nothing was sent to the device. ") + kNotSaved;
+        return false;
+    }
     Device dev = saved;
     bool ok = false;
     PairStep next;
@@ -1411,11 +1423,12 @@ bool pairing_submit(const std::string &network_id, const std::string &device_id,
         } catch (...) {
         }
     }
-    modify_entry(network_id, [&](NetworkEntry &e) {
+    const bool kept = modify_entry(network_id, [&](NetworkEntry &e) {
         for (auto &d : e.devices) {
             if (d.id == device_id) {
                 d.auth = dev.auth.is_object() ? dev.auth : json::object();
                 d.needs_setup = next.kind != Pairing::None;
+                d.trying.clear();
                 if (!d.needs_setup && ok) d.problem.clear();
                 continue;
             }
@@ -1430,6 +1443,11 @@ bool pairing_submit(const std::string &network_id, const std::string &device_id,
             }
         }
     });
+    if (!kept) {
+        err = (ok ? std::string("It was set up, but ") : clause(err) + ", and ") +
+              "that could not be saved on this device (its storage may be full); it will need setting up again.";
+        return false;
+    }
     return ok;
 }
 
@@ -1456,7 +1474,7 @@ std::string unpair(const std::string &network_id, const std::string &device_id) 
         }
     }
     const bool kept = !dev.auth.empty();
-    modify_entry(network_id, [&](NetworkEntry &e) {
+    const bool saved_ok = modify_entry(network_id, [&](NetworkEntry &e) {
         for (auto &d : e.devices)
             if (d.id == device_id) {
                 d.auth = dev.auth;
@@ -1464,6 +1482,7 @@ std::string unpair(const std::string &network_id, const std::string &device_id) 
                 d.needs_setup = !kept && next.kind != Pairing::None;
             }
     });
+    if (!saved_ok) return std::string("The pairing could not be forgotten here: ") + kNotSaved;
     if (!kept) return "";
     if (told && why.empty()) return "It could not be reached, so it is still paired. Try again while it is switched on and on this network.";
     return "It is still paired: " + (why.empty() ? std::string("it could not be reached.") : why);

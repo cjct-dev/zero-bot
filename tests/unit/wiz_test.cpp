@@ -782,6 +782,30 @@ static void test_driver() {
         const auto got = signed_bulb.received();
         const json last = json::parse(got.back(), nullptr, false);
         check("it was signed", last.value("env", "") == "pro" && last.contains("hmac") && last["params"].contains("sigTs"), got.back());
+        check("the key, taken, is no longer on trial", !secrets.get("wiz").contains("trial"), secrets.get("wiz").dump());
+
+        // A key sent by an earlier run that never learnt the outcome counts as refused: not sent.
+        const json kept = secrets.get("wiz");
+        secrets.all["wiz"] = {{"signing_key", key_hex}, {"trial", "run-of-an-earlier-start"}};
+        sent = signed_bulb.count("setPilot");
+        check("tried by an earlier run, never confirmed: not sent", !driver->apply(dev, light, c, 1500, err) && err == kKeyUnconfirmed &&
+                                                                       signed_bulb.count("setPilot") == sent, err);
+        step = driver->next_step(dev);
+        check("and the key is asked for again, saying why", step.kind == home::Pairing::Token &&
+                                                              step.prompt.find("confirmed") != std::string::npos, step.prompt);
+        // A store that cannot be written: a typed key is not saved, and one not yet tried is not sent.
+        struct FullSecrets : MemSecrets {
+            bool put(const std::string &, const json &) override { return false; }
+        } full;
+        full.all["wiz"] = {{"signing_key", key_hex}, {"trial", "typed"}};
+        auto stuck = make_wiz_driver();
+        stuck->attach(&full);
+        check("a key typed into a full store is refused", !stuck->pair(dev, key_hex, err) && err.find("could not be saved") != std::string::npos,
+              err);
+        sent = signed_bulb.count("setPilot");
+        check("a key whose first use cannot be noted is not sent", !stuck->apply(dev, light, c, 1500, err) && err == kKeyNotSaved &&
+                                                                     signed_bulb.count("setPilot") == sent, err);
+        secrets.all["wiz"] = kept;
 
         // A device not yet known to sign: unsigned first, then the saved key once.
         home::Thing unmarked = light;
@@ -821,7 +845,7 @@ static void test_driver() {
     check("no socket is left open between calls", open_fds() == fds_before,
           std::to_string(fds_before) + " before, " + std::to_string(open_fds()) + " after");
 
-    for (const char *e : {kGarbled, kNeedsKey, kKeyRefused, kClockNotSet, kRefused})
+    for (const char *e : {kGarbled, kNeedsKey, kKeyRefused, kKeyUnconfirmed, kKeyNotSaved, kClockNotSet, kRefused})
         check(std::string("not read as unreachable: ") + e, !reads_as_unreachable(e));
     check("\"did not answer\" is read as unreachable", reads_as_unreachable(kNoAnswer));
     check("another device at the address is read as unreachable (the app looks for this one)", reads_as_unreachable(kMoved) &&

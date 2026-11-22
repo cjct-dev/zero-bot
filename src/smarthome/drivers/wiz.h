@@ -70,6 +70,8 @@ extern const char *const kGarbled;       // "The WiZ device replied with somethi
 extern const char *const kNeedsKey;      // "This WiZ device only accepts signed commands. ..."
 extern const char *const kKeyRefused;    // "A WiZ device did not accept the signing key, ..."
 extern const char *const kClockNotSet;   // "The clock here is not set yet, ..."
+extern const char *const kKeyNotSaved;      // "The WiZ signing key's first use could not be noted on this device ..."
+extern const char *const kKeyUnconfirmed;   // "No WiZ device has confirmed the signing key typed last ..."
 extern const char *const kRefused;       // "The WiZ device refused the command."
 extern const char *const kMoved;         // "Another WiZ device answered at this one's saved address, ..."
 extern const char *const kNoMac;         // "The device that answered at this WiZ device's saved address did not say ..."

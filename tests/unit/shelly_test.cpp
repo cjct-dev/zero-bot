@@ -743,6 +743,71 @@ struct SlowSecrets : home::Secrets {
     }
 };
 
+// A store that holds what it held but takes nothing more (a full disk).
+struct FullSecrets : home::Secrets {
+    json all = json::object();
+    json get(const std::string &f) const override { return all.contains(f) ? all[f] : json::object(); }
+    void set(const std::string &, const json &) override {}
+    bool put(const std::string &, const json &) override { return false; }
+};
+
+// A refusal the file cannot take is still not sent again in this run, and a password tried by an
+// earlier run that never learnt whether the Shelly took it counts as refused (refactor review B6).
+static void test_storage() {
+    Refuser dev_side;
+    home::Thing relay = thing_of({{"gen", 1}, {"comp", "relay"}, {"id", 0}, {"dev", "a4cf12f45378"}}, home::kPower);
+    relay.id = "relay:0";
+    home::Device dev;
+    dev.id = "shelly:shelly1-full";
+    dev.kind = "shelly";
+    dev.ip = "127.0.0.1";
+    dev.port = dev_side.port;
+    dev.auth = {{"user", "admin"}, {"password", "wrong"}};
+    dev.things = {relay};
+    home::Change on;
+    on.on = true;
+    auto drv = make_shelly_driver();
+    FullSecrets full;
+    drv->attach(&full);
+    std::string err;
+    CHECK(!drv->apply(dev, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 1);
+    CHECK_MSG(!drv->apply(dev, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == 1,
+              std::to_string(dev_side.logins) + " logins");
+
+    // Typed and never sent, in a store that takes nothing more: its first request is not made, since
+    // the trial cannot be written down first.
+    FullSecrets stuck;
+    stuck.all["shelly"] = {{"trial", {{dev.id, {{"print", shelly::detail::fingerprint("", "typed-pw")}, {"trial", "typed"}}}}}};
+    auto unsaved = make_shelly_driver();
+    unsaved->attach(&stuck);
+    home::Device typed_dev = dev;
+    typed_dev.auth["password"] = "typed-pw";
+    const int sent = dev_side.logins;
+    CHECK_MSG(!unsaved->apply(typed_dev, relay, on, 2500, err) && dev_side.logins == sent && err.find("could not be noted") != std::string::npos,
+              err);
+
+    // Tried by an earlier run, outcome never known: refused, and nothing is sent at all.
+    auto later = make_shelly_driver();
+    MemSecrets mem;
+    later->attach(&mem);
+    home::Device old = dev;
+    old.id = "shelly:shelly1-old";
+    old.auth = {{"user", "admin"}, {"password", "maybe"}};
+    mem.all["shelly"] = {{"trial", {{old.id, {{"print", shelly::detail::fingerprint("", "maybe")}, {"trial", "run-of-an-earlier-start"}}}}}};
+    const int before = dev_side.logins;
+    CHECK(!later->apply(old, relay, on, 2500, err) && starts(err, shelly::kRefused) && dev_side.logins == before);
+    const home::PairStep step = later->next_step(old);
+    CHECK_MSG(step.kind == home::Pairing::Password && step.prompt.find("never confirmed") != std::string::npos, step.prompt);
+    // On trial in this run (or typed and not yet sent): it may be sent.
+    json now = {{"print", shelly::detail::fingerprint("", "maybe")}};
+    home::trial::typed(now);
+    mem.all["shelly"]["trial"][old.id] = now;
+    CHECK(later->next_step(old).kind == home::Pairing::None);
+    home::trial::begin(now);
+    mem.all["shelly"]["trial"][old.id] = now;
+    CHECK(later->next_step(old).kind == home::Pairing::None);
+}
+
 static void test_refusals_together() {
     Refuser dev_side;
     auto drv = make_shelly_driver();
@@ -792,6 +857,7 @@ int main() {
     test_recheck();
     test_driver();
     test_refusals_together();
+    test_storage();
     curl_global_cleanup();
     printf("shelly: %d checks, %d failed\n", g_run, g_failed);
     return g_failed ? 1 : 0;
