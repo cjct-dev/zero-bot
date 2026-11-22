@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -167,9 +168,10 @@ void hold_music() {
     printf("[music held +%.1fs]\n", seconds_since(g_began));
 }
 
-// Each spoken answer is tied to the request under way as its first sentence is queued (on the agent's
-// thread, inside that request), and said to be done once it has played out, timed from that request.
-void observe_speech() {
+// For the rest of the run: each spoken answer is tied to the request under way as its first sentence is
+// queued (on the agent's thread, inside that request), and said to be done once it has played out, timed
+// from that request; the music is looked at every 10 ms.
+void observe_audio() {
     static std::mutex mtx;
     static std::map<int, Clock::rep> began;   // answer -> its request's start
     SpeechQueue::get().set_observer([](int answer, bool over) {
@@ -180,10 +182,6 @@ void observe_speech() {
         printf("[speech done +%.1fs]\n", seconds_since(it->second));
         began.erase(it);
     });
-}
-
-// Looks at the music every 10 ms, for the rest of the run.
-void observe_music() {
     std::thread([] {
         for (;; usleep(10 * 1000)) {
             Clock::rep held = g_music_held_for;
@@ -191,6 +189,16 @@ void observe_music() {
                 printf("[music free +%.1fs]\n", seconds_since(held));
         }
     }).detach();
+}
+
+// "/wav FILE.wav" in --chat: a request said aloud, as --ask-wav makes one, which the records name by its
+// recording. False for any other line.
+bool said_aloud(const std::string &line, const std::function<void(const std::string &, std::vector<int16_t>)> &ask) {
+    if (line.compare(0, 5, "/wav ") != 0) return false;
+    const std::string wav = util::trim(line.substr(5));
+    std::vector<int16_t> pcm;
+    if (read_speech(wav, pcm)) ask(wav, std::move(pcm));
+    return true;
 }
 
 // --talk-over's microphone closes. What was said (none: as if cancelled) is handed over at once, or `late`
@@ -240,10 +248,7 @@ int run_cli(const Args &a) {
     static bool first_text;
     static double first_at;
     auto since = [] { return seconds_since(g_began); };
-    if (audio_observed()) {
-        observe_speech();
-        observe_music();
-    }
+    if (audio_observed()) observe_audio();
     // Stands in for the user speaking again mid-request, so the steering path can be tested.
     static std::string steer;
     steer = steer_text;
@@ -488,13 +493,7 @@ int run_cli(const Args &a) {
                 printf("[%s]%s%s\n", activity::saved_toast(r).c_str(), r.path.empty() ? "" : " ", r.path.c_str());
                 continue;
             }
-            // A request said aloud, as --ask-wav makes one: the records name it by its recording.
-            if (line.compare(0, 5, "/wav ") == 0) {
-                const std::string wav = util::trim(line.substr(5));
-                std::vector<int16_t> pcm;
-                if (read_speech(wav, pcm)) one(wav, std::move(pcm));
-                continue;
-            }
+            if (said_aloud(line, one)) continue;
             if (!util::trim(line).empty()) one(line);
         }
     }
