@@ -109,7 +109,7 @@ Download `zero-bot_<version>_arm64.deb` from the Releases page, copy it to the C
 (over SSH, ADB or the microSD card) and install it on the device:
 
 ```sh
-sudo apt install ./zero-bot_0.4.8_arm64.deb
+sudo apt install ./zero-bot_0.4.9_arm64.deb
 ```
 
 "Zero Bot" then appears in the launcher within a few seconds. To build the package yourself
@@ -119,7 +119,9 @@ The package also puts Zero, the app's 8-bit robot, on the picture the launcher s
 wakes from its lock screen, from the next restart of the device. It changes the launcher's picture the
 way Debian provides for (a diversion): the launcher's own picture is kept beside it and kept current by
 the launcher's updates, and removing Zero Bot (`sudo apt remove zero-bot`) puts it back, again from the
-next restart.
+next restart. To go back to a version older than 0.4.9, remove Zero Bot first and then install the older
+package: those versions know nothing of the picture, so installing one over this would leave the launcher's
+own picture set aside.
 
 ### 2. Follow the setup guide
 
@@ -300,7 +302,9 @@ device directly: nothing goes through the makers' cloud services. Supported so f
 - **TP-Link Tapo** smart plugs and power strips (tested against simulated P110 plugs and a P304M
   strip; each socket of a strip is switched on its own). Every plug of your Tapo account accepts
   the same login, so after logging in Zero Bot asks the plug at the saved address which plug it
-  is: when the router has given that address to another of your plugs, nothing is switched.
+  is: when the router has given that address to another of your plugs, nothing is switched. A plug
+  saved without its hardware address (some were, by versions before 0.4.9) is not switched until a
+  scan in *Settings → Smart home* has saved it.
 - **Accessories that work with Apple HomeKit**, over Wi-Fi or Ethernet: one driver for many
   brands, such as hubs and bridges (Hive, tado, Netatmo, ecobee, Aqara, IKEA) and Wi-Fi plugs,
   lights and thermostats that carry a HomeKit setup code. Zero Bot pairs with the accessory

@@ -16,10 +16,11 @@ struct Child {
 
 // Starts argv[0] (looked up on PATH) in its own process group. stderr is discarded
 // unless merge_err is set, in which case it joins stdout. The child inherits no other open file:
-// not the screen, not a socket the app keeps open for its next request. With die_with_parent the
-// child is killed when the thread that started it ends, the whole app included (a crash, an
-// out-of-memory kill): for a player that would otherwise go on for ever, such as a radio stream.
-// That thread must then outlive the child.
+// not the screen, not a socket the app keeps open for its next request; where that cannot be made
+// sure of, the program is not run and the child exits with 127, as for one not found. With
+// die_with_parent the child is killed when the thread that started it ends, the whole app included
+// (a crash, an out-of-memory kill): for a player that would otherwise go on for ever, such as a
+// radio stream. That thread must then outlive the child.
 Child spawn(const std::vector<std::string> &argv, bool pipe_in, bool pipe_out, bool merge_err = false,
             bool die_with_parent = false);
 

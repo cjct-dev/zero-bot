@@ -51,6 +51,7 @@ const char *const kFamily = "shelly";
 
 const char kTypeIt[] = " Type it in Settings, Smart home, on the device's page.";
 const char kReadAgain[] = "Read the device again in Settings, Smart home.";
+const char kRefusalNotNoted[] = " That refusal could not be noted on this device (its storage may be full).";
 
 // ---------------------------------------------------------------- JSON from a device
 const json *member(const json &j, const char *key) {
@@ -1187,14 +1188,15 @@ private:
         }
         const Reply r = exchange(t, "GET", gen >= 2 ? detail::rpc_path("Shelly.GetStatus", json()) : std::string("/status"), "", gen,
                                  &login, dl);
-        if (r.answered && !r.too_long && r.status == 401) {
+        if (r.answered && r.status == 401) {   // however long the body that came with it
             // Kept refused (its trial stays too) until the same write that drops it from the device's
             // record reaches the file: should that write fail, the record still holds it.
-            keep_refusal(t.key, login);
+            const bool noted = keep_refusal(t.key, login);
             dev.auth.erase("password");
             if (gen == 1) dev.auth.erase("user");
-            err = gen == 1 ? "The Shelly did not accept this user name and password. Type them again; capitals count."
-                           : "The Shelly did not accept this password. Capitals count; type it again.";
+            err = std::string(gen == 1 ? "The Shelly did not accept this user name and password. Type them again; capitals count."
+                                       : "The Shelly did not accept this password. Capitals count; type it again.") +
+                  (noted ? "" : kRefusalNotNoted);
             return false;
         }
         // From now on the password belongs to the device that answered, and goes to no other, even
@@ -1304,12 +1306,14 @@ private:
     // Where this device's password is kept, in this run's memory of refusals (driver.h home::trial).
     static std::string slot_of(const std::string &key) { return std::string(kFamily) + "\n" + key; }
 
-    // A login the Shelly refused: kept in this run's memory, so that it is not sent again even when the
-    // file cannot take it, and in the file for later runs.
-    void keep_refusal(const std::string &key, const Login &login) {
+    // A login the Shelly refused: kept in this run's memory, so that it is not sent again in this run
+    // whatever the file does, and in the file for later runs. False when the file could not take it: a
+    // password still on trial counts as refused in a later run anyway (its trial stays), but one the
+    // Shelly had taken before is held by the memory alone, and would be tried once more after a restart.
+    bool keep_refusal(const std::string &key, const Login &login) {
         const std::string print = detail::fingerprint(login.user, login.password);
         home::trial::refuse(slot_of(key), print);
-        note("refused", key, print);
+        return note("refused", key, print);
     }
 
     void forget(const std::string &key, bool locked_too) {
@@ -1330,9 +1334,10 @@ private:
         if (changed) secrets_->set(kFamily, f);
     }
 
-    bool refused_error(std::string &err) const {
+    // Always false. `noted` false adds that the refusal could not be written down (keep_refusal).
+    bool refused_error(std::string &err, bool noted = true) const {
         err = std::string(kRefused) + " so nothing more is sent to it until the password is typed again in Settings, Smart "
-                                      "home, on the device's page.";
+                                      "home, on the device's page." + (noted ? "" : kRefusalNotNoted);
         return false;
     }
 
@@ -1400,21 +1405,18 @@ private:
     }
 
     // Turns a reply into an error sentence and remembers what it says about the login. True for a
-    // 2xx answer that fits in memory.
+    // 2xx answer that fits in memory. A 401 is the device's answer to the login whatever came with it,
+    // so it is read before the body's length: one sent with a body too long to read is still a refusal.
     bool settle(const Target &t, int gen, const Login &login, const Reply &r, std::string &err) {
         if (r.no_time) { err = "There was no time left to ask the Shelly. Try again in a moment."; return false; }
-        if (r.too_long) { err = "The Shelly's answer was too long to read."; return false; }
-        if (!r.answered) { err = kNoAnswer; return false; }
-        if (r.status == 401) {
-            if (r.sent_login) {
-                keep_refusal(t.key, login);
-                note("locked", t.key, gen);
-                return refused_error(err);
-            }
+        if (r.answered && r.status == 401) {
             note("locked", t.key, gen);
+            if (r.sent_login) return refused_error(err, keep_refusal(t.key, login));
             err = std::string(kNeedsPassword) + kTypeIt;
             return false;
         }
+        if (r.too_long) { err = "The Shelly's answer was too long to read."; return false; }
+        if (!r.answered) { err = kNoAnswer; return false; }
         if (r.status == 429) {
             err = std::string(kThrottled) + " after wrong passwords. Try again in a few minutes.";
             return false;

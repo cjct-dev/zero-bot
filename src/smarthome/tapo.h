@@ -7,7 +7,8 @@
 // (pake [2]), cipher suite 1, aes_128_ccm, password_shadow id 2. Anything else is refused.
 //
 // A plug counts rejected logins and locks itself after too many, so this module never retries
-// one: a rejection is remembered for that plug and credential until forget_sessions().
+// one: a rejection is remembered for that plug and credential until forget_sessions(), and every
+// call says whether the plug refused the credentials it was given (`refused`).
 //
 // Depends on the C++ standard library, libcurl, OpenSSL libcrypto and nlohmann/json.
 // The application should have called curl_global_init() before the first request.
@@ -34,7 +35,8 @@ struct Device {
     // The MAC the plug was saved under (any notation), "" for none. An address is not an identity:
     // after a router hands this plug's address to another plug of the same account, that plug
     // accepts the same login. So each new session is asked get_device_info first, and a plug that
-    // names another MAC gets nothing else (request() fails, saying another plug answered).
+    // does not name this MAC (another one, or none) gets nothing else (request() fails, saying so).
+    // With none saved nothing is compared: such a plug may be read, and is never switched (the driver).
     std::string mac;
 };
 
@@ -52,35 +54,36 @@ bool owned_by(const Device &dev, const std::string &email);
 // or after the plug rejected these credentials, or while it reports itself locked.
 // With Device::mac set, a session is used only once the plug has named that MAC (one extra
 // request per login).
+// `refused` says whether this plug has rejected these credentials, or locked itself, in this call or
+// since forget_sessions() before it: the caller keeps that beyond the life of the program, so that
+// they are never tried again. It is said by the call itself, from the state the call used: saving the
+// account calls forget_sessions(), which may happen while a login is under way, and would drop the
+// plug's answer before the caller could ask for it.
 // Thread-safe; requests to one plug (one ip and port) are serialised and share one session.
 // Each HTTP exchange is limited to 3 s to connect and 6 s in total; a call that has to log in
 // first makes three of them (four when it must also ask a TPAP plug how to log in). A refused
 // connection is tried once more, 300 ms after a discovery query to the plug's UDP port 20002.
-bool request(const Device &dev, const Credentials &cred, const json &req, json &reply, std::string &err);
+bool request(const Device &dev, const Credentials &cred, const json &req, json &reply, std::string &err, bool &refused);
 
-// Whether this plug has rejected these credentials, or locked itself, since forget_sessions().
-// The caller can keep that beyond the life of the program, so that it is never tried again.
-bool login_refused(const Device &dev, const Credentials &cred);
-
-// Convenience wrappers built on request().
+// Convenience wrappers built on request(), with its `refused`.
 
 // Fills {"name": the plug's name, "on": true/false, "model", "fw", "sockets": number of child
 // sockets (0 for a plain plug)}, followed by everything else get_device_info returned ("nickname"
 // and "ssid" decoded from base64). A strip has no switch of its own: "on" is true when any of its
 // sockets is, which costs a second request.
-bool get_info(const Device &dev, const Credentials &cred, json &info, std::string &err);
+bool get_info(const Device &dev, const Credentials &cred, json &info, std::string &err, bool &refused);
 
-bool set_power(const Device &dev, const Credentials &cred, bool on, std::string &err);
+bool set_power(const Device &dev, const Credentials &cred, bool on, std::string &err, bool &refused);
 
 // P110. Fills {"power_w": power now in watts, "today_wh": today's energy in watt-hours}, leaving
 // out what the plug does not report, plus "month_wh" when known and "raw" (the plug's answers).
-bool get_energy(const Device &dev, const Credentials &cred, json &energy, std::string &err);
+bool get_energy(const Device &dev, const Credentials &cred, json &energy, std::string &err, bool &refused);
 
 // P304M. Fills an array of {"id": child device id for set_socket_power(), "name", "on", "position"}.
-bool list_sockets(const Device &dev, const Credentials &cred, json &sockets, std::string &err);
+bool list_sockets(const Device &dev, const Credentials &cred, json &sockets, std::string &err, bool &refused);
 
 bool set_socket_power(const Device &dev, const Credentials &cred, const std::string &child_id, bool on,
-                      std::string &err);
+                      std::string &err, bool &refused);
 
 // Drops every cached session and every remembered rejection or lock, e.g. after the credentials
 // were changed.

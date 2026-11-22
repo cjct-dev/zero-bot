@@ -93,8 +93,9 @@ def converse(name, plugs, adjust, script, said, photo=False):
             info = {"scheme": mode.upper(), "device_type": "SMART.TAPOPLUG", "owner": OWNER}
             if mode == "tpap":
                 info["tpap"] = json.dumps({"tls": 0, "dac": 0, "noc": 0, "pake": [2], "port": 80})
+            # The MAC the mock names (its default), as a scan saves it: a plug saved without one is never switched.
             devices.append({"id": "tapo:%s-%d" % (model, k), "kind": "tapo", "name": "Tapo " + model.upper(), "model": model.upper() + "(UK)",
-                            "last_ip": "127.0.0.1", "port": port, "enabled": True, "things": [], "info": info})
+                            "mac": "AA-BB-CC-DD-EE-FF", "last_ip": "127.0.0.1", "port": port, "enabled": True, "things": [], "info": info})
         home = {"version": 2, "secrets": {"tapo": {"email": EMAIL, "password_sha1": SHA1}},
                 "networks": {network: {"label": "Test network", "gateway_mac": "02:00:00:00:00:00", "allowed_at": 1, "last_scan": 1,
                                        "devices": devices}}}

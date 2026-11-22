@@ -583,16 +583,30 @@ key, real audio), say so plainly rather than implying it was.
   may have stopped before the device answered, and a Tapo plug locks after a few refusals).
   `pairing_submit` writes a "trying" mark on the device record before it hands anything typed to a
   driver, and takes it back in the write of the outcome; while it stands, the record's pairing data
-  are not read (`from_json`). Shelly ended a password's trial when a pairing was refused, before
+  are handed to no driver, but kept as they are (`Saved::held_auth`, written back by every write). They
+  were first simply not read, so the next write of the record erased them: taking the mark back when
+  the network changed before the handover, or any other change saved meanwhile, lost a Shelly's user
+  name or a Fire TV's pairing that nothing had been sent with. A mark taken back puts back the one
+  before it (an earlier run's still stands). Shelly ended a password's trial when a pairing was refused, before
   that write: when the write failed, the record kept the old password with neither its refusal nor
   a trial, and it was sent again. Every failed write of `smarthome.json` is reported
   (`home::kNotSaved`), not lost.
 - A refusal is kept in memory for the rest of the run as well as in the file (`home::trial::refuse`,
   per credential): the file can fail to take it, and Tapo's transport remembers a refusal per plug
   only, so the account's other plugs, or another WiZ device, were sent the refused password or key
-  again in the same run. A credential on trial goes to one device at a time (each family's
-  `g_first_try`, taken before the account or key is read): a command that fans out sent a wrong
-  password to four plugs at once. A refusal the file could not take is said.
+  again in the same run. The two protect differently: the memory is this run's and cannot fail; the
+  file is what stops a later run, and a write can fail. A refusal the file could not take is said (in
+  the error the user and the model read): a credential still on trial counts as refused in a later run
+  anyway (its trial stays), but one a device had accepted before is then held by the memory alone, and
+  could be tried once more after a restart. A credential on trial goes to one device at a time (each
+  family's `g_first_try`, taken before the account or key is read, let go once the outcome is kept, not
+  after the slow reads that follow, such as a plug's energy readings): a command that fans out sent a
+  wrong password to four plugs at once. It is also sent once: WiZ resends a datagram after 250 ms, which
+  sent a key on trial again while the device's first answer was on the way; on trial it goes out in
+  one. A refusal is what the call that sent the credential said (`tapo::request`'s `refused`), not
+  looked up afterwards: saving the Tapo account, even unchanged, drops the transport's sessions and
+  what each plug said, and a refusal that arrived meanwhile was lost, so the next plug was sent the
+  same password.
 - A scan is of the network the user agreed to: `home::scan` takes the network the settings page
   showed (`discovery::Options::network_id`), refuses once the device is on another, and drops what
   it heard when the network changed while it listened. So does the short scan for a device that
@@ -616,7 +630,9 @@ key, real audio), say so plainly rather than implying it was.
   A login is no identity either: every plug of one Tapo account accepts the same password, and
   until the integration review a command for a desk lamp switched on the heater plug that had
   been given the lamp's address, with no question. The Tapo transport now asks each new session's
-  plug for its MAC (`tapo::Device::mac`) before sending anything else in it.
+  plug for its MAC (`tapo::Device::mac`) before sending anything else in it, and takes only a plug that
+  names it; a plug saved without a MAC (an earlier version saved twelve zeros, which are none) is never
+  switched: it was first taken as "nothing to compare", so the plug given its address was.
 - A default that reads a device's name must also read the name the user types. WiZ devices keep
   no name, so the heater question (on for a plug named like a heater) never applied to one until
   `set_thing_alias` learnt to switch it on for a name that newly sounds like a heater.
@@ -766,9 +782,10 @@ key, real audio), say so plainly rather than implying it was.
 - A sandbox does not close what it inherits: `bwrap` handed the app's open descriptors (the
   framebuffer among them, which LVGL opens without close-on-exec) to the sandboxed Python.
   `proc::spawn` closes everything above stderr in the child; keep it. Where close_range is missing
-  or refused it closes what /proc/self/fd lists, else every number up to the hard limit: its
-  fallback first stopped at 4096, then at the soft limit, which a process can lower below a
-  descriptor it already holds. Anything slow that a tool
+  or refused it closes what /proc/self/fd lists, and where that cannot be read either it does not
+  run the program (the child exits with 127): its fallback first stopped at 4096, then at the soft
+  limit, then at the hard limit, and a process can lower either below a descriptor it already
+  holds, so no count up to a bound is sure to reach them all. Anything slow that a tool
   starts takes `ctx.cancel` (`proc::run`'s last argument), so ESC stops it.
 
 ## 9. Adding things
@@ -944,9 +961,16 @@ package's preinst moves the launcher's picture aside with `dpkg-divert --rename`
 puts it back when Zero Bot is removed, the way Debian policy describes; never copy over the launcher's
 file, which its next update would undo. Either change shows from the launcher's next start (a restart
 of the device). `FIRST_WITH_PICTURE` in the postrm is the first version that carries the picture (0.4.9):
-a failed upgrade from an older version undoes the diversion. Going back to an older version means
-removing Zero Bot first (`sudo apt remove zero-bot`): otherwise the diversion stays and the launcher's
-own picture does not come back.
+a failed upgrade from an older version undoes the diversion. `packaging_test.py` checks that the built
+package's version is not below it: the picture came in while the project's version still said 0.4.8, a
+version the postrm counts as one without it, so an aborted upgrade back to such a package would have undone
+the diversion. The postrm removes only a diversion `dpkg-divert --listpackage` says zero-bot holds: after a
+remove, another package may take the picture before the purge, and dpkg-divert refuses to remove its
+diversion (the purge would fail).
+Downgrades are not handled by the scripts and stay a documented step (README, Install): going back to a
+version older than 0.4.9 means removing Zero Bot first (`sudo apt remove zero-bot`); installed over this
+one, the older version's scripts leave the diversion in place and the launcher's own picture never comes
+back.
 
 ## 10. Planned work
 

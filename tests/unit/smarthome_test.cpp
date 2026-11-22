@@ -1703,7 +1703,8 @@ void test_pairing() {
 void test_tapo_driver() {
     Section s("tapo driver: account steps, owner check and a kept refusal, with nothing contacted");
     // Nothing listens on this port: a driver that tried to log in would report a connection error.
-    write_home({{{"id", "tapo:p"}, {"kind", "tapo"}, {"name", "Tapo P110"}, {"model", "P110"}, {"last_ip", "127.0.0.1"}, {"port", 9},
+    write_home({{{"id", "tapo:p"}, {"kind", "tapo"}, {"name", "Tapo P110"}, {"model", "P110"}, {"mac", "aa:bb:cc:00:00:01"},
+                 {"last_ip", "127.0.0.1"}, {"port", 9},
                  {"info", {{"scheme", "KLAP"}, {"device_type", "SMART.TAPOPLUG"},
                            {"owner", "B58996C504C5638798EB6B511E6F49AF"}}},   // MD5 of "user@example.com", upper case
                  {"things", json::array({thing("main", "Bed heater", "plug", home::kPower)})}},
@@ -1825,8 +1826,8 @@ void test_storage() {
     g_fake->reset();
     g_fake->wants_pairing = true;
     Listener plug_side;
-    json plug = {{"id", "tapo:p"}, {"kind", "tapo"}, {"name", "Tapo P110"}, {"model", "P110"}, {"last_ip", "127.0.0.1"},
-                 {"port", plug_side.port},
+    json plug = {{"id", "tapo:p"}, {"kind", "tapo"}, {"name", "Tapo P110"}, {"model", "P110"}, {"mac", "aa:bb:cc:00:00:01"},
+                 {"last_ip", "127.0.0.1"}, {"port", plug_side.port},
                  {"info", {{"scheme", "KLAP"}, {"device_type", "SMART.TAPOPLUG"}, {"owner", "B58996C504C5638798EB6B511E6F49AF"}}},
                  {"things", json::array({thing("main", "Lamp", "plug", home::kPower)})}};
     write_home({device("fake:tv", {thing("tv", "Lounge TV", "tv", home::kPower)}), plug},
@@ -1977,6 +1978,126 @@ struct FillingSecrets : home::Secrets {
     }
 };
 
+// A KLAP plug of the account, as discovery saved it (`mac` "" for none), at 127.0.0.1:`port`.
+home::Device tapo_plug(const std::string &id, int port, const std::string &mac) {
+    home::Device d;
+    d.id = id;
+    d.kind = "tapo";
+    d.ip = "127.0.0.1";
+    d.port = port;
+    d.mac = mac;
+    d.info = {{"scheme", "KLAP"}, {"device_type", "SMART.TAPOPLUG"}};
+    home::Thing t;
+    t.id = "main";
+    t.type = "plug";
+    t.caps = home::kPower;
+    t.ref = {{"child", ""}};
+    d.things = {t};
+    return d;
+}
+
+// A Tapo plug on 127.0.0.1 that takes one account over KLAP, as tests/mocks/mock_tapo.py does, from the
+// transport's own building blocks: it answers get_device_info (naming `mac`, which may be changed or emptied),
+// set_device_info and get_energy_usage (after `energy_ms`). One connection at a time; logins, switches and
+// energy questions are counted as they arrive.
+struct KlapPlug {
+    int fd = -1, port = 0;
+    std::mutex mtx;
+    std::string mac;
+    std::atomic<int> logins{0}, switched{0}, energy_asked{0}, energy_ms{0};
+    std::atomic<bool> stop{false};
+    std::string auth, local, remote = "remote-seed-0001";
+    tapo::detail::KlapKeys keys;
+    std::thread loop;
+    KlapPlug(const std::string &plug_mac, const std::string &email, const std::string &password)
+        : mac(plug_mac), auth(tapo::detail::klap_auth_hash(email, tapo::detail::sha1(password))) {
+        fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        socklen_t len = sizeof(a);
+        bind(fd, reinterpret_cast<sockaddr *>(&a), sizeof(a));
+        listen(fd, 8);
+        getsockname(fd, reinterpret_cast<sockaddr *>(&a), &len);
+        port = ntohs(a.sin_port);
+        loop = std::thread([this] {
+            while (!stop) {
+                pollfd p{fd, POLLIN, 0};
+                if (poll(&p, 1, 20) <= 0) continue;
+                const int c = accept(fd, nullptr, nullptr);
+                if (c >= 0) answer(c);
+            }
+        });
+    }
+    void set_mac(const std::string &m) {
+        std::lock_guard<std::mutex> lk(mtx);
+        mac = m;
+    }
+    // The decrypted request's answer, as the plug's JSON.
+    json command(const json &req) {
+        const std::string method = req.value("method", "");
+        if (method == "get_device_info") {
+            std::lock_guard<std::mutex> lk(mtx);
+            return {{"error_code", 0}, {"result", {{"device_id", "80225a0b0001"}, {"mac", mac}, {"model", "P110"},
+                                                   {"type", "SMART.TAPOPLUG"}, {"device_on", false}}}};
+        }
+        if (method == "set_device_info") {
+            ++switched;
+            return {{"error_code", 0}, {"result", json::object()}};
+        }
+        if (method == "get_energy_usage") {
+            ++energy_asked;
+            std::this_thread::sleep_for(std::chrono::milliseconds(energy_ms.load()));
+            return {{"error_code", 0}, {"result", {{"today_energy", 12}, {"current_power", 5000}}}};
+        }
+        return {{"error_code", -1002}};
+    }
+    void answer(int c) {
+        std::string req;
+        char buf[2048];
+        size_t body_at = std::string::npos, length = 0;
+        while (body_at == std::string::npos || req.size() < body_at + length) {
+            const ssize_t n = recv(c, buf, sizeof(buf), 0);
+            if (n <= 0) break;
+            req.append(buf, static_cast<size_t>(n));
+            const size_t end = req.find("\r\n\r\n");
+            if (body_at == std::string::npos && end != std::string::npos) {
+                body_at = end + 4;
+                const size_t cl = util::lower(req).find("content-length:");
+                length = cl == std::string::npos ? 0 : static_cast<size_t>(atoi(req.c_str() + cl + 15));
+            }
+        }
+        const std::string body = body_at == std::string::npos ? "" : req.substr(body_at);
+        std::string headers, out;
+        long status = 200;
+        if (req.find("/app/handshake1") != std::string::npos) {
+            ++logins;
+            local = body;
+            out = remote + tapo::detail::klap_handshake1_hash(local, remote, auth);
+            headers = "Set-Cookie: TP_SESSIONID=session-1;TIMEOUT=86400\r\n";
+        } else if (req.find("/app/handshake2") != std::string::npos) {
+            status = body == tapo::detail::klap_handshake2_hash(local, remote, auth) ? 200 : 403;
+            keys = tapo::detail::klap_derive(local, remote, auth);
+        } else if (const size_t at = req.find("/app/request?seq="); at != std::string::npos) {
+            const int32_t seq = static_cast<int32_t>(atol(req.c_str() + at + 17));
+            std::string plain;
+            const json asked = tapo::detail::klap_open(keys, seq, body, plain) ? util::parse_untrusted_json(plain) : json();
+            out = tapo::detail::klap_seal(keys, seq, command(asked).dump());
+        } else {
+            status = 404;
+        }
+        const std::string reply = "HTTP/1.1 " + std::to_string(status) + " X\r\nContent-Type: application/octet-stream\r\n" + headers +
+                                  "Connection: close\r\nContent-Length: " + std::to_string(out.size()) + "\r\n\r\n" + out;
+        send(c, reply.data(), reply.size(), MSG_NOSIGNAL);
+        close(c);
+    }
+    ~KlapPlug() {
+        stop = true;
+        loop.join();
+        close(fd);
+    }
+};
+
 // A Tapo password one plug refused is sent to no other plug of the account in this run, also when the
 // file could not take the refusal, which is said; and a password on trial goes to one plug at a time,
 // the others waiting for the outcome (fix round 2, C1).
@@ -1987,22 +2108,7 @@ void test_tapo_refusals() {
     FillingSecrets store;
     tapo->attach(&store);
     RefusingPlug side_a, side_b;
-    auto plug = [](const char *id, int port) {
-        home::Device d;
-        d.id = id;
-        d.kind = "tapo";
-        d.ip = "127.0.0.1";
-        d.port = port;
-        d.info = {{"scheme", "KLAP"}, {"device_type", "SMART.TAPOPLUG"}};
-        home::Thing t;
-        t.id = "main";
-        t.type = "plug";
-        t.caps = home::kPower;
-        t.ref = {{"child", ""}};
-        d.things = {t};
-        return d;
-    };
-    home::Device a = plug("tapo:a", side_a.port), b = plug("tapo:b", side_b.port);
+    home::Device a = tapo_plug("tapo:a", side_a.port, "aa:bb:cc:00:00:0a"), b = tapo_plug("tapo:b", side_b.port, "aa:bb:cc:00:00:0b");
     home::Change on;
     on.on = true;
     std::string err;
@@ -2031,6 +2137,102 @@ void test_tapo_refusals() {
     const int sent = side_a.logins + side_b.logins - 1;
     CHECK_MSG(sent == 1, std::to_string(sent) + " plugs were sent the password on trial");
     CHECK_MSG(has(err_a + err_b, "does not accept") && has(err_a + err_b, "did not accept the saved password"), err_a + " / " + err_b);
+    tapo::forget_sessions();
+}
+
+// The account saved again, even unchanged, while a plug is still checking its password (fix round 3, D4):
+// saving it drops the transport's sessions and what each plug said, but the call that sent the password
+// says itself that it was refused, so the refusal is kept, and no other plug is sent that password.
+void test_tapo_refusal_during_save() {
+    Section s("tapo driver: a refusal that arrives while the account is saved again is kept");
+    home::testing::new_run();
+    tapo::forget_sessions();
+    auto tapo = make_tapo_driver();
+    FillingSecrets store;
+    store.room = 100;
+    tapo->attach(&store);
+    store.all["tapo"] = {{"email", "user@example.com"}, {"password_sha1", tapo::sha1_hex("changed since")}};   // taken before
+    RefusingPlug side_a, side_b;
+    side_a.delay_ms = 400;
+    home::Device a = tapo_plug("tapo:a", side_a.port, "aa:bb:cc:00:00:0a"), b = tapo_plug("tapo:b", side_b.port, "aa:bb:cc:00:00:0b");
+    home::Change on;
+    on.on = true;
+    std::string err_a, err_b;
+    std::thread to_a([&] { tapo->apply(a, a.things[0], on, 2500, err_a); });
+    for (int i = 0; i < 200 && side_a.logins == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    CHECK(home::set_tapo_account("user@example.com", ""));   // Settings, Tapo account: saved as it was
+    to_a.join();
+    CHECK_MSG(has(err_a, "does not accept") && store.get("tapo").value("refused", false), err_a + " " + store.get("tapo").dump());
+    CHECK_MSG(!tapo->apply(b, b.things[0], on, 2500, err_b) && side_b.logins == 0 && has(err_b, "did not accept"), err_b);
+    home::set_tapo_account("", "");
+    tapo::forget_sessions();
+}
+
+// A plug of the account is switched only once it names the MAC it was saved under (fix round 3, D5). An
+// earlier version saved some plugs with an all-zero MAC, which is none: such a plug is not switched, and
+// nothing is sent, when another plug of the account now has its address, until a scan saves its MAC.
+// A plug that names another MAC, or none, gets no change either.
+void test_tapo_identity() {
+    Section s("tapo driver: a plug is switched only when it names the MAC it was saved under");
+    home::testing::new_run();
+    tapo::forget_sessions();
+    auto tapo = make_tapo_driver();
+    FillingSecrets store;
+    store.room = 100;
+    tapo->attach(&store);
+    store.all["tapo"] = {{"email", "user@example.com"}, {"password_sha1", tapo::sha1_hex("right")}};
+    KlapPlug heater("AA-BB-CC-00-00-0B", "user@example.com", "right");   // given the lamp's address by the router
+    home::Device lamp = tapo_plug("tapo:80225a0b00000000000000000000000000000001", heater.port, "00:00:00:00:00:00");
+    home::Change on;
+    on.on = true;
+    std::string err;
+    CHECK_MSG(!tapo->apply(lamp, lamp.things[0], on, 2500, err) && heater.logins == 0 && has(err, "scan the network again"), err);
+    lamp.mac.clear();
+    CHECK_MSG(!tapo->apply(lamp, lamp.things[0], on, 2500, err) && heater.logins == 0, err);
+    lamp.mac = "aa:bb:cc:00:00:0a";   // scanned again: its own MAC
+    CHECK_MSG(!tapo->apply(lamp, lamp.things[0], on, 2500, err) && heater.switched == 0 && has(err, "another plug"), err);
+    heater.set_mac("");
+    CHECK_MSG(!tapo->apply(lamp, lamp.things[0], on, 2500, err) && heater.switched == 0 && has(err, "did not say which plug"), err);
+    // The lamp itself back at the address: switched. So is one whose id holds its MAC, saved without the MAC.
+    heater.set_mac("AA-BB-CC-00-00-0A");
+    CHECK_MSG(tapo->apply(lamp, lamp.things[0], on, 2500, err) && heater.switched == 1, err);
+    home::Device by_id = tapo_plug("tapo:aa:bb:cc:00:00:0a", heater.port, "");
+    CHECK_MSG(tapo->apply(by_id, by_id.things[0], on, 2500, err) && heater.switched == 2, err);
+    tapo::forget_sessions();
+}
+
+// A password on trial goes to one plug at a time only until a plug has taken it (fix round 3, D8): the reads
+// that follow on that plug (energy readings, which can be slow) do not hold the account's other plugs back.
+void test_tapo_first_try_released() {
+    Section s("tapo driver: the first try of a password ends with its outcome, not with the slow reads after it");
+    home::testing::new_run();
+    tapo::forget_sessions();
+    auto tapo = make_tapo_driver();
+    FillingSecrets store;
+    store.room = 100;
+    tapo->attach(&store);
+    store.all["tapo"] = {{"email", "user@example.com"}, {"password_sha1", tapo::sha1_hex("right")}, {"trial", "typed"}};
+    KlapPlug metered("AA-BB-CC-00-00-0A", "user@example.com", "right"), other("AA-BB-CC-00-00-0B", "user@example.com", "right");
+    metered.energy_ms = 1500;
+    home::Device a = tapo_plug("tapo:a", metered.port, "aa:bb:cc:00:00:0a"), b = tapo_plug("tapo:b", other.port, "aa:bb:cc:00:00:0b");
+    a.model = "P110";
+    a.things[0].caps |= home::kSensor;
+    std::string err_a, err_b;
+    std::thread reading([&] {
+        std::vector<home::Thing> things = {a.things[0]};
+        tapo->read(a, things, err_a);
+    });
+    for (int i = 0; i < 400 && metered.energy_asked == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    home::Change on;
+    on.on = true;
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool switched = tapo->apply(b, b.things[0], on, 2500, err_b);
+    const long long waited =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    reading.join();
+    CHECK_MSG(metered.energy_asked == 1 && switched && other.switched == 1 && waited < 1000,
+              std::to_string(waited) + " ms; " + err_b);
+    CHECK(!store.get("tapo").contains("trial"));   // taken by the first plug
     tapo::forget_sessions();
 }
 
@@ -2069,6 +2271,83 @@ void test_unconfirmed_pairing() {
     const home::NetworkEntry e = home::entry(g_net.id());
     CHECK(e.devices[0].auth.value("key", "") == "secret-1234" && e.devices[0].trying.empty());
     g_fake->reset();
+}
+
+// The pairing data the file holds for a device, as written (not as the layer hands them to a driver).
+json auth_on_file(const std::string &device_id) {
+    json root = util::load_json(file_path(), json::object());
+    for (const auto &d : root["networks"][g_net.id()]["devices"])
+        if (d.value("id", "") == device_id) return d.value("auth", json::object());
+    return json();
+}
+
+// Something typed for a device whose trying mark was written, while another command held the device, and
+// the Wi-Fi joined another network before it could be handed over (fix round 3, D3): nothing is handed to
+// the driver, the mark from before is put back, and what pairing had saved before (a Shelly's user name, a
+// Fire TV's pairing) is as it was in the file and used again. Writes while the mark stood kept it as well.
+// An earlier run's mark that still stood stays, and its pairing data stay unused, but kept.
+void test_pairing_not_handed_over() {
+    Section s("pairing: an attempt the network change stopped before handover keeps the pairing data saved before it");
+    g_fake->reset();
+    discovery::Network moved = g_net;
+    moved.ssid = "Neighbour";
+    moved.gateway_mac = "02:00:00:00:00:0b";
+    const json shelly_user = {{"user", "owner"}, {"dev", "a4cf12f45378"}};
+    const json firetv_pairing = {{"token", "paired-token"}, {"client", "zero-bot"}};
+    for (const std::string &earlier_mark : {std::string(), std::string("run-of-an-earlier-start")}) {
+        for (const json &held : {shelly_user, firetv_pairing}) {
+            json tv = device("fake:held", {thing("tv", "Lounge TV", "tv", home::kPower)});
+            tv["auth"] = held;
+            if (!earlier_mark.empty()) tv["trying"] = earlier_mark;
+            write_home({tv, device("fake:lamp", {thing("lamp", "Desk lamp", "light", home::kPower)})});
+            std::string err;
+            bool submitted = true;
+            std::unique_lock<std::mutex> busy(home::device_lock("fake:held"));   // another command has the device
+            std::thread typing([&] { submitted = home::pairing_submit(g_net.id(), "fake:held", "1234", err); });
+            for (int i = 0; i < 300 && home::entry(g_net.id()).devices[0].trying != home::run_id(); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            CHECK(home::entry(g_net.id()).devices[0].trying == home::run_id() && home::entry(g_net.id()).devices[0].auth.empty());
+            CHECK(home::set_enabled(g_net.id(), "fake:lamp", false));   // another write while the mark stands
+            CHECK_MSG(auth_on_file("fake:held") == held, auth_on_file("fake:held").dump());
+            home::testing::set_network(&moved);
+            busy.unlock();
+            typing.join();
+            home::testing::set_network(&g_net);
+            CHECK_MSG(!submitted && has(err, "different network") && !has(err, "could not be saved") && g_fake->pairs == 0, err);
+            const home::Saved after = home::entry(g_net.id()).devices[0];
+            CHECK_MSG(after.trying == earlier_mark && auth_on_file("fake:held") == held, after.trying + " " + auth_on_file("fake:held").dump());
+            run({{"action", "on"}, {"target", "Lounge TV"}});
+            const json used = earlier_mark.empty() ? held : json::object();
+            CHECK_MSG(g_fake->seen_auth["fake:held"] == used, g_fake->seen_auth["fake:held"].dump());
+            g_fake->reset();
+        }
+    }
+    // Unpaired while an earlier run's mark stands: what was held goes with it.
+    json held_tv = device("fake:held", {thing("tv", "Lounge TV", "tv", home::kPower)});
+    held_tv["auth"] = firetv_pairing;
+    held_tv["trying"] = "run-of-an-earlier-start";
+    write_home({held_tv});
+    CHECK(home::unpair(g_net.id(), "fake:held").empty());
+    CHECK_MSG(auth_on_file("fake:held") == json::object() && home::entry(g_net.id()).devices[0].trying.empty(),
+              auth_on_file("fake:held").dump());
+    // When the mark cannot be taken back, that is said.
+    const std::string dir = util::data_dir();
+    if (!read_only_holds(dir)) return;
+    json tv = device("fake:held", {thing("tv", "Lounge TV", "tv", home::kPower)});
+    tv["auth"] = firetv_pairing;
+    write_home({tv});
+    std::string err;
+    std::unique_lock<std::mutex> busy(home::device_lock("fake:held"));
+    std::thread typing([&] { home::pairing_submit(g_net.id(), "fake:held", "1234", err); });
+    for (int i = 0; i < 300 && home::entry(g_net.id()).devices[0].trying.empty(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    chmod(dir.c_str(), 0500);
+    home::testing::set_network(&moved);
+    busy.unlock();
+    typing.join();
+    chmod(dir.c_str(), 0700);
+    home::testing::set_network(&g_net);
+    CHECK_MSG(has(err, "different network") && has(err, "could not be saved") && auth_on_file("fake:held") == firetv_pairing, err);
 }
 
 // ---------------------------------------------------------------- the stand-in test network
@@ -3603,7 +3882,11 @@ int main(int argc, char **argv) {
     test_tapo_driver();
     test_storage();
     test_tapo_refusals();
+    test_tapo_refusal_during_save();
+    test_tapo_identity();
+    test_tapo_first_try_released();
     test_unconfirmed_pairing();
+    test_pairing_not_handed_over();
     test_stand_in();
     test_scan_binding();
     test_network_gate();

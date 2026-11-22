@@ -250,6 +250,15 @@ def main():
         check("that plug was only asked who it is", st["on"] is False and set(st["methods"]) == {"get_device_info"} and st["bad"] == [], st)
         check("its refusal to be someone else is no refusal of the password", app.load()["secrets"]["tapo"].get("refused") is None,
               app.load()["secrets"]["tapo"])
+        # Saved by an earlier version with twelve zeros for its MAC, which name no plug: nothing could tell
+        # the plug at its address apart, so none is switched and nothing is sent until a scan saves its MAC.
+        root = app.load()
+        next(d for d in root["networks"][network]["devices"] if d["id"] == "tapo:desk")["mac"] = "00:00:00:00:00:00"
+        app.save(root)
+        before = heater.stats()
+        r = app.tool({"action": "on", "target": "Desk lamp"})
+        check("a plug saved with a zero MAC is not switched, and nothing is sent", isinstance(r, str) and
+              "scan the network again" in r and heater.stats() == before, (r, heater.stats()))
         root = app.load()
         root["networks"][network]["devices"] = [d for d in root["networks"][network]["devices"] if d["id"] != "tapo:desk"]
         app.save(root)

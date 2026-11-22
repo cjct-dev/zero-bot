@@ -1394,15 +1394,20 @@ PairStep pairing_step(const std::string &network_id, const std::string &device_i
 
 namespace {
 
+// Said when what a pairing leaves in the file could not be written.
+const char *const kSetUpAgain =
+    "that could not be saved on this device (its storage may be full); it will need setting up again.";
+
 // What was typed goes to the driver only once the file has taken a note that it is being tried
-// (`trying`): the driver keeps its refusal there, and one it could not keep would be sent again by a
-// later run (a Tapo plug locks itself after a few). While the note stands the device's pairing data
-// are not used (store.cpp from_json). The note goes with the write of the outcome (record_pairing),
-// or is taken back here (`on` false) when nothing was handed over after all.
-bool mark_trying(const std::string &network_id, const std::string &device_id, bool on) {
+// (`trying`, this run's mark): the driver keeps its refusal there, and one it could not keep would be
+// sent again by a later run (a Tapo plug locks itself after a few). While the note stands the device's
+// pairing data are not used, and kept as they were (store.cpp from_json). The note goes with the write
+// of the outcome (record_pairing), or, when nothing was handed over after all, the mark from before is
+// put back (an earlier run's, which still stands, or none).
+bool mark_trying(const std::string &network_id, const std::string &device_id, const std::string &mark) {
     return modify_entry(network_id, [&](NetworkEntry &e) {
         for (auto &d : e.devices)
-            if (d.id == device_id) d.trying = on ? run_id() : std::string();
+            if (d.id == device_id) d.set_trying(mark);
     });
 }
 
@@ -1444,9 +1449,9 @@ bool record_pairing(const std::string &network_id, const Device &dev, bool ok, c
     return modify_entry(network_id, [&](NetworkEntry &e) {
         for (auto &d : e.devices) {
             if (d.id == dev.id) {
+                d.set_trying("");
                 d.auth = dev.auth.is_object() ? dev.auth : json::object();
                 d.needs_setup = next.kind != Pairing::None;
-                d.trying.clear();
                 if (!d.needs_setup && ok) d.problem.clear();
                 continue;
             }
@@ -1473,7 +1478,7 @@ bool pairing_submit(const std::string &network_id, const std::string &device_id,
     if (!drv) { err = "This kind of device cannot be set up here."; return false; }
     if (!may_contact(saved, err)) return false;
     const bool typed = !input.empty();
-    if (typed && !mark_trying(network_id, device_id, true)) {
+    if (typed && !mark_trying(network_id, device_id, run_id())) {
         err = std::string("Nothing was sent to the device. ") + kNotSaved;
         return false;
     }
@@ -1482,13 +1487,12 @@ bool pairing_submit(const std::string &network_id, const std::string &device_id,
     bool handed = false;
     const bool ok = hand_over(drv, network_id, dev, input, next, handed, err);
     if (!handed) {
-        if (typed) mark_trying(network_id, device_id, false);
+        if (typed && !mark_trying(network_id, device_id, saved.trying)) err = clause(err) + ", and " + kSetUpAgain;
         return false;
     }
     if (!ok && err.empty()) err = "That did not work.";
     if (!record_pairing(network_id, dev, ok, next, family_needs(network_id, device_id, drv))) {
-        err = (ok ? std::string("It was set up, but ") : clause(err) + ", and ") +
-              "that could not be saved on this device (its storage may be full); it will need setting up again.";
+        err = (ok ? std::string("It was set up, but ") : clause(err) + ", and ") + kSetUpAgain;
         return false;
     }
     return ok;
@@ -1520,6 +1524,7 @@ std::string unpair(const std::string &network_id, const std::string &device_id) 
     const bool saved_ok = modify_entry(network_id, [&](NetworkEntry &e) {
         for (auto &d : e.devices)
             if (d.id == device_id) {
+                d.set_trying("");   // what is forgotten includes pairing data held from an unfinished pairing
                 d.auth = dev.auth;
                 d.info = dev.info;   // a driver may correct the discovery record (a HomeKit accessory is free again)
                 d.needs_setup = !kept && next.kind != Pairing::None;

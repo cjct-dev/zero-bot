@@ -42,12 +42,17 @@ struct ThingMeta {
 struct Saved : Device {
     std::vector<std::string> found_by;
     std::string trying;          // a code or password typed for it was being handed to its driver (pairing_submit);
-                                 // while it is set, `auth` is not read from the file (store.cpp from_json)
+                                 // while it is set, `auth` is empty and the pairing data in the file wait in
+                                 // `held_auth`: kept by every write, never handed to a driver (store.cpp from_json)
+    json held_auth;
     bool enabled = true;         // the assistant may use it
     bool needs_setup = false;    // its driver wants pairing before anything else
     time_t last_seen = 0;
     std::string problem;         // why it could not be read last time, shown in settings
     std::map<std::string, ThingMeta> meta;   // by Thing::id
+    // Sets the trying mark (`mark`), or takes it back (""), moving the pairing data between `auth` and
+    // `held_auth` so that no write of the record loses them.
+    void set_trying(const std::string &mark);
     bool controllable() const;   // a driver built into the app claims it
     std::string title() const;   // best name for a list
     const Thing *thing(const std::string &thing_id) const;

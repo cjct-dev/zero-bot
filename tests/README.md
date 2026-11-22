@@ -158,8 +158,10 @@ redirect rules, and that a live case reaches no real web service (`no_real_web`,
 temporary copy of what it reads, reads the package back with its own ar and tar reader (files, owners, modes, control
 fields, maintainer scripts), checks the wake picture (320x150, 8-bit RGB, no chunk but IHDR, IDAT and IEND) and runs
 `packaging/preinst` and `postrm` for every action dpkg can pass them (an upgrade from 0.2.0 and 0.4.8, without the
-picture, among them) against a stand-in `dpkg-divert` that records its arguments and a stand-in
-`dpkg --compare-versions`. What dpkg itself then does with the diversion is not tested here (this PC has no dpkg).
+picture, among them) against a stand-in `dpkg-divert` that keeps each diversion with its owner and renames the files
+as dpkg 1.22's does (refusing another package's diversion, or a rename over a file already there), and a stand-in
+`dpkg --compare-versions`; each case is checked by the calls made and the state left. What dpkg itself then does with
+the diversion is not tested here (this PC has no dpkg).
 
 **The screens** (`sim/screens/`). `build/sim/zero_bot --shots out/` renders every screen to PNG: look at them. Every
 UI change should be checked this way before it goes to the device. The script (`src/ui/shots.cpp`:
