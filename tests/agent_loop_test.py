@@ -144,14 +144,15 @@ HOME = _home({"id": "1", "name": "Fan heater", "type": "plug", "caps": 1, "room"
 def run(script, said=None, ask=None, fast=False, extra=(), env=None, home=None, photo=False, timeout=60, radio=None, search_key=None,
         inspect=None, trace=False, settings=None, speech=False, ask_wav=False, steer_wav=False):
     """Runs the app once against `script`: --chat with each of `said`, or --ask `ask` (with `extra`
-    arguments such as --steer), or both (`ask` first, then --chat with `said`). Returns a Run. `inspect(state_folder)` is called before the
-    temporary home is removed, to look at what the run left there. `trace`: the experiments' trace
-    (ZB_EXP_TRACE) is recorded, in Run.trace (events) and Run.trace_text. `settings` are added to
-    the app's settings file. `speech`: spoken replies on and audio allowed (ZB_NO_AUDIO=0), with speech
-    models and uncompressed audio (one request a sentence), and a stand-in pw-cat on PATH that only reads,
-    so nothing is heard. `ask_wav`: the request is a recording (--ask-wav, half a second of silence, which
-    the stand-in transcribes as the script's "heard"); `steer_wav`: the same recording is handed over as
-    spoken steering during the first tool (--steer-wav)."""
+    arguments such as --steer), or both (`ask` first, then --chat with `said`). Returns a Run.
+    `inspect(state_folder)` is called before the temporary home is removed, to look at what the run
+    left there. `trace`: the experiments' trace (ZB_EXP_TRACE) is recorded, in Run.trace (events) and
+    Run.trace_text. `settings` are added to the app's settings file. `speech`: spoken replies on and
+    audio allowed (ZB_NO_AUDIO=0), with speech models and uncompressed audio (one request a sentence),
+    and a stand-in pw-cat on PATH that only reads, so nothing is heard. `ask_wav`: the request is a
+    recording (--ask-wav, half a second of silence, which the stand-in transcribes as the script's
+    "heard"); `steer_wav`: the same recording is handed over as spoken steering during the first tool
+    (--steer-wav)."""
     state = tempfile.mkdtemp(prefix="zb-loop-")
     model = None
     try:
@@ -765,7 +766,7 @@ def spoken_request_fails():
 
 
 @scenario
-def failure_spoken_only_when_nothing_was():
+def failure_otherwise_as_before():
     r = run({"default": BUSY}, ask="what is the capital of portugal", speech=True)
     check("a typed request whose chat call fails: the error is shown, nothing is said",
           errors_shown(r)[:1] and errors_shown(r)[0].startswith(DOWN) and spoken_lines(r) == [], (spoken_lines(r), r))
@@ -796,7 +797,7 @@ def spoken_request_not_heard():
 
 
 @scenario
-def failure_unspoken_too():
+def speech_fails_too():
     # Speech uses the same service and may fail too: the first reason stays, the speech queue's own note follows it once,
     # the sentence is tried no more than any answer's is, and the request does not wait for it.
     r = run({"default": BUSY, "heard": "what is the capital of portugal", "speech_error": dict(BUSY, delay_ms=1500)},

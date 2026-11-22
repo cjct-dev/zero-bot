@@ -447,14 +447,13 @@ What exists:
   the results since the user spoke, whether tools are offered and the reasoning field, and whose
   replies can be split, delayed, failed (any HTTP status, an error in the stream) or carry several
   calls; its speech and transcription services can be made to fail too. It checks what the app
-  printed and what it sent: the held draft and second look, the
-  claim guards (a table of phrasings that must and must not trip them), `say` confirmations, tool
-  errors, steering, talk-over, the round budget and its apology, retries and service errors (and
-  what a spoken request that comes to nothing hears), think
-  markers, spelt-out dates, history trimming, smart-home questions, a byte-identical system prompt
-  and the first request's size (a tripwire at 32,000 bytes, for a plain set-up and with every tool
-  offered: web search, ten radio stations, a home; raise it knowingly). Add a scenario
-  here with any change to `agent.cpp` or `llm.cpp`.
+  printed and what it sent: the held draft and second look, the claim guards (a table of phrasings
+  that must and must not trip them), `say` confirmations, tool errors, steering, talk-over, the
+  round budget and its apology, retries and service errors (and what a spoken request that comes to
+  nothing hears), think markers, spelt-out dates, history trimming, smart-home questions, a
+  byte-identical system prompt and the first request's size (a tripwire at 32,000 bytes, for a
+  plain set-up and with every tool offered: web search, ten radio stations, a home; raise it
+  knowingly). Add a scenario here with any change to `agent.cpp` or `llm.cpp`.
 
 - **Command-line modes** in `src/main.cpp` (work in the `cli` build):
   `--ask "text"`, `--ask-wav FILE.wav` (a spoken request, transcribed by the service), `--chat`,
