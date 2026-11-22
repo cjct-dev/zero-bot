@@ -325,6 +325,53 @@ bool late_setup_answers_ignored(Shots &shots) {
     return test_ok && models_ok;
 }
 
+// Answers to the setup guide's slow requests that come back to the page that asked, but no longer belong
+// there (fix round 3, D11), held and delivered as above:
+// - "Test and continue", answered after Skip and then ESC back to the same step: the page that asked was
+//   on top again, and its answer moved the user on a second time (here: "That did not work" over it).
+// - "Test and continue", and the list of models asked for on the models page, answered after the service's
+//   address had changed: the old service's answer was taken as the new one's.
+bool returned_setup_answers_ignored(Shots &shots) {
+    Menu &menu = shots.app.menu;
+    const Settings was = Settings::get();
+    set([](Settings &s) { s.api_base = "http://127.0.0.1:9/v1"; s.api_key = "unused"; });
+    uiq::drain();
+    const char *service_page = "Setup 2 of 5: AI service";
+    // Delivers what waits and says whether anything did, with the page `title` still on top as it was.
+    auto delivered_on = [&menu](const std::string &title) {
+        const size_t depth = menu.depth();
+        return uiq::drain() > 0 && menu.title() == title && menu.depth() == depth;
+    };
+
+    setup_at_service(shots, nullptr);
+    shots.press("Test and continue");
+    bool asked = answer_waiting();
+    shots.press("Skip this step");
+    KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
+    menu.key(esc);
+    const bool back_ok = asked && menu.title() == service_page && delivered_on(service_page);
+
+    shots.press("Test and continue");
+    asked = answer_waiting();
+    set([](Settings &s) { s.api_base = "http://127.0.0.1:9/other/v1"; });
+    const bool test_ok = asked && delivered_on(service_page);
+
+    shots.press("Skip this step");
+    shots.press("Language model");
+    asked = answer_waiting();
+    set([](Settings &s) { s.api_base = "http://127.0.0.1:9/v1"; });
+    const bool list_ok = asked && delivered_on("Setup 3 of 5: models");
+    if (!back_ok || !test_ok || !list_ok)
+        fprintf(stderr, "a late answer to the setup guide acted on a page it no longer belonged to (\"Test and continue\" after the "
+                        "step was left and gone back to %d, after the address changed %d; the list of models after it changed %d; "
+                        "on \"%s\")\n", back_ok, test_ok, list_ok, menu.title().c_str());
+
+    menu.close();
+    for (int i = 0; i < Menu::kToastTicks; ++i) menu.tick();
+    set([&was](Settings &s) { s = was; });
+    return back_ok && test_ok && list_ok;
+}
+
 }  // namespace
 
 // ------------------------------------------------------------ screenshots
@@ -839,6 +886,7 @@ void App::shots_setup(Shots &shots) {
         menu.close();
     }
     if (!late_setup_answers_ignored(shots)) failed = true;
+    if (!returned_setup_answers_ignored(shots)) failed = true;
 }
 
 void App::shots_settings(Shots &shots) {
@@ -1195,7 +1243,8 @@ namespace {
 // The service's model list: one that cannot be reached is asked again after 30 s, then twice as long
 // each time up to five minutes; once a list has been read, the same service is not asked again
 // whatever it held (since ZB-088 one that labels none of its models gets nothing chosen, and it was
-// asked every 15 s for ever), but one with another key is.
+// asked every 15 s for ever), but one with another key is. A list that answers for the old key after
+// the key has changed is not used (fix round 3, D11): its models were chosen for the new service.
 bool model_retries_ok(App &app) {
     set([](Settings &s) {
         s.api_base = "http://127.0.0.1:9/v1";
@@ -1214,10 +1263,42 @@ bool model_retries_ok(App &app) {
     const bool read_once = app.model_retry_ms == kModelRetryMs && app.models_wanted().empty();
     set([](Settings &s) { s.api_key = "second"; });
     const bool new_service = !app.models_wanted().empty();
-    if (!backs_off || !read_once || !new_service)
-        fprintf(stderr, "the service's model list was asked for at the wrong times (backs off %d, read once %d, "
-                        "another service asked %d)\n", backs_off, read_once, new_service);
-    return backs_off && read_once && new_service;
+    app.models_answered({{"chatty", "chat"}}, "", service);
+    const bool old_list_unused = Settings::get().llm_model.empty() && !app.models_wanted().empty();
+    if (!backs_off || !read_once || !new_service || !old_list_unused)
+        fprintf(stderr, "the service's model list was asked for at the wrong times, or used for another service (backs off %d, "
+                        "read once %d, another service asked %d, the old one's list unused %d)\n", backs_off, read_once,
+                new_service, old_list_unused);
+    return backs_off && read_once && new_service && old_list_unused;
+}
+
+// Input that comes while the app tries the phone (App::when_online) waits, and is handed over in the order
+// it came once the phone has been tried; a request abandoned meanwhile (ESC, a new conversation) takes what
+// still waits with it (fix round 3, D6: a later input went ahead of the one waiting, and the one waiting was
+// handed over after a new conversation had begun). The phone itself is not tried: the check answers for it.
+bool input_waits_for_phone(App &app) {
+    std::vector<int> sent;
+    auto input = [&sent](int n) { return [&sent, n] { sent.push_back(n); }; };
+    app.menu.close();              // so that ESC below acts on the chat screen
+    app.connecting_phone = true;   // as when_online leaves it while the phone is tried
+    app.when_online(input(1));
+    app.when_online(input(2));
+    const bool waited = sent.empty();
+    app.phone_tried();
+    const bool in_order = sent == std::vector<int>{1, 2} && !app.connecting_phone;
+    sent.clear();
+    app.connecting_phone = true;
+    app.when_online(input(3));
+    app.short_escape();            // ESC: the request is abandoned
+    app.when_online(input(4));     // asked after it: waits in its turn
+    app.new_conversation();
+    app.when_online(input(5));
+    app.phone_tried();
+    const bool dropped = sent == std::vector<int>{5};
+    if (!waited || !in_order || !dropped)
+        fprintf(stderr, "input that came while the phone was tried was handed over at the wrong time (waited %d, in order %d, "
+                        "dropped with the request %d)\n", waited, in_order, dropped);
+    return waited && in_order && dropped;
 }
 
 // How long the main loop sleeps (sleep_ms), at made-up times well after anything the screenshots did:
@@ -1257,6 +1338,7 @@ bool loop_sleeps_ok(App &app) {
 // What the app does while nobody uses it. Checked, not pictured: last, since it changes the settings.
 void App::shots_idle(Shots &shots) {
     if (!model_retries_ok(*this)) shots.failed = true;
+    if (!input_waits_for_phone(*this)) shots.failed = true;
     if (!loop_sleeps_ok(*this)) shots.failed = true;
 }
 

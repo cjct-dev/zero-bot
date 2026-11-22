@@ -46,8 +46,10 @@ void App::settle_keys(unsigned long now) {
     if (space_tap.single_due(now) && settings_may_open()) open_menu();
 }
 
-// Forgets what has been said so far. Calendar, reminders and saved memories are untouched.
+// Forgets what has been said so far, and what was still waiting for the phone. Calendar, reminders and
+// saved memories are untouched.
 void App::new_conversation() {
+    drop_waiting_input();
     Agent::get().reset_conversation();
     chat.clear();
     chat.add_note("New conversation. What was said before is forgotten.", theme::kDim);
@@ -296,7 +298,11 @@ void App::short_escape() {
     if (recorder.active()) { finish_recording(false); return; }
     if (chat.typing()) { chat.typing_end(); return; }
     Agent &agent = Agent::get();
-    if (agent.busy() || agent.state() != AgentState::Idle) { agent.cancel(); return; }
+    if (agent.busy() || agent.state() != AgentState::Idle || !waiting_input.empty()) {
+        drop_waiting_input();
+        agent.cancel();
+        return;
+    }
     if (audio::Music::get().playing()) audio::Music::get().stop();
 }
 

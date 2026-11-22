@@ -42,6 +42,9 @@ public:
 
     void submit_text(const std::string &text);
     void submit_audio(std::vector<int16_t> pcm);     // 16 kHz mono
+    // Spoken replies are on, and sound is allowed (not ZB_NO_AUDIO): the answer to anything said aloud is
+    // spoken. Read as the microphone closes, to know whether music is to wait for the answer.
+    static bool replies_spoken();
     void interrupt_speech();    // user started talking: stop speaking and stop composing the spoken answer
     // The microphone is open. Until it closes nothing new is spoken and no action runs: an answer that
     // becomes ready meanwhile waits, and is withdrawn if what the user said is then handed over as steering.

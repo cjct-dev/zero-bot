@@ -113,6 +113,8 @@ void Agent::submit_audio(std::vector<int16_t> pcm) {
     cv_.notify_one();
 }
 
+bool Agent::replies_spoken() { return Settings::get().speak_replies && !audio_off(); }
+
 void Agent::interrupt_speech() {
     SpeechQueue::get().stop();
     // Only the spoken answer is abandoned; a run that is still gathering information carries on
@@ -426,7 +428,7 @@ void Agent::run_turn() { Turn(*this).run(); }
 void Agent::Turn::run() {
     a_.cancel_ = false;
     a_.interrupted_ = false;
-    speak_ = Settings::get().speak_replies && !audio_off();
+    speak_ = replies_spoken();
     rt_.absorbing();
     bool spoken = false;
     if (take_request(true, &spoken) == 0) return;
@@ -543,13 +545,12 @@ void Agent::Turn::stream(Round &r, const std::string &piece) {
 // What the user said while the reply was on its way takes its place: the draft is withdrawn, what
 // they said joins the request, and the model is asked again. True when that happened.
 bool Agent::Turn::withdraw_if_steered(Round &r) {
-    // The user was talking when this step was decided. Nothing has been said or done yet, so
-    // what they add is taken into account first: a correction should land before the action.
-    const bool talked_over = !r.speech_started && a_.listening();
+    // Nothing of this reply has been said or done yet, so what the user adds (once they have finished)
+    // is taken into account first, whether they were still talking or had finished before it came: a
+    // correction lands before the action.
     if (!r.speech_started) wait_while_listening();
 
-    if (r.steered || (!r.speech_started && !r.res.cancelled && r.res.error.empty() && a_.has_pending() &&
-                    (r.res.tool_calls.empty() || talked_over))) {
+    if (r.steered || (!r.speech_started && !r.res.cancelled && r.res.error.empty() && a_.has_pending())) {
         if (r.began && a_.ev_.answer_discard) a_.ev_.answer_discard();
         steer_in();
         return true;
@@ -703,9 +704,9 @@ Agent::Turn::Then Agent::Turn::run_tools(Round &r) {
         const llm::ToolCall &c = r.res.tool_calls[i];
         // No action runs while the microphone is open, or what the user said is on its way (AGENTS.md
         // section 4): each call waits for them to finish, and once they have said more, it and the rest are
-        // not made. The first call is held only by the gate: input that came while the model was deciding,
-        // the microphone closed, was already weighed (withdraw_if_steered).
-        if (!said_more && !a_.cancel_ && (i > 0 || a_.listening())) {
+        // not made. The first call too, whenever they said it: a correction finished while an answer that
+        // had begun was still coming in lands before the action.
+        if (!said_more && !a_.cancel_) {
             wait_while_listening();
             said_more = a_.has_pending();
         }
@@ -820,9 +821,10 @@ void Agent::Turn::new_request() {
 
 // Whether the request's answer is spoken: a typed request is answered on the screen only, and one with
 // anything said aloud is spoken too (with spoken replies on). Music waits for an answer that is heard, never
-// for one that is only shown: music a tool starts, and music already playing, which the question held
-// (App::finish_recording) until this was known. That comes back now, unless an earlier answer is still being
-// spoken (the speech queue lets go when it ends), rather than when the turn ends.
+// for one that is only shown: music a tool starts, and music already playing, which a recording holds from the
+// moment the microphone closes when replies are spoken (App::finish_recording, replies_spoken). Held for an
+// answer only shown, it comes back now, unless an earlier answer is still being spoken (the speech queue lets
+// go when it ends), rather than when the turn ends.
 void Agent::Turn::set_spoken(bool spoken) {
     spoken_ = spoken;
     req_.tool_ctx.in_conversation = heard();

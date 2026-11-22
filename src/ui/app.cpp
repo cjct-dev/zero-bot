@@ -108,14 +108,16 @@ void App::auto_select_models() {
 std::string App::models_wanted() const {
     const Settings s = Settings::get();
     if (!s.configured() || (!s.stt_model.empty() && !s.tts_model.empty() && !s.eff_llm_model().empty())) return "";
-    const std::string service = s.eff_api_base() + '\n' + s.eff_api_key();
+    const std::string service = models::service(s);
     return service == models_listed_for ? "" : service;
 }
 
 // The service's answer, on the UI thread. One that could not be reached (offline, most likely) is
 // asked again after twice as long each time, up to kModelRetryMaxMs, and at once when the
-// connection comes back (follow_connection).
+// connection comes back (follow_connection). An answer from a service the user has since changed is
+// of no use: the new one is asked in its turn (periodic).
 void App::models_answered(const models::List &list, const std::string &err, const std::string &service) {
+    if (service != models::service(Settings::get())) return;
     if (!err.empty()) {
         model_retry_ms = std::min(model_retry_ms * 2, kModelRetryMaxMs);
         return;
@@ -170,8 +172,9 @@ void App::finish_recording(bool submit) {
     audio::Music &music = audio::Music::get();
     const bool sending = submit && seconds >= kMinSpeechSeconds;
     // Music that was playing stays quiet from the question to the end of the spoken answer,
-    // rather than coming back for the few seconds in between.
-    if (sending) music.hold(audio::Music::kExchange, true);
+    // rather than coming back for the few seconds in between. With spoken replies off nothing
+    // will be said, and it plays on.
+    if (sending && Agent::replies_spoken()) music.hold(audio::Music::kExchange, true);
     music.hold(audio::Music::kMic, false);
     if (!sending) {
         Agent::get().set_listening(false);
@@ -188,29 +191,47 @@ void App::finish_recording(bool submit) {
 
 // Runs `send` (which hands the user's input to the agent) straight away when there is a connection.
 // With none, and a paired phone, it first tries the phone's Bluetooth tethering, then sends whether or
-// not that worked (the request then reports the missing connection itself). Until then the input is on
-// its way (Agent::set_input_coming): a request under way speaks nothing new and makes no call. One input
-// waits at a time; another, while it does, is sent straight away.
+// not that worked (the request then reports the missing connection itself). Input that comes while it
+// tries waits behind what is already waiting, so it all reaches the agent in the order it came.
 void App::when_online(std::function<void()> send) {
-    if (tether::online() || !Settings::get().phone_fallback || connecting_phone) { send(); return; }
+    if (connecting_phone) { wait_for_phone(std::move(send)); return; }
+    if (tether::online() || !Settings::get().phone_fallback) { send(); return; }
     connecting_phone = true;
-    Agent::get().set_input_coming(true);
-    // On the UI thread, as `send` always is: the input reaches the agent before its gate opens.
-    auto hand_over = [this, send] {
-        send();
-        Agent::get().set_input_coming(false);
-        connecting_phone = false;
-    };
-    std::thread([this, hand_over] {
-        if (!tether::available()) { uiq::post(hand_over); return; }
+    wait_for_phone(std::move(send));
+    std::thread([this] {
+        if (!tether::available()) { uiq::post([this] { phone_tried(); }); return; }
         uiq::post([this] { chat.add_note("No connection. Trying your phone over Bluetooth…", theme::kDim); });
         const std::string err = tether::connect();
-        uiq::post([this, err, hand_over] {
+        uiq::post([this, err] {
             if (err.empty()) chat.add_note("Online through your phone.", theme::kDim);
             last_indicators = 0;
-            hand_over();
+            phone_tried();
         });
     }).detach();
+}
+
+// Input kept back while the app tries the phone. Until it is handed over it is on its way
+// (Agent::set_input_coming): a request under way speaks nothing new and makes no call.
+void App::wait_for_phone(std::function<void()> send) {
+    waiting_input.push_back(std::move(send));
+    Agent::get().set_input_coming(true);
+}
+
+// The phone has been tried: what waited is handed over, in order, on the UI thread as `send` always is,
+// so it reaches the agent before its gate opens.
+void App::phone_tried() {
+    std::vector<std::function<void()>> sends;
+    sends.swap(waiting_input);
+    for (const auto &send : sends) send();
+    Agent::get().set_input_coming(false);
+    connecting_phone = false;
+}
+
+// The request the waiting input belongs to was abandoned (ESC, a new conversation): it goes with it,
+// and never starts a request of its own once the phone has been tried.
+void App::drop_waiting_input() {
+    waiting_input.clear();
+    Agent::get().set_input_coming(false);
 }
 
 // The first-run guide. When it ends the chat starts fresh with a spoken hello, which also

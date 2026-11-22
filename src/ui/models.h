@@ -16,7 +16,12 @@ using List = std::vector<llm::ModelInfo>;
 // The service's models, asked for now (up to 20 s): not on the UI thread. `err` says why there are none.
 List list(std::string &err);
 
-// Asks off the UI thread, then hands `done` the list, or the service's error, on the UI thread.
+// The service a list is asked of: its address and key. A list is used only while these are still the
+// ones it was asked of; one changed meanwhile makes the answer of no use.
+inline std::string service(const Settings &s) { return s.eff_api_base() + '\n' + s.eff_api_key(); }
+
+// Asks off the UI thread, then hands `done` the list, or the service's error, on the UI thread, unless
+// the service has changed meanwhile.
 void fetch(std::function<void(const List &list, const std::string &err)> done);
 
 // The choice made without the user (at start-up, and in the setup guide once the service has answered):

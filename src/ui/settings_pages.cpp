@@ -80,12 +80,12 @@ std::string home_things(Menu &menu) {
     static bool counting = false;
     if (!counting) {
         counting = true;
-        const unsigned long page = menu.on_top();   // Your data, being drawn
+        const unsigned long page = menu.page_on_top();   // Your data, being drawn
         background([] { return home::thing_count(); }, [&menu, page](size_t n) {
             counting = false;
             if (known == n) return;
             known = n;
-            if (menu.showing(page)) menu.refresh();
+            menu.refresh_page(page);
         });
     }
     if (!known) return "…";

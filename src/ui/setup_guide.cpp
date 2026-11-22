@@ -18,8 +18,9 @@ namespace ui {
 namespace {
 
 // A reply that comes back after the user has left the page that asked for it (on to the next step,
-// back with ESC, out of the guide) is dropped (background_on_page, Menu::showing): run late, "Test and
-// continue" reopened a finished guide on the models page, whose Continue then used the self-reference
+// back with ESC, out of the guide, or on and back again) is dropped (background_on_page, Menu::showing),
+// as is a list of models once the service's address or key has changed (models::fetch): run late, "Test
+// and continue" reopened a finished guide on the models page, whose Continue then used the self-reference
 // finish() had already let go.
 struct Setup {
     Menu &menu;
@@ -140,7 +141,7 @@ struct Setup {
                 m.toast("Contacting the service…");
                 const unsigned long page = m.on_top();
                 models::fetch([self, &m, page](const models::List &list, const std::string &err) {
-                    if (!m.showing(page)) return;   // the user skipped the step, went back or finished
+                    if (!m.showing(page)) return;   // the user left the step (on, back, or on and back again) or finished
                     if (!err.empty()) { m.problem("That did not work", err); return; }
                     change([&list](Settings &st) { models::choose(st, list); });
                     m.toast("Connected: " + std::to_string(list.size()) + " models available");

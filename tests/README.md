@@ -311,7 +311,7 @@ certificates), `homekit/` (a HomeKit bridge), `hue/` (a Hue Bridge, with test ce
 ## The app's test modes and switches
 
 **Command-line modes** in `src/main.cpp` (work in the `cli` build): `--ask "text"`, `--ask-wav FILE.wav` (a spoken
-request, transcribed by the service), `--chat`, `--tool NAME 'JSON'`, `--steer "text"` / `--steer-wav FILE.wav`
+request, transcribed by the service), `--chat` (`/wav FILE.wav` in it is a spoken request too), `--tool NAME 'JSON'`, `--steer "text"` / `--steer-wav FILE.wav`
 (inject input during the first tool), `--talk-over MS[+LATE][:text]` (hold the microphone open during a request; with
 `--talk-at tool|answer`, from its first tool or once its answer has begun, as TAB does; with `+LATE`, the words arrive
 that long after it closes, as when the app connects to the phone), `--follow-ups "a|b|c"` (chain requests inside one

@@ -551,7 +551,8 @@ A screenless build of the agent, for testing prompts and tools quickly:
 cmake --preset cli && cmake --build --preset cli
 export ZB_API_BASE=https://your-service/v1 ZB_API_KEY=... ZB_SEARCH_KEY=...
 build/cli/zero_bot --ask "what's the weather like in lisbon tomorrow"
-build/cli/zero_bot --chat           # /new starts a new conversation, /save saves it (as SPACE twice does)
+build/cli/zero_bot --chat           # /new starts a new conversation, /save saves it (as SPACE twice does),
+                                    # /wav FILE.wav says a request aloud (as --ask-wav)
 build/cli/zero_bot --tool weather '{"location":"Lisbon"}'
 build/cli/zero_bot --help           # every option
 ```

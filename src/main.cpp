@@ -3,7 +3,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -56,7 +58,8 @@ const Option kOptions[] = {
     {"--ask", "\"text\"", 1, "run one request through the agent and print what happens",
      [](Args &a, char **v, int &i, int) { a.ask = v[++i]; }},
     {"--chat", "", 0, "interactive text conversation on the terminal (/new starts a new one;\n"
-                      "/save saves it as SPACE twice does on the device: diagnostics, temporary)",
+                      "/wav FILE.wav says a request aloud, as --ask-wav does; /save saves it\n"
+                      "as SPACE twice does on the device: diagnostics, temporary)",
      [](Args &a, char **, int &, int) { a.chat = true; }},
     {"--ask-wav", "FILE.wav", 1, "run one spoken request: the recording (16-bit mono, 16 kHz) is transcribed by\n"
                                  "the speech-to-text service, and the answer spoken as on the device (not with\n"
@@ -153,39 +156,49 @@ bool audio_observed() {
     return on;
 }
 
-std::mutex g_speech_mtx;
-Clock::rep g_spoken_for = 0;   // the request the speech under way answers; 0 for none (g_speech_mtx)
 std::atomic<Clock::rep> g_music_held_for{0};   // the request music was held for (hold_music); 0 for none
 
-// Speech is tied to the request under way when it is first noticed: by observe_audio's thread, or by the
-// request itself as it ends, before the next one can begin.
-void notice_speech() {
-    std::lock_guard<std::mutex> lk(g_speech_mtx);
-    const bool active = SpeechQueue::get().active();
-    if (g_spoken_for && !active) printf("[speech done +%.1fs]\n", seconds_since(g_spoken_for));
-    if (!active) g_spoken_for = 0;
-    else if (!g_spoken_for) g_spoken_for = g_began;
-}
-
-// A recording handed over as the app hands one over (App::finish_recording): music already playing is held
-// until the agent knows whether the answer will be heard.
+// A recording handed over as the app hands one over (App::finish_recording): with spoken replies on, music
+// already playing is held until the agent knows whether the answer will be heard.
 void hold_music() {
+    if (!Agent::replies_spoken()) return;
     audio::Music::get().hold(audio::Music::kExchange, true);
     if (!audio_observed()) return;
     g_music_held_for = g_began.load();
     printf("[music held +%.1fs]\n", seconds_since(g_began));
 }
 
-// Looks at the speech and the music every 10 ms, for the rest of the run.
+// For the rest of the run: each spoken answer is tied to the request under way as its first sentence is
+// queued (on the agent's thread, inside that request), and said to be done once it has played out, timed
+// from that request; the music is looked at every 10 ms.
 void observe_audio() {
+    static std::mutex mtx;
+    static std::map<int, Clock::rep> began;   // answer -> its request's start
+    SpeechQueue::get().set_observer([](int answer, bool over) {
+        std::lock_guard<std::mutex> lk(mtx);
+        if (!over) { began[answer] = g_began; return; }
+        const auto it = began.find(answer);
+        if (it == began.end()) return;
+        printf("[speech done +%.1fs]\n", seconds_since(it->second));
+        began.erase(it);
+    });
     std::thread([] {
         for (;; usleep(10 * 1000)) {
-            notice_speech();
             Clock::rep held = g_music_held_for;
             if (held && !audio::Music::get().holding(audio::Music::kExchange) && g_music_held_for.compare_exchange_strong(held, 0))
                 printf("[music free +%.1fs]\n", seconds_since(held));
         }
     }).detach();
+}
+
+// "/wav FILE.wav" in --chat: a request said aloud, as --ask-wav makes one, which the records name by its
+// recording. False for any other line.
+bool said_aloud(const std::string &line, const std::function<void(const std::string &, std::vector<int16_t>)> &ask) {
+    if (line.compare(0, 5, "/wav ") != 0) return false;
+    const std::string wav = util::trim(line.substr(5));
+    std::vector<int16_t> pcm;
+    if (read_speech(wav, pcm)) ask(wav, std::move(pcm));
+    return true;
 }
 
 // --talk-over's microphone closes. What was said (none: as if cancelled) is handed over at once, or `late`
@@ -415,7 +428,6 @@ int run_cli(const Args &a) {
         }
         if (!pcm.empty()) hold_music();
         const std::string answer = pcm.empty() ? agent.run_blocking(text) : agent.run_blocking(std::move(pcm));
-        if (audio_observed()) notice_speech();   // its answer's speech, if any is still to play, is timed from this request
         over = true;
         if (talker.joinable()) talker.join();
         const double total = since();
@@ -481,6 +493,7 @@ int run_cli(const Args &a) {
                 printf("[%s]%s%s\n", activity::saved_toast(r).c_str(), r.path.empty() ? "" : " ", r.path.c_str());
                 continue;
             }
+            if (said_aloud(line, one)) continue;
             if (!util::trim(line).empty()) one(line);
         }
     }
