@@ -372,6 +372,79 @@ bool returned_setup_answers_ignored(Shots &shots) {
     return back_ok && test_ok && list_ok;
 }
 
+// A bubble once kept the height of one line while its text wrapped onto a second, so the
+// last word vanished ("...cybersecurity" for "...cybersecurity news").
+bool bubbles_fit(ChatView &chat) {
+    bool ok = true;
+    for (const char *said : {"What is the latest cybersecurity news", "What's the weather like in Lisbon tomorrow?", "Hi"}) {
+        if (!theme::label_fits(chat.add_user(said, false))) {
+            fprintf(stderr, "a chat bubble is too short for its text: %s\n", said);
+            ok = false;
+        }
+    }
+    chat.clear();
+    return ok;
+}
+
+// A photo's thumbnail goes with its chat row, and one left by an earlier run goes at
+// the next start; an image the row does not own stays.
+bool thumbnails_go_with_rows(ChatView &chat) {
+    const std::string own = util::cache_dir() + "/" + kThumbPrefix + "shots.png", other = util::cache_dir() + "/shots-image.png";
+    util::write_file_atomic(own, "x");
+    util::write_file_atomic(other, "x");
+    chat.add_image(own, true);
+    chat.add_image(other);
+    const bool shown = access(own.c_str(), F_OK) == 0;
+    chat.clear();
+    const bool gone = access(own.c_str(), F_OK) != 0, stayed = access(other.c_str(), F_OK) == 0;
+    unlink(other.c_str());
+    util::write_file_atomic(own, "x");
+    remove_old_thumbnails();
+    const bool cleared = access(own.c_str(), F_OK) != 0;
+    if (!shown || !gone || !stayed || !cleared)
+        fprintf(stderr, "a thumbnail was not deleted with its chat row or at the next start (kept while shown %d, "
+                        "gone with the row %d, other image kept %d, left over removed %d)\n", shown, gone, stayed, cleared);
+    return shown && gone && stayed && cleared;
+}
+
+// While a request is worked on, the footer and status bar are set on every tick with the
+// same words and colours: nothing is redrawn until something changes (the dots, every
+// fourth tick, are tick()'s).
+bool busy_footer_still(ChatView &chat) {
+    static int invalidated = 0;
+    const lv_event_cb_t count = [](lv_event_t *) { ++invalidated; };
+    lv_display_t *disp = lv_display_get_default();
+    lv_display_add_event_cb(disp, count, LV_EVENT_REFR_REQUEST, nullptr);   // sent for anything newly to redraw
+    invalidated = 0;
+    for (int i = 0; i < 3; ++i) {
+        chat.footer_busy("Calculating", theme::kThink);
+        chat.set_status(Settings::get().agent_name, theme::kThink);
+    }
+    const int same = invalidated;
+    chat.footer_busy("Calculating", theme::kAccent);
+    const int changed = invalidated - same;
+    chat.footer_busy("Calculating", theme::kThink);
+    lv_display_remove_event_cb_with_user_data(disp, count, nullptr);
+    lv_refr_now(nullptr);
+    if (same != 0 || changed == 0)
+        fprintf(stderr, "the busy footer redrew with nothing changed (%d requests), or not for a new colour (%d)\n", same, changed);
+    return same == 0 && changed != 0;
+}
+
+// A station plays for hours, and a scrolling name would redraw the status bar many times
+// a second for all that time: one too long for its room is cut short instead. A track's
+// title still scrolls.
+bool station_name_still(ChatView &chat) {
+    chat.set_now_playing("Radio Harbour Classic and Jazz", true);
+    lv_refr_now(nullptr);
+    const bool still = !chat.now_playing_moves();
+    chat.set_now_playing("Radio Harbour Classic and Jazz");
+    lv_refr_now(nullptr);
+    const bool moves = chat.now_playing_moves();
+    if (!still || !moves) fprintf(stderr, "a station's long name scrolled in the status bar, or a track's long title did not\n");
+    return still && moves;
+}
+
 }  // namespace
 
 // ------------------------------------------------------------ screenshots
@@ -406,36 +479,9 @@ void App::shots_chat(Shots &shots) {
     chat.set_status("Zero", theme::kFaint);
     chat.set_indicators(true, false, 68, false, "18:42");
     chat.footer_hints(keyguide::idle_hint(true));
-    // A bubble once kept the height of one line while its text wrapped onto a second, so the
-    // last word vanished ("...cybersecurity" for "...cybersecurity news"). Checked, not pictured.
-    for (const char *said : {"What is the latest cybersecurity news", "What's the weather like in Lisbon tomorrow?", "Hi"}) {
-        if (!theme::label_fits(chat.add_user(said, false))) {
-            fprintf(stderr, "a chat bubble is too short for its text: %s\n", said);
-            failed = true;
-        }
-    }
-    chat.clear();
-    {
-        // A photo's thumbnail goes with its chat row, and one left by an earlier run goes at
-        // the next start; an image the row does not own stays. Checked, not pictured.
-        const std::string own = util::cache_dir() + "/" + kThumbPrefix + "shots.png", other = util::cache_dir() + "/shots-image.png";
-        util::write_file_atomic(own, "x");
-        util::write_file_atomic(other, "x");
-        chat.add_image(own, true);
-        chat.add_image(other);
-        const bool shown = access(own.c_str(), F_OK) == 0;
-        chat.clear();
-        const bool gone = access(own.c_str(), F_OK) != 0, stayed = access(other.c_str(), F_OK) == 0;
-        unlink(other.c_str());
-        util::write_file_atomic(own, "x");
-        remove_old_thumbnails();
-        const bool cleared = access(own.c_str(), F_OK) != 0;
-        if (!shown || !gone || !stayed || !cleared) {
-            fprintf(stderr, "a thumbnail was not deleted with its chat row or at the next start (kept while shown %d, "
-                            "gone with the row %d, other image kept %d, left over removed %d)\n", shown, gone, stayed, cleared);
-            failed = true;
-        }
-    }
+    // Checked, not pictured.
+    if (!bubbles_fit(chat)) failed = true;
+    if (!thumbnails_go_with_rows(chat)) failed = true;
     chat.add_note("Press TAB to talk, press it again when you have finished. Or press ENTER and type.", theme::kDim);
     snap("welcome");
     {
@@ -464,30 +510,7 @@ void App::shots_chat(Shots &shots) {
     chat.footer_busy("Calculating", theme::kThink);
     chat.set_status(Settings::get().agent_name, theme::kThink);
     snap("working");
-    {
-        // While a request is worked on, the footer and status bar are set on every tick with the
-        // same words and colours: nothing is redrawn until something changes (the dots, every
-        // fourth tick, are tick()'s). Checked, not pictured.
-        static int invalidated = 0;
-        const lv_event_cb_t count = [](lv_event_t *) { ++invalidated; };
-        lv_display_t *disp = lv_display_get_default();
-        lv_display_add_event_cb(disp, count, LV_EVENT_REFR_REQUEST, nullptr);   // sent for anything newly to redraw
-        invalidated = 0;
-        for (int i = 0; i < 3; ++i) {
-            chat.footer_busy("Calculating", theme::kThink);
-            chat.set_status(Settings::get().agent_name, theme::kThink);
-        }
-        const int same = invalidated;
-        chat.footer_busy("Calculating", theme::kAccent);
-        const int changed = invalidated - same;
-        chat.footer_busy("Calculating", theme::kThink);
-        lv_display_remove_event_cb_with_user_data(disp, count, nullptr);
-        lv_refr_now(nullptr);
-        if (same != 0 || changed == 0) {
-            fprintf(stderr, "the busy footer redrew with nothing changed (%d requests), or not for a new colour (%d)\n", same, changed);
-            failed = true;
-        }
-    }
+    if (!busy_footer_still(chat)) failed = true;   // checked, not pictured
 
     chat.begin_answer();
     chat.append_answer("85 euros is about 70.93 pounds, so that's 23.64 each.");
@@ -498,21 +521,7 @@ void App::shots_chat(Shots &shots) {
     snap("speaking");
     chat.set_now_playing("Harbour Classic FM", true);   // a radio station shows its name, as the player gives it
     snap("radio-playing");
-    {
-        // A station plays for hours, and a scrolling name would redraw the status bar many times
-        // a second for all that time: one too long for its room is cut short instead. A track's
-        // title still scrolls.
-        chat.set_now_playing("Radio Harbour Classic and Jazz", true);
-        lv_refr_now(nullptr);
-        const bool still = !chat.now_playing_moves();
-        chat.set_now_playing("Radio Harbour Classic and Jazz");
-        lv_refr_now(nullptr);
-        const bool moves = chat.now_playing_moves();
-        if (!still || !moves) {
-            fprintf(stderr, "a station's long name scrolled in the status bar, or a track's long title did not\n");
-            failed = true;
-        }
-    }
+    if (!station_name_still(chat)) failed = true;
     chat.set_now_playing("Dancing Queen · ABBA");
 
     for (int i = 0; i < 40; ++i) {
