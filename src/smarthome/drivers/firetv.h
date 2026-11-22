@@ -4,7 +4,7 @@
 // Wake-on-LAN packet.
 //
 // Amazon does not document this API. Everything here follows two MIT-licensed implementations of
-// it (see firetv.cpp for what was ported from where, and STATUS.md for what is corroborated).
+// it (see firetv.cpp for what was ported from where).
 //
 // What a caller needs to know:
 //  - One thing per device: type "tv", id "tv". It takes keys (Change::key: up, down, left, right,

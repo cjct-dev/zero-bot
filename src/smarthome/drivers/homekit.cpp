@@ -8,7 +8,7 @@
 //                License, Version 2.0"
 // Neither project has a NOTICE file. HAP-NodeJS (Apache-2.0) was only read, to check behaviour.
 // Distributing the app with this file means shipping the Apache-2.0 text and crediting both
-// projects (see STATUS.md, "Remaining").
+// projects: licenses/THIRD-PARTY-NOTICES.md and licenses/Apache-2.0.txt, which the package installs.
 //
 // Ported from (all Apache-2.0), re-written in C++ over libcrypto:
 //   Jc2k/aiohomekit       protocol/__init__.py: the pair-setup M1..M6 and pair-verify M1..M4
@@ -2743,8 +2743,8 @@ public:
                 if (link.open(dev, err) && !pair_verify(link, me, peer, not_known, err)) removed = not_known;
             }
             // Not removed (the accessory could not be reached): the pairing is kept in dev.auth so
-            // that Unpair can be tried again. (The app must store dev.auth as left here; see
-            // STATUS.md, gap 1.)
+            // that Unpair can be tried again. (The app stores dev.auth as left here: control.cpp,
+            // home::unpair.)
             if (removed) {
                 forget_pairing(dev);
                 clear_forgotten(dev);

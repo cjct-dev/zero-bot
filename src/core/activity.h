@@ -1,18 +1,25 @@
 // DIAGNOSTICS, TEMPORARY. Everything in this module is there to diagnose and improve the assistant
 // for now, and will be removed (ticket ZB-052) together with its call sites, each of which is
 // marked "DIAGNOSTICS (temporary)":
-//   src/agent/agent.cpp     run_turn (the log), trim_history and reset_conversation (what a save keeps)
+//   src/agent/agent.cpp     Agent::Turn::run and Agent::Turn::run_tools (the log), trim_history and
+//                           reset_conversation (what a save keeps), whole_conversation
 //   src/agent/agent.h       Agent::whole_conversation, earlier_
-//   src/ui/app.cpp          SPACE twice saves the conversation; one SPACE waits out the double tap
+//   src/ui/app_keys.cpp     save_conversation, settings_may_open, settle_keys; SPACE in handle_key
+//                           (twice saves the conversation; one SPACE waits out the double tap)
+//   src/ui/app_impl.h       space_tap, diagnostics_shots
+//   src/ui/app_status.cpp   settle_keys in periodic
 //   src/ui/key_guide.*      the DoubleTap helper and the guide's SPACE SPACE line
 //   src/ui/menu.h           kPairKeyW, 96 to hold "SPACE SPACE" (84 before)
-//   src/ui/settings_pages.cpp   Your data > Saved conversations
+//   src/ui/settings_pages.cpp   Your data > Saved conversations (the row); the page is
+//                           open_saved_conversations in settings_data.cpp, declared in settings_internal.h
+//   src/ui/shots.cpp        App::diagnostics_shots (the last three --shots screens), and the SPACE
+//                           checks in shots_keys
 //   src/main.cpp            "/save" in --chat
 // Also README "Diagnostics (temporary)" and the SPACE SPACE key, AGENTS.md sections 3, 6 and 7,
 // tests/unit/activity_test.cpp (and its lines in tests/run_unit.sh), test_double_tap in
 // tests/unit/key_guide_test.cpp, conversation_saved in tests/agent_loop_test.py, the last three
-// --shots screens (App::diagnostics_shots; tests/golden/shots/*save*) and
-// tests/suite/from_conversation.py. Removing it should also delete the files on the device.
+// golden screenshots (tests/golden/shots/*save*) and tests/suite/from_conversation.py. Removing it
+// should also delete the files on the device.
 //
 // 1. The activity log: what the assistant did, each tool call with its arguments and result, so
 // that a problem the owner reports ("it said it could not turn the TV on") can be diagnosed

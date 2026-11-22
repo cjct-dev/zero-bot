@@ -3,7 +3,9 @@
 This file is for an AI coding agent (or a new developer) picking up Zero Bot. It explains what
 the app is, the hardware it runs on, how the code is laid out, how to build, test and deploy,
 and the mistakes already made so that they are not made again. `README.md` is the user-facing
-description; read it first. `docs/agent-architecture.html` has diagrams of the request loop.
+description; read it first. `docs/agent-architecture.html` has diagrams of the request loop
+(drawn before the November 2026 refactor: some of the names and files it cites have moved since;
+sections 3 and 4 here are current).
 
 ## 1. What this is
 
@@ -36,30 +38,56 @@ Scan staged changes and the built binary (`strings`) before every push. The buil
 ## 3. Code layout
 
 ```
-src/main.cpp        entry point and the command-line test modes (section 6)
-src/agent/          the request loop (agent), service client (llm), system prompt (prompt),
-                    tools, sentence queue for speech (speech), arithmetic (calc)
+src/main.cpp        entry point and the command-line test modes (section 6): one row of kOptions
+                    per option, and a function and one row of kModes per mode
+src/agent/          the request loop (agent: Agent::Turn and its steps), what the loop checks a
+                    reply for and the notes it sends the model (guards), the small-model controls
+                    (controls), service client (llm; reading the reply stream: llm_stream.h),
+                    system prompt (prompt), sentence queue for speech (speech), the cli build's
+                    measurement switches (experiment), arithmetic (calc), and the tools: tools.h
+                    (Context, Tool, Say) and tools/, one file per tool (<name>.cpp), registry.cpp
+                    (the list in the order the model reads it, the schema, "say" confirmations),
+                    run.cpp (a call checked against its schema, run, its failure shaped),
+                    common.h (argument and schema helpers), say_checks (weekday_slip, claims_new),
+                    web (fetch_json), places and events (what several tools share)
 src/core/           settings, calendar/reminder/timer/memory store, timers (the timer tool, which
                     timer words mean, the alarm's logic), music library, radio (the user's station
                     file, the radio tool, the check of a stream), breathing timing,
-                    phone tethering, what an upgrade leaves behind (upgrade), utilities (dates,
-                    files, strings)
+                    phone tethering, what an upgrade leaves behind (upgrade), the one failure
+                    shape (result.h: fail, failed, words), the UI queue (ui_queue.h), the
+                    diagnostics (activity; temporary), utilities (dates, files, strings)
 src/net/            libcurl wrapper with a shared connection/DNS/TLS-session cache
-src/platform/       display, keyboard, audio (recorder, speaker, music), codecs, camera,
-                    infrared, subprocess helpers
+src/platform/       display, keyboard (input, keys.h), audio (recorder, speaker, music), codecs,
+                    camera, infrared, subprocess helpers (proc), the battery (power), the Wi-Fi
+                    network and the default route (net_status), the monotonic clock (sys.h)
 src/smarthome/      discovery (mDNS, SSDP, TP-Link and WiZ broadcasts); driver.h, the contract every
                     device family implements; home.h, the layer above it: store.cpp (the 0600
                     file, migration, the network gate), targets.cpp (names, rooms, groups),
                     control.cpp (commands, safety rules, locking, status, refresh, pairing),
                     tool.cpp (the smart_home tool); color.h (colour names and conversions);
-                    drivers/ (one per family; registry.cpp lists them); Tapo transport (tapo)
-src/ui/             app controller (keys, timers, state), chat screen, menu system, settings
-                    pages, the keys and their guide (key_guide), when the screen dims and goes off
-                    (screen_idle), breathing screen, alarm banner, theme
+                    drivers/ (one per family; registry.cpp lists them; support.{h,cpp}, the
+                    helpers they share); Tapo transport (tapo)
+src/ui/             the app controller: app.cpp (wiring, the agent's events, recording, the
+                    first-run guide's start, run_app and the main loop), app_keys.cpp (what each
+                    key does), app_status.cpp (footer and status bar, timers and the alarm banner,
+                    reminders, the screen's light, the periodic work), app_impl.h (the App struct,
+                    shared by those and shots.cpp only), shots.cpp (--shots, one function per
+                    group of screens); chat screen (chat_view), menu system (menu); settings
+                    pages: settings_pages.cpp (the top page and sections, the status page, the
+                    key guide, pick_model), settings_data.cpp (Your data), settings_home.cpp
+                    (Smart home), setup_guide.cpp (the first-run guide), settings_internal.h (what
+                    they share: S, change, background); models (the service's model list and how
+                    models are chosen: without the user only one labelled "chat" becomes the
+                    language model, ZB-088, the owner's rule; by hand the settings list those
+                    labelled for the use, else the unlabelled ones, else all); the keys and their
+                    guide (key_guide), when the screen dims and goes off (screen_idle), breathing
+                    screen, alarm banner, theme
 tests/              run.py, the entry point that runs the groups below by profile (section 6);
                     scored agent test set (needs a live service), device-free unit tests
                     (run_unit.sh: smart home, HTTP options, timers, Fire TV, HomeKit, Hue, Kasa,
-                    WiZ, Shelly, keys, radio, tools), Tapo, Fire TV, HomeKit, Hue, Kasa, WiZ and
+                    WiZ, Shelly, the drivers' shared helpers, keys, radio, tools, the core's shared
+                    helpers, speaker, microphone route, music, models, the reply stream), Tapo,
+                    Fire TV, HomeKit, Hue, Kasa, WiZ and
                     Shelly end to end (tapo_e2e.py, firetv_e2e.py, homekit_e2e.py, hue_e2e.py,
                     kasa_e2e.py, wiz_e2e.py, shelly_e2e.py),
                     the loop against a scripted chat service (home_chat_e2e.py, agent_loop_test.py,
@@ -75,9 +103,31 @@ Threads: the UI thread runs LVGL and the main loop in `ui/app.cpp`. The agent ha
 thread (`Agent::worker`), speech has one (`SpeechQueue::run`), keys are read on one, music has
 one per queue. Anything a worker wants on screen goes through `uiq::post()`; never touch LVGL
 from another thread. Slow work started from a menu uses `background(work, done)` in
-`settings_pages.cpp`. The settings are read on every thread and changed by the UI and by tools:
+`settings_internal.h`. The settings are read on every thread and changed by the UI and by tools:
 `Settings::get()` returns a snapshot (a read-only copy taken under a lock), and every change goes
 through `Settings::update([](Settings &s) { ... })`, which makes it under that lock and saves.
+
+| Thread | Started in | What to know |
+|---|---|---|
+| UI (main) | `ui::run_app` (app.cpp) | LVGL, keys from the reader's queue, `App::periodic` (app_status.cpp), whatever `uiq::post` queued. Never waits on the network or a child process. |
+| Agent worker | `Agent::start` (`Agent::worker`) | One request at a time (`Agent::Turn`); `Agent::mtx_` guards its inputs, history and state. |
+| Speech | `SpeechQueue::run` | Synthesises and plays sentence by sentence; a watcher per sentence lets `stop()` cut a synthesis short. |
+| Key reader | `input::start` (device only) | Reads the keypad and makes the auto-repeat; its queue is drained by the UI thread. |
+| Recorder, music | `audio::Recorder`, `audio::Music` (and a feeder per MP3, `run_live` for the radio) | `Music::ctl_` serialises `play`, `play_live` and `stop`, which the UI and the agent call at once. |
+| Short helpers, detached | alarm rings (`AlarmSound`, one per ring), chimes, `set_volume_async`, the microphone lookup and the jack's put-back (audio.cpp), `radio::check_async`, `background()`, the app's thumbnail, model choice and phone link (app.cpp), `upgrade`'s reload | Each hands its result to the UI through `uiq::post`, or touches nothing shared. |
+| Smart-home fan-out | `run_parallel` in `home::execute` (control.cpp) | Joined before the command returns; one lock per device (`device_lock`), so two commands never talk to one device at once. |
+| cli build only | `main.cpp`'s talk-over and follow-up helpers, the experiments' TTS probe | Not in the device build. |
+
+Locks to know before adding shared state: the settings (`g_mtx` for the snapshot, `g_file_mtx` for
+one save at a time; settings.cpp), `Store::mtx_` (calendar, reminders, timers, memory: the UI reads
+them every tick and tools change them), the smart-home file (`store.cpp`: `g_mtx` for the file,
+`g_net_mtx` for the network last seen), `control.cpp` (`g_ctl_mtx` for the questions awaiting a yes
+and the rate limit, `g_locks_mtx` and then one lock per device), the time zone (`g_tz_mtx` in
+util.cpp, under which `TZ` is switched), `uiq::mtx()` and curl's share locks (http.cpp). A
+descriptor or pointer read under a lock must not be used after it is let go if another thread may
+close or free it meanwhile (section 8, Audio). Still open: `Store` writes its files under the lock
+the UI takes every second (ZB-036), and `TZ` is switched with `setenv` while other threads may read
+it.
 
 State on disk (all under the user's home, mode 0600 where they hold secrets):
 `~/.config/zero-bot/settings.json`, `~/.config/zero-bot/radio.json` (the user's own stations,
@@ -88,11 +138,15 @@ twice; diagnostic, temporary, see section 7).
 
 ## 4. How a request flows
 
-1. `App::handle_key` starts or stops the recorder (TAB) or collects typed text, then calls
-   `Agent::submit_audio` / `submit_text`.
-2. `Agent::run_turn` absorbs queued inputs (transcribing audio), then loops for up to
-   `kMaxRounds` model calls: stream a reply, run any tool calls, repeat.
-3. Text streams sentence by sentence into `SpeechQueue`, which synthesizes and plays it.
+1. `App::handle_key` (`src/ui/app_keys.cpp`) starts or stops the recorder (TAB) or collects typed
+   text, then calls `Agent::submit_audio` / `submit_text`.
+2. `Agent::run_turn` (`Agent::Turn` in agent.cpp: `run`, then `one_round` for each model call,
+   whose body lists its steps: `messages_for`, `call_model`, `withdraw_if_steered`, `cut_short`,
+   `on_error`, `second_look`, `judge_draft`, `release_held`, then `run_tools` or `finish_answer`)
+   absorbs queued inputs (transcribing audio), then calls the model up to `kMaxRounds` times (a
+   `Budget`): stream a reply, run any tool calls, repeat.
+3. When the request had spoken input, text streams sentence by sentence into `SpeechQueue`, which
+   synthesizes and plays it; a typed request's answer is only shown (Typed or spoken, below).
 
 Things in that loop that exist for a reason; do not remove them without re-running the tests:
 
@@ -100,6 +154,12 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   sometimes claims an action without calling the tool. So a reply that used no tool is held
   back and checked once ("second look") before it is spoken, and two regex guards
   (`claims_action`, `claims_not_saved`) catch "done" and "that isn't saved" said without a call.
+  The guards, `claims_done` (below) and the notes the loop sends with them are one table,
+  `guards::kClaims` in `src/agent/guards.cpp`.
+- **Small-model controls** (`src/agent/controls.h`): `second_look`, `decide_note`, `claim_guards`,
+  `say`, `weekday_check`, `cancel_claims` and `date_spelling` are named so that what each is worth
+  can be measured by switching it off in the cli build (`ZB_EXP_OFF`, section 6); the device and
+  simulator builds always have them all on, and nothing the model sends can switch one.
 - **`say`**: tools whose effect is fully known up front (timer, calendar, switch) take the
   confirmation sentence as a parameter, so success is spoken without a second model call.
 - **Steering**: input that arrives while a request is being worked on is added to the same
@@ -113,11 +173,13 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   here]") or `Answering` (TAB does not stop it). Music waits only for an answer that is heard
   (`tools::Context::in_conversation`), and each answer's end is signalled at its own request's end.
 - **Numeric dates** are spelt out by rule (`util::spell_numeric_dates`) before the model sees
-  them, in the user's date order with the year filled in.
+  them, in the user's date order with the year filled in (the same rule as a date typed in the
+  calendar editor: `year_meant` in `util.cpp`).
 - **Timestamps** ride on each user message, not in the system prompt, so the prompt stays
   byte-identical between calls and the service can reuse its cached prefix.
 - **Music holds** (`audio::Music::hold`): music waits for the spoken reply to finish, and stays
-  quiet from a spoken question to the end of its answer.
+  quiet from a spoken question to the end of its answer. A typed request holds nothing
+  (`tools::Context::in_conversation` is false for it).
 - **Smart-home questions**: a change that needs the user's yes (a thing with *Ask before
   switching on*, heating outside 10 to 25 degrees, more than eight things, loud volume, after a
   web page or photo) makes `home::execute` answer `CONFIRM: ...` and remember the change. The loop
@@ -148,9 +210,9 @@ Things in that loop that exist for a reason; do not remove them without re-runni
     A call cut short or broken says where, with an example; an unknown tool name gets the nearest
     one. Every failure has one shape, `ERROR: what was wrong. What to do` (a tool's JSON
     `{"error": ...}`, whatever "error" holds, is turned into it before anything is added to the
-    result or it is cut short); `tools::failed()` recognises it.
-    Tools whose schema is made at run time (`smart_home`, `radio`: `obj({})` in `build()`) check
-    their own arguments.
+    result or it is cut short); `result::failed()` (`src/core/result.h`; `tools::failed` forwards
+    to it) recognises it, and a JSON object holding "error". Tools whose schema is made at run time
+    (`smart_home`, `radio`: `Tool::spec`) check their own arguments.
   - *Retries.* Only what is safe to repeat is sent again by itself: the AI service, transcription,
     speech, and the tools' reads and searches (`fetch_json`), through `http::send_retrying`, after
     a failure on the way (`http::transient`: no connection, a dropped one, 408, 429, 5xx but 501
@@ -187,8 +249,9 @@ cmake --preset cp0 && cmake --build --preset cp0    # cross build for the device
 
 The three builds share all the sources except that `cli` leaves out `src/ui/` and the display
 and input code. Libraries: libcurl, libcrypto (OpenSSL 3.5 on the device, possibly newer on a
-PC: use only non-deprecated interfaces), FreeType and libpng for the UI. MP3 encoding and Opus
-decoding are loaded at run time with `dlopen` and are optional.
+PC: use only non-deprecated interfaces), FreeType and libpng for the UI. MP3 encoding (libmp3lame),
+MP3 decoding for music (libmpg123) and Opus decoding (libopusfile) are loaded at run time with
+`dlopen` and are optional.
 
 ## 6. Testing
 
@@ -299,8 +362,12 @@ What exists:
   WiZ's hostile answers come from a UDP peer on 127.0.0.1),
   `tests/unit/hue_test.cpp` (the Hue driver's known answers: certificate pins, colours, resource
   shapes, refusals kept in the secrets; its test certificates are in `tests/mocks/hue/certs/`),
+  `tests/unit/support_test.cpp` (the helpers the drivers share, `drivers/support`: the JSON depth
+  check and guarded parse, UTF-8 repair and decoding, MAC digits, hex, SHA-256/512 and HMAC against
+  FIPS 180-2 and RFC 4231, the PEM certificate read and its SHA-256 pin, the RAII socket),
   `tests/unit/http_test.cpp` (the request
-  options for devices, against a local peer), `tests/unit/timers_test.cpp` (the timer tool,
+  options for devices, against a local peer, `tests/unit/http_peer.py`),
+  `tests/unit/timers_test.cpp` (the timer tool,
   storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it keeps everything
   it writes in a temporary folder of its own, so running it by hand is safe too) and
   `tests/unit/key_guide_test.cpp` (what each key does on the chat screen, and that the key guide
@@ -308,7 +375,18 @@ What exists:
   and what wakes it), `tests/unit/radio_test.cpp` (the station file, names and nicknames, the tool absent
   without stations, the check of a stream against `tests/unit/radio_peer.py`, the player's live
   mode against a stand-in `ffplay`), `tests/unit/tools_test.cpp` (the calculator, dates and
-  zones that do not exist, helper programs: cancelling, time limits, no inherited descriptors) and
+  zones that do not exist, helper programs: cancelling, time limits, no inherited descriptors),
+  `tests/unit/core_test.cpp` (what every thread shares: one file saved by two threads, the settings
+  read and changed on several threads, all-day alerts when the clocks change; what an older version
+  left behind; and the shared helpers: failure shape, battery, Wi-Fi list, default route, monotonic
+  count, start of a day), `tests/unit/speaker_test.cpp` (the speaker written on one thread and
+  stopped or killed on another: nothing reaches a file opened after `stop()`, a stuck write is
+  freed, stops never wait for the writer, the next answer's player gets only its own sound),
+  `tests/unit/mic_route_test.cpp` (the built-in microphone with a plug in the jack, against a
+  stand-in `amixer`), `tests/unit/music_test.cpp` (the player's MP3 path against a stand-in
+  `pacat`; without ffmpeg or libmpg123 it says so and passes), `tests/unit/models_test.cpp` (the
+  two model-choosing rules of `ui/models.h`), `tests/unit/llm_stream_test.cpp` (the event stream's
+  lines, the thinking-marker filter and tool calls put together from their pieces) and
   `tests/unit/activity_test.cpp` (saved conversations: what a save holds, keys blanked out, size
   limits, modes, pruning, nothing written unless asked; diagnostic, temporary),
   then, if `build/cli/zero_bot` is built, runs the timer and radio tools through it (`--tool`),
@@ -370,13 +448,16 @@ What exists:
   here with any change to `agent.cpp` or `llm.cpp`.
 
 - **Command-line modes** in `src/main.cpp` (work in the `cli` build):
-  `--ask "text"`, `--chat`, `--tool NAME 'JSON'`, `--steer "text"` (inject input during the
+  `--ask "text"`, `--ask-wav FILE.wav` (a spoken request, transcribed by the service), `--chat`,
+  `--tool NAME 'JSON'`, `--steer "text"` / `--steer-wav FILE.wav` (inject input during the
   first tool), `--talk-over MS[:text]` (hold the microphone open during a request; with
   `--talk-at tool|answer`, from its first tool or once its answer has begun, as TAB does),
   `--follow-ups "a|b|c"` (chain requests inside one run), `--stt FILE.wav`, `--tts "text" OUT.raw`,
+  `--codec-bench FILE.wav FILE.opus` (time the MP3 and Opus codecs on this machine),
   `--discover` (smart-home scan), `--home-refresh` (read saved smart-home devices),
   `--prompt` / `--schema` (the system prompt and tools a request would get now),
-  `--shots DIR` (render every screen to PNG; `sim` build), `--keydump`, `--version`.
+  `--shots DIR` (render every screen to PNG; `sim` build), `--keydump`, `--version`. `--help`
+  lists them; each is one row of `kOptions` in `main.cpp`.
 - **Scored agent set**: `tests/agent_eval.py` runs spoken-style requests through the `cli`
   build against a live service and checks tool calls, arguments and answers. It needs
   `ZB_API_BASE`, `ZB_API_KEY` (no search key), and model names in `ZB_EVAL_LLM_MODEL`
@@ -447,7 +528,7 @@ What exists:
   pass, one per check, each asserting its problem text; run it after any change to a check, and add a
   wrong transcript for any new kind of mistake.
 - **Generated request set**: `tests/suite/generate.py` (fixed seed) writes `tests/suite/cases.json`,
-  about 570 requests in categories (timer, reminder, calendar, weather, home, route, ...) with
+  about 600 requests in categories (timer, reminder, calendar, weather, home, route, ...) with
   feature tags (`asr`, `lang-xx`, `uk`, `us`, `followup`, `compound`, `notool`, `clarify`,
   `search`, `camera`). Edit the templates, regenerate, read the diff; `--check` says whether the
   file is current. `tests/agent_suite.py` runs it with the scored set's machinery and the same
@@ -467,7 +548,9 @@ What exists:
   before 2026-11-19 had (9 music cases then failed on any model). Run a sample or the tags you
   touched, not the whole set, unless asked.
 - **Environment switches**: `ZB_DRY_RUN=1` (tools do not play music, send infrared or switch
-  devices), `ZB_NO_AUDIO=1`, `ZB_FAKE_CAMERA=file.jpg`, `ZB_FAST_MODE=0|1`, `ZB_DATE_ORDER=dmy|mdy`,
+  devices), `ZB_NO_AUDIO=1` (which `--ask`, `--ask-wav` and `--chat` set unless it is set;
+  `ZB_NO_AUDIO=0` makes them speak, and the tests then put a stand-in `pw-cat` on `PATH`),
+  `ZB_FAKE_CAMERA=file.jpg`, `ZB_FAST_MODE=0|1`, `ZB_DATE_ORDER=dmy|mdy`,
   `ZB_TEST_NETWORK=1` (a stand-in network, id `net-58678b031ae6e411`, instead of the real one:
   only devices at 127.x addresses are contacted and nothing is scanned; use it for any smart-home
   test on a PC, never `--discover`), `ZB_TEST_TETHER=1` (the radio acts as on a phone's
@@ -476,8 +559,10 @@ What exists:
   `ZB_EXPERIMENTS`, which CMake refuses outside the `cli` build): `ZB_EXP_TRACE=file` appends a JSON
   line per model call (purpose, timings, token counts the service reports, size sent) and per request
   (first sentence, tools, guards, second look); no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`.
-  `ZB_EXP_OFF=NAME[,NAME]` switches small-model controls off (`src/agent/controls.h`); an unknown name
-  stops the run. The variants once measured against the default (`ZB_EXP_TOOLS`, shorter tool text;
+  `ZB_EXP_OFF=NAME[,NAME...]|all` switches small-model controls off (`src/agent/controls.h`:
+  `second_look`, `decide_note`, `claim_guards`, `say`, `weekday_check`, `cancel_claims`,
+  `date_spelling`); an unknown name stops the run, and the trace's start line names those off.
+  The variants once measured against the default (`ZB_EXP_TOOLS`, shorter tool text;
   `ZB_EXP_DECIDE`, deciding without the second look; `ZB_EXP_CHECK_MODEL`) were retired, none adopted:
   set, any of them stops the run at start, so an old command cannot measure the default under their
   name. `ZB_EXP_WEB` (the stand-in web) takes only plain decimal `http://127.a.b.c[:port][/path]`
@@ -493,9 +578,14 @@ What exists:
   noise at these sizes. With no `ZB_EXP_*` variable set nothing sent or done changes (checked in
   `agent_loop_test.py`).
 - **Screens**: `build/sim/zero_bot --shots out/` and look at the PNGs. Every UI change should
-  be checked this way before it goes to the device. The script in `App::render_shots` walks
-  the menus by counting key presses, so adding a settings row shifts later screenshots: fix
-  the counts in the same change. `tests/shots_compare.py` renders them into a temporary folder
+  be checked this way before it goes to the device. The script (`src/ui/shots.cpp`:
+  `App::render_shots` calls one function per group of screens) walks the menus by row label
+  (`Shots::menu_to`, which presses Up or Down as a user would), so a new settings row changes only
+  the screens that show its page; renaming a row the script walks to fails the run until the
+  script is given the new label. It also checks what needs the real screen code (a key on a dark
+  screen only wakes it, labels fit, the status bar redraws only what changed, the two
+  model-choosing rules of `ui/models.h`). `tests/shots_compare.py` renders them into a temporary
+  folder
   and compares each with `tests/golden/shots/` (small tolerance; differences drawn to
   `build/shots-diff/`), with the wall clock pinned (`tests/shots/fixclock.c`, built with `cc` and
   preloaded) and stand-ins on `PATH` for the audio, volume and network helpers, so it plays no
@@ -594,6 +684,13 @@ key, real audio), say so plainly rather than implying it was.
 - With a plug in the 3.5 mm jack the board's driver moves the codec's input to the jack's
   microphone pins (PGAL/PGAR Select Line 2P/2N); a plug without a microphone then recorded silence.
   The recorder points it back at Line 1P/1N for each recording (`audio::detail`), and puts it back.
+- A descriptor another thread may close must not outlive the lock it was read under.
+  `Speaker::write` took the player's pipe under its lock and wrote outside it, while
+  `SpeechQueue::stop()` on the UI thread closed it: the number was then free, and a file or socket
+  opened meanwhile got the rest of the sentence. A write now goes through a copy of its own
+  (`F_DUPFD_CLOEXEC`), which stays on the pipe (it fails once the player has gone) and leaves `stop()`
+  and `kill()` as fast as before; `tests/unit/speaker_test.cpp` holds the writer between the two steps
+  through `-Wl,--wrap=write`.
 - Radio: an HLS master playlist can point at variants that carry hours of rewind. One public
   broadcaster's was a ~200 KB playlist that a player re-reads every 6.4 s segment, more data than
   the sound itself; its live-only variant of one quality was 600 bytes. The README tells users to
@@ -625,6 +722,11 @@ key, real audio), say so plainly rather than implying it was.
 - A "past" escape-hatch parameter on the calendar tool was used by the model to bypass the
   check it was meant to refine. Do not give the model a way round a guard.
 - Give tools the allowed names as an `enum` (smart-home devices) rather than describing them.
+- A model the service lists without a label is not necessarily a chat model: an embedding model
+  listed first became the language model in the setup guide, which took "chat or unlabelled". By
+  the owner's rule only a model labelled `chat` is chosen without the user (ZB-088); the settings
+  list, where the user chooses, falls back to the unlabelled ones so that it is never empty
+  (`ui/models.h`, `tests/unit/models_test.cpp`).
 - A rule in a tool's description is not always heeded where it matters, and words added to a
   description move routing elsewhere. tv_remote's said "if a listed TV does not answer over the network,
   say so rather than trying this", yet after every network error of a listed TV (35 runs in 35) the reply
@@ -700,12 +802,30 @@ key, real audio), say so plainly rather than implying it was.
   other record holds a decision (things read from it, or its use switched off). One that only
   listed the device (a Hue Bridge heard only as HomeKit, which no driver claims) holds none, and
   must not leave the right record switched off.
+- No saved id may be a family's prefix alone. Tapo answers without a `device_id` became "tapo:",
+  shared by every such plug, so a rescan moved one plug's name, settings and MAC to another. An id
+  now falls back to the MAC (from the answer, else the system's neighbour table) or the device is
+  not listed, and `remember_scan` and the search for a moved device never merge a record with a
+  device of the same id but another known MAC.
+- A typed password, code or key is on trial until a device accepts it (`home::trial` in driver.h):
+  the trial is written to the file before the first send, nothing is sent when that write fails,
+  and a trial an earlier run left behind counts as refused until the user types it again (the app
+  may have stopped before the device answered, and a Tapo plug locks after a few refusals).
+  `pairing_submit` writes a "trying" mark on the device record before it hands anything typed to a
+  driver. Every failed write of `smarthome.json` is reported (`home::kNotSaved`), not lost.
+- A scan is of the network the user agreed to: `home::scan` takes the network the settings page
+  showed (`discovery::Options::network_id`), refuses once the device is on another, and drops what
+  it heard when the network changed while it listened.
 - An address is not an identity. Routers hand a device's address to another one (a router that
   loses its leases when it restarts, a bulb switched off at the wall for a week), and a device
   with no key of its own (WiZ, and any family whose protocol has no login) answers whoever asks.
   The first review of the WiZ driver found that a command for a light switched the plug that now
   had its address. Such a driver checks the device's MAC (the one discovery saved it under)
   before every change, and fails with a word `unreachable()` knows so the app looks for it.
+  Only a positive match counts: an answer with no MAC, or an empty one, is not the saved device
+  (Kasa's get_sysinfo; WiZ's getPilot, where firmware that leaves the MAC out is asked
+  getSystemConfig within the same time), and a record saved without a MAC is never changed. The
+  first versions took "no MAC" for "nothing to compare" and switched whatever answered.
   A login is no identity either: every plug of one Tapo account accepts the same password, and
   until the integration review a command for a desk lamp switched on the heater plug that had
   been given the lamp's address, with no question. The Tapo transport now asks each new session's
@@ -788,6 +908,9 @@ key, real audio), say so plainly rather than implying it was.
   handler) before the process ends as it would have. A modifier tapped on its own, and a key the
   app has no use for, reach `handle_key` as a `Key::None` press (`LoneModifier`): it wakes the
   screen and does nothing else.
+- A test that walks menus by counted key presses breaks without a word when a row is added: every
+  later screenshot shifted. `--shots` walks by row label (`Shots::menu_to`), pressing the keys a
+  user would, and the pictures came out identical, pixel for pixel.
 
 **Power**
 - The fuel gauge (`/sys/class/power_supply/bq27220-0/`) reports `current_now` in µA: positive
@@ -824,6 +947,17 @@ key, real audio), say so plainly rather than implying it was.
   checkout's `.cache`, which lies outside the worktree's `-ffile-prefix-map`, so a device binary built
   in a worktree contains a path of the build machine (with the user's name). The `strings` scan
   before a release catches it.
+- A rename made with a regular expression also renames inside string literals and comments:
+  `correction` to `correction_` turned the trace's purpose "correction" into "correction_". The
+  request dump did not see it (purposes are never sent); the loop test of the trace did. Restrict
+  such renames to code, and compare the set of string literals before and after.
+- Copies that look alike are not always the same. The three UTF-8 repairers in the drivers accepted
+  exactly the same sequences but put '?' or U+FFFD in a bad byte's place; the three name cleaners
+  differ in which characters they drop and in capping at 40 bytes or 40 characters; HomeKit's depth
+  check never lets a stray closing bracket count below zero; Kasa's deadline wait polls once more at
+  the deadline, HomeKit's does not. Before merging copies, run the old and the new side by side over
+  every short input (ZB-038 compared about a million strings) and keep a difference as a parameter or
+  a separate function.
 - A sandbox does not close what it inherits: `bwrap` handed the app's open descriptors (the
   framebuffer among them, which LVGL opens without close-on-exec) to the sandboxed Python.
   `proc::spawn` closes everything above stderr in the child; keep it. Anything slow that a tool
@@ -831,30 +965,47 @@ key, real audio), say so plainly rather than implying it was.
 
 ## 9. Adding things
 
-**A tool.** In `src/agent/tools.cpp`: write `t_name(const json &, Context &)` returning text or
-JSON for the model (use `fail("...")` for errors, phrased as an instruction about what to do
-next); add it to `build()` with a description written for the model and a compact schema (the
-runner checks argument types against it before the tool runs, so the tool keeps only its domain
-rules; a reply that reads from the network uses `fetch_json`, which retries what is safe); add
-it to `kConfirmable` if success is fully known from the arguments. If it needs the screen or
-hardware, add a callback to `tools::Context` and an event in `AgentEvents`, set in
-`Agent::run_turn` and handled in `App::wire_agent` through `uiq::post`. Honour `dry_run()`.
-Add cases to `tests/agent_eval.py`, including a neighbour that must not trigger it. Document
-it in `README.md`.
+**A tool.** A new file `src/agent/tools/<name>.cpp` (include `agent/tools/common.h`) with
+`t_<name>(const json &, Context &)` returning text or JSON for the model (use `fail("...")`, which
+is `result::fail`, for errors, phrased as an instruction about what to do next) and
+`Tool make_<name>()`, its spec: name, label, a description written for the model and a compact
+schema (`obj`, `S`, `N`, `B`, `E` from `tools/common.h`; the runner checks argument types against
+it before the tool runs, so the tool keeps only its domain rules; a reply that reads from the
+network uses `fetch_json` from `tools/web.h`, with its address through `experiment::web()`, which
+retries what is safe). If success is fully known from the arguments, give it `takes_say(note,
+when)`: the registry adds the "say" parameter, and `when` picks the calls whose say is spoken
+without the model reading the result. `offered` and `spec` are for a tool offered only sometimes
+(web search needs a key) or whose schema is made from the user's data (smart_home, radio). Then one
+line, `X(<name>)`, in `ZB_TOOLS` in `src/agent/tools/registry.cpp`, where the order is the order the
+model reads them in; nothing else changes (CMake builds every file in the folder). A tool that
+creates or moves records (as reminder_set, calendar_add and timer's start do) goes in `claims_new`'s
+list in `tools/say_checks.cpp`, so that a cancel after it in the same request may say "instead". If
+it needs the screen or hardware, add a callback to `tools::Context` and an event in `AgentEvents`,
+set in `Agent::Turn::run` and handled in `App::wire_agent` through `uiq::post`. Honour `dry_run()`.
+Test it with good, wrong and hostile arguments in `tests/tools_cli.py` (offline tools) and add cases
+to `tests/agent_eval.py`, including a neighbour that must not trigger it; `--schema` shows what the
+model will read. Document it in `README.md`.
 
 **A setting.** Add the field to `Settings` (`src/core/settings.{h,cpp}`: member, `to_json`,
-`from_json`), a row under its section's header in `open_settings` (each header is a page of its
-own, opened from the top page; a new header is a new section), the setup guide if a new user
-needs it, and a line in the README's settings table. Fix the screenshot key-press counts. Rows read
-the value with `S()` and change it with `change(...)` (`Settings::update`), never by writing to a
-copy.
+`from_json`), a row in its section's function in `src/ui/settings_pages.cpp` (`assistant_rows`,
+`device_rows`, ...; `open_settings` puts each section's rows under its header, and each header is a
+page of its own, opened from the top page: a new header is a new section), the setup guide
+(`setup_guide.cpp`) if a new user needs it, and a line in the README's settings table. Rows read the
+value with `S()` and change it with `change(...)` (`Settings::update`; both in
+`settings_internal.h`), never by writing to a copy. `--shots` walks to rows by label, so a new row
+moves no later screenshot; if it walks to a row you rename, rename it in `shots.cpp` too.
 
 **A key.** Chat-screen keys outside the input line are decided in `keyguide::chat_key`
 (`src/ui/key_guide.cpp`); add the key's line to the guide there too (`H` shows it), and keep the
 bottom row's hint short: it names only the keys wanted most.
 
 **A screen.** Follow `breath_view` or `chat_view`: create objects once, update only what
-changed, drive it from `App::periodic`, route keys in `App::handle_key`, add a `--shots` frame.
+changed, drive it from `App::periodic` (`app_status.cpp`), route keys in `App::handle_key`
+(`app_keys.cpp`), and add a `--shots` frame in the function of `shots.cpp` for its group of screens.
+A settings page that needs something slow (a subprocess, the network, the first full look at the
+network) reads it with `background()` and refreshes itself when the answer comes, showing a
+placeholder meanwhile; a late answer acts only while its page is still the one on top (the Smart
+home page checks its title, the setup guide its `still_on`).
 
 **Something shown over every screen** (the timer's alarm banner, `AlarmView`): make it a child
 of the screen, created after the other views, and `raise()` it again whenever another view
@@ -897,7 +1048,11 @@ once, not twice and not never.
 `std::unique_ptr<home::Driver> make_<family>_driver();`. Registering it is one line,
 `X(<family>, "<Name>") \`, in the list in `src/smarthome/drivers/registry.cpp`; the name is what the
 settings pages call its devices. Discovery must report the family's devices under the kind its
-`claims()` accepts (`kServices` or a vendor query in `discovery.cpp`). Nothing else changes (CMake
+`claims()` accepts (`kServices` or a vendor query in `discovery.cpp`). A vendor's broadcast query
+takes a socket in `Sockets` (`open_sockets`), its question and times in `Questions`, a parser called
+from `receive_answers` into `Seen`, and a function of its own in `Merge`, called from
+`Merge::devices()`, whose order is part of the ranking (a later pass can overrule an earlier one, as
+the Kasa answers do). Nothing else changes (CMake
 and `tests/run_unit.sh` both build every `.cpp` in `src/smarthome/drivers/`): the
 shared layer does names, rooms, the tool's schema (it grows with the capabilities a home has),
 the safety questions, rate limits, locking, fan-out and the generic pairing pages (after a
@@ -907,8 +1062,10 @@ driver keeps: map only allow-listed types (lights, plugs, switches, thermostats,
 speakers, TVs, scenes, read-only sensors; never locks, garage doors, alarms, cameras, valves or
 cooking appliances); state in the units and keys documented in `home.h`; secrets only in
 `Device::auth` or `secrets()`, never in errors; never retry a rejected code or password, even in
-a later run; no retries of its own of a change (the shared layer resends one only at a device's
-new address, and only when it comes out the same if made twice; `http::send_retrying` is for
+a later run, and keep a typed one on trial (`home::trial`) until a device accepts it; an id that
+is never a family's prefix alone, and, where the protocol has no login, a change only to a device
+that positively names the MAC it was saved under (section 8); no retries of its own of a change
+(the shared layer resends one only at a device's new address, and only when it comes out the same if made twice; `http::send_retrying` is for
 the internet, not for devices); an error for a device that did not answer reads as one ("did not
 answer", "timed out", "could not connect"), which is what makes the layer look for it at a new
 address (a device that spends half its 2.5 s and then did not answer is not asked again for its
@@ -916,7 +1073,10 @@ other things in that command: the shared layer gives them the same answer); hono
 `Device::port`; deadlines of about 2.5 s for a change and 4 s for listing;
 no threads, sockets or connections of its own between calls; errors are short sentences. Use
 the `http::Request` options (`local`, `timeout_ms`, `insecure`, `pinned_pubkey`, `want_peer_cert`,
-digest, client certificate) and `color.h` rather than private copies. Set `local` on every
+digest, client certificate), `color.h` and `drivers/support.h` (the JSON depth check and a
+guarded parse, UTF-8 repair and decoding, MAC digits, hex, digests and HMAC, the PEM certificate and
+its SHA-256 pin, an RAII socket) rather than private copies; where a family's rule differs (which
+characters a name keeps, how a wait ends at its deadline), it keeps its own and says why. Set `local` on every
 request to a device (the TLS and digest options imply it): it never uses a proxy from the
 environment, returns a redirect instead of following it (a key in a header must not travel to
 another host), and speaks only http and https. Build and

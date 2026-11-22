@@ -68,10 +68,11 @@ You do not have to wait for it to finish:
 - **While it is still working** (thinking, or using a tool), anything you say or type is added
   to the same request, so you can correct or refine it before it answers.
 - **While it is speaking**, typing leaves the speech playing; pressing **TAB** stops it at once
-  and starts listening.
+  and starts listening. The answer to a typed message is only shown, so **TAB** starts listening
+  and leaves that answer as it is.
 
 The dot in the top-left corner shows what it is doing: red while the microphone is live, amber
-while it is working, teal while it is speaking. The screen dims after 45 seconds without use
+while it is working, teal while it is answering. The screen dims after 45 seconds without use
 and goes off after five minutes (see *Screen off after* below); any key wakes it.
 
 ### Timers
@@ -142,8 +143,12 @@ create `~/.config/zero-bot/settings.json` on the device over SSH or ADB before f
 { "api_base": "https://your-service/v1", "api_key": "your-key" }
 ```
 
-The first time it connects, the app picks a speech-to-text and a text-to-speech model from the
-service's list. You can change every model under *Assistant* in settings.
+The first time it connects, the app picks a language model, a speech-to-text and a text-to-speech
+model from the service's list, by what the list labels each model for (its `mode`): the language
+model only from those labelled `chat`, never an unlabelled one (that could be a model for
+something else, such as embeddings). A service that labels none of its models gets nothing picked:
+choose each model under *Assistant* in settings, which lists the models labelled for that use or,
+where there are none, the unlabelled ones. You can change every model there.
 
 ### 4. Optional extras
 
@@ -170,7 +175,7 @@ settings from any page.
 | Section | What is there |
 |---|---|
 | Assistant | Language, vision, speech-to-text and text-to-speech models; voice; spoken replies on/off; fast replies; the assistant's name |
-| Device | Volume, brightness, screen off after, microphone gain, time zone, internet via phone, microphone, flip camera image, home city and country, your name, date order, units |
+| Device | Volume, brightness, screen off after, microphone gain, time zone, internet via phone, use phone when offline, microphone, flip camera image, home city and country, your name, date order, units |
 | Your data | Calendar (edit, add, delete, delete all), reminders and timers (cancel one or all), memory (edit, add, delete, forget everything), TV remote, smart home (devices by room, setting up, the Tapo account), music library, radio stations (what was read from your list, play one to try it), saved conversations (how many, delete them all; see [Diagnostics (temporary)](#diagnostics-temporary)), start a new conversation |
 | AI service | Address, API key, web search key, compress audio |
 | About | Status and connection test, the setup guide again, exit to launcher |
@@ -384,8 +389,11 @@ device directly: nothing goes through the makers' cloud services. Supported so f
 Other families are added one driver at a time.
 
 1. On your home network, open *Your data → Smart home → Find devices on this network*. Only do
-   this on a network you own. The scan only asks devices to identify themselves, the way the
-   makers' apps do; it does not log in to anything or change anything.
+   this on a network you own: the page before the scan (*Before you scan*) names the network it
+   will scan, and the scan is of that network only (if the device joins another network
+   meanwhile, nothing is scanned there, and what was heard is not kept). The scan only asks devices
+   to identify themselves, the way the makers' apps do; it does not log in to anything or change
+   anything.
 2. Devices that need it are listed under *To set up*; *Set up…* walks through what the device
    asks for (press a button, accept a prompt, type a code or password). Tapo plugs obey only
    the Tapo account they were set up with, so they ask for its e-mail address and password; once
@@ -411,7 +419,13 @@ Other families are added one driver at a time.
    login's user name, which is admin unless it was changed). A password a Shelly refuses is not
    sent again, by any later run either, until you type it again, because Shelly devices hold back
    logins after wrong passwords. The password is kept on the handheld, in the same private file as
-   the devices.
+   the devices. Anything typed here is noted in that file before it is first sent, and the note goes
+   once a device has accepted it. So if Zero Bot stops before a device has answered (it was closed,
+   or the battery ran out), a Tapo password, WiZ key or Shelly password is not sent again, by any
+   later run either, until you type it again: the device then asks for it, saying it never
+   confirmed the one typed last. If the file cannot be written (the storage is full), nothing typed
+   is sent at all and Zero Bot says why; any other change on these pages that could not be kept
+   is reported too (*Not saved*).
 3. What each device controls is then listed by room. On its page you can set the name you will
    say (*Called*), a *Room* (guessed from the name where it starts with one, such as "Bedroom
    lamp"), whether the *Assistant may use it*, and *Ask before switching on*. That last one is on
@@ -531,36 +545,67 @@ export ZB_API_BASE=https://your-service/v1 ZB_API_KEY=... ZB_SEARCH_KEY=...
 build/cli/zero_bot --ask "what's the weather like in lisbon tomorrow"
 build/cli/zero_bot --chat           # /new starts a new conversation, /save saves it (as SPACE twice does)
 build/cli/zero_bot --tool weather '{"location":"Lisbon"}'
+build/cli/zero_bot --help           # every option
 ```
 
 Model names come from `~/.config/zero-bot/settings.json` (`llm_model`, `stt_model`,
 `tts_model`). Set `ZB_DRY_RUN=1` to stop tools from playing music, sending infrared or switching
-smart-home devices. `--home-refresh` reads the smart-home devices saved for the current network.
-`--prompt` and `--schema` print the system prompt and the tools a request would be given right
-now (radio, web search and the smart home appear only once they are set up).
+smart-home devices. Besides those above, the options are:
+
+| Option | What it does |
+|---|---|
+| `--ask-wav FILE.wav` | One spoken request: the recording (16-bit mono, 16 kHz) is transcribed by the service, as on the device |
+| `--steer "text"`, `--steer-wav FILE.wav` | With `--ask`, `--ask-wav` or `--chat`: add this while the first tool of the first request runs |
+| `--talk-over MS[:text]`, `--talk-at start\|tool\|answer` | With `--ask`: hold the microphone open for a while during the request, as **TAB** does |
+| `--follow-ups "a\|b\|c"` | With `--ask`: send each of these as the previous answer begins, all inside one run |
+| `--prompt`, `--schema` | Print the system prompt and the tools a request would be given right now (radio, web search and the smart home appear only once they are set up) |
+| `--home-refresh` | Read the smart-home devices saved for the current network |
+| `--discover` | Look for smart-home devices on this network and list them (nothing is saved) |
+| `--stt FILE.wav`, `--tts "text" OUT.raw` | Try the speech-to-text and text-to-speech models on their own |
+| `--codec-bench FILE.wav FILE.opus` | Time compressing a recording to MP3 and decompressing an Opus reply on this machine |
+| `--shots DIR` | (the app's builds, not this one) Render every screen to PNG files |
+| `--keydump` | (the app's builds, not this one) Log raw key codes while the app runs |
+| `--version` | Print the version |
+
 `ZB_TEST_TETHER=1` makes the radio behave as on a phone's connection.
 `ZB_TEST_NETWORK=1` replaces the real network with a stand-in "Test network" on which only
 devices at a 127.x address are ever contacted and nothing is scanned; the tests use it.
 
-`tests/agent_eval.py` runs a scored set of requests through this build and reports which tools
-were called, whether the answers hold up, and how long each took. See the notes at the top of
-the file. `tests/run_unit.sh` builds and runs the tests that need neither a device nor an AI
-service (the smart-home layer, the timers: the timer tool, how timers are stored, the
-countdown and the alarm, the radio: the station file, the radio tool and the check of a stream
-against a pretend radio server, the keys and their guide, saved conversations, and the Fire TV,
-HomeKit, Hue, Kasa, WiZ and Shelly drivers), `tests/tapo_e2e.py` runs the
-command-line build against two simulated Tapo plugs, `tests/firetv_e2e.py` and
-`tests/homekit_e2e.py` run those drivers against a simulated TV and a simulated HomeKit bridge,
-`tests/hue_e2e.py` runs the Hue driver and the command-line build against a simulated Hue Bridge,
-`tests/kasa_e2e.py` runs the Kasa driver and the command-line build against simulated Kasa devices,
-`tests/wiz_e2e.py` runs the WiZ driver and the app against simulated WiZ lights and plugs,
-`tests/shelly_e2e.py` runs the Shelly driver and the app against simulated Shelly devices, and
-`tests/home_chat_e2e.py` runs its conversation loop against a scripted chat
-service to check that a change needing your yes waits for one.
+### Testing
+
+`tests/run.py` runs the tests in groups and prints one line for each: `tests/run.py --profile
+quick` runs everything that needs neither the device nor an AI service (a few minutes), `--profile
+change` only what covers the files you changed, and `--list` names every group and what it needs.
+The groups are:
+
+- the unit tests, `tests/run_unit.sh`: the smart-home layer, each driver (Fire TV, HomeKit, Hue,
+  Kasa, WiZ, Shelly) and the helpers they share, the HTTP options for devices, the timers (the
+  timer tool, storage, the countdown and the alarm), the radio (the station file, the radio tool,
+  the check of a stream against a pretend radio server), the keys and their guide, when the screen
+  dims and goes off, the speaker, the microphone with a plug in the headphone socket, the music
+  player, which models are chosen, reading the service's streamed replies, the calculator, dates,
+  time zones and helper programs, what every thread shares, and saved conversations;
+- the offline tools through the command-line build, with good, wrong and hostile arguments
+  (`tests/tools_cli.py`);
+- the conversation loop against scripted chat services (`tests/agent_loop_test.py`;
+  `tests/home_chat_e2e.py`, which checks that a change needing your yes waits for one; and
+  `tests/selfheal_chat_e2e.py`, for failures);
+- each smart-home driver end to end against simulated devices (`tests/tapo_e2e.py`,
+  `firetv_e2e.py`, `homekit_e2e.py`, `hue_e2e.py`, `kasa_e2e.py`, `wiz_e2e.py`, `shelly_e2e.py`);
+- every screen, rendered by the simulator build and compared with stored pictures
+  (`tests/shots_compare.py`).
+
+With an AI service, `tests/agent_eval.py` (a scored set of requests) and `tests/agent_suite.py`
+(a generated set of about 600) report which tools were called, whether the answers hold up, and
+how long each took; their web reads go to a stand-in, never to the real services. See the notes
+at the top of each file, and AGENTS.md section 6.
 
 ## Troubleshooting
 
 - **"No AI service is set up yet."** Enter an address and key under *AI service* in settings.
+- **The assistant does not answer after setup, and *Assistant → Language model* says "not set".**
+  The service does not label its models for their use, so none was picked as the language model
+  (see [What the AI service needs](#3-what-the-ai-service-needs)). Choose one there.
 - **Voice does nothing, typing works.** No speech models are selected. Choose them under
   *Assistant* in settings.
 - **Photos are upside down.** Toggle *Device → Flip camera image* in settings. It is on by
@@ -601,14 +646,14 @@ service to check that a change needing your yes waits for one.
 ## Project layout
 
 ```
-src/agent/      the conversation loop, prompt, tools, speech queue and service client
+src/agent/      the conversation loop and what it checks, prompt, tools (one file each in tools/), speech queue and service client
 src/core/       settings, calendar/reminder/timer/memory store, timers, music library, radio stations, utilities
-src/platform/   display, keyboard, audio, camera, infrared, subprocess helpers
-src/ui/         chat screen, menus, settings pages, alarm banner, screen off, app controller
+src/platform/   display, keyboard, audio, camera, infrared, battery, network status, subprocess helpers
+src/ui/         chat screen, menus, settings pages, setup guide, alarm banner, screen off, app controller, screenshots (--shots)
 src/net/        HTTP client (libcurl)
-src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers
+src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers and their shared helpers
 scripts/        toolchain setup, packaging, deployment
-tests/          scored agent test set, unit tests (smart home, timers, radio, keys, Fire TV, HomeKit, Hue, Kasa, WiZ, Shelly), end-to-end tests with simulated devices
+tests/          the test runner (run.py), unit tests, end-to-end tests with simulated devices and chat services, stored screenshots, scored agent test sets
 licenses/       third-party notices and the Apache-2.0 text
 packaging/      launcher entry and icon
 extras/         device-tree overlay for the Wi-Fi channel fix
@@ -618,10 +663,11 @@ third_party/    nlohmann/json (MIT)
 ## Licence
 
 MIT. See [LICENSE](LICENSE). Bundled: [nlohmann/json](https://github.com/nlohmann/json) (MIT).
-Built with [LVGL](https://lvgl.io) (MIT). The Fire TV driver follows parts of firehose-remote and
-hms-firetv (both MIT); the HomeKit driver follows parts of aiohomekit and Apple's HomeKit ADK (both
-Apache-2.0); the Hue driver follows parts of aiohue and the openhue-api description (both
-Apache-2.0); the WiZ driver follows parts of pywizlight (MIT). Their notices are in
+Built with [LVGL](https://lvgl.io) (MIT). The Tapo login follows parts of the `tapo` crate (MIT);
+the Fire TV driver follows parts of firehose-remote and hms-firetv (both MIT); the HomeKit driver
+follows parts of aiohomekit and Apple's HomeKit ADK (both Apache-2.0); the Hue driver follows parts
+of aiohue and the openhue-api description (both Apache-2.0); the WiZ driver follows parts of
+pywizlight (MIT). Their notices are in
 [licenses/THIRD-PARTY-NOTICES.md](licenses/THIRD-PARTY-NOTICES.md), and the package installs them
 with the Apache-2.0 text in `/usr/share/doc/zero-bot/`. "HomeKit" is a trademark of Apple Inc.;
 Zero Bot is not made or endorsed by Apple, Amazon or Signify (the maker of Philips Hue).

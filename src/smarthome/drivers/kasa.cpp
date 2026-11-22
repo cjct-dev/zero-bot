@@ -2,8 +2,10 @@
 //
 // Written for this project. TP-Link has never published this protocol; the facts used here (the
 // scrambling, the framing, the command and reply shapes, the energy units of the two hardware
-// generations, which devices moved to the newer login) are described with their sources in the
-// project's notes. No code was copied from any implementation of it.
+// generations, which devices moved to the newer login) come from public sources: softScheck's
+// write-up of the protocol, python-kasa's device fixtures and protocol code (GPL-3.0, read for facts
+// only) and tplink-smarthome-api (MIT, read, not ported). No code was copied from any implementation
+// of it.
 #include "smarthome/drivers/kasa.h"
 
 #include <arpa/inet.h>

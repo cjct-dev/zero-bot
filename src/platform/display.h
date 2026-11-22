@@ -10,7 +10,6 @@ void init(Mode mode);
 bool save_png(const std::string &path);      // snapshot of the active screen
 void set_brightness(int percent);            // device backlight (5 to 100); no-op elsewhere
 void backlight_off();                        // device backlight off until set_brightness; no-op elsewhere
-unsigned long now_ms();
 
 // The backlight a crash puts back. The launcher does not restore it when an app ends, so an app that
 // crashed while the screen was off left it dark (dimmed: at 10 %) until a brightness key or a

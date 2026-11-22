@@ -2,7 +2,7 @@
 // Each check prints one line; the exit status is non-zero when any fails.
 //
 // Where the vectors come from:
-//   survey   the project's research notes: {"system":{"get_sysinfo":{}}} scrambled, computed there
+//   survey   {"system":{"get_sysinfo":{}}} scrambled, computed by hand from the published scheme
 //   mock     computed with tests/mocks/kasa/mock_kasa.py's scramble(), a Python implementation
 //            sharing no code with the driver
 // The get_sysinfo samples below are written for this test in the shapes real devices report

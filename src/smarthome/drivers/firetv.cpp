@@ -620,7 +620,7 @@ const long kEnumerateMs = 4000, kReadMs = 2500, kShowCodeMs = 6000, kVerifyMs = 
 const size_t kSmallBody = 64 * 1024, kAppsBody = 512 * 1024;
 
 // Words shown during pairing (README-snippet.md lists them). Step 1 is shown by the settings
-// page as an AcceptPrompt step, whose button reads "I have accepted it" (settings_pages.cpp);
+// page as an AcceptPrompt step, whose button reads "I have accepted it" (settings_home.cpp);
 // the prompt names that button, since driver.h has no step kind with a plain "Continue".
 const char kShowCodePrompt[] =
     "Turn on the Fire TV, then choose \"I have accepted it\" and the TV will show a 4-digit code.";
@@ -1326,7 +1326,7 @@ public:
             }
         } catch (...) {
         }
-        step.kind = home::Pairing::AcceptPrompt;   // driver.h has no plain "continue" step: see STATUS.md
+        step.kind = home::Pairing::AcceptPrompt;   // driver.h has no plain "continue" step
         step.prompt = kShowCodePrompt;
         step.wait_s = 0;
         return step;
@@ -1799,7 +1799,7 @@ private:
                 if (since < kPressEveryMs) s.deadline().sleep(kPressEveryMs - since);
                 if (s.deadline().left() < 200) return partial(i, "There was no time for the rest.");
             }
-            // Body-less, one complete press: nothing can be left held down (see STATUS.md).
+            // Body-less, one complete press: nothing can be left held down.
             if (!s.command([&] { return s.api(true, path, "", kJson, kSmallBody, s.deadline().left()); }, what, err))
                 return i ? partial(i, "Then it stopped taking them.") : false;
             last = Clock::now();

@@ -7,7 +7,7 @@
 // and digest authentication). Read for behaviour only, no code copied: aioshelly (Apache-2.0) for
 // "a relay whose consumption type starts with light is a light" and for leaving out a relay that
 // drives the device's own thermostat. Gen1 model codes and which Gen1 models measure power are
-// from memory of the vendor's product list (STATUS.md says which facts rest on memory).
+// from memory of the vendor's product list.
 #include "smarthome/drivers/shelly.h"
 
 #include <algorithm>

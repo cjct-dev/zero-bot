@@ -76,7 +76,7 @@
 //   heating        bool, the thermostat or heater is heating right now
 //   target_position  where a cover is heading
 //   reachable      false when some value could not be read on the last read (its bridged
-//                  accessory is switched off, say); see STATUS.md
+//                  accessory is switched off, say)
 // Readings no thermometer gives (outside -100..200 C) are left out.
 //
 // Change mapping: brightness 0 switches a light off; brightness, kelvin or hs given without `on`

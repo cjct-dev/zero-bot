@@ -22,8 +22,6 @@ unsigned long now_ms() {
 
 namespace display {
 
-unsigned long now_ms() { return sys::now_ms(); }   // the same count; callers move to sys::now_ms
-
 void set_brightness(int percent) {
 #if !ZB_DESKTOP
     if (percent < 5) percent = 5;
