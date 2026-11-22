@@ -302,7 +302,9 @@ device directly: nothing goes through the makers' cloud services. Supported so f
 - **TP-Link Tapo** smart plugs and power strips (tested against simulated P110 plugs and a P304M
   strip; each socket of a strip is switched on its own). Every plug of your Tapo account accepts
   the same login, so after logging in Zero Bot asks the plug at the saved address which plug it
-  is: when the router has given that address to another of your plugs, nothing is switched.
+  is: when the router has given that address to another of your plugs, nothing is switched. A plug
+  saved without its hardware address (some were, by versions before 0.4.9) is not switched until a
+  scan in *Settings → Smart home* has saved it.
 - **Accessories that work with Apple HomeKit**, over Wi-Fi or Ethernet: one driver for many
   brands, such as hubs and bridges (Hive, tado, Netatmo, ecobee, Aqara, IKEA) and Wi-Fi plugs,
   lights and thermostats that carry a HomeKit setup code. Zero Bot pairs with the accessory
