@@ -67,6 +67,7 @@ void App::update_footer() {
 void App::update_indicators() {
     const std::string link = tether::default_link();
     bool online = !link.empty(), charging = false;
+    follow_connection(online);
     const bool phone = link.compare(0, 4, "bnep") == 0;
     int battery = -1;
 #if !ZB_DESKTOP
@@ -218,7 +219,7 @@ void App::periodic() {
             audio::Music::get().hold(audio::Music::kExchange | audio::Music::kSpeech, false);
         tick_screen(now, active || Agent::get().busy() || Agent::get().has_pending() || SpeechQueue::get().active());
     }
-    if (now - last_model_try >= 15000) {   // covers starting up before Wi-Fi has connected
+    if (now - last_model_try >= model_retry_ms) {   // covers starting up before Wi-Fi has connected
         last_model_try = now;
         auto_select_models();
     }

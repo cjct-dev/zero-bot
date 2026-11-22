@@ -1,6 +1,7 @@
 #include "ui/app.h"
 #include "ui/app_impl.h"
 
+#include <algorithm>
 #include <atomic>
 #include <csignal>
 #include <cstring>
@@ -90,22 +91,51 @@ void App::wire_agent() {
 
 // Picks sensible models the first time, so the app works before settings are touched.
 void App::auto_select_models() {
-    const Settings s = Settings::get();
-    if (!s.configured() || (!s.stt_model.empty() && !s.tts_model.empty() && !s.eff_llm_model().empty())) return;
-    if (selecting_models.exchange(true)) return;
-    std::thread([this] {
+    const std::string service = models_wanted();
+    if (service.empty() || selecting_models.exchange(true)) return;
+    std::thread([this, service] {
         std::string err;
         const models::List list = models::list(err);
         selecting_models = false;
-        if (!err.empty()) return;   // offline, most likely; periodic() tries again later
-        uiq::post([this, list] {
-            const Settings st = Settings::update([&list](Settings &s) { models::choose(s, list); });
-            if ((st.stt_model.empty() || st.tts_model.empty()) && !warned_models) {
-                warned_models = true;
-                chat.add_note("Choose speech models in settings (SPACE) to use voice.", theme::kThink);
-            }
-        });
+        uiq::post([this, list, err, service] { models_answered(list, err, service); });
     }).detach();
+}
+
+// The service (address and key) to ask for its models, or "" when there is nothing to ask. A
+// service's list is read once: what it lacks (since ZB-088 a service that labels none of its models
+// gets no chat model chosen) the user picks in settings, and asking again would only wake the Wi-Fi.
+// Only a service with another address or key is asked again (periodic() looks every model_retry_ms).
+std::string App::models_wanted() const {
+    const Settings s = Settings::get();
+    if (!s.configured() || (!s.stt_model.empty() && !s.tts_model.empty() && !s.eff_llm_model().empty())) return "";
+    const std::string service = s.eff_api_base() + '\n' + s.eff_api_key();
+    return service == models_listed_for ? "" : service;
+}
+
+// The service's answer, on the UI thread. One that could not be reached (offline, most likely) is
+// asked again after twice as long each time, up to kModelRetryMaxMs, and at once when the
+// connection comes back (follow_connection).
+void App::models_answered(const models::List &list, const std::string &err, const std::string &service) {
+    if (!err.empty()) {
+        model_retry_ms = std::min(model_retry_ms * 2, kModelRetryMaxMs);
+        return;
+    }
+    models_listed_for = service;
+    model_retry_ms = kModelRetryMs;
+    const Settings st = Settings::update([&list](Settings &s) { models::choose(s, list); });
+    if ((st.stt_model.empty() || st.tts_model.empty()) && !warned_models) {
+        warned_models = true;
+        chat.add_note("Choose speech models in settings (SPACE) to use voice.", theme::kThink);
+    }
+}
+
+// A connection that comes back asks at once for the models still to be chosen (auto_select_models).
+void App::follow_connection(bool online) {
+    if (online && !was_online) {
+        model_retry_ms = kModelRetryMs;
+        last_model_try = 0;
+    }
+    was_online = online;
 }
 
 void App::welcome() {

@@ -587,7 +587,7 @@ What exists:
   the screens that show its page; renaming a row the script walks to fails the run until the
   script is given the new label. It also checks what needs the real screen code (a key on a dark
   screen only wakes it, labels fit, the status bar redraws only what changed, the two
-  model-choosing rules of `ui/models.h`). `tests/shots_compare.py` renders them into a temporary
+  model-choosing rules of `ui/models.h`, when the service is asked for its models: `shots_idle`). `tests/shots_compare.py` renders them into a temporary
   folder
   and compares each with `tests/golden/shots/` (small tolerance; differences drawn to
   `build/shots-diff/`), with the wall clock pinned (`tests/shots/fixclock.c`, built with `cc` and

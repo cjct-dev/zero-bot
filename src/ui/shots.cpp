@@ -167,6 +167,7 @@ int App::render_shots(const std::string &dir) {
     shots_settings(shots);
     shots_dark_settings(shots);
     shots.failed = diagnostics_shots(shots) || shots.failed;   // DIAGNOSTICS (temporary)
+    shots_idle(shots);
     timers::fix_clock(0);
     return shots.failed ? 1 : 0;
 }
@@ -1088,6 +1089,36 @@ bool App::diagnostics_shots(Shots &shots) {
     }
     menu.close();
     return failed;
+}
+
+// What the app does while nobody uses it. Checked, not pictured: last, since it changes the settings.
+void App::shots_idle(Shots &shots) {
+    // The service's model list: one that cannot be reached is asked again after 30 s, then twice as
+    // long each time up to five minutes; once a list has been read, the same service is not asked
+    // again whatever it held (since ZB-088 one that labels none of its models gets nothing chosen,
+    // and it was asked every 15 s for ever), but one with another key is.
+    set([](Settings &s) {
+        s.api_base = "http://127.0.0.1:9/v1";
+        s.api_key = "first";
+        s.llm_model.clear(); s.stt_model.clear(); s.tts_model.clear();
+    });
+    const std::string service = models_wanted();
+    std::vector<unsigned long> waits;
+    for (int i = 0; i < 6; ++i) {
+        models_answered({}, "The service did not answer.", service);
+        waits.push_back(model_retry_ms);
+    }
+    const bool backs_off = waits == std::vector<unsigned long>{30000, 60000, 120000, 240000, 300000, 300000};
+    warned_models = true;   // no note in the chat
+    models_answered({{"one", ""}, {"two", ""}}, "", service);
+    const bool read_once = model_retry_ms == kModelRetryMs && models_wanted().empty();
+    set([](Settings &s) { s.api_key = "second"; });
+    const bool new_service = !models_wanted().empty();
+    if (!backs_off || !read_once || !new_service) {
+        fprintf(stderr, "the service's model list was asked for at the wrong times (backs off %d, read once %d, "
+                        "another service asked %d)\n", backs_off, read_once, new_service);
+        shots.failed = true;
+    }
 }
 
 }  // namespace ui

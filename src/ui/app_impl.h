@@ -18,6 +18,7 @@
 #include "ui/chat_view.h"
 #include "ui/key_guide.h"
 #include "ui/menu.h"
+#include "ui/models.h"
 #include "ui/screen_idle.h"
 
 namespace ui {
@@ -29,6 +30,8 @@ inline constexpr double kMaxSpeechSeconds = 90;
 // The footer, the chat, the menu, the breathing exercise and the timers are updated this often (about
 // 15 times a second: ChatView::tick and Menu::tick count in these ticks).
 inline constexpr unsigned long kTickMs = 66;
+// The service's model list, while it cannot be reached: asked again after this long, doubling up to the most.
+inline constexpr unsigned long kModelRetryMs = 15000, kModelRetryMaxMs = 5 * 60 * 1000;
 
 extern std::atomic<bool> g_exit;   // set to leave the main loop (run_app)
 
@@ -77,6 +80,12 @@ struct App {
     bool esc_armed = false;
     screen::Idle idle;                // when the screen dims and goes off (screen_idle.h)
     unsigned long last_tick = 0, last_second = 0, last_indicators = 0, last_model_try = 0;
+    // Choosing models without the user (auto_select_models): how long until the service is asked again,
+    // the service (address and key) whose list has been read, and whether the device was online when
+    // update_indicators last looked (taken as yes at the start, which asks anyway).
+    unsigned long model_retry_ms = kModelRetryMs;
+    std::string models_listed_for;
+    bool was_online = true;
     std::atomic<bool> selecting_models{false};
     std::atomic<bool> connecting_phone{false};
     bool warned_models = false;
@@ -84,6 +93,9 @@ struct App {
     // ------------------------------------------------------------ setup
     void wire_agent();
     void auto_select_models();
+    std::string models_wanted() const;
+    void models_answered(const models::List &list, const std::string &err, const std::string &service);
+    void follow_connection(bool online);
     void welcome();
 
     // ------------------------------------------------------------ recording
@@ -137,6 +149,7 @@ struct App {
     void shots_radio(Shots &shots);
     void shots_dark_settings(Shots &shots);
     bool diagnostics_shots(Shots &shots);   // DIAGNOSTICS (temporary)
+    void shots_idle(Shots &shots);          // checked, not pictured: last
 };
 
 }  // namespace ui
