@@ -65,90 +65,129 @@ std::string joined(const std::vector<std::string> &parts) {
     return out;
 }
 
-json spec_for(const std::vector<Item> &items) {
+// What the things offered can do between them, which decides the tool's actions, parameters and
+// description: the schema grows with the home.
+struct Abilities {
     uint32_t caps = 0;
     bool scenes = false, lights = false;
+    bool brightness = false, colour = false, heat = false, position = false, volume = false, source = false,
+         transport = false, volume_keys = false, keys = false;
+    bool values = false;       // set has something to change
+    bool plugs_only = false;   // only switching on and off: the plainest wording
+};
+
+Abilities abilities_of(const std::vector<Item> &items) {
+    Abilities ab;
     for (const auto &i : items) {
-        caps |= i.thing.caps;
-        scenes = scenes || i.thing.type == "scene";
-        lights = lights || is_light(i.thing);
+        ab.caps |= i.thing.caps;
+        ab.scenes = ab.scenes || i.thing.type == "scene";
+        ab.lights = ab.lights || is_light(i.thing);
     }
-    const bool brightness = caps & kBrightness, colour = caps & (kColor | kColorTemp), heat = caps & kTargetTemp,
-               position = caps & kPosition, volume = caps & kVolume, source = caps & kSource, transport = caps & kTransport,
-               volume_keys = caps & kVolumeStep, keys = caps & kKeys;
-    const bool values = brightness || colour || heat || position || volume || volume_keys || source;
-    const bool plugs_only = !values && !scenes && !transport && !lights;
+    const uint32_t caps = ab.caps;
+    ab.brightness = caps & kBrightness;
+    ab.colour = caps & (kColor | kColorTemp);
+    ab.heat = caps & kTargetTemp;
+    ab.position = caps & kPosition;
+    ab.volume = caps & kVolume;
+    ab.source = caps & kSource;
+    ab.transport = caps & kTransport;
+    ab.volume_keys = caps & kVolumeStep;
+    ab.keys = caps & kKeys;
+    ab.values = ab.brightness || ab.colour || ab.heat || ab.position || ab.volume || ab.volume_keys || ab.source;
+    ab.plugs_only = !ab.values && !ab.scenes && !ab.transport && !ab.lights;
+    return ab;
+}
 
+std::vector<std::string> actions_for(const Abilities &ab) {
     std::vector<std::string> actions = {"on", "off"};
-    if (values) actions.push_back("set");
+    if (ab.values) actions.push_back("set");
     actions.push_back("status");
-    if (scenes) actions.push_back("scene");
-    if (transport)
+    if (ab.scenes) actions.push_back("scene");
+    if (ab.transport)
         for (const char *a : {"play", "pause", "stop", "next", "previous"}) actions.push_back(a);
-    if (volume) { actions.push_back("mute"); actions.push_back("unmute"); }
-    if (keys) actions.push_back("press");
+    if (ab.volume) { actions.push_back("mute"); actions.push_back("unmute"); }
+    if (ab.keys) actions.push_back("press");
+    return actions;
+}
 
+// The target parameter's description. `all`: "all" is among the targets; `overflow`: not every name is.
+std::string target_text(const Abilities &ab, bool all, bool overflow) {
+    std::string target = ab.plugs_only ? "The device's name, exactly as listed." : "A device, room or group, exactly as listed.";
+    if (ab.lights) target += " A room means the lights in that room: when the user names a room (\"the lounge\"), use the "
+                             "room itself, not a device whose name mentions it.";
+    if (all) target += ab.plugs_only ? " \"all\" means every device, for switching everything off or checking everything"
+                                     : " \"all\" is only for switching everything off or checking everything.";
+    if (overflow) target += (all && ab.plugs_only ? ". " : " ") + std::string("Other device names are also accepted.");
+    return target;
+}
+
+// The values set can change, each only when a thing offered has it.
+void add_values(json &props, const Abilities &ab) {
+    if (ab.brightness) props["brightness"] = percent("Light level in percent, with set");
+    if (ab.colour) {
+        std::vector<std::string> shades;
+        for (const auto &c : color::names())
+            if (c.kelvin || (ab.caps & kColor)) shades.push_back(c.name);
+        props["color"] = enum_of("A colour or shade of white, with set", shades);
+    }
+    if (ab.heat) props["temperature"] = {{"type", "number"}, {"description", "Heating target in degrees Celsius, with set"}};
+    if (ab.position) props["position"] = percent("Blinds and curtains: 0 closed to 100 open, with set");
+    if (ab.volume) props["volume"] = percent("Speaker or TV volume, 0 to 100, with set");
+    if (ab.volume_keys)
+        props["volume_step"] = {{"type", "integer"}, {"minimum", -10}, {"maximum", 10},
+                                {"description", "Volume key presses, with set, for a device that only has volume up and down: "
+                                                "positive louder, negative quieter, e.g. 3 or -3"}};
+    if (ab.source) props["source"] = {{"type", "string"}, {"description", "A TV input or app, with set, e.g. \"Netflix\" or \"HDMI 1\""}};
+    if (ab.keys)
+        props["key"] = enum_of("With press: the remote-control key to press once (moving around a TV's menus)",
+                               std::vector<std::string>(std::begin(kTvKeys), std::end(kTvKeys)));
+}
+
+json properties_for(const Abilities &ab, const std::vector<Item> &items) {
+    const std::vector<std::string> actions = actions_for(ab);
     bool overflow = false;
     const std::vector<std::string> targets = target_names(items, &overflow);
     const bool all = std::find(targets.begin(), targets.end(), "all") != targets.end();
 
     json props = json::object();
-    props["action"] = enum_of(values ? "What to do. set changes the values given with it; status with no target reports everything"
-                                     : "What to do; status with no target reports all of them",
+    props["action"] = enum_of(ab.values ? "What to do. set changes the values given with it; status with no target reports everything"
+                                        : "What to do; status with no target reports all of them",
                               actions);
-    std::string target = plugs_only ? "The device's name, exactly as listed." : "A device, room or group, exactly as listed.";
-    if (lights) target += " A room means the lights in that room: when the user names a room (\"the lounge\"), use the "
-                          "room itself, not a device whose name mentions it.";
-    if (all) target += plugs_only ? " \"all\" means every device, for switching everything off or checking everything"
-                                  : " \"all\" is only for switching everything off or checking everything.";
-    if (overflow) target += (all && plugs_only ? ". " : " ") + std::string("Other device names are also accepted.");
-    props["target"] = enum_of(target, targets);
-    if (brightness) props["brightness"] = percent("Light level in percent, with set");
-    if (colour) {
-        std::vector<std::string> shades;
-        for (const auto &c : color::names())
-            if (c.kelvin || (caps & kColor)) shades.push_back(c.name);
-        props["color"] = enum_of("A colour or shade of white, with set", shades);
-    }
-    if (heat) props["temperature"] = {{"type", "number"}, {"description", "Heating target in degrees Celsius, with set"}};
-    if (position) props["position"] = percent("Blinds and curtains: 0 closed to 100 open, with set");
-    if (volume) props["volume"] = percent("Speaker or TV volume, 0 to 100, with set");
-    if (volume_keys)
-        props["volume_step"] = {{"type", "integer"}, {"minimum", -10}, {"maximum", 10},
-                                {"description", "Volume key presses, with set, for a device that only has volume up and down: "
-                                                "positive louder, negative quieter, e.g. 3 or -3"}};
-    if (source) props["source"] = {{"type", "string"}, {"description", "A TV input or app, with set, e.g. \"Netflix\" or \"HDMI 1\""}};
-    if (keys)
-        props["key"] = enum_of("With press: the remote-control key to press once (moving around a TV's menus)",
-                               std::vector<std::string>(std::begin(kTvKeys), std::end(kTvKeys)));
+    props["target"] = enum_of(target_text(ab, all, overflow), targets);
+    add_values(props, ab);
     props["say"] = {{"type", "string"},
                     {"description", "The one short sentence to speak to the user once this has worked, in their language, with "
                                     "the detail that matters, e.g. \"Your timer is set for 12 minutes.\" Omit for status."}};
+    return props;
+}
 
-    std::string description;
-    if (plugs_only) {
-        description = "Switch one of the user's smart-home devices on this network on or off, or check whether it is on. "
-                      "Calling this is the only way a device gets switched. The devices that exist are listed in the target "
-                      "parameter; if what the user asks for is not one of them, say so instead of picking another.";
-    } else {
-        std::vector<std::string> verbs;
-        if (caps & kPower) verbs.push_back("switch on or off");
-        if (brightness) verbs.push_back("dim");
-        if (colour) verbs.push_back("change colour");
-        if (heat) verbs.push_back("set the heating temperature");
-        if (position) verbs.push_back("open or close blinds");
-        if (volume) verbs.push_back("set the volume");
-        if (volume_keys) verbs.push_back("turn a TV's volume up or down");
-        if (transport) verbs.push_back("control playback");
-        if (source) verbs.push_back("change a TV's input or open an app");
-        if (keys) verbs.push_back("press a TV's remote keys (use this, not tv_remote, for the TVs listed here)");
-        if (scenes) verbs.push_back("start scenes");
-        description = "Control the user's smart-home devices on this network: " + joined(verbs) +
-                      ", or check their state. Calling this is the only way a device changes. The targets are listed in the "
-                      "target parameter" + std::string(lights ? "; a room name means the lights in that room" : "") +
-                      ". If what the user asks for is not listed, say so instead of picking another.";
-    }
-    return {{"description", description},
+std::string description_for(const Abilities &ab) {
+    if (ab.plugs_only)
+        return "Switch one of the user's smart-home devices on this network on or off, or check whether it is on. "
+               "Calling this is the only way a device gets switched. The devices that exist are listed in the target "
+               "parameter; if what the user asks for is not one of them, say so instead of picking another.";
+    std::vector<std::string> verbs;
+    if (ab.caps & kPower) verbs.push_back("switch on or off");
+    if (ab.brightness) verbs.push_back("dim");
+    if (ab.colour) verbs.push_back("change colour");
+    if (ab.heat) verbs.push_back("set the heating temperature");
+    if (ab.position) verbs.push_back("open or close blinds");
+    if (ab.volume) verbs.push_back("set the volume");
+    if (ab.volume_keys) verbs.push_back("turn a TV's volume up or down");
+    if (ab.transport) verbs.push_back("control playback");
+    if (ab.source) verbs.push_back("change a TV's input or open an app");
+    if (ab.keys) verbs.push_back("press a TV's remote keys (use this, not tv_remote, for the TVs listed here)");
+    if (ab.scenes) verbs.push_back("start scenes");
+    return "Control the user's smart-home devices on this network: " + joined(verbs) +
+           ", or check their state. Calling this is the only way a device changes. The targets are listed in the "
+           "target parameter" + std::string(ab.lights ? "; a room name means the lights in that room" : "") +
+           ". If what the user asks for is not listed, say so instead of picking another.";
+}
+
+json spec_for(const std::vector<Item> &items) {
+    const Abilities ab = abilities_of(items);
+    const json props = properties_for(ab, items);
+    return {{"description", description_for(ab)},
             {"parameters", {{"type", "object"}, {"properties", props}, {"required", json::array({"action"})}}}};
 }
 
