@@ -8,7 +8,7 @@ temporary folder, from a smart-home file in the old format (switches, top-level 
 The plugs' own counters (GET /mock/stats) show what reached them, so "logged in once" and "not
 tried again" are checked from the plug's side.
 
-usage: tests/tapo_e2e.py [path/to/zero_bot]          (default: build/cli/zero_bot)
+usage: tests/sim/tapo_e2e.py [path/to/zero_bot]          (default: build/cli/zero_bot)
 """
 import hashlib
 import json
@@ -19,12 +19,12 @@ import sys
 import tempfile
 import urllib.request
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
+sys.path.insert(0, TESTS)
 import netguard   # noqa: E402
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
-APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
+APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "cli", "zero_bot")
 EMAIL, PASSWORD = "user@example.com", "hunter2"
 SHA1 = hashlib.sha1(PASSWORD.encode()).hexdigest()
 WRONG = hashlib.sha1(b"not the password").hexdigest()
@@ -44,7 +44,7 @@ def check(name, ok, detail=""):
 
 class Mock:
     def __init__(self, mode, model, mac, nickname=""):
-        self.proc = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "mock_tapo.py"), "--port", "0", "--mode", mode,
+        self.proc = subprocess.Popen([sys.executable, "-I", os.path.join(TESTS, "mocks", "mock_tapo.py"), "--port", "0", "--mode", mode,
                                       "--model", model, "--email", EMAIL, "--password", PASSWORD, "--mac", mac,
                                       "--nickname", nickname, "--stdin-lifeline"],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=netguard.mock_env())

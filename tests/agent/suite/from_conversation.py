@@ -4,18 +4,18 @@ for a person to edit. Nothing is written, and nothing is added to the set automa
 
 A conversation is saved on the device with SPACE twice on the chat screen (or "/save" in
 zero_bot --chat), as a JSON file in ~/.local/share/zero-bot/conversations/ (AGENTS.md section 7
-says how to pull one over ADB). This prints a case in the form tests/suite/generate.py builds
+says how to pull one over ADB). This prints a case in the form tests/agent/suite/generate.py builds
 (see its docstring): the user's turns as the input, with the time stamps, automatic notes and
 spelt-out dates the app added taken off again; the tools the last turn called as "must"; the turns
 answered at length as "long_ok"; and, as comments, what each turn called and how long its answer
 was, with checks worth considering.
 
-The words are the user's own. Before a case goes into tests/suite/generate.py (the repository is
+The words are the user's own. Before a case goes into tests/agent/suite/generate.py (the repository is
 public), replace every name, place and event with others that test the same thing, and choose the
 checks: a word cap (max_words) only for simple factual turns, never for analytical ones.
 
-usage: tests/suite/from_conversation.py FILE [--json] [--category NAME]
-  --json        print the case as an entry of tests/suite/cases.json instead of a call for generate.py
+usage: tests/agent/suite/from_conversation.py FILE [--json] [--category NAME]
+  --json        print the case as an entry of tests/agent/suite/cases.json instead of a call for generate.py
   --category    the category to file it under (default: dialogue)
 
 Diagnostic and temporary, like saved conversations themselves (src/core/activity.h). Standard
@@ -29,7 +29,7 @@ import sys
 STAMP_RE = re.compile(r"^\[(Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d\d [A-Z][a-z]{2} \d{4}, \d\d:\d\d\] ")
 NOTE_RE = re.compile(r"\n\n\((Automatic note, not from the user)[^\n]*\)\s*$", re.S)
 SPELT_DATE_RE = re.compile(r" \((Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day,? [^)]*\d{4}\)")
-LONG_CHARS = 420   # the scored set's usual cap on an answer (tests/agent_eval.py score())
+LONG_CHARS = 420   # the scored set's usual cap on an answer (tests/agent/agent_eval.py score())
 SHORT_WORDS = 40   # an answer this short may have been a simple fact
 
 
@@ -100,7 +100,7 @@ def summary_lines(record, turns, source):
     out = ["Draft from %s (saved %s, %d turn%s). EDIT BEFORE USE: these are the user's own words. Put other names,"
            % (source, record.get("saved_at", "?"), len(turns), "" if len(turns) == 1 else "s"),
            "places and events in their place (the repository is public), choose the checks, and add it to",
-           "tests/suite/generate.py by hand."]
+           "tests/agent/suite/generate.py by hand."]
     if record.get("earlier_messages_not_kept"):
         out.append("The start of this conversation was not kept (%d earlier messages): the first turn may lean on it."
                    % record["earlier_messages_not_kept"])

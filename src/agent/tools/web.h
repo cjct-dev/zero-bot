@@ -1,6 +1,6 @@
 // Reading from a web service. Every tool that reads from the network does it through fetch_json, which
 // retries what is safe to send again, and every address it is given goes through experiment::web()
-// first (the test sets' stand-in web; tests/tools_cli.py checks both). Definition in web.cpp.
+// first (the test sets' stand-in web; tests/sim/tools_cli.py checks both). Definition in web.cpp.
 #pragma once
 #include <string>
 #include <vector>

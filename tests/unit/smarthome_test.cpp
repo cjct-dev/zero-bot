@@ -2,7 +2,7 @@
 // read of a device, names, rooms and groups, the tool's schema for three made-up homes, the
 // questions asked before risky changes, rate limits, locking and fan-out, pairing, the Tapo
 // driver's refusals and colours. Nothing is contacted: devices are a fake driver, and the
-// network is a stand-in. Built and run by tests/run_unit.sh.
+// network is a stand-in. Built and run by tests/unit/run_unit.sh.
 //
 //   smarthome_test SNAPSHOT_DIR        ZB_UPDATE_SNAPSHOTS=1 rewrites the snapshots
 #include <arpa/inet.h>
@@ -2078,7 +2078,7 @@ void test_stand_in() {
     setenv("ZB_TEST_NETWORK", "1", 1);
     const discovery::Network net = home::network_now(true);
     CHECK(net.usable && net.label() == "Test network");
-    CHECK(net.id() == "net-58678b031ae6e411");   // tests/agent_eval.py and tests/tapo_e2e.py rely on it
+    CHECK(net.id() == "net-58678b031ae6e411");   // tests/agent/agent_eval.py and tests/sim/tapo_e2e.py rely on it
     CHECK(home::test_network());
     home::Device far, near;
     far.ip = "192.0.2.10";
@@ -3564,7 +3564,7 @@ void test_rescan_every_family() {
 }  // namespace
 
 int main(int argc, char **argv) {
-    g_snapshots = argc > 1 ? argv[1] : "tests/snapshots";
+    g_snapshots = argc > 1 ? argv[1] : "tests/unit/snapshots";
     const char *tmp = getenv("TMPDIR");
     std::string dir = std::string(tmp && *tmp ? tmp : "/tmp") + "/zb-unit-XXXXXX";
     if (!mkdtemp(&dir[0])) { perror("mkdtemp"); return 2; }

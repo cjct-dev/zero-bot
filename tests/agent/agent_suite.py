@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Runs the generated request set (tests/suite/cases.json, written by tests/suite/generate.py)
+"""Runs the generated request set (tests/agent/suite/cases.json, written by tests/agent/suite/generate.py)
 through the command-line agent against the live service, with the scored set's machinery
-(tests/agent_eval.py: the same runner, transcript parser, speech-suitability rules and checks).
+(tests/agent/agent_eval.py: the same runner, transcript parser, speech-suitability rules and checks).
 
 Select by tag, name or a stratified sample, so a subset can be run:
 
-    tests/agent_suite.py --list                          # what would run, and the tag counts
-    tests/agent_suite.py --tags timer,reminder           # cases with any of these tags
-    tests/agent_suite.py --tags asr+home                 # "+" means both
-    tests/agent_suite.py --skip-tags search,camera
-    tests/agent_suite.py --sample 60 --seed 1            # a few from every category
-    tests/agent_suite.py --only timer-00 --repeat 5
+    tests/agent/agent_suite.py --list                          # what would run, and the tag counts
+    tests/agent/agent_suite.py --tags timer,reminder           # cases with any of these tags
+    tests/agent/agent_suite.py --tags asr+home                 # "+" means both
+    tests/agent/agent_suite.py --skip-tags search,camera
+    tests/agent/agent_suite.py --sample 60 --seed 1            # a few from every category
+    tests/agent/agent_suite.py --only timer-00 --repeat 5
 
-Other options as in tests/agent_eval.py: --bin, --repeat, --jobs (keep 1 for timings), --fast 0|1,
+Other options as in tests/agent/agent_eval.py: --bin, --repeat, --jobs (keep 1 for timings), --fast 0|1,
 --json OUT (full results), --rescore OUT (score saved results again, judged at the time they ran), --trace (the
-experiments' trace of each turn in --json: model calls, tokens, timings; tests/exp_report.py).
+experiments' trace of each turn in --json: model calls, tokens, timings; tests/agent/exp_report.py).
 --validate compiles every case offline (kinds, nested ones too, what each needs, regular expressions,
 the turns checks look at, homes, the stand-in web's fixtures) and exits non-zero on a problem. It needs
 ZB_API_BASE and ZB_API_KEY (and model names in ZB_EVAL_LLM_MODEL etc.); no search key: every case's
 web reads (search included) go to the stand-in web, as in the scored set, and a run refuses to start if a
-case could reach a real web service (tests/agent_eval.py preflight). Every case starts from an empty state with ZB_DRY_RUN, as in the
-scored set, and a small stand-in music library (MUSIC_LIBRARY: tags only, no sound) unless
+case could reach a real web service (tests/agent/agent_eval.py preflight). Every case starts from an empty state with ZB_DRY_RUN, as in the
+scored set, and a small stand-in music library (tests/lib/music.py: tags only, no sound) unless
 ZB_EVAL_MUSIC_DIR names a folder; ZB_EVAL_MUSIC_DIR= (empty) gives an empty library, as runs before
 2026-11-19 had. The summary gives the pass rate per tag and the slowest cases.
 
@@ -29,7 +29,7 @@ dates, times, amounts and ages are worked out when the case runs. A check looks 
 or at the one its "turn" names (0 is the first, -1 the last; "/new" is not a turn); "long_ok" lists
 the turns whose answer may be longer than the usual cap (analytical follow-ups). "must" tools have to
 be called and, for a change, work; "tried" tools only have to be called (routing, failures, questions
-first). Runs end "pass", "fail" or "unscorable", as in tests/agent_eval.py.
+first). Runs end "pass", "fail" or "unscorable", as in tests/agent/agent_eval.py.
 """
 import argparse
 import concurrent.futures
@@ -43,11 +43,12 @@ import shutil
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-sys.path.insert(1, os.path.join(HERE, "mocks"))   # fake_web: the stand-in web's fixtures, for event_time
-sys.dont_write_bytecode = True   # importing agent_eval leaves no __pycache__ in tests/
+HERE = os.path.dirname(os.path.abspath(__file__))   # tests/agent: agent_eval, suite/
+TESTS = os.path.dirname(HERE)                         # tests/: lib/, mocks/
+sys.path[0:0] = [HERE, TESTS, os.path.join(TESTS, "mocks")]   # mocks: fake_web, the stand-in web's fixtures, for event_time
+sys.dont_write_bytecode = True   # importing agent_eval leaves no __pycache__ in tests/agent/
 import agent_eval as ev   # noqa: E402
+from lib.records import blank_turn   # noqa: E402
 
 HOMES = {"eval": ev.EVAL_HOME, "tv": ev.TV_HOME, "sockets": ev.SOCKETS_HOME, "tv_silent": ev.TV_SILENT_HOME,
          "tv_closed": ev.TV_CLOSED_HOME}
@@ -91,10 +92,6 @@ def stamps_for(day, times):
             out.append((t if t > now else t + datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M"))
         return out
     return [s for hhmm in times for s in ev.stamps(days_for(day), hhmm)]
-
-
-# The music library every case sees: tests/agent_eval.py's (MUSIC_LIBRARY there), shared by both sets.
-MUSIC_LIBRARY = ev.MUSIC_LIBRARY
 
 
 def says_date(text, d):
@@ -447,7 +444,7 @@ KINDS = {name[2:]: f for name, f in globals().items() if name.startswith("k_") a
 
 
 def compile_check(s):
-    """One check; with "turn", it carries that turn's number (or "all": every turn) for tests/agent_eval.py's
+    """One check; with "turn", it carries that turn's number (or "all": every turn) for tests/agent/agent_eval.py's
     score(). A whole-conversation check ("moved") looks at every turn itself."""
     f = KINDS[s["kind"]](s)
     if "turn" not in s or getattr(f, "whole", False): return f
@@ -457,7 +454,7 @@ def compile_check(s):
 
 
 def compile_case(c):
-    """A case from cases.json in the form tests/agent_eval.py runs and scores ("source" keeps the JSON, for
+    """A case from cases.json in the form tests/agent/agent_eval.py runs and scores ("source" keeps the JSON, for
     the case's hash)."""
     out = dict(c, checks=[compile_check(s) for s in c["checks"]], home=HOMES[c["home"]] if c.get("home") else None, source=c)
     return out
@@ -519,7 +516,7 @@ def check_fields(s):
 def dry_run_check(f, turns):
     """Runs a compiled check on a turn that has nothing in it, to find one that cannot run at all (a field it
     reads that its case lacks): an exception other than Unscorable is a problem."""
-    blank = ev._blank_turn(state={"now": int(ev.today().timestamp()), "reminders": [], "calendar": [], "memory": [], "home": []})
+    blank = blank_turn(state={"now": int(ev.today().timestamp()), "reminders": [], "calendar": [], "memory": [], "home": []})
     try: f([dict(blank) for _ in range(max(1, turns))] if getattr(f, "whole", False) else dict(blank))
     except ev.Unscorable: pass
     except Exception as e:   # noqa: BLE001
@@ -533,7 +530,7 @@ FIELDS = ("name", "tags", "turns", "must", "must_not", "checks", "env", "home", 
 def validate(cases):
     """Every case compiled offline, as a live run would: the fields every case has, each check's kind (inside
     "either" too) and what it needs, its regular expressions, the turn it looks at, the home and the stand-in
-    web's fixture it names; then the scored set's checks (tests/agent_eval.py validate). Returns the problems."""
+    web's fixture it names; then the scored set's checks (tests/agent/agent_eval.py validate). Returns the problems."""
     import fake_web
     errors = []
     for c in cases:
@@ -658,7 +655,7 @@ def main():
         unfit = ev.probe_binary(args.bin)
         if unfit: sys.exit("the binary cannot run the live cases: " + "; ".join(unfit))
 
-    # An empty home folder of the run's own, and the stand-in music library (tests/agent_eval.py isolated_env).
+    # An empty home folder of the run's own, and the stand-in music library (tests/agent/agent_eval.py isolated_env).
     home = tempfile.mkdtemp(prefix="zb-suite-home-")
     env = ev.isolated_env(home)
     if args.fast is not None: env["ZB_FAST_MODE"] = args.fast

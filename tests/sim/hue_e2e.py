@@ -2,8 +2,8 @@
 """Hue end to end: the driver (through build/unit/hue_cli) and the app (build/cli/zero_bot) against
 pretend bridges (tests/mocks/hue/mock_hue.py) on 127.0.0.1.
 
-usage: tests/hue_e2e.py [path/to/hue_cli [path/to/zero_bot]]
-       (defaults: build/unit/hue_cli, which tests/run_unit.sh builds, and build/cli/zero_bot; the
+usage: tests/sim/hue_e2e.py [path/to/hue_cli [path/to/zero_bot]]
+       (defaults: build/unit/hue_cli, which tests/unit/run_unit.sh builds, and build/cli/zero_bot; the
        app's part is skipped, and says so, when the command-line build is missing)
        HUE_E2E_ONLY=test_groups,test_app runs only the named groups.
 
@@ -26,14 +26,14 @@ import tempfile
 import threading
 import time
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
+sys.path.insert(0, TESTS)
 import netguard   # noqa: E402
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
-MOCK = os.path.join(HERE, "mocks", "hue", "mock_hue.py")
-CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "unit", "hue_cli")
-APP = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
+MOCK = os.path.join(TESTS, "mocks", "hue", "mock_hue.py")
+CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "unit", "hue_cli")
+APP = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else os.path.join(TESTS, "..", "build", "cli", "zero_bot")
 sys.dont_write_bytecode = True   # importing the mock for rid() leaves no __pycache__ in the repository
 _spec = importlib.util.spec_from_file_location("mock_hue", MOCK)
 mock_hue = importlib.util.module_from_spec(_spec)
@@ -41,7 +41,7 @@ _spec.loader.exec_module(mock_hue)
 rid = mock_hue.rid
 BRIDGE_ID = "00005efffe005301"
 DEVICE_ID = "hue:" + BRIDGE_ID
-PINS = dict(line.split() for line in open(os.path.join(HERE, "mocks", "hue", "certs", "pins.txt")) if line.strip())
+PINS = dict(line.split() for line in open(os.path.join(TESTS, "mocks", "hue", "certs", "pins.txt")) if line.strip())
 ENV = dict(os.environ, ZB_TEST_NETWORK="1", ZB_NO_AUDIO="1")
 ENV.pop("ZB_DRY_RUN", None)
 
@@ -937,7 +937,7 @@ def test_secrets_never_printed():
 
 def main():
     if not os.access(CLI, os.X_OK):
-        sys.exit("no hue_cli at %s (run tests/run_unit.sh first)" % CLI)
+        sys.exit("no hue_cli at %s (run tests/unit/run_unit.sh first)" % CLI)
     tmp = tempfile.mkdtemp(prefix="hue_e2e_run_")
     only = [t for t in os.environ.get("HUE_E2E_ONLY", "").split(",") if t]
     try:

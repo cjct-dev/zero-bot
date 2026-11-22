@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Writes tests/suite/cases.json: several hundred spoken-style requests with the tools and checks
-they need, for tests/agent_suite.py (which runs them through the scored set's machinery).
+"""Writes tests/agent/suite/cases.json: several hundred spoken-style requests with the tools and checks
+they need, for tests/agent/agent_suite.py (which runs them through the scored set's machinery).
 
 Requests are built from templates and lists of places, amounts, names and phrasings; a seeded
 random choice picks slot values and the light speech-recogniser slips (fillers, a repeated word, a
@@ -14,14 +14,14 @@ Each case: {"name", "tags", "turns", "must", "must_not", "checks", "env", "home"
   tried     tools the last turn must call whatever came of it: routing, and cases about a failure or
             about a question first (a change waiting for the user's yes has not worked yet)
   must_not  tools it must not call; "*" means none at all
-  checks    declarative checks of the last turn, compiled by tests/agent_suite.py (see KINDS there);
+  checks    declarative checks of the last turn, compiled by tests/agent/agent_suite.py (see KINDS there);
             a check with "turn": N looks at turn N instead (0 is the first, -1 the last; "/new" is
             not a turn), so a middle turn can be held to something too
   long_ok   turns (numbered the same way) whose answer may run longer than the usual cap of 420
             characters: analytical and deeper follow-ups, where a long answer is wanted
   env       environment changes for the run (null removes one; "@web/FIXTURE" picks the stand-in web's fixture;
             every case's web reads go to the stand-in, tests/mocks/fake_web.py)
-  home      "eval", "tv" or "sockets": a made-up smart home from tests/agent_eval.py; "tv_silent" and
+  home      "eval", "tv" or "sockets": a made-up smart home from tests/agent/agent_eval.py; "tv_silent" and
             "tv_closed": its TV, not answering over the network (these cases set env ZB_DRY_RUN null,
             so that the TV on 127.0.0.1 is really asked)
   tags      the category first, then features: asr, lang, lang-xx, uk, us, followup, compound,
@@ -29,7 +29,7 @@ Each case: {"name", "tags", "turns", "must", "must_not", "checks", "env", "home"
 Dates and times in checks are relative ("tomorrow", "next:4" for the coming Friday, "date:12-03"
 for the next 3 December) and are worked out when the case runs, so a confident wrong date fails.
 
-usage: tests/suite/generate.py [--check]
+usage: tests/agent/suite/generate.py [--check]
 """
 import json
 import os
@@ -59,7 +59,7 @@ def case(cat, turns, tags=(), must=(), must_not=(), checks=(), env=None, home=No
     # A forecast's figures are what the stand-in served: any temperature the answer gives must be one of them.
     if any("weather" in m.split("|") for m in must): CASES[-1]["checks"].append({"kind": "weather_served"})
     if long_ok: CASES[-1]["long_ok"] = list(long_ok)
-    # The held-out question forms: asked instead of turns on a held-out seed (tests/agent_eval.py case_turns).
+    # The held-out question forms: asked instead of turns on a held-out seed (tests/agent/agent_eval.py case_turns).
     if held_out: CASES[-1]["held_out_turns"] = [held_out] if isinstance(held_out, str) else list(held_out)
     if tried: CASES[-1]["tried"] = list(tried)
 
@@ -705,7 +705,7 @@ for text, must, checks in [
     case("compound", text, tags=["asr"] if " uh " in text else [], must=must, checks=checks)
 
 # ------------------------------------------------------------------ dialogue: threads of several turns, as people have them
-# Generalised from conversations saved on the device (SPACE twice; tests/suite/from_conversation.py
+# Generalised from conversations saved on the device (SPACE twice; tests/agent/suite/from_conversation.py
 # drafts a case from one): other companies and events, never the user's own words. Kept last, with
 # no seeded choices, so that adding to it leaves the cases above unchanged. Simple factual turns are
 # held to a few words (max_words); analytical and deeper follow-ups are not: a long answer is
@@ -779,7 +779,7 @@ def main():
     text = json.dumps(CASES, indent=1, ensure_ascii=False) + "\n"
     if "--check" in sys.argv:
         same = os.path.exists(OUT) and open(OUT, encoding="utf-8").read() == text
-        print("cases.json is %s (%d cases)" % ("up to date" if same else "OUT OF DATE: run tests/suite/generate.py", len(CASES)))
+        print("cases.json is %s (%d cases)" % ("up to date" if same else "OUT OF DATE: run tests/agent/suite/generate.py", len(CASES)))
         sys.exit(0 if same else 1)
     names = [c["name"] for c in CASES]
     assert len(names) == len(set(names)), "duplicate case names"

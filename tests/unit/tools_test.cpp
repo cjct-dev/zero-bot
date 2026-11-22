@@ -4,7 +4,7 @@
 // than zones, and running a helper program (cancelling it, bounding the wait for it, and giving it
 // no open file of the app's but its three standard streams, also where close_range is refused).
 //
-// Built and run by tests/run_unit.sh. Needs /bin/sh, sleep and ls; writes nothing outside the
+// Built and run by tests/unit/run_unit.sh. Needs /bin/sh, sleep and ls; writes nothing outside the
 // temporary folder it is given.
 #include <linux/filter.h>
 #include <linux/seccomp.h>

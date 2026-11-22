@@ -4,7 +4,7 @@
 // against a pretend radio server (tests/unit/radio_peer.py), and the player's live mode against a
 // stand-in for ffplay, so that nothing is heard.
 //
-// Built by tests/run_unit.sh and run through radio_peer.py, which passes the server's address and
+// Built by tests/unit/run_unit.sh and run through radio_peer.py, which passes the server's address and
 // a port nothing listens on. Everything it writes goes to a temporary folder of its own.
 #include <atomic>
 #include <cerrno>

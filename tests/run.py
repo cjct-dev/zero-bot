@@ -17,7 +17,7 @@ one line per group and a short summary instead of each script's own output.
 Each group's whole output goes to build/test-runs/<date-time>/<group>.log, with plan.txt and
 summary.txt beside it. The exit status is 0 only when every group passed (a group whose test file is not
 in this tree is skipped, and does not count). With --baseline, the live runs are judged by the
-no-regression gate (tests/exp_compare.py) rather than by every case passing: the gate must compare every
+no-regression gate (tests/agent/exp_compare.py) rather than by every case passing: the gate must compare every
 set this run ran, and a live run with failed cases passes only when the gate's verdict (gate.json in the
 run folder) is "passes" and covers its set. Live runs are always traced (--trace), so their baseline
 must be traced too.
@@ -30,14 +30,14 @@ a search allowance and none needs a search key. It builds first unless
 --no-build, and then a build older than any of its inputs (src, third_party, cmake, CMakeLists.txt,
 CMakePresets.json) stops it. It also builds the device binary (cp0), which no group runs, and fails when that
 binary's version is not the one in CMakeLists.txt or it holds a cli-only string or a path of the build machine. It starts only with a baseline measured against the roster of cases defined
-in this tree (tests/exp_compare.py load_roster): valid records of both sets, a scorable, traced run of the
+in this tree (tests/agent/exp_compare.py load_roster): valid records of both sets, a scorable, traced run of the
 current version of at least 90% of each set's cases and of every critical case, by the current scorer. The
 live sets run only on a cli build that is an experiments build whose hardware guard holds and which writes
 the evaluator's records (probe_cli). The gate then runs with --release. Record a baseline with
 tests/run.py --groups live-scored,live-suite (eval.json and suite.json in its run folder). Last, the release
 runs the held-out group: both sets once on the stand-in web's held-out seed (never used day to day), judged on
-its own by tests/exp_compare.py --held-out (pass-rate floors, critical cases), its verdict in heldout.json
-beside gate.json. The web-contract group (tests/web_contract.py: the stand-in's shapes against the real
+its own by tests/agent/exp_compare.py --held-out (pass-rate floors, critical cases), its verdict in heldout.json
+beside gate.json. The web-contract group (tests/tools/web_contract.py: the stand-in's shapes against the real
 weather, place, rate and price services; never the search) is in no profile: run it by name before a release.
 
 Groups never inherit switches that change what they test (ZB_UPDATE_SHOTS, ZB_UPDATE_SNAPSHOTS,
@@ -47,8 +47,8 @@ adds the sim-build group, which compiles the sim build (no experiments, the scre
 
 Groups that need a build fail with a clear message when it is missing; --build builds what the chosen
 groups need first (cmake --preset X the first time, then cmake --build --preset X -j2; the unit test
-programs through tests/run_unit.sh). ZB_BUILD_WRAPPER prefixes every compile (also honoured by
-tests/run_unit.sh); ZB_EVAL_WRAPPER prefixes every run against the live service (for example a lock
+programs through tests/unit/run_unit.sh). ZB_BUILD_WRAPPER prefixes every compile (also honoured by
+tests/unit/run_unit.sh); ZB_EVAL_WRAPPER prefixes every run against the live service (for example a lock
 that also sets ZB_API_BASE and ZB_API_KEY). Live runs always use --jobs 1. Each group gets fresh
 XDG_CONFIG_HOME, XDG_DATA_HOME and XDG_CACHE_HOME folders, removed afterwards.
 
@@ -74,6 +74,7 @@ import time
 sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+AGENT = os.path.join(HERE, "agent")   # the live sets' runners and the gate, imported for the roster and the baseline
 sys.path.insert(0, HERE)
 import netguard   # noqa: E402  the network boundary of every child (tests/netguard.py)
 PY = sys.executable or "python3"
@@ -93,7 +94,7 @@ def pyi(*args):
 
 # ---------------------------------------------------------------- the groups
 # Run in this order. needs: "cli" (build/cli/zero_bot), "sim" (build/sim/zero_bot), "unit:NAME"
-# (build/unit/NAME, built by tests/run_unit.sh), "live" (the AI service). secs: rough time once built.
+# (build/unit/NAME, built by tests/unit/run_unit.sh), "live" (the AI service). secs: rough time once built.
 # file: the group is skipped when this file is not in the tree. slow: left out of the quick profile.
 # A command may be a function of the options and the run folder (the live groups).
 def _eval_cmd(o, run):
@@ -119,7 +120,7 @@ def _heldout_suite_cmd(o, run):
 def _heldout_judge_cmd(o, run):
     files = ",".join(os.path.join(run, n) for n in ("eval-heldout.json", "suite-heldout.json"))
     n = max(1, getattr(o, "calibrate", 0))
-    return py("tests/exp_compare.py", "--held-out", files, "--verdict", os.path.join(run, "heldout.json"), "--repeats", str(n)) + \
+    return py("tests/agent/exp_compare.py", "--held-out", files, "--verdict", os.path.join(run, "heldout.json"), "--repeats", str(n)) + \
         (["--calibrate"] if getattr(o, "calibrate", 0) else [])
 
 
@@ -127,7 +128,7 @@ def _validate(script):
     """SCRIPT --validate (every case compiled offline), when SCRIPT has it; None (nothing to run) when not."""
     def cmd(o, run):
         try:
-            with open(os.path.join(HERE, os.path.basename(script)), encoding="utf-8") as f:
+            with open(os.path.join(ROOT, script), encoding="utf-8") as f:
                 has = '"--validate"' in f.read()
         except OSError:
             has = False
@@ -140,65 +141,65 @@ def _sim_build_cmd(o, run):
 
 
 GROUPS = [
-    dict(name="runner", secs=4, needs=[], cmds=[py("tests/run.py", "--self-test"), py("tests/exp_compare.py", "--self-test"),
-                                              py("tests/web_contract.py", "--self-test"), py("tests/netguard.py", "--self-test")],
+    dict(name="runner", secs=4, needs=[], cmds=[py("tests/run.py", "--self-test"), py("tests/agent/exp_compare.py", "--self-test"),
+                                              py("tests/tools/web_contract.py", "--self-test"), py("tests/netguard.py", "--self-test")],
          about="this runner (the path map, the profiles, --plan, the summaries) and the gate's verdicts"),
     dict(name="unit", secs=60, needs=[], uses=["cli"], timeout=2400,
-         cmds=[["sh", "tests/run_unit.sh"]], env={"ZB_UNIT_SKIP_SCRIPTS": "1"},
-         about="tests/run_unit.sh: the C++ unit tests (the first build takes about 7 min), and the timer "
+         cmds=[["sh", "tests/unit/run_unit.sh"]], env={"ZB_UNIT_SKIP_SCRIPTS": "1"},
+         about="tests/unit/run_unit.sh: the C++ unit tests (the first build takes about 7 min), and the timer "
                "and radio tools through build/cli"),
     dict(name="cases", secs=3, needs=[],
-         cmds=[pyi("tests/agent_suite.py", "--list"), pyi("tests/suite/generate.py", "--check"),
-               _validate("tests/agent_suite.py"), _validate("tests/agent_eval.py")],
-         about="the generated suite loads, tests/suite/cases.json matches generate.py, and every case of both "
+         cmds=[pyi("tests/agent/agent_suite.py", "--list"), pyi("tests/agent/suite/generate.py", "--check"),
+               _validate("tests/agent/agent_suite.py"), _validate("tests/agent/agent_eval.py")],
+         about="the generated suite loads, tests/agent/suite/cases.json matches generate.py, and every case of both "
                "live sets compiles (--validate)"),
-    dict(name="scorer", secs=5, needs=[], file="tests/scorer_test.py",
-         cmds=[pyi("tests/scorer_test.py")],
+    dict(name="scorer", secs=5, needs=[], file="tests/agent/scorer_test.py",
+         cmds=[pyi("tests/agent/scorer_test.py")],
          about="the live sets' scoring, checked offline on saved answers"),
-    dict(name="packaging", secs=2, needs=[], cmds=[pyi("tests/packaging_test.py")],
+    dict(name="packaging", secs=2, needs=[], cmds=[pyi("tests/sim/packaging_test.py")],
          about="scripts/package-deb.sh's package, built from a stand-in binary and read back, and its maintainer "
                "scripts (the wake screen's diversion) against a stand-in dpkg-divert"),
-    dict(name="tools", secs=2, needs=["cli"], cmds=[pyi("tests/tools_cli.py", "build/cli/zero_bot")],
+    dict(name="tools", secs=2, needs=["cli"], cmds=[pyi("tests/sim/tools_cli.py", "build/cli/zero_bot")],
          about="the offline tools through the cli build: good, wrong and hostile arguments"),
     dict(name="loop", secs=30, needs=["cli"],
-         cmds=[py("tests/home_chat_e2e.py"), py("tests/selfheal_chat_e2e.py"),
-               pyi("tests/agent_loop_test.py", "-q", "build/cli/zero_bot")],
+         cmds=[py("tests/sim/home_chat_e2e.py"), py("tests/sim/selfheal_chat_e2e.py"),
+               pyi("tests/sim/agent_loop_test.py", "-q", "build/cli/zero_bot")],
          about="the request loop against scripted and fake services: home_chat_e2e, selfheal_chat_e2e, "
                "agent_loop_test"),
-    dict(name="tapo", secs=2, needs=["cli"], cmds=[py("tests/tapo_e2e.py")],
+    dict(name="tapo", secs=2, needs=["cli"], cmds=[py("tests/sim/tapo_e2e.py")],
          about="Tapo end to end against two simulated plugs"),
-    dict(name="wiz", secs=12, needs=["unit:wiz_cli", "cli"], cmds=[py("tests/wiz_e2e.py")],
+    dict(name="wiz", secs=12, needs=["unit:wiz_cli", "cli"], cmds=[py("tests/sim/wiz_e2e.py")],
          about="WiZ end to end against simulated lights and plugs"),
-    dict(name="kasa", secs=12, needs=["unit:kasa_cli", "cli"], cmds=[py("tests/kasa_e2e.py")],
+    dict(name="kasa", secs=12, needs=["unit:kasa_cli", "cli"], cmds=[py("tests/sim/kasa_e2e.py")],
          about="Kasa end to end against simulated plugs, strip, dimmer, bulbs"),
-    dict(name="shelly", secs=15, needs=["unit:shelly_cli", "cli"], cmds=[py("tests/shelly_e2e.py")],
+    dict(name="shelly", secs=15, needs=["unit:shelly_cli", "cli"], cmds=[py("tests/sim/shelly_e2e.py")],
          about="Shelly end to end against simulated Gen1 and Gen2+ devices"),
-    dict(name="hue", secs=36, needs=["unit:hue_cli", "cli"], cmds=[py("tests/hue_e2e.py")],
+    dict(name="hue", secs=36, needs=["unit:hue_cli", "cli"], cmds=[py("tests/sim/hue_e2e.py")],
          about="Hue end to end against a simulated bridge"),
-    dict(name="homekit", secs=51, needs=["unit:homekit_cli"], cmds=[py("tests/homekit_e2e.py")],
+    dict(name="homekit", secs=51, needs=["unit:homekit_cli"], cmds=[py("tests/sim/homekit_e2e.py")],
          about="HomeKit end to end against a simulated bridge"),
     dict(name="sim-build", secs=60, needs=["sim-tree"], build=True, timeout=3600, cmds=[_sim_build_cmd],
          about="compiles the sim build, which has no experiments and has the screen code, as the device build: "
                "a change to shared code must compile there too (not in the profiles; the path map adds it)"),
-    dict(name="screens", secs=10, needs=["sim"], cmds=[pyi("tests/shots_compare.py")],
-         about="every screen rendered by the sim build and compared with tests/golden/shots/"),
+    dict(name="screens", secs=10, needs=["sim"], cmds=[pyi("tests/sim/screens/shots_compare.py")],
+         about="every screen rendered by the sim build and compared with tests/sim/screens/golden/"),
     dict(name="firetv", secs=330, needs=["unit:firetv_cli"], slow=True, timeout=1500,
-         cmds=[py("tests/firetv_e2e.py")],
+         cmds=[py("tests/sim/firetv_e2e.py")],
          about="Fire TV end to end (waits out real wake-up times: about 5 min)"),
     dict(name="live-scored", secs=480, needs=["cli", "live"], live=True, timeout=MAX_LIVE_SECONDS,
-         cmds=[_eval_cmd], about="tests/agent_eval.py, the scored set, against the live service (--jobs 1)"),
+         cmds=[_eval_cmd], about="tests/agent/agent_eval.py, the scored set, against the live service (--jobs 1)"),
     dict(name="live-suite", secs=2100, needs=["cli", "live"], live=True, timeout=MAX_LIVE_SECONDS,
          cmds=[_suite_cmd],
-         about="tests/agent_suite.py, the generated suite (601 cases), against the live service (--jobs 1)"),
+         about="tests/agent/agent_suite.py, the generated suite (601 cases), against the live service (--jobs 1)"),
     dict(name="gate", secs=5, needs=["baseline"], auto=True, cmds=[_gate_cmd],
-         about="tests/exp_compare.py's no-regression gate: this run's live results against --baseline "
+         about="tests/agent/exp_compare.py's no-regression gate: this run's live results against --baseline "
                "(added when --baseline is given with a live group, and always in the release profile)"),
     dict(name="held-out", secs=2700, needs=["cli", "live"], heldout=True, judged=True, timeout=MAX_LIVE_SECONDS,
          cmds=[_heldout_eval_cmd, _heldout_suite_cmd, _heldout_judge_cmd],
          about="the release's held-out run: both sets once on the stand-in web's held-out seed and variants, which no "
-               "day-to-day run uses, judged on its own (tests/exp_compare.py --held-out: a pass-rate floor per set, every "
+               "day-to-day run uses, judged on its own (tests/agent/exp_compare.py --held-out: a pass-rate floor per set, every "
                "critical case passing); reported beside the gate. Only in the release profile: never tune on it"),
-    dict(name="web-contract", secs=15, needs=[], ondemand=True, internet=True, cmds=[py("tests/web_contract.py")],
+    dict(name="web-contract", secs=15, needs=[], ondemand=True, internet=True, cmds=[py("tests/tools/web_contract.py")],
          about="the stand-in web's shapes against the real weather, place, rate and price services (a handful of direct "
                "requests, never the search; needs the internet): on demand, before a release, in no profile"),
 ]
@@ -206,7 +207,7 @@ BY_NAME = {g["name"]: g for g in GROUPS}
 OFFLINE = [g["name"] for g in GROUPS if not g.get("live") and not g.get("auto") and not g.get("build") and not g.get("heldout")
            and not g.get("ondemand")]
 LIVE = [g["name"] for g in GROUPS if g.get("live")]
-LIVE_SET = {"live-scored": "scored", "live-suite": "suite"}            # tests/exp_compare.py's names for them
+LIVE_SET = {"live-scored": "scored", "live-suite": "suite"}            # tests/agent/exp_compare.py's names for them
 LIVE_FILE = {"live-scored": "eval.json", "live-suite": "suite.json"}   # their results in the run folder
 # Inherited switches that change what a group tests: never passed on (the runner sets its own).
 SCRUB = ("ZB_UNIT_BUILD_ONLY", "ZB_UNIT_SKIP_SCRIPTS", "ZB_UPDATE_SHOTS", "ZB_UPDATE_SNAPSHOTS", "HUE_E2E_ONLY",
@@ -236,33 +237,35 @@ QUICK = "<quick>"
 PATH_RULES = [
     (r"^(docs/|licenses/|LICENSE$|[^/]*\.md$|.*/README[^/]*$|\.gitignore$)", [], "documentation"),
     (r"^(.*/)?__pycache__/|.*\.pyc$", [], "Python's bytecode cache"),
-    (r"^(scripts/package-deb\.sh$|packaging/|tests/packaging_test\.py$)", ["packaging"],
+    (r"^(scripts/package-deb\.sh$|packaging/|tests/sim/packaging_test\.py$)", ["packaging"],
      "the package and its maintainer scripts"),
     (r"^(scripts/|extras/|\.github/)", [], "deployment: no offline test covers it"),
     (r"^tests/run\.py$", ["runner"], "this runner"),
     (r"^tests/netguard\.py$", ["runner", "tools", "loop", "scorer"], "the network boundary of every test process"),
-    (r"^tests/(exp_compare|exp_report|web_contract)\.py$", ["runner"], "the gate and the reports (their self-test is in runner)"),
-    (r"^tests/scorer_test\.py$", ["scorer"], "the scorer's own test"),
-    (r"^tests/agent_eval\.py$", ["scorer", "cases", "loop"],
-     "the scored set and the scoring both live sets use (agent_loop_test.py reads its parser)"),
-    (r"^tests/agent_suite\.py$", ["scorer", "cases"], "the suite's runner"),
-    (r"^tests/suite/from_conversation\.py$", ["cases", "scorer", "loop"],
+    (r"^tests/(agent/exp_compare|agent/exp_report|tools/web_contract)\.py$", ["runner"], "the gate and the reports (their self-test is in runner)"),
+    (r"^tests/agent/scorer_test\.py$", ["scorer"], "the scorer's own test"),
+    (r"^tests/agent/agent_eval\.py$", ["scorer", "cases", "tools"],
+     "the scored set and the scoring both live sets use (tools_cli.py runs its runner against a scripted model)"),
+    (r"^tests/lib/", ["scorer", "cases", "tools", "loop"],
+     "code the test folders share: the cli's account of a run and the stand-in music library (agent_eval.py, agent_loop_test.py)"),
+    (r"^tests/agent/agent_suite\.py$", ["scorer", "cases"], "the suite's runner"),
+    (r"^tests/agent/suite/from_conversation\.py$", ["cases", "scorer", "loop"],
      "drafts a case from a saved conversation (agent_loop_test.py runs it)"),
-    (r"^tests/suite/", ["cases", "scorer"], "the generated suite (scorer_test.py reads its cases)"),
+    (r"^tests/agent/suite/", ["cases", "scorer"], "the generated suite (scorer_test.py reads its cases)"),
     (r"^tests/mocks/(fake_web\.py|web/)", ["cases", "scorer", "tools"],
      "the stand-in web (its fixtures: the validators and scorer_test.py; tools_cli.py starts it)"),
-    (r"^tests/(golden/|shots/|shots_compare\.py$)", ["screens"], "the golden screenshots"),
+    (r"^tests/sim/screens/", ["screens"], "the golden screenshots"),
     (r"^tests/mocks/mock_tapo\.py$", ["tapo", "loop"],
      "the simulated Tapo plugs (home_chat_e2e.py and selfheal_chat_e2e.py start them too)"),
     (r"^tests/mocks/(?P<family>hue|firetv)/", ["unit", "{family}"],
      "a simulated device whose files the driver's unit test reads too"),
     (r"^tests/mocks/(?P<family>%s)/" % _F, ["{family}"], "a simulated device"),
-    (r"^tests/(?P<family>%s)_e2e\.py$" % _F, ["{family}"], "a device family's end-to-end test"),
-    (r"^tests/(mocks/(mock_chat|fake_model)\.py|home_chat_e2e\.py|selfheal_chat_e2e\.py|agent_loop_test\.py)$",
+    (r"^tests/sim/(?P<family>%s)_e2e\.py$" % _F, ["{family}"], "a device family's end-to-end test"),
+    (r"^tests/(mocks/(mock_chat|fake_model)|sim/(home_chat_e2e|selfheal_chat_e2e|agent_loop_test))\.py$",
      ["loop"], "the request loop's tests"),
-    (r"^tests/tools_cli\.py$", ["tools"], "the offline tools' test"),
+    (r"^tests/sim/tools_cli\.py$", ["tools"], "the offline tools' test"),
     (r"^tests/unit/(?P<family>%s)_(test|cli)\.cpp$" % _F, ["unit", "{family}"], "a driver's unit test"),
-    (r"^tests/(unit/|snapshots/|run_unit\.sh$)", ["unit"], "the unit tests"),
+    (r"^tests/unit/", ["unit"], "the unit tests"),
     # Source shared with the device build also compiles the sim build (sim-build): the no-experiments
     # side of experiment.h, `#if ZB_EXPERIMENTS` and `#if !ZB_CLI_ONLY` are compiled nowhere else.
     (r"^src/smarthome/drivers/(?P<family>%s)\.(h|cpp)$" % _F, ["unit", "{family}", "sim-build"], "one device driver"),
@@ -360,7 +363,7 @@ def model_facing_tags(paths, diff_text_of=None, categories=None):
 
 def suite_categories():
     try:
-        with open(os.path.join(HERE, "suite", "cases.json"), encoding="utf-8") as f:
+        with open(os.path.join(AGENT, "suite", "cases.json"), encoding="utf-8") as f:
             return {t for c in json.load(f) for t in c["tags"]}
     except (OSError, ValueError, KeyError):
         return None
@@ -395,7 +398,7 @@ PER_CASE = 3.6   # seconds a live case takes at --jobs 1 (whole runs: 480 s for 
 
 def live_count(name, o):
     """How many cases a live group will run with these options, or None when that cannot be told."""
-    sys.path.insert(0, HERE)
+    sys.path.insert(0, AGENT)
     try:
         if name == "live-suite":
             return len(suite_selected(o, o.skip_tags))
@@ -406,7 +409,7 @@ def live_count(name, o):
     except Exception:  # a set that cannot be read here: the whole run's time stands
         return None
     finally:
-        if sys.path and sys.path[0] == HERE:
+        if sys.path and sys.path[0] == AGENT:
             sys.path.pop(0)
 
 
@@ -440,8 +443,8 @@ def heldout_command(cmd, out, o=None):
 
 def eval_command(o, run):
     # --trace always: a traced run sends stream_options.include_usage, so a baseline and a variant must
-    # both be traced (tests/exp_compare.py leaves out traced-against-untraced pairs).
-    cmd = live_prefix() + py("tests/agent_eval.py", "--jobs", "1", "--trace", "--json", os.path.join(run, "eval.json"))
+    # both be traced (tests/agent/exp_compare.py leaves out traced-against-untraced pairs).
+    cmd = live_prefix() + py("tests/agent/agent_eval.py", "--jobs", "1", "--trace", "--json", os.path.join(run, "eval.json"))
     only = scored_only(o)
     if only:
         cmd += ["--only", only]
@@ -453,7 +456,7 @@ def eval_command(o, run):
 
 
 def suite_command(o, run):
-    cmd = live_prefix() + py("tests/agent_suite.py", "--jobs", "1", "--trace", "--json", os.path.join(run, "suite.json"))
+    cmd = live_prefix() + py("tests/agent/agent_suite.py", "--jobs", "1", "--trace", "--json", os.path.join(run, "suite.json"))
     for flag, value in (("--tags", o.tags), ("--skip-tags", o.skip_tags), ("--only", o.only)):
         if value:
             cmd += [flag, value]
@@ -467,14 +470,14 @@ def suite_command(o, run):
 
 
 def gate_command(o, run):
-    """tests/exp_compare.py on this run's live results. It must compare every set this run ran (--require),
+    """tests/agent/exp_compare.py on this run's live results. It must compare every set this run ran (--require),
     and in a release both sets with their manifest fields (--release); it writes its verdict to gate.json."""
     if run == "<run>":
         ran = [g for g in LIVE if g in getattr(o, "chosen", LIVE)]
     else:
         ran = [g for g in LIVE if g in getattr(o, "live_ran", ())]
     variant = [os.path.join(run, LIVE_FILE[g]) for g in ran if run == "<run>" or os.path.exists(os.path.join(run, LIVE_FILE[g]))]
-    cmd = py("tests/exp_compare.py", "--base", o.baseline or "<baseline>", "--variant", ",".join(variant) or "<none>",
+    cmd = py("tests/agent/exp_compare.py", "--base", o.baseline or "<baseline>", "--variant", ",".join(variant) or "<none>",
              "--tags", "--verdict", os.path.join(run, "gate.json"))
     if release_mode(o):
         cmd += ["--release", "--require", "scored,suite"]
@@ -520,7 +523,7 @@ def need_path(need):
     return None
 
 
-# What the driver test programs are built from (tests/run_unit.sh), besides every header in src/.
+# What the driver test programs are built from (tests/unit/run_unit.sh), besides every header in src/.
 SIM_ONLY = ("src/ui/", "src/platform/display.", "src/platform/input.", "src/lv_conf.h")    # not in the cli build
 # What the cli and sim builds are made from: the sources, the bundled libraries and the build's own files.
 BUILD_INPUTS = ("src", "third_party", "cmake", "CMakeLists.txt", "CMakePresets.json")
@@ -850,7 +853,7 @@ def release_problems(o):
         out.append("--baseline is needed: the scored set's and the suite's results to compare with "
                    "(eval.json and suite.json of an earlier run)")
     else:
-        sys.path.insert(0, HERE)
+        sys.path.insert(0, AGENT)
         try:
             import exp_compare as ec
             records, problems = ec.load(o.baseline)
@@ -875,7 +878,7 @@ def release_problems(o):
                 else:
                     out += ec.roster_gaps(records, roster, "baseline", ec.MIN_COVERAGE, trace=True)
         finally:
-            if sys.path and sys.path[0] == HERE:
+            if sys.path and sys.path[0] == AGENT:
                 sys.path.pop(0)
     if o.no_build:
         for need in ("cli", "sim", "cp0"):
@@ -989,7 +992,7 @@ def build(preset, run, o):
     t0 = time.time()
     with open(os.path.join(run, "build-%s.log" % preset), "w") as log:
         if preset == "unit":
-            rc = RUN_COMMAND(["sh", "tests/run_unit.sh"], log, dict(env, ZB_UNIT_BUILD_ONLY="1"), 2400)
+            rc = RUN_COMMAND(["sh", "tests/unit/run_unit.sh"], log, dict(env, ZB_UNIT_BUILD_ONLY="1"), 2400)
         else:
             rc = 0
             if not os.path.exists(os.path.join(ROOT, "build", preset, "CMakeCache.txt")):
@@ -1271,10 +1274,10 @@ def self_test():
     for path in ("src/agent/experiment.h", "src/core/radio.cpp", "src/net/http.cpp", "src/platform/camera.cpp",
                  "src/smarthome/home.h", "src/platform/display.cpp", "CMakeLists.txt"):
         check("%s compiles the no-experiments build too" % path, "sim-build" in groups(path), groups(path))
-    check("suite templates: the cases and the scorer that reads them", groups("tests/suite/generate.py") == ["cases", "scorer"],
-          groups("tests/suite/generate.py"))
-    check("from_conversation.py: the loop test runs it", groups("tests/suite/from_conversation.py") == ["cases", "scorer", "loop"],
-          groups("tests/suite/from_conversation.py"))
+    check("suite templates: the cases and the scorer that reads them", groups("tests/agent/suite/generate.py") == ["cases", "scorer"],
+          groups("tests/agent/suite/generate.py"))
+    check("from_conversation.py: the loop test runs it", groups("tests/agent/suite/from_conversation.py") == ["cases", "scorer", "loop"],
+          groups("tests/agent/suite/from_conversation.py"))
     check("docs only", groups("docs/agent-architecture.html", "README.md", "AGENTS.md") == [],
           groups("docs/agent-architecture.html", "README.md", "AGENTS.md"))
     check("a mock", groups("tests/mocks/kasa/mock_kasa.py") == ["kasa"])
@@ -1284,23 +1287,30 @@ def self_test():
     check("firetv's mock files: its unit test reads them", groups("tests/mocks/firetv/mock_firetv.py") == ["unit", "firetv"])
     check("the stand-in web: validators, scorer and tools", groups("tests/mocks/fake_web.py") == ["cases", "scorer", "tools"],
           groups("tests/mocks/fake_web.py"))
-    check("a driver's e2e", groups("tests/wiz_e2e.py") == ["wiz"])
+    check("a driver's e2e", groups("tests/sim/wiz_e2e.py") == ["wiz"])
     check("a driver's unit test", groups("tests/unit/shelly_test.cpp") == ["unit", "shelly"])
-    check("golden shots", groups("tests/golden/shots/01-chat.png") == ["screens"])
+    check("golden shots", groups("tests/sim/screens/golden/01-chat.png") == ["screens"])
     check("this runner", groups("tests/run.py") == ["runner"])
-    check("the package", groups("scripts/package-deb.sh", "packaging/postrm", "tests/packaging_test.py") ==
-          ["packaging"], groups("scripts/package-deb.sh", "packaging/postrm", "tests/packaging_test.py"))
+    check("the package", groups("scripts/package-deb.sh", "packaging/postrm", "tests/sim/packaging_test.py") ==
+          ["packaging"], groups("scripts/package-deb.sh", "packaging/postrm", "tests/sim/packaging_test.py"))
     check("deployment: no offline test", groups("scripts/deploy.sh") == [], groups("scripts/deploy.sh"))
-    check("the gate and the reports", groups("tests/exp_compare.py") == ["runner"] and groups("tests/exp_report.py") == ["runner"])
-    check("the scorer, and the loop test that reads its parser", groups("tests/agent_eval.py") == ["cases", "scorer", "loop"],
-          groups("tests/agent_eval.py"))
-    check("the suite's runner", groups("tests/agent_suite.py") == ["cases", "scorer"])
-    want = [g["name"] for g in GROUPS if g["name"] in set(PROFILES["quick"][1]) | {"sim-build"}]
+    check("the gate and the reports", groups("tests/agent/exp_compare.py") == ["runner"] and groups("tests/agent/exp_report.py") == ["runner"])
+    check("the scorer, and the tools test that runs its runner", groups("tests/agent/agent_eval.py") == ["cases", "scorer", "tools"],
+          groups("tests/agent/agent_eval.py"))
+    check("the shared parser: the scorer and the loop test", groups("tests/lib/records.py") == ["cases", "scorer", "tools", "loop"],
+          groups("tests/lib/records.py"))
+    check("the suite's runner", groups("tests/agent/agent_suite.py") == ["cases", "scorer"])
+    for path, want in (("tests/unit/run_unit.sh", ["unit"]), ("tests/unit/snapshots/plugs_only.json", ["unit"]),
+                       ("tests/sim/screens/fixclock.c", ["screens"]), ("tests/sim/tools_cli.py", ["tools"]),
+                       ("tests/sim/agent_loop_test.py", ["loop"]), ("tests/agent/scorer_test.py", ["scorer"]),
+                       ("tests/tools/web_contract.py", ["runner"])):
+        check("%s: %s" % (path, ", ".join(want)), groups(path) == want, groups(path))
+    want =[g["name"] for g in GROUPS if g["name"] in set(PROFILES["quick"][1]) | {"sim-build"}]
     check("the build", groups("CMakeLists.txt") == want, groups("CMakeLists.txt"))
     check("an unknown path", groups("somewhere/new.txt") == PROFILES["quick"][1])
     check("bytecode", groups("tests/__pycache__/run.cpython-314.pyc") == [])
-    check("several paths add up", groups("src/ui/app.cpp", "tests/suite/x.py") == ["unit", "cases", "scorer", "sim-build", "screens"],
-          groups("src/ui/app.cpp", "tests/suite/x.py"))
+    check("several paths add up", groups("src/ui/app.cpp", "tests/agent/suite/x.py") == ["unit", "cases", "scorer", "sim-build", "screens"],
+          groups("src/ui/app.cpp", "tests/agent/suite/x.py"))
     for _, gs, _ in PATH_RULES:
         for g in gs:
             check("rule names group %s" % g, g in BY_NAME or g in ("{family}", QUICK))
@@ -1367,7 +1377,7 @@ def self_test():
     cmds = commands_of(BY_NAME["held-out"], o, "/r")
     check("held-out: both sets on the held-out seed, then the judge", len(cmds) == 3 and all("--held-out" in c for c in cmds) and
           cmds[0][cmds[0].index("--json") + 1] == "/r/eval-heldout.json" and cmds[1][cmds[1].index("--json") + 1] == "/r/suite-heldout.json" and
-          "tests/exp_compare.py" in cmds[2] and "/r/heldout.json" in cmds[2] and "--base" not in cmds[2], cmds)
+          "tests/agent/exp_compare.py" in cmds[2] and "/r/heldout.json" in cmds[2] and "--base" not in cmds[2], cmds)
     for argv in (["--groups", "held-out"], ["--groups", "held-out,live-suite"]):
         try:
             with contextlib.redirect_stderr(io.StringIO()):
@@ -1396,7 +1406,7 @@ def self_test():
     check("every command's script is in the tree",
           all(os.path.exists(os.path.join(ROOT, w)) for g in GROUPS if not g.get("file")
               for c in g["cmds"] if not callable(c) for w in c if w.startswith("tests/")))
-    for script in ("tests/agent_suite.py", "tests/agent_eval.py"):
+    for script in ("tests/agent/agent_suite.py", "tests/agent/agent_eval.py"):
         has = '"--validate"' in open(os.path.join(ROOT, script), encoding="utf-8").read()
         cmd = _validate(script)(parse([]), "<run>")
         check("cases group: %s --validate %s" % (script, "runs" if has else "is not in this tree yet"),
@@ -1495,7 +1505,7 @@ def self_test():
         old = os.path.join(tmp, "old.json")
         with open(old, "w") as f:
             json.dump([{"case": "timer-001", "tags": ["timer"], "problems": [], "turns": []}], f)
-        sys.path.insert(0, HERE)
+        sys.path.insert(0, AGENT)
         import exp_compare as ec
         roster = ec.load_roster()
 
@@ -1676,7 +1686,7 @@ def self_test():
                         "case_hash": "h2", "scorer": "s", "trace": True,
                         "turns": [{"answer": "", "first": None, "total": None, "error": "timeout", "timed_out": True, "tools": [],
                                    "results": [], "trace": []}]}], f)
-        r = subprocess.run([PY, "-B", os.path.join(HERE, "exp_report.py"), saved, "--tags", "--cases", "2"], capture_output=True, text=True,
+        r = subprocess.run([PY, "-B", os.path.join(AGENT, "exp_report.py"), saved, "--tags", "--cases", "2"], capture_output=True, text=True,
                            timeout=60)
         check("exp_report.py runs on a saved result", r.returncode == 0 and "## Model calls" in r.stdout and "## Answers" in r.stdout
               and "1/2 (50%)" in r.stdout, (r.returncode, r.stderr[-300:]))

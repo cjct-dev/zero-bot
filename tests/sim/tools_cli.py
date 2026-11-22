@@ -12,12 +12,12 @@ infrared transmitter out of a test run, a bad ZB_EXP_WEB stops the run cleanly, 
 stand-in takes no proxy and follows no redirect. A tool call's arguments and a web service's answer nested
 deeper than 32 levels are not read (nested_too_deep, against a local server of its own). no_real_web runs
 one case through the live sets' own runner
-(tests/agent_eval.py run_case) against a scripted model (tests/mocks/fake_model.py) that calls every tool
+(tests/agent/agent_eval.py run_case) against a scripted model (tests/mocks/fake_model.py) that calls every tool
 that reads the web, with every proxy variable pointing at a trap: no request leaves 127.x (the trap sees
 none), each service is answered by the stand-in, the search carries the dummy key and never the inherited
 one, and a case whose environment holds a real key is refused before the app starts.
 
-usage: tests/tools_cli.py [path/to/zero_bot]          (default: build/cli/zero_bot)
+usage: tests/sim/tools_cli.py [path/to/zero_bot]          (default: build/cli/zero_bot)
 """
 import json
 import re
@@ -28,11 +28,12 @@ import subprocess
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
+sys.path.insert(0, TESTS)
+sys.path.insert(1, os.path.join(TESTS, "agent"))   # the live sets' runner (agent_eval), whose web guard no_real_web runs
 sys.dont_write_bytecode = True
 import netguard   # noqa: E402  the network boundary (tests/netguard.py)
-APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
+APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "cli", "zero_bot")
 
 checks = failed = 0
 
@@ -511,7 +512,7 @@ def guards(root):
     # The stand-in web is reached directly, whatever proxy the environment names, and a redirect is not
     # followed: tests/mocks/fake_web.py answers the search, the trap must see nothing.
     trap = Trap()
-    web = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "fake_web.py")], stdin=subprocess.PIPE,
+    web = subprocess.Popen([sys.executable, "-I", os.path.join(TESTS, "mocks", "fake_web.py")], stdin=subprocess.PIPE,
                            stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
     try:
         line = web.stdout.readline().split()
@@ -563,7 +564,7 @@ def no_real_web(root):
         json.dump({"rules": [{"when": {"said": "check everything", "last": "user"}, "reply": {"calls": calls}},
                              {"when": {"last": "tool"}, "reply": {"text": "Here is what I found."}}],
                    "default": {"text": "Here is what I found."}}, f)
-    model = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "fake_model.py"), g.dir + "/script.json", log],
+    model = subprocess.Popen([sys.executable, "-I", os.path.join(TESTS, "mocks", "fake_model.py"), g.dir + "/script.json", log],
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
     sentinel = "inherited-key-0001"
     saved = {k: os.environ.get(k) for k in ("ZB_SEARCH_KEY",)}
@@ -640,7 +641,7 @@ def web_wraps():
     src/agent/tools/; fetch_json is in web.cpp there), and the only http::send calls in the app's own code are the
     reviewed ones (fetch_json, the AI service, the radio's check of a stream, the smart-home drivers and the http
     layer itself)."""
-    src = os.path.join(HERE, "..", "src")
+    src = os.path.join(TESTS, "..", "src")
     sources = {}
     for d, _, files in os.walk(src):
         for name in files:

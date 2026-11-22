@@ -8,7 +8,7 @@ against a stand-in dpkg-divert that records its arguments (and a stand-in dpkg f
 launcher's picture is diverted before Zero's is unpacked, on a first install and on an upgrade from a version
 without it alike, put back when the app goes or a first install fails, and a failed diversion stops the install.
 
-    tests/packaging_test.py [-v]
+    tests/sim/packaging_test.py [-v]
 
 Standard library only.
 """
@@ -24,7 +24,7 @@ import tarfile
 import tempfile
 import zlib
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the repository
 IMAGE = "/usr/share/APPLaunch/share/images/lockscreen.png"
 DIVERT = ["--divert", IMAGE + ".distrib", IMAGE]
 ADD = ["--package", "zero-bot", "--add", "--rename"] + DIVERT

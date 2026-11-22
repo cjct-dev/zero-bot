@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Shelly end to end: the driver, and then the app, against simulated Shelly devices on 127.0.0.1.
 
-usage: tests/shelly_e2e.py [path/to/shelly_cli [path/to/zero_bot]]
-       (defaults: build/unit/shelly_cli, which tests/run_unit.sh builds, and build/cli/zero_bot;
+usage: tests/sim/shelly_e2e.py [path/to/shelly_cli [path/to/zero_bot]]
+       (defaults: build/unit/shelly_cli, which tests/unit/run_unit.sh builds, and build/cli/zero_bot;
         the app part is skipped when the app is not built)
 
 Part 1 drives shelly_cli (the driver alone, its state in a file that stands in for the app's saved
@@ -25,14 +25,14 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
+sys.path.insert(0, TESTS)
 import netguard   # noqa: E402
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
-CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "unit", "shelly_cli")
-APP = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else os.path.join(HERE, "..", "build", "cli", "zero_bot")
-MOCK = os.path.join(HERE, "mocks", "shelly", "mock_shelly.py")
+CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "unit", "shelly_cli")
+APP = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else os.path.join(TESTS, "..", "build", "cli", "zero_bot")
+MOCK = os.path.join(TESTS, "mocks", "shelly", "mock_shelly.py")
 TMP = tempfile.mkdtemp(prefix="shelly-e2e-")
 NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 ENV = dict(os.environ, ZB_TEST_NETWORK="1", ZB_NO_AUDIO="1")
@@ -795,7 +795,7 @@ def app_part():
 
 def main():
     if not os.access(CLI, os.X_OK):
-        sys.exit("no %s (run tests/run_unit.sh first)" % CLI)
+        sys.exit("no %s (run tests/unit/run_unit.sh first)" % CLI)
     p = subprocess.run([sys.executable, "-I", MOCK, "--selftest"], capture_output=True, text=True, timeout=30)
     check("the mock's digest code reproduces RFC 7616's SHA-256 and MD5 examples", p.returncode == 0, p.stdout + p.stderr)
     try:

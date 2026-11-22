@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Runs homekit_cli against mock_homekit.py on 127.0.0.1 and checks what the mock saw.
 
-usage: homekit_e2e.py [path/to/homekit_cli]   (default: build/unit/homekit_cli, which tests/run_unit.sh builds)
+usage: tests/sim/homekit_e2e.py [path/to/homekit_cli]   (default: build/unit/homekit_cli, which tests/unit/run_unit.sh builds)
 
 Prints one line per check and exits non-zero when any fails. Nothing outside 127.0.0.1 is
 contacted. Every mock binds port 0 and says which port it got; every mock is killed when this
@@ -21,12 +21,12 @@ import threading
 import time
 import urllib.request
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
+sys.path.insert(0, TESTS)
 import netguard   # noqa: E402
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
-CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "..", "build", "unit", "homekit_cli")
+CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "unit", "homekit_cli")
 CODE, WRONG, WRONG2 = "123-45-678", "123-45-679", "111-22-333"
 TMP = tempfile.mkdtemp(prefix="homekit-e2e-")
 NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -63,7 +63,7 @@ def info(text):
 
 class Mock:
     def __init__(self, *extra):
-        self.proc = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "homekit", "mock_homekit.py"), "--port", "0", *extra],
+        self.proc = subprocess.Popen([sys.executable, "-I", os.path.join(TESTS, "mocks", "homekit", "mock_homekit.py"), "--port", "0", *extra],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, start_new_session=True, env=netguard.mock_env())
         mocks.append(self)
         line = self.proc.stdout.readline().strip()

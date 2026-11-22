@@ -16,9 +16,9 @@
 //                           checks in shots_keys
 //   src/main.cpp            "/save" in --chat
 // Also README "Diagnostics (temporary)" and the SPACE SPACE key, AGENTS.md sections 3, 6 and 7,
-// tests/unit/activity_test.cpp (and its lines in tests/run_unit.sh), test_double_tap in
-// tests/unit/key_guide_test.cpp, conversation_saved in tests/agent_loop_test.py, the last three
-// golden screenshots (tests/golden/shots/*save*) and tests/suite/from_conversation.py. Removing it
+// tests/unit/activity_test.cpp (and its lines in tests/unit/run_unit.sh), test_double_tap in
+// tests/unit/key_guide_test.cpp, conversation_saved in tests/sim/agent_loop_test.py, the last three
+// golden screenshots (tests/sim/screens/golden/*save*) and tests/agent/suite/from_conversation.py. Removing it
 // should also delete the files on the device.
 //
 // 1. The activity log: what the assistant did, each tool call with its arguments and result, so

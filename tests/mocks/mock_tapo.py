@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A pretend Tapo plug for testing tapo.cpp. Python standard library only.
 
-Used by tests/tapo_e2e.py (the app end to end); it was first written beside the Tapo module's own
+Used by tests/sim/tapo_e2e.py (the app end to end); it was first written beside the Tapo module's own
 known-answer tests.
 
 It plays the device side of both logins for one known account and answers a few commands:

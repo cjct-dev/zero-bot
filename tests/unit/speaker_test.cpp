@@ -2,7 +2,7 @@
 // thread writes each sentence while SpeechQueue::stop() (ESC, TAB) runs on the UI thread. Against a
 // stand-in pw-cat that keeps what it is sent: nothing is heard.
 //
-// Built and run by tests/run_unit.sh, linked with -Wl,--wrap=write: `write` is wrapped so that the
+// Built and run by tests/unit/run_unit.sh, linked with -Wl,--wrap=write: `write` is wrapped so that the
 // writer thread can be held at the one point where a busy processor may preempt it, between taking the
 // pipe's descriptor and the system call. Everything it writes goes in a folder of its own under TMPDIR.
 #include "platform/audio.h"

@@ -11,7 +11,7 @@ Run it on demand, before a release (tests/run.py --groups web-contract), never o
 internet. It never calls the web search: search costs the owner's allowance, and its host is not in HOSTS (a
 request to anything else is refused before it is made). Standard library only.
 
-usage: tests/web_contract.py [--self-test]       (--self-test: the comparison itself, offline)
+usage: tests/tools/web_contract.py [--self-test]       (--self-test: the comparison itself, offline)
 """
 import json
 import re
@@ -22,8 +22,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
+sys.path.insert(0, TESTS)
 sys.dont_write_bytecode = True
 import netguard   # noqa: E402  openers that follow no redirect, and a proxy-free one for 127.x
 HOSTS = ("geocoding-api.open-meteo.com", "api.open-meteo.com", "open.er-api.com", "query1.finance.yahoo.com")
@@ -133,7 +133,7 @@ def fetch(url):
 
 
 def stand_in():
-    p = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "mocks", "fake_web.py")], stdin=subprocess.PIPE,
+    p = subprocess.Popen([sys.executable, "-I", os.path.join(TESTS, "mocks", "fake_web.py")], stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
     line = p.stdout.readline().split()
     if line[:2] != ["WEB", "listening"]: raise SystemExit("the stand-in web did not start")
@@ -209,7 +209,7 @@ def self_test():
     check("a type that disagrees", not meets("12", "number"))
     # Round 2, W12: every stock field the app reads is in the contract (src/agent/tools/stock_price.cpp: t_stock
     # reads them by name).
-    app = open(os.path.join(HERE, "..", "src", "agent", "tools", "stock_price.cpp"), encoding="utf-8").read()
+    app = open(os.path.join(TESTS, "..", "src", "agent", "tools", "stock_price.cpp"), encoding="utf-8").read()
     body = app[app.index("std::string t_stock("):app.index("Tool make_stock_price(")]
     read = set(re.findall(r'jget\(m, "(\w+)"', body)) | set(re.findall(r'm\.contains\("(\w+)"\)', body))
     stock = next(r for w, _, r in REQUESTS if w == "stock price")

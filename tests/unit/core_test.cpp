@@ -2,11 +2,14 @@
 // files saved by two threads at once, the settings read and changed on several threads, and the
 // calendar's all-day alerts on the days the clocks change. Also the small shared helpers (ZB-035): the
 // failure shape, the battery, the Wi-Fi list, the default route, the monotonic count and the start of
-// a day, on known inputs.
+// a day, on known inputs; numeric dates spelt out for the model and dates typed in the calendar editor,
+// in both date orders; when a calendar event comes round again; and the breathing exercise's timing.
 //
-// Built and run by tests/run_unit.sh with a state folder; everything it writes goes there (main()
+// Built and run by tests/unit/run_unit.sh with a state folder; everything it writes goes there (main()
 // points HOME and the XDG folders at it).
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -19,6 +22,7 @@
 #include <vector>
 #include <unistd.h>
 
+#include "core/breath.h"
 #include "core/result.h"
 #include "core/settings.h"
 #include "core/store.h"
@@ -474,6 +478,174 @@ void test_start_of_day() {
     util::apply_timezone("");
 }
 
+// ---------------------------------------------------------------- dates said, typed and repeated
+// A day and month given without a year mean their next time round (util.cpp year_meant): noon of that day.
+time_t next_noon(int month, int day) {
+    const util::LocalTime now = util::local_fields(time(nullptr));
+    const bool gone = now.month > month || (now.month == month && now.day > day);
+    return util::make_local(now.year + (gone ? 1 : 0), month, day, 12, 0);
+}
+
+// The text with each "{M/D}" replaced by that day's date as spell_numeric_dates writes it in the order set.
+std::string with_dates(std::string text) {
+    for (size_t at; (at = text.find('{')) != std::string::npos;) {
+        int month = 0, day = 0;
+        sscanf(text.c_str() + at + 1, "%d/%d", &month, &day);
+        const char *form = util::month_first() ? "%A, %B %-d, %Y" : "%A %-d %B %Y";
+        text.replace(at, text.find('}', at) - at + 1, util::format_time(next_noon(month, day), form));
+    }
+    return text;
+}
+
+// Numeric dates are spelt out for the model (AGENTS.md section 4), in the user's date order; a number that
+// only looks like a date is left alone.
+void test_spelt_dates() {
+    g_test = "numeric dates spelt out";
+    util::apply_timezone("Europe/London");
+    const struct { const char *said, *day_first, *month_first; } cases[] = {
+        {"put the dentist in my calendar on 3/4 at 10am", "put the dentist in my calendar on 3/4 ({4/3}) at 10am",
+         "put the dentist in my calendar on 3/4 ({3/4}) at 10am"},
+        {"dentist 3/4 at 10", "dentist 3/4 ({4/3}) at 10", "dentist 3/4 ({3/4}) at 10"},
+        {"on 3/4.", "on 3/4 ({4/3}).", "on 3/4 ({3/4})."},
+        {"flight on 25/12", "flight on 25/12 ({12/25})", "flight on 25/12 ({12/25})"},   // only one reading is a date
+        {"from 1/12 to 5/12", "from 1/12 ({12/1}) to 5/12 ({12/5})", "from 1/12 ({1/12}) to 5/12 ({5/12})"},
+        {"call on 17/11 and 16/11", "call on 17/11 ({11/17}) and 16/11 ({11/16})", "call on 17/11 ({11/17}) and 16/11 ({11/16})"},
+        {"meeting 14.03.2027 with tom", "meeting 14.03.2027 (Sunday 14 March 2027) with tom",
+         "meeting 14.03.2027 (Sunday, March 14, 2027) with tom"},
+        {"pay by 5-6-27", "pay by 5-6-27 (Saturday 5 June 2027)", "pay by 5-6-27 (Thursday, May 6, 2027)"},
+    };
+    for (const bool month_first : {false, true}) {
+        util::set_month_first(month_first);
+        for (const auto &c : cases) CHECK_EQ(util::spell_numeric_dates(c.said), with_dates(month_first ? c.month_first : c.day_first));
+        // A fraction, "24/7", a decimal, a version, a date already plain, a day that does not exist, an address.
+        for (const char *same : {"add 3/4 cup of flour", "is the shop open 24/7", "what is 3.4 times 2", "version 1.2.3 is out",
+                                 "remind me on 2027-03-04", "book for 31/2", "ip 10.0.0.1/24 and 1/2/3/4"})
+            CHECK_EQ(util::spell_numeric_dates(same), same);
+    }
+    util::set_month_first(false);
+    util::apply_timezone("");
+}
+
+// A date typed in the calendar editor (util::parse_typed), in each order, and how it is shown and edited.
+void test_typed_dates() {
+    g_test = "typed dates";
+    util::apply_timezone("Europe/London");
+    auto read = [](const char *typed) {
+        time_t t = 0;
+        return util::parse_typed(typed, t) ? util::format_time(t, "%Y-%m-%d %H:%M") : std::string("rejected");
+    };
+    const std::string april_3 = util::format_time(next_noon(4, 3), "%Y-%m-%d"), march_4 = util::format_time(next_noon(3, 4), "%Y-%m-%d");
+    util::set_month_first(false);
+    CHECK_EQ(util::typed_date_hint(), "Day/month/year hour:minute, 24-hour clock");
+    CHECK_EQ(read("14/03/2027 18:30"), "2027-03-14 18:30");
+    CHECK_EQ(read("03.04.27 9"), "2027-04-03 09:00");            // a two-digit year, an hour alone
+    CHECK_EQ(read("4-3-2027 07:05"), "2027-03-04 07:05");
+    CHECK_EQ(read("3/4 10:00"), april_3 + " 10:00");               // no year: its next time round
+    CHECK_EQ(read("3/4"), april_3 + " 00:00");
+    CHECK_EQ(read("25/12/2026"), "2026-12-25 00:00");
+    time_t t = 0;
+    CHECK(util::parse_typed("14/03/2027 18:30", t));
+    CHECK_EQ(util::typed_date(t), "14/03/2027 18:30");
+    CHECK_EQ(util::short_date(t), "Sun 14 Mar 18:30");
+    util::set_month_first(true);
+    CHECK_EQ(util::typed_date_hint(), "Month/day/year hour:minute, 24-hour clock");
+    CHECK_EQ(read("03.04.27 9"), "2027-03-04 09:00");
+    CHECK_EQ(read("4-3-2027 07:05"), "2027-04-03 07:05");
+    CHECK_EQ(read("3/4 10:00"), march_4 + " 10:00");
+    CHECK_EQ(util::typed_date(t), "03/14/2027 18:30");
+    CHECK_EQ(util::short_date(t), "Sun Mar 14 18:30");
+    for (const char *wrong : {"14/03/2027 18:30", "17/11", "25/12/2026"}) CHECK_EQ(read(wrong), "rejected");   // no 14th month
+    for (const bool month_first : {false, true}) {
+        util::set_month_first(month_first);
+        CHECK_EQ(read("2027-03-14 18:30"), "2027-03-14 18:30");    // a year first is read the same in either order
+        for (const char *wrong : {"31/02/2027", "13/13", "hello"}) CHECK_EQ(read(wrong), "rejected");
+    }
+    util::set_month_first(false);
+    util::apply_timezone("");
+}
+
+// When a calendar event comes round again (next_occurrence): the 29th of February and the 31st in shorter
+// months, the clock time kept across the clock changes, a one-off in the past never.
+void test_next_occurrence() {
+    g_test = "an event's next time";
+    util::apply_timezone("Europe/London");
+    auto at = [](const char *text) {
+        time_t t = 0;
+        util::parse_local(text, t);
+        return t;
+    };
+    const struct { const char *start, *repeat, *from, *next; bool all_day; } cases[] = {
+        {"1960-03-14", "yearly", "2026-11-17 10:00", "2027-03-14 00:00", true},
+        {"1960-03-14", "yearly", "2027-03-14 00:00", "2027-03-14 00:00", true},   // the day itself
+        {"1960-03-14", "yearly", "2027-03-14 00:01", "2028-03-14 00:00", true},
+        {"2024-02-29", "yearly", "2026-11-17 10:00", "2027-02-28 00:00", true},
+        {"2024-02-29", "yearly", "2027-03-01 10:00", "2028-02-29 00:00", true},
+        {"2030-05-05", "yearly", "2026-11-17 10:00", "2030-05-05 00:00", true},   // not started yet
+        {"2026-01-31 09:00", "monthly", "2026-02-01 00:00", "2026-02-28 09:00", false},
+        {"2026-01-31 09:00", "monthly", "2026-11-17 10:00", "2026-11-30 09:00", false},
+        {"2026-03-24 07:00", "weekly", "2026-03-27 00:00", "2026-03-31 07:00", false},   // clocks go forward 29 March
+        {"2026-03-24 07:00", "weekly", "2026-11-17 06:00", "2026-11-17 07:00", false},
+        {"2026-03-24 07:00", "weekly", "2026-11-17 08:00", "2026-11-24 07:00", false},
+        {"2026-10-20 08:30", "daily", "2026-10-25 09:00", "2026-10-26 08:30", false},     // clocks go back 25 October
+        {"2026-10-20 08:30", "daily", "2026-11-17 08:30", "2026-11-17 08:30", false},
+        {"2026-12-01 10:00", "", "2026-11-17 10:00", "2026-12-01 10:00", false},
+        {"2026-11-01 10:00", "", "2026-11-17 10:00", "never", false},
+    };
+    for (const auto &c : cases) {
+        CalEvent e;
+        e.start = at(c.start);
+        e.repeat = c.repeat;
+        e.all_day = c.all_day;
+        const time_t next = next_occurrence(e, at(c.from));
+        CHECK_EQ(next ? util::format_time(next, "%Y-%m-%d %H:%M") : "never", c.next);
+    }
+    util::apply_timezone("");
+}
+
+// ---------------------------------------------------------------- the breathing exercise's timing
+void test_breathing() {
+    g_test = "breathing timing";
+    using namespace breath;
+    const Pattern box = pattern("box");
+    CHECK_EQ(box.cycle_ms(), 16000);
+    CHECK_EQ(pattern("nonsense").id, "box");                     // an unknown pattern is box
+    CHECK(std::string(pattern("calm").id) == "calm" && pattern("calm").cycle_ms() == 10000);   // in 4, out 6
+    CHECK(clamp_minutes(5) == 5 && clamp_minutes(0) == kDefaultMinutes && clamp_minutes(99) == 20 && clamp_minutes(0.7) == 1);
+    CHECK_EQ(clamp_minutes(NAN), kDefaultMinutes);
+    const long total = session_ms(box, 5);
+    CHECK_EQ(total, 304000);                                     // five minutes, ended on a whole breath
+    CHECK_EQ(session_ms(pattern("calm"), 1), 60000);             // exactly six breaths
+    Moment m = at(box, 0, total);
+    CHECK(m.step == 0 && m.level == 0.f && m.seconds_left == 4 && std::string(m.label) == "Breathe in");
+    m = at(box, 2000, total);
+    CHECK(std::fabs(m.level - 0.5f) < 0.01f && m.seconds_left == 2);   // half way in, the orb half full
+    m = at(box, 3999, total);
+    CHECK(m.level > 0.99f && m.seconds_left == 1);
+    m = at(box, 4000, total);
+    CHECK(m.step == 1 && m.level == 1.f && std::string(m.label) == "Hold");
+    m = at(box, 10000, total);
+    CHECK(m.step == 2 && std::fabs(m.level - 0.5f) < 0.01f);      // half way out
+    m = at(box, 15000, total);
+    CHECK(m.step == 3 && m.level == 0.f);
+    m = at(box, 16000, total);
+    CHECK(m.step == 0 && m.level == 0.f);                        // the next cycle starts where the last ended
+    // The orb never jumps between frames (15 a second), in the box pattern or the sighing one.
+    for (const char *id : {"box", "sigh"}) {
+        const Pattern p = pattern(id);
+        float prev = at(p, 0, 600000).level, jump = 0;
+        for (long t = 66; t < 32000; t += 66) {
+            const float l = at(p, t, 600000).level;
+            jump = std::max(jump, std::fabs(l - prev));
+            prev = l;
+        }
+        check(jump <= (std::string(id) == "box" ? 0.04f : 0.06f), id, __LINE__);
+    }
+    m = at(box, total - 1, total);
+    CHECK(!m.finished && m.remaining_ms == 1);                   // not finished until the last millisecond
+    m = at(box, total, total);
+    CHECK(m.finished && m.level == 0.f);                         // and finished empty, on an out-breath
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -501,6 +673,10 @@ int main(int argc, char **argv) {
     test_default_route(helpers);
     test_now_ms();
     test_start_of_day();
+    test_spelt_dates();
+    test_typed_dates();
+    test_next_occurrence();
+    test_breathing();
     printf("core: %d checks, %d failed\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

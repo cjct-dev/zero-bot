@@ -1,6 +1,6 @@
 // --shots DIR: every screen drawn to a PNG, with the checks that need the real screen code (a key on
 // a dark screen only wakes it, labels fit, the status bar redraws only what changed, ...). Exits 1
-// when a check fails. tests/shots_compare.py runs it and compares the pictures with the stored ones.
+// when a check fails. tests/sim/screens/shots_compare.py runs it and compares the pictures with the stored ones.
 #include "ui/app_impl.h"
 
 #include <algorithm>
