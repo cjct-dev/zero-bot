@@ -18,6 +18,18 @@ option(ZB_DESKTOP "Build the desktop simulator instead of the device binary" ON)
 # ZB_CLI_ONLY=ON -> terminal-only build of the agent (no screen code, no LVGL); quick to compile,
 # used for testing and tuning the agent loop on a PC.
 option(ZB_CLI_ONLY "Build only the command-line agent, without the on-screen app" OFF)
+
+# The device binary: -O2 rather than Release's -O3 (drawing is under 1 % of a core, so -O3 buys nothing
+# seen, and it is bigger), and every function and object in a section of its own so that the linker
+# drops what nothing calls (most of the static C++ runtime and LVGL's unused widgets). About a third
+# smaller: less to read from the card and to keep in memory on a device that swaps. Before the LVGL
+# subdirectory, so that LVGL is built the same way.
+if(NOT ZB_DESKTOP AND NOT ZB_CLI_ONLY)
+    set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
+    add_compile_options(-ffunction-sections -fdata-sections)
+    add_link_options(-Wl,--gc-sections)
+endif()
 # ZB_EXPERIMENTS=ON -> the ZB_EXP_* measurement switches (src/agent/experiment.h: a trace of model
 # calls and requests, probes) are compiled in. On by default in the cli build only, so the device
 # and simulator binaries cannot carry them by accident.

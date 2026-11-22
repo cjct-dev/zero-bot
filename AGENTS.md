@@ -251,7 +251,10 @@ The three builds share all the sources except that `cli` leaves out `src/ui/` an
 and input code. Libraries: libcurl, libcrypto (OpenSSL 3.5 on the device, possibly newer on a
 PC: use only non-deprecated interfaces), FreeType and libpng for the UI. MP3 encoding (libmp3lame),
 MP3 decoding for music (libmpg123) and Opus decoding (libopusfile) are loaded at run time with
-`dlopen` and are optional.
+`dlopen` and are optional. The device build (`cp0`) is `-O2` with every function in a section of its
+own and `--gc-sections`, LVGL included (a quarter smaller than `-O3` without them); `scripts/deploy.sh`
+and `scripts/package-deb.sh` install it stripped, and `build/cp0/zero_bot` keeps the symbols for
+reading a crash.
 
 ## 6. Testing
 
