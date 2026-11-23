@@ -8,8 +8,15 @@
 // A search takes 8 s at most, the first of several services 5 s of them. A key a service refused is not
 // sent again until it is typed again (marked beside it in the settings, so a later run does not send it
 // either); a spent allowance is passed over until it comes back (when the service says, else for six
-// hours); a service that failed twice in a row rests for two minutes (asked only when no other can be).
-// The order never changes by itself. When no service answered, the model reads one ERROR sentence.
+// hours; kept in the allowance file, usage.h, so a later run passes it over too); a service that failed
+// twice in a row rests for two minutes (asked only when no other can be). The order never changes by
+// itself. When no service answered, the model reads one ERROR sentence; so it does once the day's
+// searches have reached the cap (usage::kDailyCap).
+//
+// An answer is kept for ten minutes, in memory only (32 at most; Brave's terms allow its results to be
+// stored only transiently): the same query again, in other capitals or spacing, is answered from it
+// without asking a service or counting a search. Failures and answers that found nothing are not kept,
+// and a change to the services set up (one switched on or off, moved, or another key) empties it.
 #pragma once
 #include <string>
 
@@ -27,5 +34,19 @@ bool configured(const Settings &s);
 // The web_search tool's result for `query`: {"summary"?, "results": [{"title", "source", "text"}]}, or one
 // "ERROR: ..." when no service answered.
 std::string run(const std::string &query, tools::Context &ctx);
+
+// How a service of the user's list stands, for the settings page: switched off, without a key, its key refused,
+// its allowance used up, resting after two failures in a row, failed at its last search, answered its last
+// search, or none of these yet in this run.
+enum class State { Off, NoKey, KeyRefused, Spent, Resting, FailedLast, Working, Ready };
+State state_of(const SearchService &service);
+// The same in a few words: "working", "key refused: type it again", "allowance used until 1 December", ...
+std::string describe(const SearchService &service);
+
+// Asks the user's service of this kind what is left of its allowance, in a way that costs none of it
+// (Provider::tells_allowance), at most once a minute: what it said is kept in the allowance file, a key it
+// refused is marked refused as a search's would be. "" when it answered, else why not, in a sentence for the
+// settings page. Only when the user asks for it there, never at start or for a search.
+std::string ask_allowance(const std::string &kind, tools::Context &ctx);
 
 }  // namespace search

@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "agent/agent.h"
+#include "agent/search/provider.h"
 #include "core/activity.h"
 #include "core/radio.h"
 #include "core/settings.h"
@@ -247,6 +248,21 @@ void sample_home() {
                        {"networks", {{net.id(), {{"label", net.label()}, {"gateway_mac", net.gateway_mac}, {"allowed_at", 1},
                                                  {"last_scan", 1}, {"devices", devices}}}}}};
     util::save_json(util::data_dir() + "/smarthome.json", root);
+}
+
+// Made-up web search services for the settings pages: Tavily, with its searches this month and the figure it last gave
+// in the allowance file, then Brave, which refused its key. In memory only, like the other settings here: never asked.
+void sample_search() {
+    const SearchService tavily{"tavily", "sample-key-0001"}, brave{"brave", "sample-key-0002"};
+    Settings::update([&](Settings &s) {
+        s.search = {tavily, brave};
+        s.search[1].refused = search::key_print(brave.key);
+    }, false);
+    const time_t now = time(nullptr);
+    const json figures = {{"month", util::format_time(now, "%Y-%m")}, {"used", 37}, {"left", 812}, {"limit", 1000},
+                          {"said_at", static_cast<long long>(now - 86400)}, {"spent_until", 0}};
+    util::save_json(util::data_dir() + "/search_usage.json", {{"version", 1}, {"day", util::format_time(now, "%Y-%m-%d")}, {"today", 4},
+                                                              {"services", {{search::id_of(tavily), figures}}}});
 }
 
 // The labels of the rows on the page on top, read by moving the cursor down to its last row.
@@ -1003,6 +1019,7 @@ void App::shots_settings(Shots &shots) {
          "low_data_url": "https://stream.example.org/valley-low.aac"},
         {"name": "Night Jazz", "url": "https://stream.example.org/jazz/live.m3u8"},
         {"name": "Coast News"}]})");
+    sample_search();   // here, not with the other sample data: the setup guide shows a new user's, with no key
     open_menu();
     snap("settings");                              // the top page: a row for each section
     KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
@@ -1028,6 +1045,7 @@ void App::shots_settings(Shots &shots) {
     shots.menu_to("AI service");
     menu.key(enter);
     snap("settings-service");
+    shots_web_search(shots);
     menu.key(esc);
     shots.menu_to("About");
     menu.key(enter);
@@ -1141,6 +1159,37 @@ void App::shots_smart_home(Shots &shots) {
     menu.key(enter);
     snap("tapo-account");
     menu.key(esc); menu.key(esc);                  // back to "Your data", on "Smart home"
+}
+
+// AI service > Web search, with the sample services (sample_search). From the section's page, and back to it.
+void App::shots_web_search(Shots &shots) {
+    auto snap = [&shots](const char *name) { shots.snap(name); };
+    KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
+    KeyEvent right; right.key = Key::Right; right.state = 1;
+    KeyEvent left; left.key = Key::Left; left.state = 1;
+    // A key a service refused is not sent again until it is typed again: the AI service page says so, not only the
+    // Web search page under it, so that a key refused by mistake is noticed.
+    if (menu.value_of("Web search") != "Brave key refused") {
+        fprintf(stderr, "the AI service page does not say that Brave refused its key (%s)\n", menu.value_of("Web search").c_str());
+        shots.failed = true;
+    }
+    shots.press("Web search");
+    snap("web-search");
+    shots.press("Tavily");
+    snap("web-search-service");
+    // The order: Right asks Tavily later, Left earlier again.
+    shots.menu_to("Asked");
+    menu.key(right);
+    const bool later = Settings::get().search[0].kind == "brave" && menu.value_of("Asked") == "second of 2";
+    menu.key(left);
+    if (!later || Settings::get().search[0].kind != "tavily" || menu.value_of("Asked") != "first of 2") {
+        fprintf(stderr, "Left and Right on \"Asked\" did not move Tavily in the order (later %d)\n", later);
+        shots.failed = true;
+    }
+    menu.key(esc);
+    shots.press("Brave");
+    snap("web-search-refused");
+    menu.key(esc); menu.key(esc);                  // back to "AI service", on "Web search"
 }
 
 // Your data > Radio stations. From the section's page, and back to it.
