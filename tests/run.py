@@ -289,6 +289,7 @@ MODEL_FACING = [
     (r"^src/agent/prompt\.cpp$", "all"),
     (r"^src/agent/(agent|llm|guards|controls)\.cpp$", "all"),
     (r"^src/agent/tools/", "scan"),
+    (r"^src/agent/search/", ["search"]),                        # a service's answer, mapped, is what the model reads
     (r"^src/smarthome/(tool|control)\.cpp$", ["home", "tv"]),   # the schema; the sentences results carry
     (r"^src/core/timers\.cpp$", ["timer", "countdown"]),
     (r"^src/core/radio\.cpp$", {"scored": ["radio_"]}),        # the suite has no radio case; the scored set's radio_*
@@ -1341,6 +1342,8 @@ def self_test():
     check("the tools' registry: a radio change asks for the scored set's radio cases", tags == [] and scored == ["radio_"], (tags, scored))
     tags, _, scored = model_facing_tags(["src/agent/tools/radio.cpp"], lambda p: "+ a line")
     check("the radio tool's file asks for the scored set's radio cases", tags == [] and scored == ["radio_"], (tags, scored))
+    tags, hit, _ = model_facing_tags(["src/agent/search/providers/tavily.cpp", "src/agent/search/search.cpp"])
+    check("the web search layer and a search service ask for the search cases", tags == ["search"] and len(hit) == 2, (tags, hit))
     tags, _, _ = model_facing_tags(["src/smarthome/tool.cpp"], categories={"home", "timer"})
     check("tags only from the suite's own", tags == ["home"], tags)
     check("ui is not model-facing", model_facing_tags(["src/ui/app.cpp"])[1] == [])

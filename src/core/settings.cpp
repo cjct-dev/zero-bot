@@ -15,6 +15,41 @@ uint64_t g_written = 0;      // the version on disk
 
 std::string settings_path() { return util::config_dir() + "/settings.json"; }
 
+// The search service the old "search_key" and ZB_SEARCH_KEY have always meant.
+constexpr const char *kFirstSearchKind = "tavily";
+
+json search_to_json(const std::vector<SearchService> &list) {
+    json out = json::array();
+    for (const SearchService &s : list) {
+        json e = s.more.is_object() ? s.more : json::object();
+        e["kind"] = s.kind;
+        e["key"] = s.key;
+        e["enabled"] = s.enabled;
+        out.push_back(std::move(e));
+    }
+    return out;
+}
+
+// The services in `j`: its "search" list, else one Tavily entry for an older file's "search_key", else
+// `fallback`.
+std::vector<SearchService> search_from_json(const json &j, std::vector<SearchService> fallback) {
+    using util::jget;
+    const auto list = j.find("search");
+    if (list == j.end() || !list->is_array()) {
+        const std::string old = jget(j, "search_key", std::string());
+        if (old.empty()) return fallback;
+        return {SearchService{kFirstSearchKind, old}};
+    }
+    std::vector<SearchService> out;
+    for (const json &e : *list) {
+        if (!e.is_object()) continue;
+        SearchService s{jget(e, "kind", std::string()), jget(e, "key", std::string()), jget(e, "enabled", true), e};
+        for (const char *known : {"kind", "key", "enabled"}) s.more.erase(known);
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
 // Writes the settings of version `version`, unless a newer version is already on disk.
 void write(const json &j, uint64_t version) {
     std::lock_guard<std::mutex> lk(g_file_mtx);
@@ -59,7 +94,7 @@ json Settings::to_json() const {
     return {
         {"api_base", api_base}, {"api_key", api_key}, {"llm_model", llm_model}, {"vision_model", vision_model},
         {"stt_model", stt_model}, {"tts_model", tts_model}, {"tts_voice", tts_voice}, {"speak_replies", speak_replies}, {"fast_mode", fast_mode}, {"compress_audio", compress_audio}, {"phone_fallback", phone_fallback}, {"setup_done", setup_done},
-        {"search_key", search_key}, {"volume", volume}, {"brightness", brightness}, {"screen_off_min", screen_off_min}, {"mic_gain", mic_gain},
+        {"search", search_to_json(search)}, {"volume", volume}, {"brightness", brightness}, {"screen_off_min", screen_off_min}, {"mic_gain", mic_gain},
         {"agent_name", agent_name}, {"user_name", user_name}, {"home_city", home_city}, {"home_country", home_country}, {"date_order", date_order}, {"camera_flip", camera_flip}, {"mic_builtin", mic_builtin}, {"timezone", timezone},
         {"units", units}, {"tv_brand", tv_brand}, {"music_dir", music_dir},
     };
@@ -79,7 +114,7 @@ void Settings::from_json(const json &j) {
     compress_audio = jget(j, "compress_audio", compress_audio);
     phone_fallback = jget(j, "phone_fallback", phone_fallback);
     setup_done = jget(j, "setup_done", setup_done);
-    search_key = jget(j, "search_key", search_key);
+    search = search_from_json(j, search);
     volume = jget(j, "volume", volume);
     brightness = jget(j, "brightness", brightness);
     screen_off_min = std::max(0, std::min(24 * 60, jget(j, "screen_off_min", screen_off_min)));
@@ -103,7 +138,10 @@ void Settings::load() {
     // Environment overrides make development on a PC possible without a settings file.
     if (const char *v = getenv("ZB_API_BASE"); v && *v) s.api_base = v;
     if (const char *v = getenv("ZB_API_KEY"); v && *v) s.api_key = v;
-    if (const char *v = getenv("ZB_SEARCH_KEY"); v && *v) s.search_key = v;
+    if (const char *v = getenv("ZB_SEARCH_KEY"); v && *v) {
+        if (s.search.empty()) s.search.push_back({kFirstSearchKind});
+        s.search.front().key = v;
+    }
     if (const char *v = getenv("ZB_FAST_MODE"); v && *v) s.fast_mode = *v != '0';
     if (const char *v = getenv("ZB_DATE_ORDER"); v && *v) s.date_order = v;
     if (s.date_order != "mdy") s.date_order = "dmy";
@@ -131,3 +169,23 @@ std::string Settings::eff_api_key() const { return api_key; }
 std::string Settings::eff_llm_model() const { return llm_model; }
 std::string Settings::eff_vision_model() const { return vision_model.empty() ? eff_llm_model() : vision_model; }
 std::string Settings::eff_music_dir() const { return music_dir.empty() ? util::home_dir() + "/Music" : music_dir; }
+
+std::string Settings::search_key(const std::string &kind) const {
+    for (const SearchService &s : search)
+        if (s.kind == kind) return s.key;
+    return "";
+}
+
+void Settings::set_search_key(const std::string &kind, const std::string &key) {
+    for (SearchService &s : search)
+        if (s.kind == kind) { s.key = key; return; }
+    if (!key.empty()) search.push_back({kind, key});
+}
+
+std::vector<std::string> Settings::secret_values() const {
+    std::vector<std::string> out;
+    if (!api_key.empty()) out.push_back(api_key);
+    for (const SearchService &s : search)
+        if (!s.key.empty()) out.push_back(s.key);
+    return out;
+}

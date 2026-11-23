@@ -11,6 +11,7 @@
 #include <string>
 #include <thread>
 
+#include "agent/search/provider.h"
 #include "core/settings.h"
 #include "core/ui_queue.h"
 #include "ui/menu.h"
@@ -22,6 +23,10 @@ namespace ui {
 // then saved. It returns the settings after the change.
 inline const Settings S() { return Settings::get(); }
 inline Settings change(const std::function<void(Settings &)> &fn) { return Settings::update(fn); }
+
+// The web search service whose key the settings and the setup guide ask for, one key only: the first
+// the registry lists (agent/search/providers/registry.cpp). Its kind is what Settings::search_key takes.
+inline const search::Registered &asked_search() { return search::registry().front(); }
 
 inline std::string or_dash(const std::string &s) { return s.empty() ? "not set" : s; }
 

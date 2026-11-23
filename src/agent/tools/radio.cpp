@@ -1,6 +1,7 @@
 // The radio tool: the user's own radio stations.
 #include "agent/tools/common.h"
 
+#include "agent/search/search.h"
 #include "core/radio.h"
 #include "core/settings.h"
 
@@ -26,7 +27,7 @@ Tool make_radio() {
     Tool t{"radio", "Tuning in", "", obj({}), t_radio, takes_say("", say_confirms)};
     // Description and parameters are made from the user's station list (radio::tool_spec), with its say. Radio
     // exists only once the user has listed stations; the file is read again when it changes.
-    t.spec = [] { return radio::tool_spec(!Settings::get().search_key.empty()); };
+    t.spec = [] { return radio::tool_spec(search::configured(Settings::get())); };
     return t;
 }
 

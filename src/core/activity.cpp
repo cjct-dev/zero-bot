@@ -258,7 +258,7 @@ SaveResult save_conversation(const json &messages, size_t dropped) {
     if (!said) { r.nothing = true; return r; }
     const Settings &s = Settings::get();
     const time_t now = time(nullptr);
-    json record = conversation_record(messages, dropped, now, {s.api_key, s.search_key});
+    json record = conversation_record(messages, dropped, now, s.secret_values());
     record["app_version"] = ZB_VERSION;
     record["fast_mode"] = s.fast_mode;
     record["time_zone"] = s.timezone.empty() ? util::system_timezone() : s.timezone;
