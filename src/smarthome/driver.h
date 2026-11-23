@@ -155,8 +155,9 @@ void forgive(const std::string &slot);
 // ... switched off at the wall" (ZB-108). The words, in any capitals:
 //   Nobody    "did not answer", "could not be reached", "cannot connect", "refused the connection",
 //             "closed the connection"
-//   Another   "answers at this" or "answered at this" (address): another device, or one that would
-//             not say which device it is
+//   Another   "answers at this" or "answered at this" (address): another device, one that would not
+//             say which device it is, or an answer none of the family would give, before the device
+//             has said who it is (Tapo's login comes first: a web server's 404 to it)
 //   Device    any other error: the device answered, or nothing was sent
 enum class Answered { Device, Nobody, Another };
 Answered who_answered(const std::string &err);

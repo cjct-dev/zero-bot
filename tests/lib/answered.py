@@ -2,8 +2,9 @@
 (src/smarthome/control.cpp; src/smarthome/driver.h says what the words mean). The app looks for the device at a
 new address only when nobody, or another device, answered there; an answer that could not be read, an error code
 or a refusal is the device's (ZB-108). The words are read from that function, so the drivers' end-to-end scripts
-check their errors exactly as the app reads them; a function this cannot read stops the script that asked.
-Standard library only.
+check their errors exactly as the app reads them; a function this cannot read stops the script that asked. On the
+stand-in network, where the app never scans, ZB_EXP_SCAN=FILE has each search it would make noted instead
+(`searches`). Standard library only.
 """
 import os
 import re
@@ -44,3 +45,12 @@ def who_answered(err):
 def looked_for(err):
     """Whether the app looks for the device at a new address after ERR (a 2.5 s scan of the network)."""
     return who_answered(err) != "device"
+
+
+def searches(path):
+    """How many searches for a device that may have moved the app noted in PATH (ZB_EXP_SCAN)."""
+    try:
+        with open(path) as f:
+            return len(f.read().splitlines())
+    except FileNotFoundError:
+        return 0

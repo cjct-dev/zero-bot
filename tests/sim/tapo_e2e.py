@@ -17,11 +17,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
 sys.path.insert(0, TESTS)
 import netguard   # noqa: E402
+from lib.answered import searches   # noqa: E402  the searches the app noted (ZB_EXP_SCAN)
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
 APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "cli", "zero_bot")
@@ -30,6 +33,8 @@ SHA1 = hashlib.sha1(PASSWORD.encode()).hexdigest()
 WRONG = hashlib.sha1(b"not the password").hexdigest()
 OWNER = hashlib.md5(EMAIL.encode()).hexdigest().upper()
 PLUG, STRIP = "Mock Plug ☕", "Mock Strip"
+# What the app adds to an answer no plug would give, from before the plug named its MAC (src/smarthome/tapo.cpp).
+MAYBE_ANOTHER = "; it may be another device that now answers at this plug's address"
 
 checks = failed = 0
 outputs = []
@@ -114,8 +119,10 @@ def old_file(network, plug_port, strip_port):
 
 def nested_too_deep(app, plug, network):
     """Answers nested deeper than any plug's (ZB-093). Each is otherwise right, and before the guard was taken
-    as it came. None is read now: the plug answered wrongly (it is not gone, so it is not looked for at another
-    address: ZB-108), and no password is held against it. The TPAP plug is left on, with normal answers."""
+    as it came. None is read now, and no password is held against the plug. One from before the plug has named
+    its MAC in the session may be another device's that now has its address, so the app looks for the plug at
+    another address; one after is the plug's own, and the plug, where it was, is not looked for (ZB-108). The
+    TPAP plug is left on, with normal answers."""
     scans = os.path.join(app.state, "scans.log")
     app.env["ZB_EXP_SCAN"] = scans   # each search for a plug that may have moved is noted (the stand-in network has none)
 
@@ -138,6 +145,8 @@ def nested_too_deep(app, plug, network):
     check("login answers nested too deep are not read: the login stops at its first step, nothing is switched",
           isinstance(r, str) and "the plug answered the login unexpectedly" in r and st["pake_register"] == 1 and
           st["pake_share"] == 0 and st["on"] is False and st["bad"] == [], (r, st))
+    check("... and it came before the plug said who it is: the plug is looked for at another address",
+          MAYBE_ANOTHER in r and searches(scans) == 1, (r, searches(scans)))
     check("that is no refusal of the password", app.load()["secrets"]["tapo"].get("refused") is None, app.load()["secrets"]["tapo"])
     plug.reset({"deep": "reply"})
     r = app.tool({"action": "on", "target": PLUG})
@@ -145,18 +154,70 @@ def nested_too_deep(app, plug, network):
     check("command answers nested too deep are not read: after the first, nothing more is sent",
           isinstance(r, str) and "the plug's answer cannot be read" in r and st["on"] is False and
           set(st["methods"]) == {"get_device_info"}, (r, st))
+    check("... the first was the answer to who it is: the plug is looked for at another address",
+          MAYBE_ANOTHER in r and searches(scans) == 2, (r, searches(scans)))
+    plug.reset({"deep": "commands"})
+    r = app.tool({"action": "on", "target": PLUG})
+    check("an answer nested too deep after the plug named its MAC is the plug's: not looked for elsewhere",
+          isinstance(r, str) and "the plug's answer cannot be read" in r and MAYBE_ANOTHER not in r and
+          plug.stats()["methods"] == ["get_device_info", "set_device_info"] and searches(scans) == 2, (r, searches(scans)))
     plug.reset({"deep": "lost", "budget": [1, 5]})
     r = app.tool({"action": "on", "target": PLUG})
     st = plug.stats()
     check("a 'session ended' notice nested too deep is not taken as one: no second login, nothing switched",
           isinstance(r, str) and "the plug's answer could not be decrypted" in r and st["login_ok"] == 1 and st["gone"] == 1 and
           st["on"] is False, (r, st))
-    check("none of those answers sent the app looking for the plug at another address", not os.path.exists(scans))
+    check("... after the plug named its MAC: not looked for elsewhere", MAYBE_ANOTHER not in r and searches(scans) == 2,
+          (r, searches(scans)))
     del app.env["ZB_EXP_SCAN"]
     plug.reset({})
     r = app.tool({"action": "on", "target": PLUG})
     check("answers as a plug sends them are read again at once", r == {"now": "on", "target": PLUG} and plug.stats()["on"] is True and
           app.load()["secrets"]["tapo"].get("refused") is None, r)
+
+
+def web_server_at_address(app, network):
+    """The router gave the plugs' addresses to a plain web server. What answers the logins is no plug: the app says
+    it may be another device, looks for each plug at a new address, and sends no password to it (ZB-108; an address
+    is not an identity). TPAP's first login step and KLAP's handshake both."""
+    seen = []
+
+    class NotAPlug(BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen.append((self.path, self.rfile.read(int(self.headers.get("Content-Length") or 0))))
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), NotAPlug)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    root = app.load()
+    devices = root["networks"][network]["devices"]
+    ports = {d["id"]: d["port"] for d in devices}
+    for d in devices:
+        d["port"] = server.server_port
+    app.save(root)
+    scans = os.path.join(app.state, "web-server-scans.log")
+    app.env["ZB_EXP_SCAN"] = scans
+    try:
+        for target, step, n in ((PLUG, "the plug answered the login unexpectedly (HTTP 404)", 1),
+                                ("Socket 1", "the plug answered the first login step unexpectedly (HTTP 404)", 2)):
+            r = app.tool({"action": "on", "target": target})
+            check("a web server at the address of %s: looked for at another address, and said so" % target,
+                  isinstance(r, str) and step + MAYBE_ANOTHER + "; it was not found at another address" in r and searches(scans) == n,
+                  (r, searches(scans)))
+        check("no password went to the web server", not any(b"pake_share" in body or "/app/handshake2" in path for path, body in seen),
+              [path for path, _ in seen])
+    finally:
+        del app.env["ZB_EXP_SCAN"]
+        server.shutdown()
+        root = app.load()
+        for d in root["networks"][network]["devices"]:
+            d["port"] = ports.get(d["id"], d["port"])
+        app.save(root)
 
 
 def locked_by_another(app, plug, strip):
@@ -288,6 +349,7 @@ def main():
         check("the plugs that are where they were saved still switch", r == {"now": "on", "target": PLUG} and plug.stats()["on"] is True, r)
 
         nested_too_deep(app, plug, network)
+        web_server_at_address(app, network)
         locked_by_another(app, plug, strip)
 
         # A wrong password: tried once, by each plug's rules, and never again, even by a new run.

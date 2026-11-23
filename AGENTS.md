@@ -675,9 +675,13 @@ key, real audio), say so plainly rather than implying it was.
   answer could not be understood", sent it searching the network for 2.5 s, after which the model was
   told the device was "not found at another address ... switched off at the wall" (ZB-108). Only
   exact phrases count now (`home::who_answered`, driver.h): nobody answering, or another device
-  answering at the address, is looked for; anything else is the device's own answer. The drivers'
-  end-to-end scripts read those phrases from the function itself (`tests/lib/answered.py`), and on
-  the stand-in network, where the app never scans, `ZB_EXP_SCAN` notes each search it would make.
+  answering at the address, is looked for; anything else is the device's own answer. But only once
+  it has said who it is: Tapo logs in before the plug names its MAC, so an answer no plug would give
+  before that (a web server's 404 to a login step, a reply to "who are you" that cannot be read)
+  says it "may be another device that now answers at this plug's address", and is looked for; the
+  same answer after it is the plug's. The drivers' end-to-end scripts read those phrases from the
+  function itself (`tests/lib/answered.py`), and on the stand-in network, where the app never scans,
+  `ZB_EXP_SCAN` notes each search it would make.
 - The keyboard's three lights (caps lock, fn, symbols) have no kernel interface: the keypad takes no
   EV_LED events and they are not LED-class devices. The M5Stack keypad driver sets them by writing a
   mode (0 off, 1 blink, 2 fast, 3 on) into registers 0xBD to 0xBF of the M5IOE1 expander, the
@@ -969,7 +973,8 @@ connection"; "answers at this" or "answered at this" address), which is what mak
 for it at a new address (a device that spends half its 2.5 s and then did not answer is not asked
 again for its other things in that command: the shared layer gives them the same answer), and no
 other error uses them: a device that answered, only wrongly (a reply that could not be read, an error
-code, a refusal), is where it was (ZB-108; every driver's sentences are in `test_who_answered`,
+code, a refusal), is where it was, once it has said who it is; before that, an answer no device of the
+family would give may be another device's, and says so (ZB-108; every driver's sentences are in `test_who_answered`,
 `tests/unit/smarthome_test.cpp`, and a new one goes there too); honour
 `Device::port`; deadlines of about 2.5 s for a change and 4 s for listing;
 no threads, sockets or connections of its own between calls; errors are short sentences. Use

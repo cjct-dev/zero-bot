@@ -3711,14 +3711,29 @@ void test_who_answered() {
         {shelly::kNeedsPassword, device}, {shelly::kRefused, device}, {shelly::kThrottled, device},
         {"The Shelly ran out of time doing that.", device}, {"The Shelly reported an error.", device},
         {"There was no time left to ask the Shelly. Try again in a moment.", device},
-        // Tapo (the transport, tapo.cpp)
+        // Tapo (the transport, tapo.cpp). An answer no plug would give, from before the plug has named its MAC in the
+        // session, may be another device's (a web server given its address): those say so, and are looked for.
         {"cannot connect to the plug", nobody}, {"the plug did not answer in time", nobody},
         {"another plug answered at this plug's saved address, so nothing was sent to it", another},
         {"the plug that answered at this plug's saved address did not say which plug it is, so nothing was sent to it", another},
-        {"the plug answered the first login step unexpectedly (HTTP 404)", device},
-        {"the plug answered the login unexpectedly (HTTP 0)", device}, {"the plug's answer to the login cannot be used", device},
+        {"the plug refuses the KLAP login: it has probably switched to TPAP (run discovery again), or another device now "
+         "answers at this plug's address",
+         another},
+        {"the plug answered the first login step unexpectedly (HTTP 404); it may be another device that now answers at this "
+         "plug's address",
+         another},
+        {"the plug answered the login unexpectedly (HTTP 0); it may be another device that now answers at this plug's address",
+         another},
+        {"the plug's answer to the login cannot be used; it may be another device that now answers at this plug's address",
+         another},
+        {"the plug answered with HTTP 404; it may be another device that now answers at this plug's address", another},
+        {"the plug's answer could not be decrypted; it may be another device that now answers at this plug's address", another},
+        {"the plug's answer cannot be read; it may be another device that now answers at this plug's address", another},
         {"the plug answered with HTTP 500", device}, {"the plug's answer could not be decrypted", device},
         {"the plug's answer cannot be read", device}, {"the request could not be built or its answer could not be read", device},
+        {"the plug does not accept this e-mail and password (both are case-sensitive)", device},
+        {"the plug rejected the second login step (HTTP 403)", device}, {"the plug sent no session cookie", device},
+        {"the plug did not prove that it knows the password; it is not trusted", device},
         {"the request to the plug failed: Failure when receiving data from the peer", device},
         {"the plug dropped a session it had only just opened; giving up", device},
         {"the strip did not say whether the socket was switched", device},

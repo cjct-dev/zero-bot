@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
 sys.path.insert(0, TESTS)
 import netguard   # noqa: E402
-from lib.answered import looked_for   # noqa: E402  who answered, as the app reads a driver's error
+from lib.answered import looked_for, searches   # noqa: E402  who answered, as the app reads a driver's error
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
 CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "unit", "shelly_cli")
@@ -715,15 +715,6 @@ class App:
         os.makedirs(os.path.dirname(self.file), exist_ok=True)
         with open(self.file, "w") as f:
             json.dump(root, f)
-
-
-def searches(path):
-    """How many searches for a device that may have moved the app noted in PATH (ZB_EXP_SCAN)."""
-    try:
-        with open(path) as f:
-            return len(f.read().splitlines())
-    except FileNotFoundError:
-        return 0
 
 
 def answered_wrongly(app, lamp):

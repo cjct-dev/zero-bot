@@ -49,7 +49,8 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
 - `answered.py`: who answered at a smart-home device's address, as the app reads a driver's error (`who_answered`,
   `looked_for`): the app looks for the device at a new address only when nobody, or another device, answered there
   (ZB-108). Its words are read from `home::who_answered` in `src/smarthome/control.cpp` itself, so they cannot drift.
-  The drivers' end-to-end scripts (`sim/{wiz,kasa,shelly,homekit,firetv}_e2e.py`) check their errors with it.
+  The drivers' end-to-end scripts (`sim/{wiz,kasa,shelly,homekit,firetv}_e2e.py`) check their errors with it, and
+  `searches` counts the searches the app noted under `ZB_EXP_SCAN` (`sim/shelly_e2e.py`, `sim/tapo_e2e.py`).
 
 ## unit/: offline unit tests
 
@@ -110,7 +111,7 @@ compile through `cmd`. `ZB_UNIT_BUILD_ONLY=1` builds the programs and stops; `ZB
 from the device's side:
 
 - `tapo_e2e.py` runs `build/cli/zero_bot` against two simulated plugs (`mocks/mock_tapo.py`, a TPAP P110 and a KLAP
-  P304M).
+  P304M), and a plain web server given their addresses.
 - `firetv_e2e.py` runs `build/unit/firetv_cli` (built by `unit/run_unit.sh`) against `mocks/firetv/mock_firetv.py`:
   pairing, waking, refusals and hostile answers, checked from the simulated TV's side. It takes a few minutes (it waits
   out real wake-up times).
