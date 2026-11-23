@@ -211,7 +211,9 @@ the script walks to fails the run until the script is given the new label. It al
 code (a key on a dark screen only wakes it, labels fit, the status bar redraws only what changed, the two
 model-choosing rules of `ui/models.h`, where a lookup of the models sends its key, at a stand-in service on 127.0.0.1,
 when the service is asked for its models, that a key a web search service refused shows on the AI service page and
-that Left and Right move a service in the order, that input waiting for the phone goes with a cancelled request, and how
+that Left and Right move a service in the order, that the Web search pages follow a search made while they are open,
+that every key, password and code is typed hidden (bullets, `--keydump` quiet meanwhile, the field emptied when it
+closes) while an e-mail or user name is not, that input waiting for the phone goes with a cancelled request, and how
 long the main loop sleeps: `shots_idle`). `sim/screens/shots_compare.py` renders them into a temporary folder and
 compares each with `sim/screens/golden/` (small tolerance; differences drawn to `build/shots-diff/`), with the wall
 clock pinned (`sim/screens/fixclock.c`, built with `cc` and preloaded) and stand-ins on `PATH` for the audio, volume

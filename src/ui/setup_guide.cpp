@@ -146,7 +146,7 @@ struct Setup {
             std::vector<MenuItem> items;
             Menu::add_paragraph(items, "Enter the address and key of an OpenAI-compatible service.");
             items.push_back(self->edit("Address", &Settings::api_base, "The service's base address, ending in /v1."));
-            items.push_back(self->edit("API key", &Settings::api_key, "Typed text is shown while you enter it.", true));
+            items.push_back(self->edit("API key", &Settings::api_key, "Each character shows for a moment as you type.", true));
             items.push_back(MenuItem::action("Test and continue", [self, &m] {
                 if (!S().configured()) { m.toast("Enter both the address and the key first"); return; }
                 m.toast("Contacting the service…");

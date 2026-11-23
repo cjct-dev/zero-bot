@@ -22,6 +22,7 @@
 
 #include "agent/agent.h"
 #include "agent/search/provider.h"
+#include "agent/search/usage.h"
 #include "core/activity.h"
 #include "core/radio.h"
 #include "core/settings.h"
@@ -265,6 +266,40 @@ void sample_search() {
                                                               {"services", {{search::id_of(tavily), figures}}}});
 }
 
+// A search made while a Web search page is open changes what the page shows at once (both pages are live, and a
+// service's is built again when a row comes): from Brave's page (sample_search: its key refused, no figure yet), an
+// answer with a figure is counted and its row added; then, on the Web search page under it, Tavily's key is refused.
+// In memory only, and put back as it was; it ends on the Web search page. Checked, not pictured.
+bool search_pages_follow(Menu &menu) {
+    const Settings was = Settings::get();
+    const auto brave = std::find_if(was.search.begin(), was.search.end(), [](const SearchService &e) { return e.kind == "brave"; });
+    if (brave == was.search.end()) return false;
+    search::Reply answer;
+    answer.outcome = search::Outcome::Ok;
+    answer.left = 1999;
+    answer.limit = 2000;
+    search::usage::note(search::id_of(*brave), answer);
+    menu.tick();
+    const bool counted = menu.value_of("This month") == "1 search" && menu.value_of("Brave said").rfind("1999 of 2000 left", 0) == 0;
+    KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
+    menu.key(esc);
+    const std::string tavily = menu.value_of("Tavily");
+    Settings::update([](Settings &s) {
+        for (SearchService &e : s.search)
+            if (e.kind == "tavily") e.refused = search::key_print(e.key);
+    }, false);
+    menu.tick();
+    const bool refused = menu.needs_tick() && menu.value_of("Tavily") == "key refused: type it again";   // live: redrawn
+    Settings::update([&was](Settings &s) { s.search = was.search; }, false);
+    search::usage::forget();   // the figures as the file has them: the answer above was never saved
+    menu.tick();
+    const bool back = menu.value_of("Tavily") == tavily;
+    if (!counted || !refused || !back)
+        fprintf(stderr, "a Web search page did not follow a search made while it was open (counted %d, refused %d, back %d)\n",
+                counted, refused, back);
+    return counted && refused && back;
+}
+
 // The labels of the rows on the page on top, read by moving the cursor down to its last row.
 std::vector<std::string> page_rows(Menu &menu) {
     KeyEvent key; key.key = Key::Down; key.state = 1;
@@ -300,6 +335,34 @@ bool move_to(Menu &menu, const std::string &label) {
     key.state = 1;
     for (int i = 0; i < 200 && menu.cursor() != at; ++i) menu.key(key);
     return menu.cursor() == at;
+}
+
+// Types `text` into the text field open on `menu`, a key at a time.
+void type_keys(Menu &menu, const std::string &text) {
+    for (const char c : text) {
+        KeyEvent key; key.key = Key::Char; key.text = std::string(1, c); key.state = 1;
+        menu.key(key);
+    }
+}
+
+// The text field open on `menu` (`what` names it): a secret's shows what is typed as bullets but for the last
+// character, and --keydump logs nothing meanwhile; a plain one shows it as typed. ESC closes the field, which is then
+// empty, and --keydump logs again. Checked, not pictured.
+bool field_ok(Menu &menu, const std::string &what, bool secret) {
+    input::set_dump(true);
+    const bool open = menu.editing() && input::dumping() == !secret;
+    type_keys(menu, "ab");
+    const std::string shown = menu.field_shown();
+    const bool ends_ab = shown.size() >= 2 && shown.compare(shown.size() - 2, 2, "ab") == 0;
+    const bool drawn = secret ? !ends_ab && shown.find('a') == std::string::npos && !shown.empty() && shown.back() == 'b' : ends_ab;
+    KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
+    menu.key(esc);
+    const bool emptied = !menu.editing() && menu.field_shown().empty() && input::dumping();
+    input::set_dump(false);
+    if (!open || !drawn || !emptied)
+        fprintf(stderr, "the %s field (%s): open as one %d, typing shown as \"%s\", emptied when closed %d\n", what.c_str(),
+                secret ? "a secret" : "plain text", open, shown.c_str(), emptied);
+    return open && drawn && emptied;
 }
 
 }  // namespace
@@ -988,6 +1051,8 @@ void App::shots_setup(Shots &shots) {
                                           "This is on the service's side; try again later.");
         snap("setup-problem");
         menu.pop();
+        shots.press("API key");
+        if (!field_ok(menu, "setup guide's API key", true)) failed = true;
         shots.menu_to("Skip this step");
         menu.key(enter);                       // skip the live test in screenshots
         set([](Settings &s) { s.llm_model = "example-chat-model"; s.stt_model = "example-speech-to-text"; s.tts_model = "example-text-to-speech"; });
@@ -1002,6 +1067,8 @@ void App::shots_setup(Shots &shots) {
         menu.key(enter);
         snap("setup-extras");
         if (!without_power_on(menu, "setup guide's extras", {"Speak replies", "Finish"})) failed = true;
+        shots.press("Web search key");
+        if (!field_ok(menu, "setup guide's web search key", true)) failed = true;
         menu.close();
     }
     if (!late_setup_answers_ignored(shots)) failed = true;
@@ -1045,6 +1112,8 @@ void App::shots_settings(Shots &shots) {
     shots.menu_to("AI service");
     menu.key(enter);
     snap("settings-service");
+    shots.press("API key");
+    if (!field_ok(menu, "AI service's key", true)) failed = true;
     shots_web_search(shots);
     menu.key(esc);
     shots.menu_to("About");
@@ -1154,10 +1223,15 @@ void App::shots_smart_home(Shots &shots) {
     shots.menu_to("Set up…");
     menu.key(enter);
     snap("home-pairing");
-    menu.key(esc); menu.key(esc);
+    if (!field_ok(menu, "pairing step's e-mail", false)) shots.failed = true;   // an e-mail: no secret
+    menu.key(esc);
     shots.menu_to("Tapo account");                 // past the strip that listed nothing
     menu.key(enter);
     snap("tapo-account");
+    shots.press("Password");
+    if (!field_ok(menu, "Tapo password", true)) shots.failed = true;
+    shots.press("E-mail");
+    if (!field_ok(menu, "Tapo e-mail", false)) shots.failed = true;
     menu.key(esc); menu.key(esc);                  // back to "Your data", on "Smart home"
 }
 
@@ -1177,6 +1251,13 @@ void App::shots_web_search(Shots &shots) {
     snap("web-search");
     shots.press("Tavily");
     snap("web-search-service");
+    // A key is typed hidden: bullets, its last character for a moment (pictured as a key is typed).
+    shots.press("Key");
+    if (!field_ok(menu, "web search key", true)) shots.failed = true;
+    shots.press("Key");
+    type_keys(menu, "sample-key-typed");
+    snap("edit-key");
+    menu.key(esc);
     // The order: Right asks Tavily later, Left earlier again.
     shots.menu_to("Asked");
     menu.key(right);
@@ -1189,7 +1270,8 @@ void App::shots_web_search(Shots &shots) {
     menu.key(esc);
     shots.press("Brave");
     snap("web-search-refused");
-    menu.key(esc); menu.key(esc);                  // back to "AI service", on "Web search"
+    if (!search_pages_follow(menu)) shots.failed = true;   // back on the Web search page
+    menu.key(esc);                                 // back to "AI service", on "Web search"
 }
 
 // Your data > Radio stations. From the section's page, and back to it.

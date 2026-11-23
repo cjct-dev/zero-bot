@@ -100,6 +100,9 @@ struct PairStep {
     std::string prompt;     // "Press the round button on the Hue Bridge"
     int wait_s = 0;         // for button and prompt steps: keep trying for this long
     std::string field;      // label of the text field for a code, password or token
+    // What is typed is no secret (an e-mail, a user name): shown as it is typed. A code, password or token is
+    // hidden while it is typed (Menu::edit_text's secret).
+    bool plain = false;
 };
 
 // Secrets shared by every device of a family (an account, this controller's own key pair).

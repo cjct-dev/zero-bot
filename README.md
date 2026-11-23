@@ -496,7 +496,8 @@ devices, with or without this app.
 
 - Settings are in `~/.config/zero-bot/settings.json`, readable only by your user. An API key you
   enter is stored there in plain text, so treat the device like anything else that holds a
-  password.
+  password. Keys, passwords and codes are hidden while you type them (each character shows for a
+  moment), and settings show only a key's last four characters.
 - Calendar, reminders, memories and learned remote buttons are plain JSON files in
   `~/.local/share/zero-bot/`. Delete a file to reset that part.
 - Your radio stations are in `~/.config/zero-bot/radio.json`. Their names are sent to your AI

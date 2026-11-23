@@ -905,7 +905,10 @@ model will read. Document it in `README.md`.
 page of its own, opened from the top page: a new header is a new section), the setup guide
 (`setup_guide.cpp`) if a new user needs it, and a line in the README's settings table. Rows read the
 value with `S()` and change it with `change(...)` (`Settings::update`; both in
-`settings_internal.h`), never by writing to a copy. `--shots` walks to rows by label, so a new row
+`settings_internal.h`), never by writing to a copy. A key, password or code is typed with
+`Menu::edit_text`'s `secret`: the field starts empty, shows bullets (each character for a moment as it
+is typed), is emptied whenever it closes, and `--keydump` logs none of it (`input::set_secret`); the
+first versions showed a new key in full while it was typed. `--shots` walks to rows by label, so a new row
 moves no later screenshot; if it walks to a row you rename, rename it in `shots.cpp` too.
 
 **A key.** Chat-screen keys outside the input line are decided in `keyguide::chat_key`
@@ -955,7 +958,8 @@ nothing there should scroll for long: the now-playing text scrolls only when
 it has all of its room, and beside the countdown it is cut short with dots instead. A radio
 station's name, there for hours, never scrolls (`set_now_playing(text, true)`).
 
-**A settings value that changes by itself** (a timer's time left): set `MenuPage::live`.
+**A settings value that changes by itself** (a timer's time left, a web search service's state and
+use, which a search made meanwhile changes): set `MenuPage::live`.
 `Menu::tick` then reads the values on screen 15 times a second and redraws only those whose
 text changed, so their value functions must be cheap: no file reads, no subprocesses. Rows that
 come and go by themselves (a timer ends) also need `MenuPage::revision`, a number that changes
@@ -1019,7 +1023,8 @@ and `tests/unit/run_unit.sh` both build every `.cpp` in `src/smarthome/drivers/`
 shared layer does names, rooms, the tool's schema (it grows with the capabilities a home has),
 the safety questions, rate limits, locking, fan-out and the generic pairing pages (after a
 pairing step, the family's other devices are asked again, so an account typed once serves them
-all). The rules a
+all; what a step asks for is hidden while it is typed unless the driver marks it `PairStep::plain`,
+an e-mail or a user name). The rules a
 driver keeps: map only allow-listed types (lights, plugs, switches, thermostats, covers, fans,
 speakers, TVs, scenes, read-only sensors; never locks, garage doors, alarms, cameras, valves or
 cooking appliances); state in the units and keys documented in `home.h`; secrets only in
