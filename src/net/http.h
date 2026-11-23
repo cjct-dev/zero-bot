@@ -1,4 +1,5 @@
-// Thin libcurl wrapper: JSON/body requests, multipart upload, streaming and cancellation.
+// Thin libcurl wrapper: JSON/body requests, multipart upload, streaming and cancellation. DNS answers and
+// TLS sessions are shared by every thread; each thread keeps its own connections for its next request.
 #pragma once
 #include <atomic>
 #include <functional>
@@ -70,8 +71,9 @@ std::string url_encode(const std::string &s);
 
 // Whether a failed request may simply be sent again: the connection could not be made or broke,
 // or the server said it is overloaded or failing for the moment (408, 429, 5xx but 501 and 505).
-// Never a refusal or any other 4xx, a cancellation, or a timeout once the request had gone out
-// (its time is up, and waiting again would double it).
+// Never a refusal or any other 4xx (even with its body cut short: the status stands), a
+// cancellation, or a timeout once the request had gone out (its time is up, and waiting again
+// would double it).
 bool transient(const Response &res);
 
 // For requests that are safe to repeat and nothing else: reading, searching, asking the AI

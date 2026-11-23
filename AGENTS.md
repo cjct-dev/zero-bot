@@ -63,7 +63,8 @@ src/core/           settings, calendar/reminder/timer/memory store, timers (the 
                     phone tethering, what an upgrade leaves behind (upgrade), the one failure
                     shape (result.h: fail, failed, words), the UI queue (ui_queue.h), the
                     diagnostics (activity; temporary), utilities (dates, files, strings)
-src/net/            libcurl wrapper with a shared connection/DNS/TLS-session cache
+src/net/            libcurl wrapper: DNS answers and TLS sessions shared by every thread, connections kept by
+                    each thread for its next request
 src/platform/       display, keyboard (input, keys.h), audio (recorder, speaker, music), codecs,
                     camera, infrared, subprocess helpers (proc), the battery (power), the Wi-Fi
                     network and the default route (net_status), the monotonic clock (sys.h)
@@ -130,7 +131,8 @@ them every tick and tools change them), the smart-home file (`store.cpp`: `g_mtx
 and the rate limit, `g_locks_mtx` and then one lock per device), web search (`search.cpp`: `g_health_mtx`,
 `g_cache_mtx`, `g_asked_mtx`; `usage.cpp`: `g_mtx` for the allowance as read, `g_file_mtx` for one save at a
 time, written outside `g_mtx`, which the settings page takes too), the time zone (`g_tz_mtx` in
-util.cpp, under which `TZ` is switched), `uiq::mtx()` and curl's share locks (http.cpp). A
+util.cpp, under which `TZ` is switched), `uiq::mtx()` and curl's share locks (http.cpp), which guard DNS answers
+and TLS sessions only: no connection is shared between threads (section 8, Networking). A
 descriptor or pointer read under a lock must not be used after it is let go if another thread may
 close or free it meanwhile (section 8, Audio). `Store` writes no file with `Store::mtx_` held, which
 the UI thread takes every second: it queues a file's new contents under it and writes them once it is
@@ -240,7 +242,8 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   - *Retries.* Only what is safe to repeat is sent again by itself: the AI service, transcription,
     speech, and the tools' reads and searches (`fetch_json`), through `http::send_retrying`, after
     a failure on the way (`http::transient`: no connection, a dropped one, 408, 429, 5xx but 501
-    and 505; never a refusal, and never a timeout once the request had gone out), after a pause
+    and 505; never a refusal, even one whose body was then cut short, and never a timeout once the
+    request had gone out), after a pause
     and inside the request's own time limit. Nothing that changes, logs in or pairs is retried by
     this; a device change is resent only by the smart-home layer, at a device's new address, and
     only when it comes out the same if made twice (on, 40 %, an input; never a volume step, key
@@ -441,6 +444,18 @@ key, real audio), say so plainly rather than implying it was.
   because it can outlast the Wi-Fi.
 - The Wi-Fi chip's firmware ignored the country code, hiding channels 12 and 13;
   `docs/wifi-channels-12-13.md` has the device-tree fix.
+- libcurl does not let threads use one connection cache at once, even through a share with lock
+  functions (`CURLSHOPT_SHARE(3)`), and the app's first share held connections too: the agent's worker,
+  speech, the settings page's lookups and every `background()` thread sent through it together (found by
+  review, not by a crash). The share (`http.cpp`) now holds DNS answers and TLS sessions only, and each
+  thread keeps one easy handle between its requests (`ThreadHandle`, reset for each), and with it its own
+  connections: the agent's next call to the AI service still goes out on the connection the last one left
+  open. A request with a device's own TLS settings, or one made while the thread's handle is busy, gets a
+  handle and a connection of its own. `tests/unit/http_test.cpp` counts the connections at a local peer:
+  reused within a thread, never one used by two.
+- A status received stands whatever then happens to its body: `http::transient` took a 401 whose body
+  was cut short for a dropped connection and sent the request again, refusal and all. Only a success cut
+  short (a read that lost its body on the way) or no answer at all is resent.
 
 **Audio**
 - The music player's default buffer is about 12 ms and skipped whenever the processor was busy.

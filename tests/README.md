@@ -67,8 +67,10 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
 - `support_test.cpp`: the helpers the drivers share (`drivers/support`): the JSON depth check and guarded parse, UTF-8
   repair and decoding, MAC digits, hex, SHA-256/512 and HMAC against FIPS 180-2 and RFC 4231, the PEM certificate read
   and its SHA-256 pin, the RAII socket.
-- `http_test.cpp`: the request options for devices, and reply headers kept by name (a search service's allowance
-  left), against a local peer, `http_peer.py`.
+- `http_test.cpp`: the request options for devices, reply headers kept by name (a search service's allowance left),
+  what `send_retrying` sends again (an answer cut short keeps its status: a 401 is not resent), and the connections
+  each thread keeps (reused for its next request, never used by another thread; the peer numbers them), against a
+  local peer, `http_peer.py`.
 - `timers_test.cpp`: the timer tool, storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it
   keeps everything it writes in a temporary folder of its own, so running it by hand is safe too.
 - `key_guide_test.cpp`: what each key does on the chat screen, and that the key guide says so.
