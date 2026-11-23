@@ -28,6 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
 sys.path.insert(0, TESTS)
 import netguard   # noqa: E402
+from lib.answered import looked_for   # noqa: E402  who answered, as the app reads a driver's error
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
 CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "unit", "shelly_cli")
@@ -570,6 +571,7 @@ def identity_and_hostile():
         m.config(hostile=mode)
         ok, out, kind, err, ms = cli(st, "read")
         check("hostile %s: read fails with \"%s\"" % (mode, want), not ok and want in err and ms < 5000, (err, ms))
+        check("hostile %s: the device answered, so the app does not look for it elsewhere" % mode, not looked_for(err), err)
     m.config(hostile="redirect")
     m.reset()
     ok, out, kind, err, ms = cli(st, "apply", "switch:0", '{"on":true}')
@@ -587,7 +589,7 @@ def identity_and_hostile():
     # A port nothing listens on: "did not answer" (the app then looks for the device elsewhere).
     st = new_state("closed", m, "shelly:shellyplus1pm-a8032ab12345")
     ok, out, kind, err, ms = cli(st, "enumerate")
-    check("nothing at the port: did not answer", not ok and kind == "no_answer", (kind, err))
+    check("nothing at the port: did not answer", not ok and kind == "no_answer" and looked_for(err), (kind, err))
 
 
 def review2():
@@ -715,6 +717,50 @@ class App:
             json.dump(root, f)
 
 
+def searches(path):
+    """How many searches for a device that may have moved the app noted in PATH (ZB_EXP_SCAN)."""
+    try:
+        with open(path) as f:
+            return len(f.read().splitlines())
+    except FileNotFoundError:
+        return 0
+
+
+def answered_wrongly(app, lamp):
+    """ZB-108: a Shelly that answers, only wrongly, is where it was. It is not looked for at another address (a
+    2.5 s scan, after which its error said "not found at another address ... switched off at the wall"), and its
+    error is its own. One where nothing answers is looked for. On the stand-in network the app never scans:
+    ZB_EXP_SCAN has each search it would make noted instead."""
+    def lamp_at(port):
+        root = app.load()
+        for d in next(iter(root["networks"].values()))["devices"]:
+            if d["id"] == "shelly:shellyplus1pm-a8032ab12345":
+                d["port"] = port
+        app.save(root)
+
+    scans = os.path.join(app.state, "scans.log")
+    app.env["ZB_EXP_SCAN"] = scans
+    try:
+        for mode in ("garbage", "deep", "long"):
+            lamp.config(hostile=mode)
+            for args in ({"action": "on", "target": "Desk lamp"}, {"action": "status", "target": "Desk lamp"}):
+                r = app.tool(args)
+                check("app: a %s answer to '%s' is the Shelly's: not looked for, nothing said of another address" % (mode, args["action"]),
+                      r.startswith("ERROR") and "Shelly's answer" in r and "another address" not in r and searches(scans) == 0,
+                      (r, searches(scans)))
+        lamp.config(hostile="")
+        gone = Mock("plus1pm")
+        gone.stop()
+        lamp_at(gone.port)
+        r = app.tool({"action": "on", "target": "Desk lamp"})
+        check("app: nothing answering at the lamp's address: looked for once, and said so",
+              r.startswith("ERROR") and "did not answer" in r and "not found at another address" in r and searches(scans) == 1,
+              (r, searches(scans)))
+        lamp_at(lamp.port)
+    finally:
+        del app.env["ZB_EXP_SCAN"]
+
+
 def app_part():
     if not os.access(APP, os.X_OK):
         print("info  %s not built: the app part was skipped" % APP)
@@ -772,6 +818,7 @@ def app_part():
         check("app: the status of the lamp comes from the device", '"on":true' in r.replace(" ", "") and "12.5" in r and
               paths(lamp.log()) == ["/shelly", "Shelly.GetStatus"], (r, paths(lamp.log())))
         check("app: results carry no address, id or MAC", "127.0.0.1" not in r and "a8032ab12345" not in r.lower(), r)
+        answered_wrongly(app, lamp)
         # review 2: since it was read, the desk lamp's Shelly has been set up as a garage door
         # opener in the Shelly app (same device). Nothing has read it again; it is still offered
         # under its old name, but asked again, it is not switched.

@@ -114,8 +114,11 @@ def old_file(network, plug_port, strip_port):
 
 def nested_too_deep(app, plug, network):
     """Answers nested deeper than any plug's (ZB-093). Each is otherwise right, and before the guard was taken
-    as it came. None is read now: the plug answered wrongly (it is not gone), and no password is held against
-    it. The TPAP plug is left on, with normal answers."""
+    as it came. None is read now: the plug answered wrongly (it is not gone, so it is not looked for at another
+    address: ZB-108), and no password is held against it. The TPAP plug is left on, with normal answers."""
+    scans = os.path.join(app.state, "scans.log")
+    app.env["ZB_EXP_SCAN"] = scans   # each search for a plug that may have moved is noted (the stand-in network has none)
+
     def saved_tpap(text):
         root = app.load()
         next(d for d in root["networks"][network]["devices"] if d["id"] == "tapo:p110")["info"]["tpap"] = text
@@ -148,6 +151,8 @@ def nested_too_deep(app, plug, network):
     check("a 'session ended' notice nested too deep is not taken as one: no second login, nothing switched",
           isinstance(r, str) and "the plug's answer could not be decrypted" in r and st["login_ok"] == 1 and st["gone"] == 1 and
           st["on"] is False, (r, st))
+    check("none of those answers sent the app looking for the plug at another address", not os.path.exists(scans))
+    del app.env["ZB_EXP_SCAN"]
     plug.reset({})
     r = app.tool({"action": "on", "target": PLUG})
     check("answers as a plug sends them are read again at once", r == {"now": "on", "target": PLUG} and plug.stats()["on"] is True and

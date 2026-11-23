@@ -35,10 +35,12 @@
 //    firmware and every other call that changes how a device is set up are never sent.
 //  - Before every change, every read and pairing, the device is asked who it is (GET /shelly): when
 //    another device answers at the saved address, nothing is sent (kOtherDevice, whose wording
-//    counts as "did not answer" for the app's re-discovery), so a password never reaches another
-//    device and its answers (a refusal, a 401) are never kept against this one. "Who it is" is the
-//    id or MAC its things were read with, and the one that took the password when it was typed
-//    (Device::auth "dev"), so a paired device that has never been read is recognised too.
+//    makes the app look for the device at a new address: home::who_answered), so a password never
+//    reaches another device and its answers (a refusal, a 401) are never kept against this one.
+//    "Who it is" is the id or MAC its things were read with, and the one that took the password
+//    when it was typed (Device::auth "dev"), so a paired device that has never been read is
+//    recognised too. An answer that is garbled (kNotUnderstood) or too long is the device's: it
+//    is not looked for elsewhere.
 //  - Before a change to a relay or blind, its settings are read again (Shelly.GetConfig, Gen1
 //    /settings): one renamed "Garage door", given a switch-off timer of seconds, or gone (a 2PM or
 //    2.5 changed between relay and blind) since the device was last read is not switched.

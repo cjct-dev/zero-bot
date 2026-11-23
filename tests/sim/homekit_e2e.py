@@ -24,6 +24,7 @@ import urllib.request
 TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
 sys.path.insert(0, TESTS)
 import netguard   # noqa: E402
+from lib.answered import looked_for   # noqa: E402  who answered, as the app reads a driver's error
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
 CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "unit", "homekit_cli")
@@ -36,9 +37,6 @@ NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 APP_KEYS = {"on", "brightness", "kelvin", "hue", "saturation", "mode", "target_c", "current_c", "humidity", "position",
             "fan", "volume", "muted", "playing", "source", "title", "power_w", "energy_today_wh", "motion", "contact"}
 OWN_KEYS = {"in_use", "heating", "target_position", "reachable"}
-# What the app counts as "it did not answer" (control.cpp unreachable()): such an error costs a
-# 2.5 s rescan of the network.
-UNREACHABLE_WORDS = ("connect", "reach", "answer", "respond", "timed out", "timeout", "no route", "unreachable")
 
 
 def shown(state):
@@ -536,7 +534,7 @@ def test_session_failures():
         if fault == "impostor":   # nothing at all may be sent to an accessory that failed the identity check
             ok = ok and not s["puts"] and not any(r[1] in ("/accessories", "/characteristics") for r in s["requests"])
         if fault in ("status_207", "status_huge"):   # the accessory answered: nothing that reads as "it did not"
-            ok = ok and not any(w in err[0].lower() for w in UNREACHABLE_WORDS)
+            ok = ok and not looked_for(err[0])
         check("%s: \"%s\", no crash, quickly" % (fault, words), ok, (rc, err, round(el, 2)))
     if os.environ.get("HOMEKIT_E2E_SANITIZED"):
         info("memory not checked: a sanitizer build keeps large shadow maps (largest %.1f MB)" % (peak / 1024.0))
@@ -630,7 +628,7 @@ def test_partial_failures():
           each.get("3.10", "").startswith("Kettle Plug is switched off") and s["values"]["14.11"] is True and
           s["values"]["21.11"] is True and s["values"]["21.21"] is True, (rc, out, err))
     check("... and the error does not read as \"the bridge did not answer\" (which costs the app a rescan)",
-          not any(w in each.get("3.10", "").lower() for w in UNREACHABLE_WORDS), each.get("3.10"))
+          not looked_for(each.get("3.10", "")), each.get("3.10"))
     # One of several cannot take the change at all (the panel heater has no auto mode): the others
     # are still changed, and only that one says why.
     rc2, out2, err2, _ = st.run("apply-many", "4.10,13.10", "mode=auto")

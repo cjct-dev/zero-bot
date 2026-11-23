@@ -28,6 +28,7 @@ import urllib.request
 TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
 sys.path.insert(0, TESTS)
 import netguard   # noqa: E402
+from lib.answered import looked_for   # noqa: E402  who answered, as the app reads a driver's error
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
 paths = [a for a in sys.argv[1:] if os.sep in a or a.endswith("_cli") or a.endswith("zero_bot")]
@@ -427,7 +428,7 @@ def test_identity(mock):
         rc, out, err, _ = cli(state_file(mock, "plug", plug=True), "apply", "main", json.dumps({"on": True}))
         st = mock.stats("plug")
         check("%s: the change is refused, in words that make the app look for the device" % mode,
-              rc == 1 and "does not say which device it is" in err and "answers" in err, (rc, err))
+              rc == 1 and "does not say which device it is" in err and looked_for(err), (rc, err))
         check("%s: the device was only asked who it is, and is still off" % mode,
               st["requests"] == [GET_SYSINFO] and st["state"]["relay_state"] == 0, (st["requests"], st["state"]))
         rc, out, err, _ = cli(state_file(mock, "plug", plug=True), "enumerate")
@@ -468,6 +469,7 @@ def test_hostile(mock):
         rc, out, err, ms = cli(state_file(mock, "plug"), "apply", "main", json.dumps({"on": not before}), deadline=1500)
         check("%s: '%s' within the deadline (%d ms)" % (mode, words, ms), rc == 1 and words in err and at_least <= ms <= at_most,
               (rc, out, err, int(ms)))
+        check("%s: looked for at another address only when nothing answered" % mode, looked_for(err) == (words == "did not answer"), err)
     mock.reset()
     mock.mode("plug", "split")
     rc, out, err, ms = cli(state_file(mock, "plug"), "apply", "main", json.dumps({"on": True}))

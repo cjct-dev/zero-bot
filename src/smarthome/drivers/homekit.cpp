@@ -141,11 +141,11 @@ const char *const kErrFakeAccessory =
     "The accessory could not prove that it knows the setup code, so pairing was stopped.";
 const char *const kErrBadIdentity = "The accessory's identity could not be checked, so pairing was stopped.";
 const char *const kErrNoStore = "This app could not save its HomeKit key, so pairing was not started.";
-// No sentence for a problem on this side, or from an accessory that did answer, may contain a word
-// of the app's "it did not answer" list (src/smarthome/control.cpp unreachable(): connect, reach,
-// answer, respond, timed out, timeout, no route, unreachable): the app rescans the network for
-// those. Checked by the unit test over answered_error_texts(). kErrUnreachable, kErrTimeout,
-// kErrDropped and kErrWrongAccessory use them on purpose: the accessory may have moved.
+// No sentence for a problem on this side, or from an accessory that did answer, may read as nobody
+// or another accessory answering (home::who_answered, driver.h: "did not answer", "could not be
+// reached", ...): the app rescans the network for those. Checked by the unit test over
+// answered_error_texts(). kErrUnreachable, kErrTimeout, kErrDropped and kErrWrongAccessory read so
+// on purpose: the accessory may have moved.
 const char *const kErrBadStore =
     "The HomeKit key saved by this app is damaged, so this app cannot use its HomeKit accessories.";
 const char *const kErrNotPaired = "This accessory is not paired yet. Pair it in settings with its setup code.";
@@ -1429,8 +1429,8 @@ void apply_values(home::Thing &t, const std::map<std::pair<int64_t, int64_t>, js
     merge_state(t, vals, any_failed);
 }
 
-// No word here may read as "the accessory did not answer" (the app rescans the network for those,
-// control.cpp unreachable()): a status always comes from an accessory that did answer.
+// Nothing here may read as "the accessory did not answer" (the app rescans the network for those,
+// home::who_answered): a status always comes from an accessory that did answer.
 std::string status_text(long status, const std::string &name) {
     const std::string who = name.empty() ? std::string("The accessory") : name;
     switch (status == LONG_MIN ? 0 : status < 0 ? -status : status) {

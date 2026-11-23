@@ -28,7 +28,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-std::mutex g_mtx;                          // the trace file, the current request
+std::mutex g_mtx;                          // the trace and scan files, the current request
 const Clock::time_point g_process_start = Clock::now();
 int g_req = 0;                             // requests begun in this process
 int g_calls = 0;                           // model calls in the current request
@@ -129,6 +129,7 @@ const Switches &get() {
                 exit(2);
             }
         }
+        if (const char *s = getenv("ZB_EXP_SCAN")) r.scan = s;
         return r;
     }();
     return s;
@@ -197,6 +198,17 @@ std::string net_refusal(const std::string &url) {
 
 std::string no_lan() {
     return get().net.empty() ? "" : "The real network is not looked at in a test run (ZB_EXP_NET).";
+}
+
+bool stand_in_scan() {
+    const std::string &file = get().scan;
+    if (file.empty()) return false;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    if (FILE *f = fopen(file.c_str(), "a")) {
+        fputs("search\n", f);
+        fclose(f);
+    }
+    return true;
 }
 
 std::string no_camera() {

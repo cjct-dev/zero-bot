@@ -69,11 +69,11 @@
 
 namespace firetv {
 
-// Only kNoAnswer and kAlreadyOff messages may use the words control.cpp's unreachable() looks
-// for (connect, reach, answer, respond, timed out, timeout, no route, unreachable): the app then
-// searches the network for the device, which helps only when nothing answered at this address.
-// (A message that quotes what the user asked for, an app, key or playback control name, can
-// carry those words in the quote: fault_of() is the reliable classifier.)
+// Only kNoAnswer and kAlreadyOff messages may use the words home::who_answered() (driver.h) reads
+// as nobody or another device answering ("did not answer", "could not be reached", ...): the app
+// then searches the network for the device, which helps only when nothing answered at this address.
+// (A message that quotes what the user asked for, an app, key or playback control name, carries
+// the quote's words too: fault_of() is the reliable classifier.)
 const char *const kNoAnswer = "The TV did not answer.";
 const char *const kAlreadyOff = "The TV seems to be off already.";
 const char *const kNotServing = "The TV is on the network but its remote control service is not replying.";

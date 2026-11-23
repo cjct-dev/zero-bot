@@ -630,7 +630,8 @@ key, real audio), say so plainly rather than implying it was.
   with no key of its own (WiZ, and any family whose protocol has no login) answers whoever asks.
   The first review of the WiZ driver found that a command for a light switched the plug that now
   had its address. Such a driver checks the device's MAC (the one discovery saved it under)
-  before every change, and fails with a word `unreachable()` knows so the app looks for it.
+  before every change, and fails with words `home::who_answered` reads as another device answering
+  ("answered at this ... address"), so the app looks for it.
   Only a positive match counts: an answer with no MAC, or an empty one, is not the saved device
   (Kasa's get_sysinfo; WiZ's getPilot, where firmware that leaves the MAC out is asked
   getSystemConfig within the same time), and a record saved without a MAC is never changed. The
@@ -668,6 +669,15 @@ key, real audio), say so plainly rather than implying it was.
   for an off change a device found nowhere "seems to be off already" (`after_lookup`), not "switched
   off at the wall, or out of Wi-Fi range", which the model passed on as a fault (ZB-075). A driver's
   error is joined to more words without its closing full stop (`clause`).
+- A device that answered is not lost. The shared layer took any error holding "answer" (or
+  "connect", "reach", "timed out"...) for silence, so a reply that could not be read or nested too
+  deep, a Tapo error code, a Shelly answer too long to read, even the layer's own "the device's
+  answer could not be understood", sent it searching the network for 2.5 s, after which the model was
+  told the device was "not found at another address ... switched off at the wall" (ZB-108). Only
+  exact phrases count now (`home::who_answered`, driver.h): nobody answering, or another device
+  answering at the address, is looked for; anything else is the device's own answer. The drivers'
+  end-to-end scripts read those phrases from the function itself (`tests/lib/answered.py`), and on
+  the stand-in network, where the app never scans, `ZB_EXP_SCAN` notes each search it would make.
 - The keyboard's three lights (caps lock, fn, symbols) have no kernel interface: the keypad takes no
   EV_LED events and they are not LED-class devices. The M5Stack keypad driver sets them by writing a
   mode (0 off, 1 blink, 2 fast, 3 on) into registers 0xBD to 0xBF of the M5IOE1 expander, the
@@ -952,10 +962,15 @@ first try to one device at a time; an id that
 is never a family's prefix alone, and, where the protocol has no login, a change only to a device
 that positively names the MAC it was saved under (section 8); no retries of its own of a change
 (the shared layer resends one only at a device's new address, and only when it comes out the same if made twice; `http::send_retrying` is for
-the internet, not for devices); an error for a device that did not answer reads as one ("did not
-answer", "timed out", "could not connect"), which is what makes the layer look for it at a new
-address (a device that spends half its 2.5 s and then did not answer is not asked again for its
-other things in that command: the shared layer gives them the same answer); honour
+the internet, not for devices); an error for a device that did not answer, or for another device
+answering at its address, says so in the words `home::who_answered` knows (driver.h lists them: "did
+not answer", "could not be reached", "cannot connect", "refused the connection", "closed the
+connection"; "answers at this" or "answered at this" address), which is what makes the layer look
+for it at a new address (a device that spends half its 2.5 s and then did not answer is not asked
+again for its other things in that command: the shared layer gives them the same answer), and no
+other error uses them: a device that answered, only wrongly (a reply that could not be read, an error
+code, a refusal), is where it was (ZB-108; every driver's sentences are in `test_who_answered`,
+`tests/unit/smarthome_test.cpp`, and a new one goes there too); honour
 `Device::port`; deadlines of about 2.5 s for a change and 4 s for listing;
 no threads, sockets or connections of its own between calls; errors are short sentences. Use
 the `http::Request` options (`local`, `timeout_ms`, `insecure`, `pinned_pubkey`, `want_peer_cert`,
