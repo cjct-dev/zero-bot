@@ -11,7 +11,10 @@ search, a place looked up by name, the photo's description) are run only against
 infrared transmitter out of a test run, a bad ZB_EXP_WEB stops the run cleanly, and a request to the
 stand-in takes no proxy and follows no redirect. search_services: web search is offered, and searches with the
 right key, exactly when the settings' list of services sets one up (an older file's search_key and ZB_SEARCH_KEY
-included), and a settings file saved again keeps the list. A tool call's arguments and a web service's answer nested
+included), and a settings file saved again keeps the list. search_shapes: every search service built in (read from
+src/agent/search/providers/registry.cpp) has its shape in the stand-in web, is asked there with the stand-in's key, gives
+the model the same facts as every other, and a refused key and a hostile answer come back as an ERROR or capped and
+cleaned. A tool call's arguments and a web service's answer nested
 deeper than 32 levels are not read (nested_too_deep, against a local server of its own). no_real_web runs
 one case through the live sets' own runner
 (tests/agent/agent_eval.py run_case) against a scripted model (tests/mocks/fake_model.py) that calls every tool
@@ -373,6 +376,7 @@ def run_all(root):
 
     guards(root)
     search_services(root)
+    search_shapes(root)
     nested_too_deep(root)
     no_real_web(root)
     web_wraps()
@@ -501,6 +505,95 @@ def search_services(root):
     finally:
         web.stdin.close()
         web.wait(timeout=10)
+
+
+def registered_services():
+    """The search services built into the app, in their order: (kind, name) from src/agent/search/providers/registry.cpp."""
+    with open(os.path.join(TESTS, "..", "src", "agent", "search", "providers", "registry.cpp"), encoding="utf-8") as f:
+        return re.findall(r'^\s*X\((\w+), "([^"]+)"\)', f.read(), re.M)
+
+
+class StandInWeb:
+    """tests/mocks/fake_web.py, logging every request: url(fixture) is ZB_EXP_WEB for that fixture, and since(mark) the
+    requests logged after `mark` (a count of lines)."""
+    def __init__(self, root):
+        self.log = os.path.join(root, "stand-in-%d.log" % id(self))
+        self.proc = subprocess.Popen([sys.executable, "-I", os.path.join(TESTS, "mocks", "fake_web.py"), "--log", self.log],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
+        line = self.proc.stdout.readline().split()
+        check("the stand-in web starts", line[:2] == ["WEB", "listening"], line)
+        self.port = line[2] if len(line) > 2 else "9"
+
+    def url(self, fixture):
+        return "http://127.0.0.1:%s/%s" % (self.port, fixture)
+
+    def lines(self):
+        return [json.loads(l) for l in open(self.log)] if os.path.exists(self.log) else []
+
+    def since(self, mark):
+        return self.lines()[mark:]
+
+    def close(self):
+        self.proc.stdin.close()
+        self.proc.wait(timeout=10)
+
+
+def search_with(g, web, fixture, services, query="louvre opening hours on sunday"):
+    """One web_search through the app with SERVICES as the settings' list (each [kind, key]) at the stand-in's FIXTURE:
+    (the result, the stand-in's requests for it)."""
+    os.makedirs(g.dir + "/config/zero-bot", exist_ok=True)
+    path = g.dir + "/config/zero-bot/settings.json"
+    saved = json.load(open(path)) if os.path.exists(path) else {}
+    saved["search"] = [dict(saved_entry(saved, kind), kind=kind, key=key) for kind, key in services]
+    with open(path, "w") as f:
+        json.dump(saved, f)
+    mark = len(web.lines())
+    out = g.run("web_search", {"query": query}, ZB_EXP_WEB=web.url(fixture))
+    return out, web.since(mark)
+
+
+def saved_entry(saved, kind):
+    """The settings' entry of KIND as the app last saved it (what it keeps beside the key), or {}."""
+    return next((dict(e) for e in saved.get("search", []) if e.get("kind") == kind), {})
+
+
+def search_shapes(root):
+    """Every search service built into the app (src/agent/search/providers/registry.cpp, read here) has its shape in the
+    stand-in web (fake_web.SEARCH_SHAPES), is asked there with the stand-in's key when it is the one set up, and its answer
+    reaches the model as the same facts whichever service gave it; a key the service refuses, and a hostile answer,
+    come back as the model's ERROR or capped and cleaned."""
+    sys.path.insert(0, os.path.join(TESTS, "mocks"))
+    import fake_web
+    services = registered_services()
+    check("the registry lists the services built in, Tavily first", services and services[0][0] == "tavily", services)
+    web = StandInWeb(root)
+    try:
+        rule = fake_web.search_rule(fake_web.FIXTURES["default"], "louvre opening hours on sunday")
+        facts = [fake_web.fill(fake_web.shown(v)) for v in fake_web.facts(rule["id"], 1).values()]
+        for kind, name in services:
+            check("%s has a shape in the stand-in web" % name, kind in fake_web.SEARCH_SHAPES, sorted(fake_web.SEARCH_SHAPES))
+            g = State(root, "shape-" + kind)
+            out, asked = search_with(g, web, "default", [[kind, "stand-in"]])
+            check("%s is asked, once, with the stand-in's key" % name, [(a.get("service"), a.get("key")) for a in asked] == [(kind, "stand-in")], asked)
+            check("%s: the answer holds the rule's facts %s" % (name, facts), all(f in out for f in facts) and not out.startswith("ERROR"), out[:400])
+            out, asked = search_with(g, web, "default", [[kind, "not-the-stand-in"]])
+            check("%s: a refused key is an ERROR for the model" % name, out.startswith("ERROR") and [a.get("key") for a in asked] == ["other"],
+                  (out[:200], asked))
+            out, asked = search_with(g, web, "search_hostile", [[kind, "stand-in"]])
+            try:
+                hits = json.loads(out).get("results", [])
+            except (ValueError, AttributeError):
+                hits = None
+            check("%s: a hostile answer is read, its results four at most" % name, isinstance(hits, list) and 0 < len(hits) <= 4, out[:300])
+            size = lambda h, k: len(str(h.get(k, "")).encode())   # a cap is in bytes, then "…" (3 more) when cut
+            for h in hits or []:
+                if not isinstance(h, dict): continue
+                check("%s: a hostile title is capped and cleaned" % name, size(h, "title") <= 203 and
+                      not re.search(r"[\x00-\x1f]", h.get("title", "")), h.get("title", "")[:80])
+                check("%s: a hostile source and text are capped" % name, size(h, "source") <= 303 and size(h, "text") <= 503,
+                      (size(h, "source"), size(h, "text")))
+    finally:
+        web.close()
 
 
 def nested_too_deep(root):

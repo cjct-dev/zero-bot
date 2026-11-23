@@ -20,19 +20,27 @@ usage: fake_web.py [--seed N] [--date YYYY-MM-DD] [--log FILE] [FIXTURES.json]
 --date D   the run's date, frozen: every date written (forecast days, "yesterday", events, rates) counts from it.
            No value depends on the date (forecasts are made for a fixed season, by days from today), so runs on other
            days see the same answers with their dates moved.
---log FILE one JSON line per request: {"host", "path", "fixture", "status", "key"} ("key" says only whether
-           a search carried the stand-in's key, never what it carried).
+--log FILE one JSON line per request: {"host", "path", "fixture", "status"}, and for a search "service" (which
+           search service's shape was asked, SEARCH_SHAPES) and "key" (only whether it carried the stand-in's
+           key, never what it carried).
 
 The data lives beside this file, in web/ (places.json, markets.json, search.json), and is versioned with
 VERSION; the runners hash this file and every file in web/ into each case's case_hash, so results made
 against other fixtures are never compared.
 
+Web search is answered in the shape of every search service the app knows (SEARCH_SHAPES: Tavily, then
+Brave), each at its own address, with its own way of carrying the key, of saying the key is refused and the
+allowance spent, and one hostile reply; every shape is made from the same search.json rules, so the same
+facts come back whichever service is asked.
+
 Fixtures (the path's first part; "default" without one): "default", "events" (an event whose time a
 search gives, and one whose time is not announced), "rain59", "rain60", "rainmissing" (tomorrow's rain
 chance in York just under, at, and without the threshold), and the edge cases "search_empty",
-"search_error", "search_irrelevant", "search_conflict", "search_stale", "search_long", "weather_error",
-"weather_partial", "rates_missing". FIXTURES.json adds to or replaces them: {"NAME": FIXTURE}, FIXTURE as
-in FIXTURES below.
+"search_error", "search_irrelevant", "search_conflict", "search_stale", "search_long", "search_hostile",
+"weather_error", "weather_partial", "rates_missing"; and for the failover between search services, one
+service on a bad day while the others answer as usual: "tavily_down", "tavily_spent", "tavily_slow",
+"tavily_empty", "brave_key_refused", "brave_left_0", "brave_spent", "brave_busy", and "all_down" (every
+service failing). FIXTURES.json adds to or replaces them: {"NAME": FIXTURE}, FIXTURE as in FIXTURES below.
 
 Search rules (web/search.json): {"id", "match": regex found in the query (any case), "slots": {NAME:
 [VALUE, ...]}, "held_out": {NAME: [VALUE, ...]}, "answer": [TEMPLATE, ...], "answer_held_out": [...],
@@ -44,6 +52,7 @@ values a check expects (tests/agent_eval.py chk_served).
 """
 import datetime
 import hashlib
+import html
 import json
 import math
 import os
@@ -51,11 +60,12 @@ import random
 import re
 import sys
 import threading
+import time
 import unicodedata
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "web-4"          # change it with anything that changes what is served
+VERSION = "web-5"          # change it with anything that changes what is served
 CLIMATE_DAY = 325          # the season every forecast is made for (late November), whatever the date: values never move with the day
 HELD_OUT_FROM = 1000       # seeds from here on draw the held-out variants
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -194,8 +204,9 @@ def search_rule(fx, query):
     return None
 
 
-def search(fx, query, seed=1):
-    """The answer to a search, as the search service gives it."""
+def search(fx, query, seed=1, summary=True):
+    """The answer to a search, as Tavily gives it (the other shapes are made from it: SEARCH_SHAPES). Without
+    `summary` (a service that gives none) the summary is left out and the facts come first, the same draws made."""
     rnd = rng(seed, "search", fx.get("name", ""), query.lower())
     base = {"query": query, "follow_up_questions": None, "answer": "", "images": [], "results": [],
             "response_time": round(0.6 + rnd.random(), 2), "request_id": "%032x" % rnd.getrandbits(128)}
@@ -214,7 +225,8 @@ def search(fx, query, seed=1):
     answers = rule.get("answer_held_out") if held_out(seed) else rule.get("answer")
     if not answers:
         raise KeyError("search rule %s: no %s wording" % (rule["id"], "held-out" if held_out(seed) else "everyday"))
-    base["answer"] = "" if rnd.random() < rule.get("no_answer", 0.15) else fill(rnd.choice(answers), values)
+    answer = "" if rnd.random() < rule.get("no_answer", 0.15) else fill(rnd.choice(answers), values)
+    base["answer"] = answer if summary else ""
     pool = rule["results"]
     others = rnd.sample(pool[1:], rnd.randint(min(len(pool) - 1, rule.get("min_results", 1) - 1), len(pool) - 1))
     chosen = [pool[0]] + others
@@ -225,6 +237,139 @@ def search(fx, query, seed=1):
         chosen.insert(0, pool[0])
     base["results"] = [_result(r, rnd, values, 0.92 - i * 0.08 - rnd.random() * 0.05) for i, r in enumerate(chosen)]
     return base
+
+
+# ---------------------------------------------------------------- the search services' shapes
+# One entry per search service the app knows (src/agent/search/providers/registry.cpp), in its order; tests/sim/tools_cli.py
+# asks every registered service through the app, and finds each one here. An entry says where the service is asked
+# ("host", "path", "method"), whether a request carried the stand-in's key ("key"), what was searched for ("query"),
+# how an answer is wrapped ("wrap", from search(): the same facts in every shape) with the headers a success carries
+# ("headers"), and what the service sends on a bad day ("bad"): "refused" (the key; also any key but the stand-in's),
+# "spent" (the allowance), "busy" (too many at once), "down" (503, or a fixture's "fail" status), "outage" (a proxy's
+# HTML page) and "hostile" (what no service should send: control characters, fields far too long or of the wrong type,
+# addresses that are not web pages). A fixture's "services" names a mode per service ("*" for every one): one of
+# those, or "slow" (answers after SLOW_S), "empty" (answers with nothing found) or "left_0" (answers, saying that
+# nothing is left of the month's allowance).
+SLOW_S = 6.5     # "slow": past the 5 s the app gives the first of several services, inside the 8 s of a whole search
+OUTAGE_PAGE = "<html><head><title>502 Bad Gateway</title></head><body><h1>502 Bad Gateway</h1></body></html>"
+
+
+def hostile_hits(title, url, text):
+    """Results no service should send: control characters and an oversized title, an address that is not a web page,
+    text far too long, every field of the wrong type, an entry that is not an object, and more results than are read."""
+    return [{title: "\x1b[2J\x07Bell and escape " + "T" * 1000, url: "javascript:alert(1)", text: "C" * 5000},
+            {title: 12345, url: ["not", "an", "address"], text: {"nested": True}},
+            "not an object"] + [{title: "Filler %d" % i, url: "https://example.com/filler/%d" % i, text: "Filler text."} for i in range(12)]
+
+
+def tavily_bad(mode, status=None):
+    """What Tavily sends on a bad day (MODE as in SEARCH_SHAPES): (status, body, headers)."""
+    words = {"refused": (401, "Unauthorized: missing or invalid API key (the stand-in web takes only the key 'stand-in')"),
+             "spent": (432, "This request exceeds your plan's set usage limit. Please upgrade your plan."),
+             "busy": (429, "Rate limit exceeded. Please slow down your requests."),
+             "down": (status or 503, "The service is temporarily unavailable.")}
+    if mode == "outage": return 502, OUTAGE_PAGE, {}
+    if mode == "hostile":
+        return 200, {"query": "", "answer": "\x1b[31mA summary that never ends. " * 800, "images": [],
+                     "results": hostile_hits("title", "url", "content"), "response_time": 0.4}, {}
+    code, text = words[mode]
+    return code, {"detail": {"error": text}}, {}
+
+
+def month_left():
+    """Seconds from the run's date to the first of the next month: when a monthly allowance comes back."""
+    d = today()
+    first = datetime.date(d.year + d.month // 12, d.month % 12 + 1, 1)
+    return (first - d).days * 86400
+
+
+def brave_headers(left=812):
+    """What Brave says of its limits on every reply: per second, then per month (left, and seconds to the reset)."""
+    return {"X-RateLimit-Limit": "50, 1000", "X-RateLimit-Policy": "50;w=1, 1000;w=2592000",
+            "X-RateLimit-Remaining": "49, %d" % left, "X-RateLimit-Reset": "1, %d" % month_left()}
+
+
+def brave_error(status, code, detail, meta):
+    return {"type": "ErrorResponse", "error": {"id": "c1f8a0d2-3b4e-4f5a-9c6d-7e8f9a0b1c2d", "status": status, "code": code,
+                                               "detail": detail, "meta": meta}, "time": 1763900000}
+
+
+def brave_bad(mode, status=None):
+    """What Brave sends on a bad day (MODE as in SEARCH_SHAPES): (status, body, headers)."""
+    limits = {"plan": "Free", "rate_limit": 50, "rate_current": 1, "quota_limit": 1000, "quota_current": 1000, "component": "rate_limiter"}
+    if mode == "refused":   # 422 as one user reported it (a guide says 401; Brave's own pages do not say)
+        return 422, brave_error(422, "SUBSCRIPTION_TOKEN_INVALID", "The provided subscription token is invalid. (The stand-in web takes "
+                                "only the key 'stand-in'.)", {"component": "authentication"}), {}
+    if mode == "spent":
+        return 429, brave_error(429, "QUOTA_LIMITED", "Request quota limit exceeded for plan.", limits), brave_headers(0)
+    if mode == "busy":
+        return 429, brave_error(429, "RATE_LIMITED", "Request rate limit exceeded for plan.", dict(limits, rate_current=50, quota_current=188)), \
+            dict(brave_headers(), **{"X-RateLimit-Remaining": "0, 812"})
+    if mode == "down":
+        return status or 503, brave_error(status or 503, "SERVICE_UNAVAILABLE", "The service is temporarily unavailable.", {}), {}
+    if mode == "outage": return 502, OUTAGE_PAGE, {}
+    if mode == "hostile":
+        return 200, {"type": "search", "web": {"type": "search", "results": hostile_hits("title", "url", "description") + [
+            {"title": "Tags", "url": "https://example.com/tags", "description": "<script>alert(1)</script>" + "<strong>D</strong>" * 3000}]}}, {}
+    raise KeyError("no Brave reply for the mode %r" % mode)
+
+
+def decorated(text, query):
+    """A description as Brave writes it: HTML-escaped, with the words searched for in <strong>."""
+    words = sorted({w for w in re.findall(r"[a-z0-9]{4,}", query.lower())}, key=len, reverse=True)
+    out = html.escape(text, quote=True)
+    if words:
+        out = re.sub(r"\b(%s)\b" % "|".join(map(re.escape, words)), r"<strong>\1</strong>", out, flags=re.I)
+    return out
+
+
+def brave_wrap(found, query):
+    """A search's answer in Brave's shape: its web results, each with a description, and no summary ("web" left out
+    when nothing was found, as Brave does)."""
+    hits = []
+    for r in found["results"]:
+        u = urllib.parse.urlsplit(r["url"])
+        hits.append({"title": r["title"], "url": r["url"], "is_source_local": False, "is_source_both": False,
+                     "description": decorated(r["content"], query), "language": "en", "family_friendly": True,
+                     "type": "search_result", "subtype": "generic", "is_live": False,
+                     "meta_url": {"scheme": u.scheme, "netloc": u.netloc, "hostname": u.hostname, "path": u.path}})
+    out = {"query": {"original": query, "show_strict_warning": False, "is_navigational": False, "spellcheck_off": True,
+                     "country": "us", "bad_results": False, "should_fallback": False, "more_results_available": bool(hits)},
+           "mixed": {"type": "mixed", "main": [{"type": "web", "index": i, "all": False} for i in range(len(hits))], "top": [], "side": []},
+           "type": "search"}
+    if hits:
+        out["web"] = {"type": "search", "results": hits, "family_friendly": True}
+    return out
+
+
+SEARCH_SHAPES = {
+    "tavily": {"host": "api.tavily.com", "path": "/search", "method": "POST", "summary": True,
+               "key": lambda headers: headers.get("Authorization", "") == "Bearer " + SEARCH_KEY,
+               "query": lambda q, body: str(json.loads(body or b"{}").get("query", "")),
+               "wrap": lambda found, query: found, "headers": lambda left=None: {}, "bad": tavily_bad},
+    "brave": {"host": "api.search.brave.com", "path": "/res/v1/web/search", "method": "GET", "summary": False,
+              "key": lambda headers: headers.get("X-Subscription-Token", "") == SEARCH_KEY,
+              "query": lambda q, body: (q.get("q") or [""])[0],
+              "wrap": brave_wrap, "headers": brave_headers, "bad": brave_bad},
+}
+
+
+def search_shape(host, path, method):
+    for name, shape in SEARCH_SHAPES.items():
+        if host == shape["host"] and path == shape["path"] and method == shape["method"]:
+            return name, shape
+    return None, None
+
+
+def search_reply(fx, name, shape, query, seed):
+    """What service NAME answers to QUERY in fixture FX: (status, body, headers, seconds to wait first)."""
+    modes = fx.get("services", {})
+    mode = modes.get(name) or modes.get("*") or ("down" if "search" in fx.get("fail", {}) else "")
+    if mode not in ("", "slow", "empty", "left_0"):
+        return shape["bad"](mode, fx.get("fail", {}).get("search")) + (0,)
+    found = search(dict(fx, search_mode="empty") if mode == "empty" else fx, query, seed, summary=shape["summary"])
+    headers = shape["headers"](0) if mode == "left_0" else shape["headers"]()
+    return 200, shape["wrap"](found, query), headers, SLOW_S if mode == "slow" else 0
 
 
 # ---------------------------------------------------------------- places
@@ -437,6 +582,17 @@ FIXTURES = {
     "search_conflict": {"search": RULE_SETS["conflict"] + RULES},
     "search_stale": {"search": RULE_SETS["stale"] + RULES},
     "search_long": {"search": RULE_SETS["long"] + RULES},
+    "search_hostile": {"services": {"*": "hostile"}},
+    # The failover between search services (src/agent/search/search.cpp): one service on a bad day, the others as usual.
+    "tavily_down": {"services": {"tavily": "down"}},
+    "tavily_spent": {"services": {"tavily": "spent"}},
+    "tavily_slow": {"services": {"tavily": "slow"}},
+    "tavily_empty": {"services": {"tavily": "empty"}},
+    "brave_key_refused": {"services": {"brave": "refused"}},
+    "brave_left_0": {"services": {"brave": "left_0"}},
+    "brave_spent": {"services": {"brave": "spent"}},
+    "brave_busy": {"services": {"brave": "busy"}},
+    "all_down": {"services": {"tavily": "down", "brave": "outage"}},
     "weather_error": {"fail": {"forecast": 503}},
     "weather_partial": {"forecast_mode": "partial"},
     "rates_missing": {"rates_drop": ["GBP"]},
@@ -451,13 +607,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def reply(self, status, body, what):
+    def reply(self, status, body, what, headers=None):
         data = (body if isinstance(body, str) else json.dumps(body)).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "text/html" if isinstance(body, str) else "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html" if isinstance(body, str) else "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):   # a slow answer the app no longer waited for
+            pass
         if self.log:
             with self.lock, open(self.log, "a", encoding="utf-8") as f:
                 f.write(json.dumps(dict(what, status=status)) + "\n")
@@ -487,16 +648,18 @@ class Handler(BaseHTTPRequestHandler):
         if host.startswith("query1.finance.") and path.startswith("/v8/finance/chart/"):
             status, out = chart(urllib.parse.unquote(path.rsplit("/", 1)[1]), self.seed)
             return self.reply(status, out, what)
-        if path == "/search" and body is not None:
-            # The stand-in takes only its own key: a real key sent here means a runner let one through.
-            what["key"] = "stand-in" if self.headers.get("Authorization", "") == "Bearer " + SEARCH_KEY else "other"
+        name, shape = search_shape(host, path, "GET" if body is None else "POST")
+        if shape:
+            # Each service takes only the stand-in's key, in its own way: a real key sent here means a runner let one through.
+            what.update(service=name, key="stand-in" if shape["key"](self.headers) else "other")
             if what["key"] != "stand-in":
-                return self.reply(401, {"detail": {"error": "Unauthorized: the stand-in web takes only the key 'stand-in'"}}, what)
-            if "search" in fail:
-                return self.reply(fail["search"], {"detail": {"error": "The service is temporarily unavailable."}}, what)
-            try: query = str(json.loads(body or b"{}").get("query", ""))
+                status, out, headers = shape["bad"]("refused")
+                return self.reply(status, out, what, headers)
+            try: query = shape["query"](q, body)
             except ValueError: return self.reply(400, {"detail": {"error": "bad request"}}, what)
-            return self.reply(200, search(fx, query, self.seed), what)
+            status, out, headers, wait = search_reply(fx, name, shape, query, self.seed)
+            time.sleep(wait)
+            return self.reply(status, out, what, headers)
         return self.reply(404, {"error": "the stand-in has nothing at " + url.path}, what)
 
     def do_GET(self):

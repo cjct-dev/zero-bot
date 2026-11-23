@@ -1,6 +1,7 @@
 // Web search (search.h): which service answers, and what the model reads of its answer.
 #include "agent/search/search.h"
 
+#include <mutex>
 #include <vector>
 
 #include "agent/search/provider.h"
@@ -10,6 +11,17 @@
 namespace search {
 
 namespace {
+
+// The registry: filled before the first search (the services built in, or a test's), then only read.
+std::vector<Registered> g_registry;
+std::once_flag g_builtin_once;
+bool g_skip_builtin = false;
+
+void ensure_builtin() {
+    std::call_once(g_builtin_once, [] {
+        if (!g_skip_builtin) register_builtin_providers();
+    });
+}
 
 constexpr size_t kMaxResults = 4;   // the results the model reads
 
@@ -45,6 +57,31 @@ std::string shaped(const Reply &reply) {
 }
 
 }  // namespace
+
+const std::vector<Registered> &registry() {
+    ensure_builtin();
+    return g_registry;
+}
+
+const Provider *provider_for(const std::string &kind) {
+    for (const Registered &r : registry())
+        if (kind == r.provider->kind()) return r.provider.get();
+    return nullptr;
+}
+
+void register_provider(std::unique_ptr<Provider> provider, const std::string &name) {
+    if (provider) g_registry.push_back({std::move(provider), name});
+}
+
+namespace testing {
+
+void clear_providers() {
+    g_skip_builtin = true;
+    ensure_builtin();
+    g_registry.clear();
+}
+
+}  // namespace testing
 
 Outcome outcome_of(const tools::Fetched &got, const std::string &err) {
     if (err.empty()) return Outcome::Ok;

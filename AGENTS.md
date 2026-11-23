@@ -947,8 +947,12 @@ service means, plus the service's own codes, as Tavily's 432 and 433 for a spent
 retries, waits, picks another service, counts allowance, caches, writes a file or shapes what the model
 reads: those are done once, in `search.cpp`. The settings hold only generic fields per service (kind, key,
 on or off); an entry of a kind this version does not know is kept and passed over, and every key is
-blanked from saved conversations through `Settings::secret_values()`. Test it against the stand-in web
-(`tests/mocks/fake_web.py`), never a real search, and add the service to the README.
+blanked from saved conversations through `Settings::secret_values()`. Test it against the stand-in web, never a
+real search: one entry in `SEARCH_SHAPES` in `tests/mocks/fake_web.py` (its address, how its key travels, how an answer
+is wrapped, how it refuses a key and says the allowance is spent, one hostile reply), and `tests/sim/tools_cli.py`'s
+search checks, which read the registry, run it with nothing more to write; `tests/unit/search_test.cpp` tests the layer
+with stand-in providers (`search::register_provider`). The stand-in's bytes are hashed into every live case, so a new
+shape needs a new baseline of both live sets (section 6). Add the service to the README.
 
 **A smart-home device family.** It is a driver: a class implementing `home::Driver`
 (`src/smarthome/driver.h`) in `src/smarthome/drivers/<family>.{h,cpp}`, which defines
