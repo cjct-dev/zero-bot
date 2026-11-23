@@ -25,8 +25,8 @@ const std::vector<Section> &sections(bool in_setup_guide = false);
 // What a key does on the chat screen when nothing is being typed or recorded. TAB, ESC and the
 // fn layer's control keys are handled before this is asked; a release does nothing here.
 enum class ChatKey { None, Settings, Guide, ScrollUp, ScrollDown, PageUp, PageDown, Type, DeleteTap, TypeHint,
-                     // W, E, A, S, D: what fn+W, fn+E, fn+A, fn+S and fn+D do
-                     PreviousTrack, NextTrack, Mute, VolumeDown, VolumeUp };
+                     // Q, W, E, A, S, D: what fn+Q, fn+W, fn+E, fn+A, fn+S and fn+D do
+                     PlayPause, PreviousTrack, NextTrack, Mute, VolumeDown, VolumeUp };
 ChatKey chat_key(const KeyEvent &ev);
 
 bool is_guide_key(const KeyEvent &ev);      // H or ?, pressed (in settings too, outside a text field)

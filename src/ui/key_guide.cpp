@@ -16,6 +16,7 @@ const std::vector<Section> &sections(bool in_setup_guide) {
           {"hold ESC", "leave Zero Bot"},
           {"F  X", "scroll up, down"},
           {"fn+F  fn+X", "scroll while typing"},
+          {"Q", "pause or resume music, radio"},
           {"W  E", "previous, next track or station"},
           {"A", "mute or unmute"},
           {"S  D", "volume down, up"},
@@ -83,8 +84,9 @@ ChatKey chat_key(const KeyEvent &ev) {
         case Key::Char:
             if (ev.text == "f" || ev.text == "F") return ChatKey::ScrollUp;
             if (ev.text == "x" || ev.text == "X") return ChatKey::ScrollDown;
-            // W, E, A, S and D do what they do with fn (the media and volume keys), so music needs no
-            // fn either. Volume repeats while held, as fn+S and fn+D do; the others act once a press.
+            // Q, W, E, A, S and D do what they do with fn (the media and volume keys), so music needs
+            // no fn either. Volume repeats while held, as fn+S and fn+D do; the others act once a press.
+            if (ev.text == "q" || ev.text == "Q") return press ? ChatKey::PlayPause : ChatKey::None;
             if (ev.text == "w" || ev.text == "W") return press ? ChatKey::PreviousTrack : ChatKey::None;
             if (ev.text == "e" || ev.text == "E") return press ? ChatKey::NextTrack : ChatKey::None;
             if (ev.text == "a" || ev.text == "A") return press ? ChatKey::Mute : ChatKey::None;

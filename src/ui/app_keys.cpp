@@ -278,10 +278,25 @@ void App::typing_key(const KeyEvent &ev) {
     }
 }
 
+// The fn layer's key that a plain Q, W, E, A, S or D stands for on the chat screen.
+static Key fn_layer_key(keyguide::ChatKey k) {
+    using keyguide::ChatKey;
+    switch (k) {
+        case ChatKey::PlayPause: return Key::MediaPlay;
+        case ChatKey::PreviousTrack: return Key::MediaPrevious;
+        case ChatKey::NextTrack: return Key::MediaNext;
+        case ChatKey::Mute: return Key::Mute;
+        case ChatKey::VolumeDown: return Key::VolumeDown;
+        case ChatKey::VolumeUp: return Key::VolumeUp;
+        default: return Key::None;
+    }
+}
+
 // The chat screen's own keys (keyguide::chat_key says which is which).
 void App::chat_screen_key(const KeyEvent &ev, unsigned long now) {
     using keyguide::ChatKey;
-    switch (keyguide::chat_key(ev)) {
+    const ChatKey k = keyguide::chat_key(ev);
+    switch (k) {
         // Two taps of the delete key (not while typing, where it deletes text) start a new conversation.
         case ChatKey::DeleteTap:
             if (last_delete && now - last_delete < kDoubleTapMs) { last_delete = 0; new_conversation(); }
@@ -300,15 +315,12 @@ void App::chat_screen_key(const KeyEvent &ev, unsigned long now) {
         case ChatKey::PageUp: chat.scroll(ChatView::kPageScroll); break;
         case ChatKey::PageDown: chat.scroll(-ChatView::kPageScroll); break;
         case ChatKey::TypeHint: show_level("Press ENTER to type"); break;
-        // W, E, A, S, D: the fn layer's media and volume keys, without fn.
-        case ChatKey::PreviousTrack: case ChatKey::NextTrack: case ChatKey::Mute:
+        // Q, W, E, A, S, D: the fn layer's media and volume keys, without fn.
+        case ChatKey::PlayPause: case ChatKey::PreviousTrack: case ChatKey::NextTrack: case ChatKey::Mute:
         case ChatKey::VolumeDown: case ChatKey::VolumeUp: {
-            const ChatKey k = keyguide::chat_key(ev);
             KeyEvent fn = ev;
             fn.text.clear();
-            fn.key = k == ChatKey::PreviousTrack ? Key::MediaPrevious : k == ChatKey::NextTrack ? Key::MediaNext
-                   : k == ChatKey::Mute          ? Key::Mute         : k == ChatKey::VolumeDown ? Key::VolumeDown
-                                                                                                : Key::VolumeUp;
+            fn.key = fn_layer_key(k);
             control_key(fn);
             break;
         }
