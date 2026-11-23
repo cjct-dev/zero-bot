@@ -235,9 +235,16 @@ void service_rows(Menu &menu, std::vector<MenuItem> &items) {
             change([&v](Settings &s) { s.api_key = v; });
         }, "Typed text is shown while you enter it. Leave blank to keep the current key.");
     }));
-    items.push_back(MenuItem::val("Web search key", [] { return S().search_key.empty() ? std::string("not set") : masked(S().search_key); }, [&menu] {
-        menu.edit_text("Web search key", "", true, [](const std::string &t) { const std::string v = util::trim(t); change([&v](Settings &s) { s.search_key = v; }); },
-                       "A Tavily API key enables the web search tool. Leave blank to turn web search off.");
+    const search::Registered &web = asked_search();
+    const std::string kind = web.provider->kind();
+    items.push_back(MenuItem::val("Web search key", [kind] {
+        const std::string key = S().search_key(kind);
+        return key.empty() ? std::string("not set") : masked(key);
+    }, [&menu, kind, name = web.name] {
+        menu.edit_text("Web search key", "", true, [kind](const std::string &t) {
+            const std::string v = util::trim(t);
+            change([&](Settings &s) { s.set_search_key(kind, v); });
+        }, "A " + name + " API key enables the web search tool. Leave blank to turn web search off.");
     }));
 
     items.push_back(MenuItem::val("Compress audio", [] { return on_off(S().compress_audio); }, nullptr,

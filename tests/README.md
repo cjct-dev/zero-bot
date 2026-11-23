@@ -62,7 +62,8 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
 - `support_test.cpp`: the helpers the drivers share (`drivers/support`): the JSON depth check and guarded parse, UTF-8
   repair and decoding, MAC digits, hex, SHA-256/512 and HMAC against FIPS 180-2 and RFC 4231, the PEM certificate read
   and its SHA-256 pin, the RAII socket.
-- `http_test.cpp`: the request options for devices, against a local peer, `http_peer.py`.
+- `http_test.cpp`: the request options for devices, and reply headers kept by name (a search service's allowance
+  left), against a local peer, `http_peer.py`.
 - `timers_test.cpp`: the timer tool, storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it
   keeps everything it writes in a temporary folder of its own, so running it by hand is safe too.
 - `key_guide_test.cpp`: what each key does on the chat screen, and that the key guide says so.
@@ -72,8 +73,9 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
 - `tools_test.cpp`: the calculator, dates and zones that do not exist, helper programs: cancelling, time limits, no
   inherited descriptors.
 - `core_test.cpp`: what every thread shares: one file saved by two threads, the settings read and changed on several
-  threads, all-day alerts when the clocks change, the store read at once while a slow write of its file is under way
-  (fsync wrapped), the main loop's sleep and what wakes it (`uiq::wait`); what an older version left behind; and the
+  threads (and their list of web search services: an older file's key, a newer version's entry kept whole,
+  `ZB_SEARCH_KEY`, every key a secret), all-day alerts when the clocks change, the store read at once while a slow
+  write of its file is under way (fsync wrapped), the main loop's sleep and what wakes it (`uiq::wait`); what an older version left behind; and the
   shared helpers: failure shape, battery, Wi-Fi list, default route, monotonic count, start of a day; numeric dates
   spelt out for the model (`util::spell_numeric_dates`) and dates typed in the calendar editor (`util::parse_typed`),
   in both date orders; when a calendar event comes round again (`next_occurrence`); the breathing exercise's timing
@@ -151,8 +153,10 @@ set nothing sent or done changes (checked here). Add a scenario here with any ch
 
 **The tools.** `tools_cli.py` runs the offline tools through the `cli` build, with good, wrong and hostile arguments,
 each in a fresh state folder; it also checks the hardware guard (`ZB_EXP_NO_HARDWARE`), the stand-in web's proxy and
-redirect rules, and that a live case reaches no real web service (`no_real_web`, which imports the live sets' runner,
-`agent/agent_eval.py`, to run one).
+redirect rules, when web search is set up by the settings' list of services and searches with which key
+(`search_services`: an older file's `search_key`, `ZB_SEARCH_KEY`, an entry switched off, without a key or of a kind a
+newer version wrote), and that a live case reaches no real web service (`no_real_web`, which imports the live sets'
+runner, `agent/agent_eval.py`, to run one).
 
 **The package.** `packaging_test.py` (group `packaging`) runs `scripts/package-deb.sh` with a stand-in binary in a
 temporary copy of what it reads, reads the package back with its own ar and tar reader (files, owners, modes, control

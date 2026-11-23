@@ -2,6 +2,7 @@
 #pragma once
 #include <atomic>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,9 @@ struct Request {
     std::atomic<bool> *cancel_too = nullptr;
     // When set, body bytes are handed over as they arrive instead of being collected.
     std::function<void(const char *, size_t)> on_data;
+    // Reply headers to hand back in Response::headers, by name in any case (a search service's
+    // allowance left, say). Only the last answer's: not a redirect's or a challenge's before it.
+    std::vector<std::string> keep_headers;
 
     // For devices on the home network (smart-home drivers). A request that sets any of the TLS
     // options gets a connection of its own, never one shared with other requests.
@@ -50,6 +54,7 @@ struct Response {
     std::string error;                       // transport-level failure, empty if none
     std::string peer_cert_pem;               // with want_peer_cert: the peer's own certificate
     std::string content_type;                // the answer's Content-Type header, as sent ("" if none)
+    std::map<std::string, std::string> headers;   // those Request::keep_headers asked for, by lower-case name, trimmed
     bool sent = false;                       // a connection was made and the request went out on it
     // With digest_user: the last answer is to the request that carried the login, not the challenge
     // before it (libcurl sends the login only once challenged). A 401 then refused the login; a

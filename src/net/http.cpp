@@ -32,6 +32,16 @@ size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
     return n;
 }
 
+// A header line, kept in Response::headers when the request asked for it by name (Request::keep_headers).
+void keep_header(const Ctx &ctx, const char *line, size_t n) {
+    const char *colon = static_cast<const char *>(memchr(line, ':', n));
+    if (!colon) return;
+    const std::string name = util::lower(util::trim(std::string(line, colon)));
+    const auto &keep = ctx.req->keep_headers;
+    if (std::none_of(keep.begin(), keep.end(), [&](const std::string &k) { return util::lower(k) == name; })) return;
+    ctx.res->headers[name] = util::trim(std::string(colon + 1, line + n));
+}
+
 size_t header_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
     // Switch to "collect" mode for non-2xx responses to streaming requests.
     auto *ctx = static_cast<Ctx *>(userdata);
@@ -41,6 +51,9 @@ size_t header_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
         const int code = sp ? atoi(sp + 1) : 0;
         if (code >= 200) ++ctx->answers;
         ctx->res->status = (code >= 200 && code < 300) ? -1 : -2;
+        ctx->res->headers.clear();   // a new answer: only the last one's headers are kept
+    } else if (!ctx->req->keep_headers.empty()) {
+        keep_header(*ctx, ptr, n);
     }
     return n;
 }
