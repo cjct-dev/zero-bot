@@ -2,6 +2,7 @@
 #include "agent/search/search.h"
 
 #include <algorithm>
+#include <cctype>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -80,6 +81,7 @@ std::vector<Usable> usable(const Settings &s) {
 // ---------------------------------------------------------------- what the model reads
 constexpr size_t kMaxResults = 4;      // the results the model reads
 constexpr size_t kMaxSummary = 1000;   // bytes of the service's own summary
+const char *const kNothingFound = "{\"results\":[]}";
 
 // An address the model may pass on as a source: a web page's, cleaned and capped; "" for any other kind.
 std::string source_of(const std::string &url) {
@@ -109,6 +111,62 @@ std::string shaped(const Reply &reply) {
 // One sentence for the model, after what went wrong: what it is to do about it.
 std::string failure(const std::string &what) {
     return result::fail(what + ", so this could not be looked up. Tell the user that; if you answer from memory, say it may be out of date");
+}
+
+// ---------------------------------------------------------------- the cache
+constexpr size_t kCacheSize = 32;
+constexpr unsigned long kCacheMs = 10 * 60 * 1000UL;
+
+struct Cached {
+    std::string query;     // as cache_key gives it
+    std::string result;    // what the model read
+    unsigned long at;
+};
+std::mutex g_cache_mtx;            // guards the two below
+std::vector<Cached> g_cache;       // the oldest first
+std::string g_cache_services;      // the services set up when it was filled (their ids, in order)
+
+// A query as the cache knows it: in small letters, with its words one space apart.
+std::string cache_key(const std::string &query) {
+    std::string out;
+    bool gap = false;
+    for (const char c : util::lower(query)) {
+        if (isspace(static_cast<unsigned char>(c))) { gap = !out.empty(); continue; }
+        if (gap) out += ' ';
+        gap = false;
+        out += c;
+    }
+    return out;
+}
+
+std::string services_key(const std::vector<Usable> &services) {
+    std::string out;
+    for (const Usable &u : services) out += u.id + ";";
+    return out;
+}
+
+// The answer kept for this query, while it is fresh and the services set up are the ones that gave it.
+std::optional<std::string> cached(const std::string &query, const std::vector<Usable> &services) {
+    const std::string key = cache_key(query), set_up = services_key(services);
+    const unsigned long now = now_ms();
+    std::lock_guard<std::mutex> lk(g_cache_mtx);
+    if (g_cache_services != set_up) {
+        g_cache.clear();
+        g_cache_services = set_up;
+    }
+    g_cache.erase(std::remove_if(g_cache.begin(), g_cache.end(), [now](const Cached &c) { return now - c.at >= kCacheMs; }),
+                  g_cache.end());
+    for (const Cached &c : g_cache)
+        if (c.query == key) return c.result;
+    return std::nullopt;
+}
+
+void keep(const std::string &query, const std::string &result) {
+    std::lock_guard<std::mutex> lk(g_cache_mtx);
+    const std::string key = cache_key(query);
+    g_cache.erase(std::remove_if(g_cache.begin(), g_cache.end(), [&key](const Cached &c) { return c.query == key; }), g_cache.end());
+    if (g_cache.size() >= kCacheSize) g_cache.erase(g_cache.begin());
+    g_cache.push_back({key, result, now_ms()});
 }
 
 // ---------------------------------------------------------------- one search
@@ -197,9 +255,12 @@ void Search::note(const Usable &u, const Reply &reply) {
     }
 }
 
+// An answer is kept for the same query for ten minutes, unless it found nothing.
 std::string Search::answered(const Reply &reply) const {
     home::saw_untrusted_text();   // a web page's words may now steer the model: smart-home changes need a yes
-    return shaped(reply);
+    const std::string out = shaped(reply);
+    if (reply.outcome == Outcome::Ok && out != kNothingFound) keep(query_, out);
+    return out;
 }
 
 // One sentence when no service answered, whichever and however many were set up.
@@ -258,6 +319,10 @@ void forget() {
         g_health.clear();
     }
     {
+        std::lock_guard<std::mutex> lk(g_cache_mtx);
+        g_cache.clear();
+    }
+    {
         std::lock_guard<std::mutex> lk(g_asked_mtx);
         g_asked.clear();
     }
@@ -283,6 +348,10 @@ std::string run(const std::string &query, tools::Context &ctx) {
     const std::vector<Usable> services = usable(s);
     if (services.empty())
         return failure("web search is not set up on this device (a search key can be added in settings)");
+    if (const std::optional<std::string> kept = cached(query, services)) {
+        home::saw_untrusted_text();   // the model reads a web page's words again
+        return *kept;
+    }
     if (usage::today() >= usage::kDailyCap)
         return failure("web search has reached this device's limit of " + std::to_string(usage::kDailyCap) +
                        " searches a day (it starts again tomorrow)");

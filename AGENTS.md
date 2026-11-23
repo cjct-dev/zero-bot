@@ -54,7 +54,7 @@ src/agent/          the request loop (agent: Agent::Turn and its steps), what th
                     service implements, like smarthome/driver.h), providers/ (one file per service;
                     registry.cpp lists them), search.{h,cpp} (which service answers, from the user's
                     list in Settings::search, and the failover between them; what the model reads, the
-                    same whatever the service; how each service stands, for the
+                    same whatever the service; the ten-minute cache; how each service stands, for the
                     settings page), usage.{h,cpp} (the allowance file: searches counted per service and
                     per day, what each service said is left, spent allowances, the daily cap)
 src/core/           settings, calendar/reminder/timer/memory store, timers (the timer tool, which
@@ -128,7 +128,7 @@ one save at a time; settings.cpp), `Store::mtx_` (calendar, reminders, timers, m
 them every tick and tools change them), the smart-home file (`store.cpp`: `g_mtx` for the file,
 `g_net_mtx` for the network last seen), `control.cpp` (`g_ctl_mtx` for the questions awaiting a yes
 and the rate limit, `g_locks_mtx` and then one lock per device), web search (`search.cpp`: `g_health_mtx`,
-`g_asked_mtx`; `usage.cpp`: `g_mtx` for the allowance as read, `g_file_mtx` for one save at a
+`g_cache_mtx`, `g_asked_mtx`; `usage.cpp`: `g_mtx` for the allowance as read, `g_file_mtx` for one save at a
 time, written outside `g_mtx`, which the settings page takes too), the time zone (`g_tz_mtx` in
 util.cpp, under which `TZ` is switched), `uiq::mtx()` and curl's share locks (http.cpp). A
 descriptor or pointer read under a lock must not be used after it is let go if another thread may
@@ -256,8 +256,9 @@ Things in that loop that exist for a reason; do not remove them without re-runni
     not sent again until it is typed again, by this run or a later one (as `home::trial`; only a 401 or
     the service's own word for it counts, never a bare 403, which a firewall or proxy answers too), a spent
     allowance is passed over until it comes back (kept in `search_usage.json`, so by a later run too), two
-    failures in a row rest a service for two minutes, and the order never changes by itself. Past 100
-    searches a day (`usage::kDailyCap`) the model reads one `ERROR` until the next day.
+    failures in a row rest a service for two minutes, and the order never changes by itself. An answer is
+    kept in memory for ten minutes, so the same query again asks no service; past 100 searches a day
+    (`usage::kDailyCap`) the model reads one `ERROR` until the next day.
   - *Never silence.* "Done" in a reply after tool calls that all failed or wait for a yes is
     withdrawn once, like the guard for no tool at all (`claims_done`: an offer put as a question,
     "Shall I put it in for next year?", is not withdrawn; it is often the right answer then; the

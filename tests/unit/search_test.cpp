@@ -2,7 +2,7 @@
 // registry (the services built in, and a test's own in their place), what each outcome a service reports means
 // (outcome_of), when search counts as set up (configured), what the model reads of an answer, the same whatever
 // the service, the failover, the allowance file (counts, figures, periods, an unset clock, spent allowances after
-// a restart, the daily cap), and what the settings page says of each service. No service built into the
+// a restart, the daily cap), the cache, and what the settings page says of each service. No service built into the
 // app is ever asked: the stand-ins replace them before the first search, and every proxy variable points at a
 // closed port on this computer besides.
 // usage: search_test STATE_DIR (a folder for the settings file; made if missing)
@@ -205,7 +205,7 @@ void test_shape(Stand &alpha) {
 std::string usage_path() { return util::data_dir() + "/search_usage.json"; }
 
 // Three stand-ins, set up afresh for each case: each answers "From <kind>." unless told otherwise. Nothing is
-// remembered from the case before (as on a first start): no health, no allowance file.
+// remembered from the case before (as on a first start): no health, no cache, no allowance file.
 struct Trio {
     Stand &a, &b, &c;
     void reset(std::vector<SearchService> list) {
@@ -525,7 +525,7 @@ void test_daily_cap(Trio &t) {
     t.reset(kAB);
     search_for("kept for later");
     util::save_json(usage_path(), {{"version", 1}, {"day", util::format_time(kNov18, "%Y-%m-%d")}, {"today", usage::kDailyCap}});
-    search::testing::forget();   // as a run would find the file
+    search::testing::forget();   // as a run would find the file: the cache gone too
     std::string out = search_for("one more");
     check(t.a.asked.size() == 1 && t.b.asked.empty() &&
               out.rfind("ERROR: web search has reached this device's limit of 100 searches a day (it starts again tomorrow), so "
@@ -534,6 +534,50 @@ void test_daily_cap(Trio &t) {
     g_wall = kNov18 + 86400;
     out = search_for("one more");
     check(from(out, "alpha"), "the next day, search works again");
+}
+
+// ---------------------------------------------------------------- the cache
+void test_cache(Trio &t) {
+    t.reset(kAB);
+    const std::string first = search_for("Louvre  opening hours");
+    std::string out = search_for(" louvre opening\tHOURS ");
+    check(out == first && t.a.asked.size() == 1, "the same query in other capitals and spacing is answered from the cache");
+    check(usage::today() == 1 && usage::of(kIdA).used == 1, "an answer from the cache is no search: not counted");
+    g_now += 10 * 60 * 1000;
+    search_for("louvre opening hours");
+    check(t.a.asked.size() == 2, "after ten minutes the service is asked again");
+
+    t.reset(kAB);
+    t.a.will({failure(Outcome::Failing, "HTTP 503")});
+    t.b.will({failure(Outcome::Failing, "HTTP 503")});
+    search_for("q");
+    search_for("q");
+    check(t.a.asked.size() == 2 && t.b.asked.size() == 2, "a failure is not kept");
+    t.reset({{"alpha", "key-a"}});
+    t.a.will({answer("", {})});
+    search_for("q");
+    search_for("q");
+    check(t.a.asked.size() == 2, "an answer that found nothing is not kept");
+    t.a.will({answer("", {{"", "https://example.com/", " "}})});
+    search_for("r");
+    search_for("r");
+    check(t.a.asked.size() == 4, "nor one whose results all said nothing");
+
+    t.reset(kAB);
+    search_for("q");
+    set_services({{"beta", "key-b"}, {"alpha", "key-a"}});
+    out = search_for("q");
+    check(from(out, "beta"), "the services set up changed (another order): the cache is emptied");
+    set_services({{"beta", "key-b"}, {"alpha", "key-a", false}});
+    search_for("q");
+    check(t.b.asked.size() == 2, "one switched off: emptied again");
+
+    t.reset(kAB);
+    for (int i = 0; i <= 32; ++i) search_for("query " + std::to_string(i));
+    search_for("query 1");
+    check(t.a.asked.size() == 33, "32 answers are kept: the newest");
+    search_for("query 0");
+    check(t.a.asked.size() == 34, "the oldest went first");
 }
 
 // ---------------------------------------------------------------- what the settings page says
@@ -638,6 +682,7 @@ int main(int argc, char **argv) {
     test_periods(t);
     test_spent_kept(t);
     test_daily_cap(t);
+    test_cache(t);
     test_states(t);
     test_ask_allowance(t);
 

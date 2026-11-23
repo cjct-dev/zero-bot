@@ -91,10 +91,10 @@ void register_builtin_providers();
 
 namespace testing {
 void clear_providers();   // no service at all: not even those built in, now or later
-void set_clock(unsigned long (*clock_ms)());   // the layer's milliseconds (deadlines, rests, allowances)
+void set_clock(unsigned long (*clock_ms)());   // the layer's milliseconds (deadlines, rests, allowances, the cache)
 void set_wall_clock(time_t (*clock)());        // its wall clock (the month, the day, an allowance's end)
-// Everything this run remembers of the services, as a restart forgets it: failures and rests, and the allowance file
-// as read (read again at the next use; the file itself stays).
+// Everything this run remembers of the services, as a restart forgets it: failures and rests, the cache, and the
+// allowance file as read (read again at the next use; the file itself stays).
 void forget();
 }  // namespace testing
 

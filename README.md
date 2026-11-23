@@ -171,7 +171,8 @@ What each service has been used for is counted in `~/.local/share/zero-bot/searc
 it answered this month, what the service itself last said is left (Brave says so with every answer;
 Tavily when asked from its settings page), and today's searches. Counts and dates only, never what was
 searched for. At most 100 searches are sent a day, a guard against a fault spending a month's allowance;
-past that the assistant says search is unavailable until the next day.
+past that the assistant says search is unavailable until the next day. The same question asked again
+within ten minutes is answered from memory, without a search (nothing of it is written to disk).
 
 The first time it connects, the app picks a language model, a speech-to-text and a text-to-speech
 model from the service's list, by what the list labels each model for (its `mode`): the language
@@ -509,7 +510,8 @@ devices, with or without this app.
   diagnose problems: see [Diagnostics (temporary)](#diagnostics-temporary).
 - What you say, type and photograph is sent to the AI service you configured. Web searches go to
   the search services you set up (Tavily, Brave Search; Brave keeps its query logs for up to 90 days).
-  The device keeps no record of what was searched for: the allowance file holds counts and dates.
+  The device keeps no record of what was searched for: answers are held in memory for ten minutes
+  only, and the allowance file holds counts and dates.
   Weather, currency and share-price lookups go to Open-Meteo, open.er-api.com and Yahoo Finance.
 - Python runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox with no
   network, no access to your files, a 20-second limit and a memory cap.
@@ -689,7 +691,7 @@ services. `tests/README.md` says what each test checks, and AGENTS.md section 6 
 
 ```
 src/agent/      the conversation loop and what it checks, prompt, tools (one file each in tools/), web search (search/: one
-                file per search service, the failover and the allowance), speech queue and service client
+                file per search service, the failover, the allowance and the cache), speech queue and service client
 src/core/       settings, calendar/reminder/timer/memory store, timers, music library, radio stations, utilities
 src/platform/   display, keyboard, audio, camera, infrared, battery, network status, subprocess helpers
 src/ui/         chat screen, menus, settings pages, setup guide, alarm banner, screen off, app controller, screenshots (--shots)

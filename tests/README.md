@@ -107,8 +107,9 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
   sentence when none answered; the allowance file (`usage.cpp`, on a wall clock of the test's own too): searches
   counted per service and per day, a service's figure kept with its time, no key and no query in the file (mode 0600),
   read back by a later run, another key counted afresh, the month and day rolling over, nothing rolling while the
-  clock reads 1970, a spent allowance passed over after a restart (and while the clock is not set), the daily cap; what
-  the settings page says of each
+  clock reads 1970, a spent allowance passed over after a restart (and while the clock is not set), the daily cap; the
+  cache (the same query in other capitals and spacing asks no service and counts nothing, ten minutes, 32 answers,
+  failures and empty answers not kept, emptied when the services set up change); what the settings page says of each
   service (`describe`); and asking a service what is left (`ask_allowance`: once a minute, the figure kept, nothing left
   marking it spent, a 401 marking the key refused). `run_unit.sh` builds every service in
   `src/agent/search/providers/` by glob, as it does the drivers.

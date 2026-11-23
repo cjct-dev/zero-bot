@@ -5,7 +5,7 @@
 // X-RateLimit-Reset "1, 1419704" (seconds). Its error codes come in the body: an invalid key is 422
 // SUBSCRIPTION_TOKEN_INVALID (as a user reported it; a guide says 401, which outcome_of takes too), a spent month 429
 // QUOTA_LIMITED, too many at once 429 RATE_LIMITED. Its terms allow results to be stored only transiently: nothing of a
-// reply is written anywhere (the allowance file keeps only the figures).
+// reply is written anywhere (the cache is in memory, for ten minutes; the allowance file keeps only the figures).
 #include "agent/search/provider.h"
 
 #include <algorithm>

@@ -17,9 +17,10 @@ the model the same facts as every other, and a refused key and a hostile answer 
 cleaned. search_failover: the failover between the services against the stand-in's fixtures that put one on a bad day
 (one search a run, and several in one run against a scripted model). search_allowance: the allowance file
 (search_usage.json) counts searches and keeps Brave's figure, a spent allowance is passed over by a later run, the day's
-cap stops a search before any service is asked, and zero_bot --search-status asks Tavily's GET /usage (a stand-in of
-its own) for what is left, with the key and nothing else. A tool call's arguments and a web service's answer nested
-deeper than 32 levels are not read (nested_too_deep, against a local server of its own). no_real_web runs
+cap stops a search before any service is asked, the same query again in one run is answered from the cache, and
+zero_bot --search-status asks Tavily's GET /usage (a stand-in of its own) for what is left, with the key and nothing
+else. A tool call's arguments and a web service's answer nested deeper than 32 levels are not read (nested_too_deep,
+against a local server of its own). no_real_web runs
 one case through the live sets' own runner
 (tests/agent/agent_eval.py run_case) against a scripted model (tests/mocks/fake_model.py) that calls every tool
 that reads the web, with every proxy variable pointing at a trap: no request leaves 127.x (the trap sees
@@ -619,7 +620,8 @@ def search_shapes(root):
 
 def searches_in_one_run(g, web, fixture, services, n, same=False):
     """N web searches in one run of the app (--chat, against a scripted model that searches once for each message, each
-    time in other words for the same rule of the stand-in, or with `same` in the same words), with SERVICES as the settings' list at the stand-in's FIXTURE: the services the stand-in was asked, in
+    time in other words for the same rule of the stand-in, or with `same` in the same words, which the app's cache then
+    answers), with SERVICES as the settings' list at the stand-in's FIXTURE: the services the stand-in was asked, in
     order, and the tool results."""
     write_services(g, services)
     script = g.dir + "/search-script.json"
@@ -761,7 +763,8 @@ def search_status(g, base):
 def search_allowance(root):
     """What the app keeps of each search service's allowance (src/agent/search/usage.cpp, search_usage.json): the
     searches each answered and the day's, Brave's own figure from its reply headers, counts and figures only (no key, no
-    query); a spent allowance passed over by a later run too; past the day's cap one ERROR and no service asked; and
+    query); a spent allowance passed over by a later run too; past the day's cap one ERROR and no service asked; the same
+    query again in one run answered from the cache, not counted; and
     Tavily's free GET /usage, asked only by --search-status (the settings page's button), with the key and nothing more:
     its figure kept, a 401 marking the key refused, after which it is not sent again."""
     BT = [["brave", "stand-in"], ["tavily", "stand-in"]]
@@ -792,6 +795,12 @@ def search_allowance(root):
         out, asked = search_with(g, web, "default", BT)
         check("past the day's cap: one ERROR, and no service asked", out.startswith("ERROR: web search has reached this device's "
               "limit of 100 searches a day") and not asked, (out[:200], asked))
+
+        g = State(root, "allowance-cache")
+        asked, printed = searches_in_one_run(g, web, "default", BT, 3, same=True)
+        check("the same query three times in one run: one search, the others answered from the cache",
+              asked == ["brave"] and printed.count("Opening hours | Louvre Museum") >= 3 and usage_file(g).get("today") == 1,
+              (asked, usage_file(g), printed[-300:]))
     finally:
         web.close()
 

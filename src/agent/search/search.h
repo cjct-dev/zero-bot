@@ -12,6 +12,11 @@
 // twice in a row rests for two minutes (asked only when no other can be). The order never changes by
 // itself. When no service answered, the model reads one ERROR sentence; so it does once the day's
 // searches have reached the cap (usage::kDailyCap).
+//
+// An answer is kept for ten minutes, in memory only (32 at most; Brave's terms allow its results to be
+// stored only transiently): the same query again, in other capitals or spacing, is answered from it
+// without asking a service or counting a search. Failures and answers that found nothing are not kept,
+// and a change to the services set up (one switched on or off, moved, or another key) empties it.
 #pragma once
 #include <string>
 
