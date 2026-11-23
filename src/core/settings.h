@@ -19,6 +19,10 @@ struct SearchService {
     std::string key;
     bool enabled = true;
     json more;                   // fields this version does not read, written back as they came
+    // Set when the service refused the key: a print of that key (never the key), so the key is not sent
+    // again, by this run or a later one, until it is typed again (set_search_key clears it); another key
+    // put in its place is not refused. Saved as "refused" (agent/search/search.cpp).
+    std::string refused;
 };
 
 struct Settings {
@@ -41,6 +45,7 @@ struct Settings {
     std::vector<SearchService> search;
     std::string search_key(const std::string &kind) const;   // the first entry of that kind's key, "" if none
     // Sets that key, adding an entry of the kind at the end when there is none (and the key is not empty).
+    // A key typed is a key to try: whatever the service refused before is forgotten.
     void set_search_key(const std::string &kind, const std::string &key);
 
     // Device

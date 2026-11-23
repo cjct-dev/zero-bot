@@ -94,9 +94,13 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
 - `search_test.cpp`: web search's layer (`src/agent/search/`) against stand-in services registered in place of those
   built in (`search::register_provider` after `search::testing::clear_providers`, as `smarthome_test.cpp` does with a
   fake driver; no service built in is ever asked, and every proxy variable points at a closed local port): the built-in
-  registry, what each reply means (`outcome_of`), when search counts as set up, and what the model reads of an answer
-  (the summary, four results, each part capped and the title cleaned). `run_unit.sh` builds every service in
-  `src/agent/search/providers/` by glob, as it does the drivers.
+  registry, what each reply means (`outcome_of`), when search counts as set up, what the model reads of an answer
+  (the summary, four results, each part capped, the title cleaned, only a web page's address as the source), and the
+  failover, on a clock of the test's own: the user's order, 5 s for the first of several and 8 s in all, every failure
+  moving on, a refused key never sent again (nor by a later run, until typed again), a spent allowance passed over
+  until it comes back, a rest after two failures in a row, nothing found tried once elsewhere, ESC, and one ERROR
+  sentence when none answered. `run_unit.sh` builds every service in `src/agent/search/providers/` by glob, as it does
+  the drivers.
 - `activity_test.cpp`: saved conversations: what a save holds, keys blanked out, size limits, modes, pruning, nothing
   written unless asked (diagnostic, temporary).
 - `firetv_cli.cpp`, `homekit_cli.cpp`, `hue_cli.cpp`, `kasa_cli.cpp`, `wiz_cli.cpp`, `shelly_cli.cpp`: not tests, the
@@ -153,7 +157,8 @@ several calls; its speech and transcription services can be made to fail too. It
 it sent: the held draft and second look, the claim guards (a table of phrasings that must and must not trip them),
 `say` confirmations, tool errors, steering, talk-over, the round budget and its apology, retries and service errors
 (and what a spoken request that comes to nothing hears), think markers, spelt-out dates, history trimming, smart-home
-questions, a byte-identical system prompt and the first request's size (a tripwire at 32,000 bytes, for a plain set-up
+questions, a byte-identical system prompt (also when web search's allowance runs out mid-conversation, against the
+stand-in web's `tavily_spent`: the tools unchanged too) and the first request's size (a tripwire at 32,000 bytes, for a plain set-up
 and with every tool offered: web search, ten radio stations, a home; raise it knowingly). With no `ZB_EXP_*` variable
 set nothing sent or done changes (checked here). Add a scenario here with any change to `agent.cpp` or `llm.cpp`.
 

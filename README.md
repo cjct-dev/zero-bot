@@ -153,7 +153,12 @@ create `~/.config/zero-bot/settings.json` on the device over SSH or ADB before f
 
 A web search key (see [Optional extras](#4-optional-extras)) goes in the same file as a list of search
 services, `"search": [{ "kind": "tavily", "key": "your-search-key" }]`; a `"search_key"` written by an
-older version is read as that.
+older version is read as that. With more than one service in the list, they are tried in its order
+without the assistant having to ask again: when one cannot be reached, is slow (5 seconds; a search takes
+8 at most), fails, has used up its allowance or found nothing, the next one is asked. A key a service
+refuses is not sent again, even after a restart, until it is typed again or changed (the app marks it
+`"refused"` in the file); a used-up allowance is skipped until it comes back, and a service that failed
+twice in a row is asked last for two minutes.
 
 The first time it connects, the app picks a language model, a speech-to-text and a text-to-speech
 model from the service's list, by what the list labels each model for (its `mode`): the language

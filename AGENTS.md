@@ -53,7 +53,8 @@ src/agent/          the request loop (agent: Agent::Turn and its steps), what th
                     tools share); and web search in search/: provider.h (the contract every search
                     service implements, like smarthome/driver.h), providers/ (one file per service;
                     registry.cpp lists them), search.{h,cpp} (which service answers, from the user's
-                    list in Settings::search; what the model reads, the same whatever the service)
+                    list in Settings::search, and the failover between them; what the model reads, the
+                    same whatever the service)
 src/core/           settings, calendar/reminder/timer/memory store, timers (the timer tool, which
                     timer words mean, the alarm's logic), music library, radio (the user's station
                     file, the radio tool, the check of a stream), breathing timing,
@@ -242,7 +243,13 @@ Things in that loop that exist for a reason; do not remove them without re-runni
     arguments, "say" aside): the model is told it already failed. What the user says next clears
     that, so "try again" works. A call refused only for what its `say` claimed, before anything was
     done (`weekday_slip`, `claims_new`: `Context::say_refused`), is not remembered: it may come again
-    with the say put right, or after the step it lacked.
+    with the say put right, or after the step it lacked. Web search fails over by itself, never back
+    through the model (`search.cpp`): the next service of the user's list is asked at once, inside 8 s
+    for the whole search (the first of several gets 5 and is sent once), and the model reads one
+    `ERROR` only when none answered; a key a service refused is marked beside it in the settings and
+    not sent again until it is typed again, by this run or a later one (as `home::trial`), a spent
+    allowance is passed over until it comes back, two failures in a row rest a service for two
+    minutes, and the order never changes by itself.
   - *Never silence.* "Done" in a reply after tool calls that all failed or wait for a yes is
     withdrawn once, like the guard for no tool at all (`claims_done`: an offer put as a question,
     "Shall I put it in for next year?", is not withdrawn; it is often the right answer then; the
@@ -943,10 +950,12 @@ capped) are the same whichever service answers, so a new service changes nothing
 words. A provider builds its request, sends it with `fetch_json(experiment::web(address), ..., how, &got)`
 (the deadline and attempts are the layer's, in `how`; the provider adds its headers and body), maps the
 answer onto `Reply` (summary, hits) and says what it meant as an `Outcome` (`outcome_of` for what any HTTP
-service means, plus the service's own codes, as Tavily's 432 and 433 for a spent allowance). It never
+service means, plus the service's own codes, as Tavily's 432 and 433 for a spent allowance), with what the service
+says of its allowance (`none_left`, `reset_s`): the layer acts on them (a refused key is never sent again, a spent
+allowance is passed over until it comes back), so a refusal must never be reported as a mere failure. It never
 retries, waits, picks another service, counts allowance, caches, writes a file or shapes what the model
 reads: those are done once, in `search.cpp`. The settings hold only generic fields per service (kind, key,
-on or off); an entry of a kind this version does not know is kept and passed over, and every key is
+on or off, and the refusal's mark); an entry of a kind this version does not know is kept and passed over, and every key is
 blanked from saved conversations through `Settings::secret_values()`. Test it against the stand-in web, never a
 real search: one entry in `SEARCH_SHAPES` in `tests/mocks/fake_web.py` (its address, how its key travels, how an answer
 is wrapped, how it refuses a key and says the allowance is spent, one hostile reply), and `tests/sim/tools_cli.py`'s

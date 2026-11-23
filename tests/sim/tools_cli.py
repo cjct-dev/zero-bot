@@ -612,7 +612,7 @@ def nested_too_deep(root):
             if works:
                 ok(g, "web_search", {"query": "a nested answer"}, "Words from a nested answer.", **env)
             else:
-                out = error(g, "web_search", {"query": "a nested answer"}, "unexpected reply from the service", **env)
+                out = error(g, "web_search", {"query": "a nested answer"}, "web search is not available right now", **env)
                 check("a web answer nested 33 levels is not read", "Words from" not in out, out)
     finally:
         web.close()
@@ -691,7 +691,8 @@ def guards(root):
                       len(days) == 2 and days[0].endswith("%") and days[1].endswith(tomorrow) and
                       ("not given" in out) == (fixture == "rainmissing"), days)
         del trap.seen[:]
-        error(g, "web_search", {"query": "when does the sun set"}, "HTTP 302", ZB_EXP_WEB=trap.url + "/redirect", ZB_SEARCH_KEY="stand-in")
+        error(g, "web_search", {"query": "when does the sun set"}, "web search is not available right now", ZB_EXP_WEB=trap.url + "/redirect",
+              ZB_SEARCH_KEY="stand-in")
         check("a redirect from the stand-in is not followed", len(trap.seen) == 1 and not any("/landed" in s for s in trap.seen), trap.seen)
     finally:
         trap.close()
