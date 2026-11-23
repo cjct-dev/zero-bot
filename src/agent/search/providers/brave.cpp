@@ -1,10 +1,11 @@
 // Brave Search (brave.com/search/api): GET /res/v1/web/search with the key in X-Subscription-Token; five web results,
 // each a title, an address and a description, and no summary. The descriptions are HTML: the words searched for in
-// <strong>, some characters as entities (&#x27;). Every reply says what is left of the allowance and when it comes
-// back, per second then per month: X-RateLimit-Remaining "49, 812", X-RateLimit-Reset "1, 1419704" (seconds). Its
-// error codes come in the body: an invalid key is 422 SUBSCRIPTION_TOKEN_INVALID (as a user reported it; a guide says
-// 401, which outcome_of takes too), a spent month 429 QUOTA_LIMITED, too many at once 429 RATE_LIMITED. Its terms allow
-// results to be stored only transiently: nothing of a reply is written anywhere.
+// <strong>, some characters as entities (&#x27;). Every reply says what the allowance is, what is left of it and when
+// it comes back, per second then per month: X-RateLimit-Limit "50, 1000", X-RateLimit-Remaining "49, 812",
+// X-RateLimit-Reset "1, 1419704" (seconds). Its error codes come in the body: an invalid key is 422
+// SUBSCRIPTION_TOKEN_INVALID (as a user reported it; a guide says 401, which outcome_of takes too), a spent month 429
+// QUOTA_LIMITED, too many at once 429 RATE_LIMITED. Its terms allow results to be stored only transiently: nothing of a
+// reply is written anywhere (the allowance file keeps only the figures).
 #include "agent/search/provider.h"
 
 #include <algorithm>
@@ -95,20 +96,20 @@ public:
 
     Reply run(const std::string &query, const SearchService &service, tools::Fetch how, tools::Context &ctx) const override {
         how.headers = {"Accept: application/json", "X-Subscription-Token: " + service.key};
-        how.keep_headers = {"X-RateLimit-Remaining", "X-RateLimit-Reset"};
+        how.keep_headers = {"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"};
         Reply reply;
         tools::Fetched got;
         const json j = tools::fetch_json(
             experiment::web("https://api.search.brave.com/res/v1/web/search?q=" + http::url_encode(query) + "&count=5"), reply.error,
             ctx, how, &got);
         reply.outcome = outcome_of(got, reply.error);
-        const long left = monthly(got.headers, "x-ratelimit-remaining");
+        reply.left = monthly(got.headers, "x-ratelimit-remaining");
+        reply.limit = monthly(got.headers, "x-ratelimit-limit");
         reply.reset_s = std::max(0L, monthly(got.headers, "x-ratelimit-reset"));
         const std::string code = reply.outcome == Outcome::Failing ? error_code(got.body) : "";
         if (code == "SUBSCRIPTION_TOKEN_INVALID") reply.outcome = Outcome::KeyRefused;
-        else if (code == "QUOTA_LIMITED" || (got.status == 429 && left == 0)) reply.outcome = Outcome::Spent;
+        else if (code == "QUOTA_LIMITED" || (got.status == 429 && reply.left == 0)) reply.outcome = Outcome::Spent;
         if (reply.outcome != Outcome::Ok) return reply;
-        reply.none_left = left == 0;
         const json web = j.is_object() && j.contains("web") ? j["web"] : json();
         if (web.is_object() && web.contains("results") && web["results"].is_array())
             for (const json &r : web["results"])

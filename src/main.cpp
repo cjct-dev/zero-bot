@@ -17,6 +17,8 @@
 #include "agent/experiment.h"
 #include "agent/llm.h"
 #include "agent/prompt.h"
+#include "agent/search/search.h"
+#include "agent/search/usage.h"
 #include "agent/speech.h"
 #include "agent/tools.h"
 #include "core/activity.h"
@@ -41,7 +43,7 @@ struct Args {
     std::string tool_name, tool_args = "{}";
     std::string stt_file, tts_text, tts_out, bench_wav, bench_opus, shots;
     bool chat = false, keydump = false, discover = false, home_refresh = false, show_prompt = false, show_schema = false;
-    bool version = false;
+    bool search_status = false, version = false;
 };
 
 // One option: its flag, its arguments as the usage line names them and how many must follow, what it
@@ -93,6 +95,10 @@ const Option kOptions[] = {
      }},
     {"--prompt", "", 0, "print the system prompt a request would get now", [](Args &a, char **, int &, int) { a.show_prompt = true; }},
     {"--schema", "", 0, "print the tools a request would be offered now (JSON)", [](Args &a, char **, int &, int) { a.show_schema = true; }},
+    {"--search-status", "", 0, "print how each web search service set up stands and its use this month, as the\n"
+                               "settings page shows them, asking those that can say for free what is left of\n"
+                               "their allowance (Tavily), as the page's button does",
+     [](Args &a, char **, int &, int) { a.search_status = true; }},
     {"--codec-bench", "FILE.wav FILE.opus", 2, "time compressing a recording to MP3 and decompressing an Opus reply\n"
                                                "on this machine (three runs)",
      [](Args &a, char **v, int &i, int) { a.bench_wav = v[++i]; a.bench_opus = v[++i]; }},
@@ -662,6 +668,28 @@ int show(const Args &a) {
     return 0;
 }
 
+// How each web search service of the settings' list stands (--search-status): one line each, then today's searches.
+int search_status(const Args &) {
+    const Settings before = Settings::get();
+    for (const SearchService &listed : before.search) {
+        const search::Provider *p = search::provider_for(listed.kind);
+        if (!p) continue;
+        tools::Context ctx;
+        const std::string asked = p->tells_allowance() && listed.enabled && !listed.key.empty() ? search::ask_allowance(listed.kind, ctx) : "";
+        const std::string key = listed.key;
+        SearchService e = listed;   // as it is now: asking may have marked its key refused
+        const Settings after = Settings::get();
+        for (const SearchService &now : after.search)
+            if (now.kind == listed.kind && now.key == key) e = now;
+        const search::usage::Figures f = search::usage::of(search::id_of(e));
+        printf("%s: %s; %ld this month", e.kind.c_str(), search::describe(e).c_str(), f.used);
+        if (f.left >= 0) printf("; it said %ld of %ld left", f.left, f.limit);
+        printf("%s%s\n", asked.empty() ? "" : "; ", asked.c_str());
+    }
+    printf("today: %d of %d searches\n", search::usage::today(), search::usage::kDailyCap);
+    return 0;
+}
+
 // Calls one tool directly and prints its result (--tool).
 int tool(const Args &a) {
     MusicLibrary::get().refresh(Settings::get().eff_music_dir());
@@ -680,6 +708,7 @@ const struct {
     {[](const Args &a) { return a.home_refresh; }, home_refresh},
     {[](const Args &a) { return a.discover; }, discover},
     {[](const Args &a) { return a.show_prompt || a.show_schema; }, show},
+    {[](const Args &a) { return a.search_status; }, search_status},
     {[](const Args &a) { return !a.tool_name.empty(); }, tool},
     {[](const Args &a) { return !a.ask.empty() || !a.ask_wav.empty() || a.chat; }, run_cli},
 };

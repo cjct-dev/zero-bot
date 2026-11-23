@@ -1,7 +1,8 @@
 // What the settings pages share: reading and changing the settings, a few ways of showing values,
 // slow work off the UI thread, and the pages one file opens from another. For settings_pages.cpp
 // (the top page, its sections, the status page, the key guide), settings_data.cpp (Your data),
-// settings_home.cpp (Smart home), setup_guide.cpp (the first-run guide) and models.cpp (background).
+// settings_home.cpp (Smart home), settings_search.cpp (Web search), setup_guide.cpp (the first-run guide)
+// and models.cpp (background).
 #pragma once
 #include <algorithm>
 #include <cstdio>
@@ -24,8 +25,8 @@ namespace ui {
 inline const Settings S() { return Settings::get(); }
 inline Settings change(const std::function<void(Settings &)> &fn) { return Settings::update(fn); }
 
-// The web search service whose key the settings and the setup guide ask for, one key only: the first
-// the registry lists (agent/search/providers/registry.cpp). Its kind is what Settings::search_key takes.
+// The web search service whose key the setup guide asks for, one key only: the first the registry lists
+// (agent/search/providers/registry.cpp). Its kind is what Settings::search_key takes.
 inline const search::Registered &asked_search() { return search::registry().front(); }
 
 inline std::string or_dash(const std::string &s) { return s.empty() ? "not set" : s; }
@@ -86,5 +87,7 @@ void open_remote(Menu &menu);
 void open_saved_conversations(Menu &menu);   // DIAGNOSTICS (temporary, ZB-051)
 void open_radio(Menu &menu);
 void open_smart_home(Menu &menu);       // settings_home.cpp
+void open_web_search(Menu &menu);       // settings_search.cpp
+std::string web_search_value();         // the AI service page's Web search row: the services set up, or a refused key
 
 }  // namespace ui

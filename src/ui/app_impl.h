@@ -169,10 +169,11 @@ struct App {
     void shots_timers(Shots &shots);
     void shots_sample_data(Shots &shots);
     void shots_setup(Shots &shots);
-    void shots_settings(Shots &shots);      // the top page and its sections; the next three on the way
+    void shots_settings(Shots &shots);      // the top page and its sections; the next four on the way
     void shots_data(Shots &shots);
     void shots_smart_home(Shots &shots);
     void shots_radio(Shots &shots);
+    void shots_web_search(Shots &shots);
     void shots_dark_settings(Shots &shots);
     bool diagnostics_shots(Shots &shots);   // DIAGNOSTICS (temporary)
     void shots_idle(Shots &shots);          // checked, not pictured: last

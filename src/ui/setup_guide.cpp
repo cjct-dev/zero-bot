@@ -77,7 +77,8 @@ struct Setup {
             const std::string kind = web.provider->kind();
             items.push_back(self->edit("Web search key", [kind](const Settings &s) { return s.search_key(kind); },
                                        [kind](Settings &s, const std::string &v) { s.set_search_key(kind, v); },
-                                       "A " + web.name + " API key lets the assistant search the web. Leave it out to do without.", true));
+                                       "With a key from " + web.name + " the assistant can search the web. Leave it out to do without; more "
+                                       "search services can be set up later in settings.", true));
             items.push_back(MenuItem::action("Finish", [self] { self->finish(); }));
             return items;
         };

@@ -15,7 +15,10 @@ included), and a settings file saved again keeps the list. search_shapes: every 
 src/agent/search/providers/registry.cpp) has its shape in the stand-in web, is asked there with the stand-in's key, gives
 the model the same facts as every other, and a refused key and a hostile answer come back as an ERROR or capped and
 cleaned. search_failover: the failover between the services against the stand-in's fixtures that put one on a bad day
-(one search a run, and several in one run against a scripted model). A tool call's arguments and a web service's answer nested
+(one search a run, and several in one run against a scripted model). search_allowance: the allowance file
+(search_usage.json) counts searches and keeps Brave's figure, a spent allowance is passed over by a later run, the day's
+cap stops a search before any service is asked, and zero_bot --search-status asks Tavily's GET /usage (a stand-in of
+its own) for what is left, with the key and nothing else. A tool call's arguments and a web service's answer nested
 deeper than 32 levels are not read (nested_too_deep, against a local server of its own). no_real_web runs
 one case through the live sets' own runner
 (tests/agent/agent_eval.py run_case) against a scripted model (tests/mocks/fake_model.py) that calls every tool
@@ -380,6 +383,7 @@ def run_all(root):
     search_services(root)
     search_shapes(root)
     search_failover(root)
+    search_allowance(root)
     nested_too_deep(root)
     no_real_web(root)
     web_wraps()
@@ -613,15 +617,17 @@ def search_shapes(root):
         web.close()
 
 
-def searches_in_one_run(g, web, fixture, services, n):
-    """N web searches in one run of the app (--chat, against a scripted model that searches once for each message), with
-    SERVICES as the settings' list at the stand-in's FIXTURE: the services the stand-in was asked, in order, and the
-    tool results."""
+def searches_in_one_run(g, web, fixture, services, n, same=False):
+    """N web searches in one run of the app (--chat, against a scripted model that searches once for each message, each
+    time in other words for the same rule of the stand-in, or with `same` in the same words), with SERVICES as the settings' list at the stand-in's FIXTURE: the services the stand-in was asked, in
+    order, and the tool results."""
     write_services(g, services)
     script = g.dir + "/search-script.json"
+    searches = [{"when": {"last": "user", "said": "search number %d" % i},
+                 "reply": {"calls": [{"name": "web_search", "args": {"query": SEARCHED if same else "%s (%d)" % (SEARCHED, i)}}]}}
+                for i in range(n)]
     with open(script, "w") as f:
-        json.dump({"rules": [{"when": {"last": "user"}, "reply": {"calls": [{"name": "web_search", "args": {"query": SEARCHED}}]}},
-                             {"when": {"last": "tool"}, "reply": {"text": "Done."}}], "default": {"text": "Done."}}, f)
+        json.dump({"rules": searches + [{"when": {"last": "tool"}, "reply": {"text": "Done."}}], "default": {"text": "Done."}}, f)
     model = subprocess.Popen([sys.executable, "-I", os.path.join(TESTS, "mocks", "fake_model.py"), script, g.dir + "/model.log"],
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
     try:
@@ -704,6 +710,114 @@ def search_failover(root):
               (round(took, 1), out[:200]))
     finally:
         web.close()
+
+
+class UsageServer(LocalServer):
+    """A stand-in for Tavily's GET /usage, which tests/mocks/fake_web.py does not serve (its bytes are hashed into every
+    live case): answers every request with `status` and `body` (settable), noting the request line, the key it carried
+    and the length of any body sent."""
+    def __init__(self):
+        import http.server
+        owner = self
+        self.status, self.body, self.seen = 200, "{}", []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def answer(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                if n:
+                    self.rfile.read(n)
+                owner.seen.append((self.requestline, self.headers.get("Authorization", ""), n))
+                raw = owner.body.encode()
+                self.send_response(owner.status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+            do_GET = do_POST = answer
+
+        super().__init__(H)
+
+
+# Tavily's documented example answer to GET /usage: the key has used 150 of 1,000 credits, the plan 500 of 15,000.
+TAVILY_USAGE = {"key": {"usage": 150, "limit": 1000, "search_usage": 100, "extract_usage": 25, "crawl_usage": 15, "map_usage": 7,
+                        "research_usage": 3},
+                "account": {"current_plan": "Bootstrap", "plan_usage": 500, "plan_limit": 15000, "paygo_usage": 25, "paygo_limit": 100,
+                            "search_usage": 350, "extract_usage": 75, "crawl_usage": 50, "map_usage": 15, "research_usage": 10}}
+
+
+def usage_file(g):
+    return g.file("data", "zero-bot", "search_usage.json") or {}
+
+
+def search_status(g, base):
+    p = subprocess.run([APP, "--search-status"], env=g.env(ZB_EXP_WEB=base), capture_output=True, text=True, timeout=60)
+    check("--search-status exits normally", p.returncode == 0, (p.returncode, p.stdout[-300:], p.stderr[-300:]))
+    return p.stdout
+
+
+def search_allowance(root):
+    """What the app keeps of each search service's allowance (src/agent/search/usage.cpp, search_usage.json): the
+    searches each answered and the day's, Brave's own figure from its reply headers, counts and figures only (no key, no
+    query); a spent allowance passed over by a later run too; past the day's cap one ERROR and no service asked; and
+    Tavily's free GET /usage, asked only by --search-status (the settings page's button), with the key and nothing more:
+    its figure kept, a 401 marking the key refused, after which it is not sent again."""
+    BT = [["brave", "stand-in"], ["tavily", "stand-in"]]
+    web = StandInWeb(root)
+    try:
+        g = State(root, "allowance-count")
+        for query in ("louvre opening hours on sunday", "who won the mens singles at wimbledon this year"):
+            search_with(g, web, "default", BT, query=query)
+        saved = usage_file(g)
+        brave = next((v for k, v in saved.get("services", {}).items() if k.startswith("brave:")), {})
+        check("two searches counted, for the day and for Brave, with Brave's figure (812 of 1000 left)",
+              saved.get("today") == 2 and brave.get("used") == 2 and brave.get("left") == 812 and brave.get("limit") == 1000, saved)
+        text = json.dumps(saved)
+        check("the allowance file holds no key and no query", "stand-in" not in text and "louvre" not in text and "wimbledon" not in text, text)
+        path = os.path.join(g.dir, "data", "zero-bot", "search_usage.json")
+        check("the allowance file can be read by its owner only", os.path.exists(path) and stat.S_IMODE(os.stat(path).st_mode) == 0o600)
+
+        g = State(root, "allowance-spent")
+        out, asked = search_with(g, web, "tavily_spent", BT[::-1])
+        check("tavily_spent: Tavily, then Brave answers", [a.get("service") for a in asked] == ["tavily", "brave"], asked)
+        out, asked = search_with(g, web, "default", BT[::-1])
+        check("a later run passes the spent allowance over: only Brave is asked", [a.get("service") for a in asked] == ["brave"], asked)
+
+        g = State(root, "allowance-cap")
+        os.makedirs(os.path.join(g.dir, "data", "zero-bot"), exist_ok=True)
+        with open(os.path.join(g.dir, "data", "zero-bot", "search_usage.json"), "w") as f:
+            json.dump({"version": 1, "day": time.strftime("%Y-%m-%d", time.gmtime()), "today": 100}, f)   # TZ is UTC
+        out, asked = search_with(g, web, "default", BT)
+        check("past the day's cap: one ERROR, and no service asked", out.startswith("ERROR: web search has reached this device's "
+              "limit of 100 searches a day") and not asked, (out[:200], asked))
+    finally:
+        web.close()
+
+    server = UsageServer()
+    try:
+        g = State(root, "allowance-ask")
+        write_services(g, BT)
+        server.body = json.dumps(TAVILY_USAGE)
+        out = search_status(g, server.url)
+        check("--search-status asks Tavily's GET /usage once, with the key as a bearer token and no body",
+              server.seen == [("GET /api.tavily.com/usage HTTP/1.1", "Bearer stand-in", 0)], server.seen)
+        check("what Tavily said is shown: the key's 850 of 1000 (less than the plan's)", "tavily: ready; 0 this month; it said 850 of "
+              "1000 left" in out and "brave: ready; 0 this month\n" in out and "today: 0 of 100 searches" in out, out)
+        tavily = next((v for k, v in usage_file(g).get("services", {}).items() if k.startswith("tavily:")), {})
+        check("and kept in the allowance file", tavily.get("left") == 850 and tavily.get("limit") == 1000, usage_file(g))
+        server.seen.clear()
+        server.status, server.body = 401, json.dumps({"detail": {"error": "Unauthorized: missing or invalid API key."}})
+        out = search_status(g, server.url)
+        check("a 401 from GET /usage: the key is marked refused", "tavily: key refused: type it again" in out and
+              re.fullmatch(r"[0-9a-f]{16}", saved_entry(g.file("config", "zero-bot", "settings.json") or {}, "tavily").get("refused", "")),
+              out)
+        server.seen.clear()
+        out = search_status(g, server.url)
+        check("and the refused key is not sent again", server.seen == [] and "tavily: key refused" in out, (server.seen, out))
+    finally:
+        server.close()
 
 
 def nested_too_deep(root):

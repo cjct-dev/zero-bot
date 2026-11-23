@@ -63,7 +63,7 @@ HELPERS="src/platform/power.cpp src/core/breath.cpp"
 # Web search's layer and every service built in (agent/search), with settings.cpp from DIAG and the smart-home
 # objects (the layer marks a web page's words as untrusted): providers/registry.cpp names each service's
 # make_<kind>_provider(), so a service registered there links here with nothing else to change.
-SEARCH="src/agent/search/search.cpp $(echo src/agent/search/providers/*.cpp) src/agent/tools/web.cpp src/agent/tools/common.cpp"
+SEARCH="src/agent/search/search.cpp src/agent/search/usage.cpp $(echo src/agent/search/providers/*.cpp) src/agent/tools/web.cpp src/agent/tools/common.cpp"
 
 obj_of() { echo "$OUT/$(echo "$1" | tr '/' '_' | sed 's/\.cpp$/.o/')"; }
 

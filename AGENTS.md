@@ -54,7 +54,9 @@ src/agent/          the request loop (agent: Agent::Turn and its steps), what th
                     service implements, like smarthome/driver.h), providers/ (one file per service;
                     registry.cpp lists them), search.{h,cpp} (which service answers, from the user's
                     list in Settings::search, and the failover between them; what the model reads, the
-                    same whatever the service)
+                    same whatever the service; how each service stands, for the
+                    settings page), usage.{h,cpp} (the allowance file: searches counted per service and
+                    per day, what each service said is left, spent allowances, the daily cap)
 src/core/           settings, calendar/reminder/timer/memory store, timers (the timer tool, which
                     timer words mean, the alarm's logic), music library, radio (the user's station
                     file, the radio tool, the check of a stream), breathing timing,
@@ -80,7 +82,8 @@ src/ui/             the app controller: app.cpp (wiring, the agent's events, rec
                     group of screens); chat screen (chat_view), menu system (menu); settings
                     pages: settings_pages.cpp (the top page and sections, the status page, the
                     key guide, pick_model), settings_data.cpp (Your data), settings_home.cpp
-                    (Smart home), setup_guide.cpp (the first-run guide), settings_internal.h (what
+                    (Smart home), settings_search.cpp (Web search, built from the search services'
+                    registry), setup_guide.cpp (the first-run guide), settings_internal.h (what
                     they share: S, change, background); models (the service's model list and how
                     models are chosen: without the user only one labelled "chat" becomes the
                     language model, ZB-088, the owner's rule; by hand the settings list those
@@ -124,7 +127,9 @@ Locks to know before adding shared state: the settings (`g_mtx` for the snapshot
 one save at a time; settings.cpp), `Store::mtx_` (calendar, reminders, timers, memory: the UI reads
 them every tick and tools change them), the smart-home file (`store.cpp`: `g_mtx` for the file,
 `g_net_mtx` for the network last seen), `control.cpp` (`g_ctl_mtx` for the questions awaiting a yes
-and the rate limit, `g_locks_mtx` and then one lock per device), the time zone (`g_tz_mtx` in
+and the rate limit, `g_locks_mtx` and then one lock per device), web search (`search.cpp`: `g_health_mtx`,
+`g_asked_mtx`; `usage.cpp`: `g_mtx` for the allowance as read, `g_file_mtx` for one save at a
+time, written outside `g_mtx`, which the settings page takes too), the time zone (`g_tz_mtx` in
 util.cpp, under which `TZ` is switched), `uiq::mtx()` and curl's share locks (http.cpp). A
 descriptor or pointer read under a lock must not be used after it is let go if another thread may
 close or free it meanwhile (section 8, Audio). `Store` writes no file with `Store::mtx_` held, which
@@ -137,7 +142,8 @@ State on disk (all under the user's home, mode 0600 where they hold secrets):
 `~/.config/zero-bot/settings.json`, `~/.config/zero-bot/radio.json` (the user's own stations,
 written by hand; the app ships none and never writes it), and in `~/.local/share/zero-bot/`: `calendar.json`,
 `reminders.json` (running timers too, as records with `"kind": "timer"`), `memory.json`,
-`ir_learned.json`, `music_index.json`, `smarthome.json`, and `conversations/` (saved with SPACE
+`ir_learned.json`, `music_index.json`, `smarthome.json`, `search_usage.json` (web search's counts and
+allowances: no query, no key), and `conversations/` (saved with SPACE
 twice; diagnostic, temporary, see section 7).
 
 ## 4. How a request flows
@@ -247,9 +253,11 @@ Things in that loop that exist for a reason; do not remove them without re-runni
     through the model (`search.cpp`): the next service of the user's list is asked at once, inside 8 s
     for the whole search (the first of several gets 5 and is sent once), and the model reads one
     `ERROR` only when none answered; a key a service refused is marked beside it in the settings and
-    not sent again until it is typed again, by this run or a later one (as `home::trial`), a spent
-    allowance is passed over until it comes back, two failures in a row rest a service for two
-    minutes, and the order never changes by itself.
+    not sent again until it is typed again, by this run or a later one (as `home::trial`; only a 401 or
+    the service's own word for it counts, never a bare 403, which a firewall or proxy answers too), a spent
+    allowance is passed over until it comes back (kept in `search_usage.json`, so by a later run too), two
+    failures in a row rest a service for two minutes, and the order never changes by itself. Past 100
+    searches a day (`usage::kDailyCap`) the model reads one `ERROR` until the next day.
   - *Never silence.* "Done" in a reply after tool calls that all failed or wait for a yes is
     withdrawn once, like the guard for no tool at all (`claims_done`: an offer put as a question,
     "Shall I put it in for next year?", is not withdrawn; it is often the right answer then; the
@@ -966,10 +974,13 @@ words. A provider builds its request, sends it with `fetch_json(experiment::web(
 answer onto `Reply` (summary, hits) and says what it meant as an `Outcome` (`outcome_of` for what any HTTP
 service means, plus the service's own codes: Tavily's 432 and 433 for a spent allowance, Brave's error code in the
 body, `Fetched::body`, and its allowance in reply headers kept through `Fetch::keep_headers`), with what the service
-says of its allowance (`none_left`, `reset_s`): the layer acts on them (a refused key is never sent again, a spent
-allowance is passed over until it comes back), so a refusal must never be reported as a mere failure. It never
-retries, waits, picks another service, counts allowance, caches, writes a file or shapes what the model
-reads: those are done once, in `search.cpp`. The settings hold only generic fields per service (kind, key,
+says of its allowance (`left` and `limit` in its own units, `reset_s`): the layer acts on them (a refused key is never
+sent again, a spent allowance is passed over until it comes back, the figure is kept for the settings page), so a
+refusal must never be reported as a mere failure. A service that can say what is left without spending any of it
+(Tavily's `GET /usage`) says so in `tells_allowance` and `allowance`, which only the settings page's button calls
+(`search::ask_allowance`, once a minute at most), never a search. It never retries, waits, picks another service,
+counts allowance, caches, writes a file or shapes what the model reads: those are done once, in `search.cpp` and
+`usage.cpp`. Its settings page needs nothing of its own: `settings_search.cpp` lists every registered service. The settings hold only generic fields per service (kind, key,
 on or off, and the refusal's mark); an entry of a kind this version does not know is kept and passed over, and every key is
 blanked from saved conversations through `Settings::secret_values()`. Test it against the stand-in web, never a
 real search: one entry in `SEARCH_SHAPES` in `tests/mocks/fake_web.py` (its address, how its key travels, how an answer

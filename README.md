@@ -152,22 +152,26 @@ create `~/.config/zero-bot/settings.json` on the device over SSH or ADB before f
 { "api_base": "https://your-service/v1", "api_key": "your-key" }
 ```
 
-A web search key (see [Optional extras](#4-optional-extras)) goes in the same file as a list of search
-services, `"search": [{ "kind": "tavily", "key": "your-search-key" }]`; a `"search_key"` written by an
-older version is read as that. The settings page has a row for the Tavily key only, so for now a Brave
-Search key is added to that list by hand, before or after Tavily's (`"enabled": false` sets one aside
-without losing its key):
+Web search keys (see [Optional extras](#4-optional-extras)) are typed in settings, under *AI service →
+Web search*, and kept in the same file as a list of search services, in the order they are asked:
 
 ```json
 "search": [{ "kind": "tavily", "key": "your-tavily-key" }, { "kind": "brave", "key": "your-brave-key" }]
 ```
 
-With more than one service in the list, they are tried in its order without the assistant having to ask
-again: when one cannot be reached, is slow (5 seconds; a search takes 8 at most), fails, has used up its
-allowance or found nothing, the next one is asked. A key a service refuses is not sent again, even after
-a restart, until it is typed again or changed (the app marks it `"refused"` in the file); a used-up
-allowance is skipped until it comes back, and a service that failed twice in a row is asked last for two
-minutes.
+A `"search_key"` written by an older version is read as one Tavily entry, and `"enabled": false` sets a
+service aside without losing its key. With more than one service set up, they are tried in that order
+without the assistant having to ask again: when one cannot be reached, is slow (5 seconds; a search takes
+8 at most), fails, has used up its allowance or found nothing, the next one is asked. A key a service
+refuses is not sent again, even after a restart, until it is typed again or changed (the app marks it
+`"refused"` in the file); a used-up allowance is skipped until it comes back, after a restart too, and a
+service that failed twice in a row is asked last for two minutes.
+
+What each service has been used for is counted in `~/.local/share/zero-bot/search_usage.json`: the searches
+it answered this month, what the service itself last said is left (Brave says so with every answer;
+Tavily when asked from its settings page), and today's searches. Counts and dates only, never what was
+searched for. At most 100 searches are sent a day, a guard against a fault spending a month's allowance;
+past that the assistant says search is unavailable until the next day.
 
 The first time it connects, the app picks a language model, a speech-to-text and a text-to-speech
 model from the service's list, by what the list labels each model for (its `mode`): the language
@@ -180,8 +184,8 @@ while, less often each time, and at once when the connection comes back.
 
 ### 4. Optional extras
 
-- **Web search:** add a Tavily key under *AI service → Web search key*. A Brave Search key, as a second
-  service or instead, goes in `settings.json` for now (see [What the AI service needs](#3-what-the-ai-service-needs)).
+- **Web search:** add a Tavily key, a Brave Search key or both under *AI service → Web search* (see
+  [What the AI service needs](#3-what-the-ai-service-needs)).
 - **Music:** copy your music into `~/Music` on the device, then choose *Music library* in
   settings to rescan. MP3 tags (title, artist, album, genre) are read automatically.
 - **Radio:** list the stations you listen to in `~/.config/zero-bot/radio.json` (see
@@ -206,7 +210,7 @@ settings from any page.
 | Assistant | Language, vision, speech-to-text and text-to-speech models; voice; spoken replies on/off; fast replies; the assistant's name |
 | Device | Volume, brightness, screen off after, microphone gain, time zone, internet via phone, use phone when offline, microphone, flip camera image, home city and country, your name, date order, units |
 | Your data | Calendar (edit, add, delete, delete all), reminders and timers (cancel one or all), memory (edit, add, delete, forget everything), TV remote, smart home (devices by room, setting up, the Tapo account), music library, radio stations (what was read from your list, play one to try it), saved conversations (how many, delete them all; see [Diagnostics (temporary)](#diagnostics-temporary)), start a new conversation |
-| AI service | Address, API key, web search key, compress audio |
+| AI service | Address, API key, web search (each service's key, on or off, the order they are asked in, how each stands: working, key refused, allowance used up until when, resting after failures; its searches this month and what it last said is left, which Tavily can be asked for; today's searches), compress audio |
 | About | Status and connection test, the setup guide again, exit to launcher |
 | Keys | Every key and what it does (as **H** shows them) |
 
@@ -505,6 +509,7 @@ devices, with or without this app.
   diagnose problems: see [Diagnostics (temporary)](#diagnostics-temporary).
 - What you say, type and photograph is sent to the AI service you configured. Web searches go to
   the search services you set up (Tavily, Brave Search; Brave keeps its query logs for up to 90 days).
+  The device keeps no record of what was searched for: the allowance file holds counts and dates.
   Weather, currency and share-price lookups go to Open-Meteo, open.er-api.com and Yahoo Finance.
 - Python runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox with no
   network, no access to your files, a 20-second limit and a memory cap.
@@ -592,6 +597,7 @@ smart-home devices. Besides those above, the options are:
 | `--talk-over MS[+LATE][:text]`, `--talk-at start\|tool\|answer` | With `--ask`: hold the microphone open for a while during the request, as **TAB** does (with `+LATE`, the words arrive that much later, as when the app first connects to the phone) |
 | `--follow-ups "a\|b\|c"` | With `--ask`: send each of these as the previous answer begins, all inside one run |
 | `--prompt`, `--schema` | Print the system prompt and the tools a request would be given right now (radio, web search and the smart home appear only once they are set up) |
+| `--search-status` | How each web search service stands and its use this month, as its settings page shows them, asking Tavily what is left (as the page's button does) |
 | `--home-refresh` | Read the smart-home devices saved for the current network |
 | `--discover` | Look for smart-home devices on this network and list them (nothing is saved) |
 | `--stt FILE.wav`, `--tts "text" OUT.raw` | Try the speech-to-text and text-to-speech models on their own |
@@ -683,7 +689,7 @@ services. `tests/README.md` says what each test checks, and AGENTS.md section 6 
 
 ```
 src/agent/      the conversation loop and what it checks, prompt, tools (one file each in tools/), web search (search/: one
-                file per search service), speech queue and service client
+                file per search service, the failover and the allowance), speech queue and service client
 src/core/       settings, calendar/reminder/timer/memory store, timers, music library, radio stations, utilities
 src/platform/   display, keyboard, audio, camera, infrared, battery, network status, subprocess helpers
 src/ui/         chat screen, menus, settings pages, setup guide, alarm banner, screen off, app controller, screenshots (--shots)

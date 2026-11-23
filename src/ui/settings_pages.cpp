@@ -1,6 +1,6 @@
 // The settings menu: the top page and its sections (Assistant, Device, Your data, AI service, About),
 // the status page and the key guide. Your data's pages are in settings_data.cpp and settings_home.cpp,
-// the first-run guide in setup_guide.cpp.
+// Web search's in settings_search.cpp, the first-run guide in setup_guide.cpp.
 #include "ui/settings_pages.h"
 #include "ui/settings_internal.h"
 
@@ -109,7 +109,7 @@ std::string section_about(const std::string &section) {
     if (section == "Assistant") return "models, voice, name";
     if (section == "Device") return "sound, screen, phone, place";
     if (section == "Your data") return "calendar, timers, smart home";
-    if (section == "AI service") return "address and keys";
+    if (section == "AI service") return "address, keys, web search";
     if (section == "About") return "status, setup guide, exit";
     return "";
 }
@@ -235,18 +235,7 @@ void service_rows(Menu &menu, std::vector<MenuItem> &items) {
             change([&v](Settings &s) { s.api_key = v; });
         }, "Typed text is shown while you enter it. Leave blank to keep the current key.");
     }));
-    const search::Registered &web = asked_search();
-    const std::string kind = web.provider->kind();
-    items.push_back(MenuItem::val("Web search key", [kind] {
-        const std::string key = S().search_key(kind);
-        return key.empty() ? std::string("not set") : masked(key);
-    }, [&menu, kind, name = web.name] {
-        menu.edit_text("Web search key", "", true, [kind](const std::string &t) {
-            const std::string v = util::trim(t);
-            change([&](Settings &s) { s.set_search_key(kind, v); });
-        }, "A " + name + " API key enables the web search tool. Leave blank to turn web search off.");
-    }));
-
+    items.push_back(MenuItem::val("Web search", [] { return web_search_value(); }, [&menu] { open_web_search(menu); }));
     items.push_back(MenuItem::val("Compress audio", [] { return on_off(S().compress_audio); }, nullptr,
                                   [](int) { change([](Settings &s) { s.compress_audio = !s.compress_audio; }); }));
 }

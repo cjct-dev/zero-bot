@@ -1,11 +1,14 @@
-// Unit tests for web search's layer (src/agent/search/search.cpp) against stand-in services: the registry
-// (the services built in, and a test's own in their place), what each outcome a service reports means
-// (outcome_of), when search counts as set up (configured), and what the model reads of an answer, the same
-// whatever the service. No service built into the app is ever asked: the stand-ins replace them before the
-// first search, and every proxy variable points at a closed port on this computer besides.
+// Unit tests for web search's layer (src/agent/search/search.cpp, usage.cpp) against stand-in services: the
+// registry (the services built in, and a test's own in their place), what each outcome a service reports means
+// (outcome_of), when search counts as set up (configured), what the model reads of an answer, the same whatever
+// the service, the failover, the allowance file (counts, figures, periods, an unset clock, spent allowances after
+// a restart, the daily cap), and what the settings page says of each service. No service built into the
+// app is ever asked: the stand-ins replace them before the first search, and every proxy variable points at a
+// closed port on this computer besides.
 // usage: search_test STATE_DIR (a folder for the settings file; made if missing)
 // Each check prints one line on failure; the exit status is non-zero when any fails.
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -17,7 +20,9 @@
 
 #include "agent/search/provider.h"
 #include "agent/search/search.h"
+#include "agent/search/usage.h"
 #include "core/settings.h"
+#include "core/util.h"
 
 namespace {
 
@@ -41,6 +46,9 @@ struct Asked {
 
 unsigned long g_now = 1000000;   // the layer's clock (search::testing::set_clock), in milliseconds
 unsigned long test_clock() { return g_now; }
+constexpr time_t kNov18 = 1795003200;   // Wednesday 18 November 2026, 12:00 in London
+time_t g_wall = kNov18;                 // its wall clock (search::testing::set_wall_clock)
+time_t test_wall() { return g_wall; }
 
 // A search service that answers what the test tells it to, and notes what it was asked.
 class Stand : public search::Provider {
@@ -53,6 +61,11 @@ public:
         if (cancel_with) *cancel_with = true;
         return replies_.empty() ? Reply() : replies_[std::min(used_++, replies_.size() - 1)];
     }
+    bool tells_allowance() const override { return tells; }
+    Reply allowance(const SearchService &, tools::Context &) const override {
+        ++allowance_asked;
+        return allowance_reply;
+    }
     void will(std::vector<Reply> replies) {   // one a search, in turn; the last again after that
         replies_ = std::move(replies);
         used_ = 0;
@@ -60,6 +73,9 @@ public:
     mutable std::vector<Asked> asked;
     unsigned long takes_ms = 0;                // how long each search takes, on the test's clock
     std::atomic<bool> *cancel_with = nullptr;  // set while it searches: the user pressed ESC
+    bool tells = false;                        // it can be asked what is left of its allowance
+    Reply allowance_reply;                     // and answers this
+    mutable int allowance_asked = 0;
 
 private:
     const char *kind_;
@@ -124,9 +140,9 @@ void test_outcomes() {
     check(of(0, false, false, false, "no internet connection") == Outcome::Unreachable, "no connection: Unreachable");
     check(of(200, true, false, false, "transfer closed") == Outcome::Unreachable, "a success cut off on the way: Unreachable");
     check(of(401, true, false, false, "HTTP 401") == Outcome::KeyRefused, "401: the key refused");
-    check(of(403, true, false, false, "HTTP 403") == Outcome::KeyRefused, "403: the key refused");
     check(of(402, true, false, false, "HTTP 402") == Outcome::Spent, "402: the allowance spent");
-    for (long status : {302L, 400L, 404L, 408L, 422L, 429L, 500L, 502L, 503L})
+    // 403 is what a firewall, a proxy or a country block answers too: a failure, not a key to stop sending.
+    for (long status : {302L, 400L, 403L, 404L, 408L, 422L, 429L, 500L, 502L, 503L})
         check(of(status, true, false, false, "HTTP " + std::to_string(status)) == Outcome::Failing,
               "HTTP " + std::to_string(status) + ": Failing");
 }
@@ -179,23 +195,30 @@ void test_shape(Stand &alpha) {
     check(out == "{\"results\":[]}", "nothing found: an empty list, not an error (" + out + ")");
 
     alpha.will({failure(Outcome::Failing, "the service answered with an error (HTTP 503)")});
-    out = search_for("louvre opening hours");
+    out = search_for("louvre closing hours");
     check(out.rfind("ERROR: web search is not available right now (every search service failed or has used its allowance), so "
                     "this could not be looked up. Tell the user that; if you answer from memory, say it may be out of date", 0) == 0,
           "a failure is one ERROR sentence, whatever the service said (" + out + ")");
 }
 
 // ---------------------------------------------------------------- failover
-// Three stand-ins, set up afresh for each case: each answers "From <kind>." unless told otherwise.
+std::string usage_path() { return util::data_dir() + "/search_usage.json"; }
+
+// Three stand-ins, set up afresh for each case: each answers "From <kind>." unless told otherwise. Nothing is
+// remembered from the case before (as on a first start): no health, no allowance file.
 struct Trio {
     Stand &a, &b, &c;
     void reset(std::vector<SearchService> list) {
-        search::testing::forget_health();
+        search::testing::forget();
+        unlink(usage_path().c_str());
+        g_wall = kNov18;
         set_services(std::move(list));
         for (Stand *s : {&a, &b, &c}) {
             s->asked.clear();
             s->will({answer("From " + std::string(s->kind()) + ".", {{"Title", "https://example.com/", "Text."}})});
             s->takes_ms = 0;
+            s->tells = false;
+            s->allowance_asked = 0;
         }
     }
 };
@@ -341,7 +364,7 @@ void test_spent(Trio &t) {
 
     t.reset(kAB);
     Reply last = answer("From alpha.", {});
-    last.none_left = true;
+    last.left = 0;
     last.reset_s = 3600;
     t.a.will({last});
     out = search_for("one");
@@ -408,6 +431,171 @@ void test_cancelled(Trio &t) {
     check(t.a.asked.size() == 3, "a cancelled search is no failure of the service: one failure since is no rest");
 }
 
+// ---------------------------------------------------------------- the allowance file
+namespace usage = search::usage;
+
+const std::string kIdA = search::id_of({"alpha", "key-a"}), kIdB = search::id_of({"beta", "key-b"});
+
+json usage_file() { return util::load_json(usage_path(), json::object()); }
+
+void test_counts(Trio &t) {
+    t.reset(kAB);
+    search_for("one");
+    search_for("two");
+    check(usage::of(kIdA).used == 2 && usage::of(kIdB).used == 0 && usage::today() == 2,
+          "two searches answered: counted for the service that answered, and for the day");
+    t.a.will({failure(Outcome::Failing, "HTTP 503")});
+    search_for("three");
+    check(usage::of(kIdA).used == 2 && usage::of(kIdB).used == 1 && usage::today() == 3,
+          "a search that failed over is one search of the day, and counts only for the service that answered");
+    Reply said = answer("From alpha.", {{"Title", "https://example.com/", "Text."}});
+    said.left = 812;
+    said.limit = 1000;
+    t.a.will({said});
+    search_for("four");
+    const usage::Figures f = usage::of(kIdA);
+    check(f.left == 812 && f.limit == 1000 && f.said_at == kNov18, "what the service said is left is kept, with when it said it");
+
+    const json file = usage_file();
+    check(util::jget(file, "today", 0) == 4 && file.contains("services") && file["services"].contains(kIdA) &&
+              util::jget(file["services"][kIdA], "used", 0) == 3 && util::jget(file["services"][kIdA], "left", 0) == 812,
+          "the counts and the figure are in the file (" + file.dump() + ")");
+    const std::string text = file.dump();
+    check(text.find("key-a") == std::string::npos && text.find("four") == std::string::npos && text.find("From") == std::string::npos,
+          "the file holds no key, no query and no result");
+    struct stat st{};
+    check(stat(usage_path().c_str(), &st) == 0 && (st.st_mode & 0777) == 0600, "the file can be read by its owner only");
+
+    search::testing::forget();   // a restart: the file is read again
+    check(usage::of(kIdA).used == 3 && usage::of(kIdA).left == 812 && usage::today() == 4, "a later run reads the counts back");
+    set_services({{"alpha", "key-a2"}, {"beta", "key-b"}});
+    search_for("five");
+    check(usage::of(search::id_of({"alpha", "key-a2"})).used == 1 && !usage_file()["services"].contains(kIdA),
+          "another key is another allowance: counted afresh, the old key's figures dropped from the file");
+}
+
+void test_periods(Trio &t) {
+    t.reset(kAB);
+    search_for("one");
+    g_wall = kNov18 + 86400;
+    check(usage::today() == 0 && usage::of(kIdA).used == 1, "a new day: the day's count starts again, the month's goes on");
+    g_wall = kNov18 + 13 * 86400;   // 1 December
+    check(usage::of(kIdA).used == 0, "a new month: the month's count starts again");
+    search_for("two");
+    g_wall = 1000;   // 1970: the clock has not been set (a board without a battery-backed clock, before its time sync)
+    search::testing::forget();
+    search_for("three");
+    check(usage::of(kIdA).used == 2 && usage::today() == 2, "the clock not set: nothing rolls over, the counts go on");
+    Reply said = answer("From alpha.", {{"Title", "https://example.com/", "Text."}});
+    said.left = 5;
+    t.a.will({said});
+    search_for("four");
+    check(usage::of(kIdA).said_at == 0 && usage::of(kIdA).left == 5, "a figure said while the clock is not set is kept undated");
+    g_wall = kNov18 + 13 * 86400 + 3600;
+    check(usage::of(kIdA).used == 3, "the clock set again in the same month: the count it held goes on");
+
+    t.reset(kAB);
+    g_wall = 1000;
+    search_for("one");
+    g_wall = kNov18;
+    check(usage::of(kIdA).used == 1 && usage::today() == 1, "counted before the clock was ever set: the first month and day it reads");
+}
+
+void test_spent_kept(Trio &t) {
+    t.reset(kAB);
+    Reply spent = failure(Outcome::Spent, "HTTP 432");
+    spent.reset_s = 3 * 86400;
+    t.a.will({spent, answer("From alpha.", {{"Title", "https://example.com/", "Text."}})});
+    search_for("one");
+    search::testing::forget();   // a restart
+    std::string out = search_for("two");
+    check(t.a.asked.size() == 1 && from(out, "beta"), "a spent allowance is passed over by a later run too (" + out + ")");
+    const time_t until = usage::of(kIdA).spent_until;
+    check(until >= kNov18 + 3 * 86400 - 1 && until <= kNov18 + 3 * 86400 + 1, "until the end the service gave");
+    search::testing::forget();
+    g_wall = 1000;   // a later run, before the clock is set
+    search_for("three");
+    check(t.a.asked.size() == 1, "while the clock is not set, the end the file holds stands");
+    g_wall = kNov18 + 3 * 86400 + 60;
+    out = search_for("four");
+    check(t.a.asked.size() == 2 && from(out, "alpha"), "once the clock says the end has passed, the service is asked again");
+}
+
+void test_daily_cap(Trio &t) {
+    t.reset(kAB);
+    search_for("kept for later");
+    util::save_json(usage_path(), {{"version", 1}, {"day", util::format_time(kNov18, "%Y-%m-%d")}, {"today", usage::kDailyCap}});
+    search::testing::forget();   // as a run would find the file
+    std::string out = search_for("one more");
+    check(t.a.asked.size() == 1 && t.b.asked.empty() &&
+              out.rfind("ERROR: web search has reached this device's limit of 100 searches a day (it starts again tomorrow), so "
+                        "this could not be looked up. Tell the user that", 0) == 0,
+          "past the day's cap: one sentence for the model, and no service is asked (" + out + ")");
+    g_wall = kNov18 + 86400;
+    out = search_for("one more");
+    check(from(out, "alpha"), "the next day, search works again");
+}
+
+// ---------------------------------------------------------------- what the settings page says
+void test_states(Trio &t) {
+    t.reset(kAB);
+    const SearchService a{"alpha", "key-a"};
+    check(search::describe(a) == "ready", "a service not asked yet in this run: ready");
+    search_for("one");
+    check(search::describe(a) == "working", "it answered: working");
+    t.a.will({failure(Outcome::Failing, "HTTP 503")});
+    search_for("two");
+    check(search::describe(a) == "failed last time", "one failure: failed last time");
+    search_for("three");
+    check(search::describe(a) == "resting after failures", "two in a row: resting after failures");
+    check(search::describe({"alpha", "key-a", false}) == "off" && search::describe({"alpha", ""}) == "no key", "off, no key");
+    SearchService marked = a;
+    marked.refused = search::key_print("key-a");
+    check(search::describe(marked) == "key refused: type it again" && search::state_of(marked) == search::State::KeyRefused,
+          "its key refused: type it again");
+    for (const long reset_s : {3 * 86400L, 2 * 3600L}) {
+        t.reset(kAB);
+        Reply spent = failure(Outcome::Spent, "HTTP 429");
+        spent.reset_s = reset_s;
+        t.a.will({spent});
+        search_for("one");
+        const std::string want = "allowance used until " + util::format_time(kNov18 + reset_s, reset_s > 86400 ? "%-d %B" : "%H:%M");
+        check(search::describe(a) == want, "spent: " + want + " (" + search::describe(a) + ")");
+    }
+}
+
+void test_ask_allowance(Trio &t) {
+    t.reset(kAB);
+    tools::Context ctx;
+    check(search::ask_allowance("alpha", ctx) == "This service says what is left only with its searches." && t.a.allowance_asked == 0,
+          "a service that cannot be asked is not");
+    t.a.tells = true;
+    t.a.allowance_reply.outcome = Outcome::Ok;
+    t.a.allowance_reply.left = 850;
+    t.a.allowance_reply.limit = 1000;
+    check(search::ask_allowance("alpha", ctx).empty() && usage::of(kIdA).left == 850 && usage::of(kIdA).limit == 1000,
+          "asked what is left: the figure is kept");
+    check(util::jget(usage_file()["services"][kIdA], "left", 0) == 850 && usage::today() == 0 && usage::of(kIdA).used == 0,
+          "in the file, and asking is no search");
+    check(search::ask_allowance("alpha", ctx).rfind("Asked a moment ago", 0) == 0 && t.a.allowance_asked == 1, "at most once a minute");
+    g_now += 61 * 1000;
+    t.a.allowance_reply.left = 0;
+    search::ask_allowance("alpha", ctx);
+    check(usage::of(kIdA).spent && t.a.allowance_asked == 2, "nothing left: the service is passed over");
+    g_now += 61 * 1000;
+    t.a.allowance_reply.left = 40;
+    search::ask_allowance("alpha", ctx);
+    check(!usage::of(kIdA).spent, "something left again (a plan changed): asked again");
+    g_now += 61 * 1000;
+    t.a.allowance_reply = failure(Outcome::KeyRefused, "HTTP 401");
+    check(search::ask_allowance("alpha", ctx).find("refused this key") != std::string::npos &&
+              Settings::get().search[0].refused == search::key_print("key-a"),
+          "a key refused when asked is marked refused, as a search's would be");
+    g_now += 61 * 1000;
+    search::ask_allowance("alpha", ctx);
+    check(t.a.allowance_asked == 4, "and not sent again");
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -428,6 +616,7 @@ int main(int argc, char **argv) {
 
     search::testing::clear_providers();
     search::testing::set_clock(test_clock);
+    search::testing::set_wall_clock(test_wall);
     auto *alpha = new Stand("alpha"), *beta = new Stand("beta"), *gamma = new Stand("gamma");
     search::register_provider(std::unique_ptr<search::Provider>(alpha), "Alpha");
     search::register_provider(std::unique_ptr<search::Provider>(beta), "Beta");
@@ -445,6 +634,12 @@ int main(int argc, char **argv) {
     test_nothing_found(t);
     test_same_shape(t);
     test_cancelled(t);
+    test_counts(t);
+    test_periods(t);
+    test_spent_kept(t);
+    test_daily_cap(t);
+    test_states(t);
+    test_ask_allowance(t);
 
     printf("search: %d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? 1 : 0;

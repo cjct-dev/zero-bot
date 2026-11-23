@@ -104,8 +104,14 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
   failover, on a clock of the test's own: the user's order, 5 s for the first of several and 8 s in all, every failure
   moving on, a refused key never sent again (nor by a later run, until typed again), a spent allowance passed over
   until it comes back, a rest after two failures in a row, nothing found tried once elsewhere, ESC, and one ERROR
-  sentence when none answered. `run_unit.sh` builds every service in `src/agent/search/providers/` by glob, as it does
-  the drivers.
+  sentence when none answered; the allowance file (`usage.cpp`, on a wall clock of the test's own too): searches
+  counted per service and per day, a service's figure kept with its time, no key and no query in the file (mode 0600),
+  read back by a later run, another key counted afresh, the month and day rolling over, nothing rolling while the
+  clock reads 1970, a spent allowance passed over after a restart (and while the clock is not set), the daily cap; what
+  the settings page says of each
+  service (`describe`); and asking a service what is left (`ask_allowance`: once a minute, the figure kept, nothing left
+  marking it spent, a 401 marking the key refused). `run_unit.sh` builds every service in
+  `src/agent/search/providers/` by glob, as it does the drivers.
 - `activity_test.cpp`: saved conversations: what a save holds, keys blanked out, size limits, modes, pruning, nothing
   written unless asked (diagnostic, temporary).
 - `firetv_cli.cpp`, `homekit_cli.cpp`, `hue_cli.cpp`, `kasa_cli.cpp`, `wiz_cli.cpp`, `shelly_cli.cpp`: not tests, the
@@ -178,7 +184,11 @@ gives the model the same facts as the others, as plain text, and that a refused 
 fixtures (`search_failover`: the order asked, a second service only after the first failed or found nothing, the
 answer that worked or one ERROR, a refused key not sent again by a later run, a spent allowance or one that said
 nothing is left passed over and two failures in a row resting a service within a run, 5 s for a slow first service
-and 8 for one alone), and that a live case reaches no real web service (`no_real_web`, which imports the live sets'
+and 8 for one alone), the allowance file (`search_allowance`: searches and Brave's figure counted in
+`search_usage.json` with no key or query in it, a spent allowance passed over by a later run, the daily cap stopping
+a search before any service is asked, and `--search-status` asking Tavily's `GET /usage` at a stand-in of its own,
+`UsageServer`, since `fake_web.py`'s bytes are hashed into every live case: once, with the key and nothing else, its
+figure kept, a 401 marking the key refused and nothing sent after it), and that a live case reaches no real web service (`no_real_web`, which imports the live sets'
 runner, `agent/agent_eval.py`, to run one).
 
 **The package.** `packaging_test.py` (group `packaging`) runs `scripts/package-deb.sh` with a stand-in binary in a
@@ -197,7 +207,8 @@ presses Up or Down as a user would), so a new settings row changes only the scre
 the script walks to fails the run until the script is given the new label. It also checks what needs the real screen
 code (a key on a dark screen only wakes it, labels fit, the status bar redraws only what changed, the two
 model-choosing rules of `ui/models.h`, where a lookup of the models sends its key, at a stand-in service on 127.0.0.1,
-when the service is asked for its models, that input waiting for the phone goes with a cancelled request, and how
+when the service is asked for its models, that a key a web search service refused shows on the AI service page and
+that Left and Right move a service in the order, that input waiting for the phone goes with a cancelled request, and how
 long the main loop sleeps: `shots_idle`). `sim/screens/shots_compare.py` renders them into a temporary folder and
 compares each with `sim/screens/golden/` (small tolerance; differences drawn to `build/shots-diff/`), with the wall
 clock pinned (`sim/screens/fixclock.c`, built with `cc` and preloaded) and stand-ins on `PATH` for the audio, volume
@@ -354,7 +365,8 @@ request, transcribed by the service), `--chat` (`/wav FILE.wav` in it is a spoke
 `--talk-at tool|answer`, from its first tool or once its answer has begun, as TAB does; with `+LATE`, the words arrive
 that long after it closes, as when the app connects to the phone), `--follow-ups "a|b|c"` (chain requests inside one
 run), `--stt FILE.wav`, `--tts "text" OUT.raw`, `--codec-bench FILE.wav FILE.opus` (time the MP3 and Opus codecs on
-this machine), `--discover` (smart-home scan), `--home-refresh` (read saved smart-home devices), `--prompt` /
+this machine), `--discover` (smart-home scan), `--home-refresh` (read saved smart-home devices), `--search-status`
+(how each web search service stands and its use, asking Tavily what is left, as its settings page's button does), `--prompt` /
 `--schema` (the system prompt and tools a request would get now), `--shots DIR` (render every screen to PNG; `sim`
 build), `--keydump`, `--version`. `--help` lists them; each is one row of `kOptions` in `main.cpp`.
 
