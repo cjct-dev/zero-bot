@@ -97,16 +97,17 @@ std::string source_of(const std::string &url) {
     return util::truncate_utf8(u, 300);
 }
 
-// What the model reads, whichever service answered: the summary when there is one, and the first results,
-// each part capped, the title cleaned of control characters and only a web page's address as the source.
+// What the model reads, whichever service answered: the summary when there is one, and the first results that say
+// anything, each part capped, the title cleaned of control characters and only a web page's address as the source.
 std::string shaped(const Reply &reply) {
     json out = json::object();
     if (!reply.summary.empty()) out["summary"] = util::truncate_utf8(reply.summary, kMaxSummary);
     json results = json::array();
     for (const Hit &h : reply.hits) {
         if (results.size() >= kMaxResults) break;
-        results.push_back({{"title", util::truncate_utf8(tools::clean_text(h.title), 200)},
-                           {"source", source_of(h.url)},
+        const std::string title = tools::clean_text(h.title);
+        if (title.empty() && util::trim(h.text).empty()) continue;
+        results.push_back({{"title", util::truncate_utf8(title, 200)}, {"source", source_of(h.url)},
                            {"text", util::truncate_utf8(h.text, 500)}});
     }
     out["results"] = results;
@@ -123,7 +124,7 @@ public:
 
 private:
     std::vector<Usable> order(const std::vector<Usable> &services);
-    tools::Fetch budget(bool another_follows) const;
+    tools::Fetch budget(size_t i, size_t count) const;
     void note(const Usable &u, const Reply &reply);
     std::string answered(const Reply &reply) const;
     std::string failed() const;
@@ -133,7 +134,6 @@ private:
     const std::string &query_;
     tools::Context &ctx_;
     const unsigned long start_;
-    int asked_ = 0;
     int refusals_ = 0;   // services passed over or failed because their key was refused
     int others_ = 0;     // and for any other reason (spent, no answer, the service's trouble)
 };
@@ -143,8 +143,7 @@ std::string Search::run(const std::vector<Usable> &services) {
     const std::vector<Usable> list = order(services);
     for (size_t i = 0; i < list.size() && left_ms() >= kLeastMs && !cancelled(); ++i) {
         const Usable &u = list[i];
-        const Reply reply = u.provider->run(query_, *u.service, budget(i + 1 < list.size()), ctx_);
-        ++asked_;
+        const Reply reply = u.provider->run(query_, *u.service, budget(i, list.size()), ctx_);
         if (cancelled()) return result::fail(reply.error.empty() ? "cancelled" : reply.error);
         note(u, reply);
         if (reply.outcome == Outcome::Ok) return answered(reply);
@@ -172,13 +171,14 @@ std::vector<Usable> Search::order(const std::vector<Usable> &services) {
     return ready;
 }
 
-// How long the next service may take: the first asked, when another could follow, 5 s of the 8; any other, what is
-// left. It is sent once when another could answer instead (a resend costs the user's wait), twice when it is the last.
-tools::Fetch Search::budget(bool another_follows) const {
+// How long the next of `count` services that may be asked may take: the first, when another could follow, 5 s of the
+// 8; any other, what is left. Each is sent once when another service could answer instead (a resend costs the user's
+// wait, and the next service is the better try); one that is the only one may be sent twice, as any read is.
+tools::Fetch Search::budget(size_t i, size_t count) const {
     tools::Fetch how;
     how.deadline_ms = left_ms();
-    if (another_follows && asked_ == 0) how.deadline_ms = std::min(how.deadline_ms, kFirstMs);
-    how.attempts = another_follows ? 1 : 2;
+    if (i == 0 && count > 1) how.deadline_ms = std::min(how.deadline_ms, kFirstMs);
+    how.attempts = count > 1 ? 1 : 2;
     return how;
 }
 

@@ -216,6 +216,13 @@ void test_order_and_deadlines(Trio &t) {
     search_for("q");
     check(t.a.asked.size() == 1 && t.a.asked[0].deadline_ms == 8000 && t.a.asked[0].attempts == 2,
           "a service alone gets the whole 8 s and may resend once");
+    t.reset(kAB);
+    t.a.will({failure(Outcome::Spent, "HTTP 432"), answer("From alpha.", {})});
+    search_for("one");
+    t.b.asked.clear();
+    search_for("two");
+    check(t.a.asked.size() == 1 && t.b.asked.size() == 1 && t.b.asked[0].deadline_ms == 8000 && t.b.asked[0].attempts == 2,
+          "the only service that may be asked (the other spent) is given the whole 8 s and may resend");
     t.reset({{"beta", "key-b"}, {"alpha", "key-a"}});
     out = search_for("q");
     check(from(out, "beta") && t.a.asked.empty(), "the user's order, not the registry's");
@@ -234,8 +241,8 @@ void test_each_failure_moves_on(Trio &t) {
         t.a.takes_ms = 5000;
         const std::string out = search_for("q");
         check(from(out, "beta"), std::string(what) + ": the next service answers (" + out + ")");
-        check(t.b.asked.size() == 1 && t.b.asked[0].deadline_ms == 3000 && t.b.asked[0].attempts == 2,
-              std::string(what) + ": the last service gets what is left of the 8 s, and may resend");
+        check(t.b.asked.size() == 1 && t.b.asked[0].deadline_ms == 3000 && t.b.asked[0].attempts == 1,
+              std::string(what) + ": the next service gets what is left of the 8 s, sent once (another was set up)");
     }
     t.reset(kAB);
     t.a.will({failure(Outcome::Slow, "timed out")});
@@ -366,7 +373,8 @@ void test_nothing_found(Trio &t) {
 }
 
 void test_same_shape(Trio &t) {
-    const Reply same = answer("A summary.", {{"T", "https://example.com/x", "Words."}, {"U", "javascript:alert(1)", "More."}});
+    const Reply same = answer("A summary.", {{"T", "https://example.com/x", "Words."}, {"", "https://example.com/y", " "},
+                                             {"U", "javascript:alert(1)", "More."}});
     t.reset({{"alpha", "key-a"}});
     t.a.will({same});
     const std::string from_a = search_for("q");
@@ -376,6 +384,8 @@ void test_same_shape(Trio &t) {
     check(from_a == from_b && from_a.find("alpha") == std::string::npos, "the model reads the same whichever service answered, and no name");
     check(from_a.find("javascript:") == std::string::npos && from_a.find("https://example.com/x") != std::string::npos,
           "only a web page's address is passed on as a source (" + from_a + ")");
+    check(from_a.find("example.com/y") == std::string::npos && from_a.find("More.") != std::string::npos,
+          "a result with neither title nor text is left out");
     t.reset({{"alpha", "key-a"}});
     t.a.will({answer(std::string(5000, 'S'), {})});
     check(search_for("q").size() < 1100, "a summary is capped");
