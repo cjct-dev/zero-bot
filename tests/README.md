@@ -168,8 +168,12 @@ redirect rules, when web search is set up by the settings' list of services and 
 (`search_services`: an older file's `search_key`, `ZB_SEARCH_KEY`, an entry switched off, without a key or of a kind a
 newer version wrote), that every search service built in (`search_shapes`, which reads
 `src/agent/search/providers/registry.cpp`) has its shape in the stand-in web, is asked there with the stand-in's key and
-gives the model the same facts as the others, and that a refused key and a hostile answer (`search_hostile`) come back
-as an ERROR or capped and cleaned, and that a live case reaches no real web service (`no_real_web`, which imports the live sets'
+gives the model the same facts as the others, as plain text, and that a refused key and a hostile answer
+(`search_hostile`) come back as an ERROR or capped and cleaned, the failover between the services against the stand-in's
+fixtures (`search_failover`: the order asked, a second service only after the first failed or found nothing, the
+answer that worked or one ERROR, a refused key not sent again by a later run, a spent allowance or one that said
+nothing is left passed over and two failures in a row resting a service within a run, 5 s for a slow first service
+and 8 for one alone), and that a live case reaches no real web service (`no_real_web`, which imports the live sets'
 runner, `agent/agent_eval.py`, to run one).
 
 **The package.** `packaging_test.py` (group `packaging`) runs `scripts/package-deb.sh` with a stand-in binary in a

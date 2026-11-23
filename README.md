@@ -39,7 +39,8 @@ is built in.
 | The device itself | "Turn your volume down to 40 percent." |
 
 Weather, currency and share prices use free public services that need no account. Web search
-needs a [Tavily](https://tavily.com) key.
+needs a key for [Tavily](https://tavily.com) or the [Brave Search API](https://brave.com/search/api/),
+or both: with two, the second answers whenever the first cannot.
 
 ## Using it
 
@@ -153,12 +154,20 @@ create `~/.config/zero-bot/settings.json` on the device over SSH or ADB before f
 
 A web search key (see [Optional extras](#4-optional-extras)) goes in the same file as a list of search
 services, `"search": [{ "kind": "tavily", "key": "your-search-key" }]`; a `"search_key"` written by an
-older version is read as that. With more than one service in the list, they are tried in its order
-without the assistant having to ask again: when one cannot be reached, is slow (5 seconds; a search takes
-8 at most), fails, has used up its allowance or found nothing, the next one is asked. A key a service
-refuses is not sent again, even after a restart, until it is typed again or changed (the app marks it
-`"refused"` in the file); a used-up allowance is skipped until it comes back, and a service that failed
-twice in a row is asked last for two minutes.
+older version is read as that. The settings page has a row for the Tavily key only, so for now a Brave
+Search key is added to that list by hand, before or after Tavily's (`"enabled": false` sets one aside
+without losing its key):
+
+```json
+"search": [{ "kind": "tavily", "key": "your-tavily-key" }, { "kind": "brave", "key": "your-brave-key" }]
+```
+
+With more than one service in the list, they are tried in its order without the assistant having to ask
+again: when one cannot be reached, is slow (5 seconds; a search takes 8 at most), fails, has used up its
+allowance or found nothing, the next one is asked. A key a service refuses is not sent again, even after
+a restart, until it is typed again or changed (the app marks it `"refused"` in the file); a used-up
+allowance is skipped until it comes back, and a service that failed twice in a row is asked last for two
+minutes.
 
 The first time it connects, the app picks a language model, a speech-to-text and a text-to-speech
 model from the service's list, by what the list labels each model for (its `mode`): the language
@@ -171,7 +180,8 @@ while, less often each time, and at once when the connection comes back.
 
 ### 4. Optional extras
 
-- **Web search:** add a Tavily key under *AI service → Web search key*.
+- **Web search:** add a Tavily key under *AI service → Web search key*. A Brave Search key, as a second
+  service or instead, goes in `settings.json` for now (see [What the AI service needs](#3-what-the-ai-service-needs)).
 - **Music:** copy your music into `~/Music` on the device, then choose *Music library* in
   settings to rescan. MP3 tags (title, artist, album, genre) are read automatically.
 - **Radio:** list the stations you listen to in `~/.config/zero-bot/radio.json` (see
@@ -494,8 +504,8 @@ devices, with or without this app.
 - A log of the tools the assistant used, and conversations you choose to save, are kept to help
   diagnose problems: see [Diagnostics (temporary)](#diagnostics-temporary).
 - What you say, type and photograph is sent to the AI service you configured. Web searches go to
-  Tavily; weather, currency and share-price lookups go to Open-Meteo, open.er-api.com and Yahoo
-  Finance.
+  the search services you set up (Tavily, Brave Search; Brave keeps its query logs for up to 90 days).
+  Weather, currency and share-price lookups go to Open-Meteo, open.er-api.com and Yahoo Finance.
 - Python runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox with no
   network, no access to your files, a 20-second limit and a memory cap.
 - Reminders and timers only fire while the app is running.
@@ -698,3 +708,6 @@ pywizlight (MIT). Their notices are in
 [licenses/THIRD-PARTY-NOTICES.md](licenses/THIRD-PARTY-NOTICES.md), and the package installs them
 with the Apache-2.0 text in `/usr/share/doc/zero-bot/`. "HomeKit" is a trademark of Apple Inc.;
 Zero Bot is not made or endorsed by Apple, Amazon or Signify (the maker of Philips Hue).
+
+Web search results come from [Tavily](https://tavily.com) and, where you set it up, are powered by
+[Brave Search](https://brave.com/search/api/).

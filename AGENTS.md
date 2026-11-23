@@ -950,7 +950,8 @@ capped) are the same whichever service answers, so a new service changes nothing
 words. A provider builds its request, sends it with `fetch_json(experiment::web(address), ..., how, &got)`
 (the deadline and attempts are the layer's, in `how`; the provider adds its headers and body), maps the
 answer onto `Reply` (summary, hits) and says what it meant as an `Outcome` (`outcome_of` for what any HTTP
-service means, plus the service's own codes, as Tavily's 432 and 433 for a spent allowance), with what the service
+service means, plus the service's own codes: Tavily's 432 and 433 for a spent allowance, Brave's error code in the
+body, `Fetched::body`, and its allowance in reply headers kept through `Fetch::keep_headers`), with what the service
 says of its allowance (`none_left`, `reset_s`): the layer acts on them (a refused key is never sent again, a spent
 allowance is passed over until it comes back), so a refusal must never be reported as a mere failure. It never
 retries, waits, picks another service, counts allowance, caches, writes a file or shapes what the model

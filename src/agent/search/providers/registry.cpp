@@ -10,6 +10,7 @@
 
 #define ZB_SEARCH_PROVIDERS(X) \
     X(tavily, "Tavily") \
+    X(brave, "Brave") \
     /* end of the list */
 
 #define ZB_DECLARE(kind, name) std::unique_ptr<search::Provider> make_##kind##_provider();

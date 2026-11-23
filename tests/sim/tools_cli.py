@@ -14,7 +14,8 @@ right key, exactly when the settings' list of services sets one up (an older fil
 included), and a settings file saved again keeps the list. search_shapes: every search service built in (read from
 src/agent/search/providers/registry.cpp) has its shape in the stand-in web, is asked there with the stand-in's key, gives
 the model the same facts as every other, and a refused key and a hostile answer come back as an ERROR or capped and
-cleaned. A tool call's arguments and a web service's answer nested
+cleaned. search_failover: the failover between the services against the stand-in's fixtures that put one on a bad day
+(one search a run, and several in one run against a scripted model). A tool call's arguments and a web service's answer nested
 deeper than 32 levels are not read (nested_too_deep, against a local server of its own). no_real_web runs
 one case through the live sets' own runner
 (tests/agent/agent_eval.py run_case) against a scripted model (tests/mocks/fake_model.py) that calls every tool
@@ -32,6 +33,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
 sys.path.insert(0, TESTS)
@@ -377,6 +379,7 @@ def run_all(root):
     guards(root)
     search_services(root)
     search_shapes(root)
+    search_failover(root)
     nested_too_deep(root)
     no_real_web(root)
     web_wraps()
@@ -538,15 +541,24 @@ class StandInWeb:
         self.proc.wait(timeout=10)
 
 
-def search_with(g, web, fixture, services, query="louvre opening hours on sunday"):
-    """One web_search through the app with SERVICES as the settings' list (each [kind, key]) at the stand-in's FIXTURE:
-    (the result, the stand-in's requests for it)."""
+SEARCHED = "louvre opening hours on sunday"   # a search.json rule's question: its facts come back from every service
+
+
+def write_services(g, services):
+    """SERVICES ([kind, key], ...) as the settings' list of search services, each entry keeping what the app saved
+    beside it (a refusal's mark)."""
     os.makedirs(g.dir + "/config/zero-bot", exist_ok=True)
     path = g.dir + "/config/zero-bot/settings.json"
     saved = json.load(open(path)) if os.path.exists(path) else {}
     saved["search"] = [dict(saved_entry(saved, kind), kind=kind, key=key) for kind, key in services]
     with open(path, "w") as f:
         json.dump(saved, f)
+
+
+def search_with(g, web, fixture, services, query=SEARCHED):
+    """One web_search through the app with SERVICES as the settings' list (each [kind, key]) at the stand-in's FIXTURE:
+    (the result, the stand-in's requests for it)."""
+    write_services(g, services)
     mark = len(web.lines())
     out = g.run("web_search", {"query": query}, ZB_EXP_WEB=web.url(fixture))
     return out, web.since(mark)
@@ -568,7 +580,7 @@ def search_shapes(root):
     check("the registry lists the services built in, Tavily first", services and services[0][0] == "tavily", services)
     web = StandInWeb(root)
     try:
-        rule = fake_web.search_rule(fake_web.FIXTURES["default"], "louvre opening hours on sunday")
+        rule = fake_web.search_rule(fake_web.FIXTURES["default"], SEARCHED)
         facts = [fake_web.fill(fake_web.shown(v)) for v in fake_web.facts(rule["id"], 1).values()]
         for kind, name in services:
             check("%s has a shape in the stand-in web" % name, kind in fake_web.SEARCH_SHAPES, sorted(fake_web.SEARCH_SHAPES))
@@ -576,6 +588,11 @@ def search_shapes(root):
             out, asked = search_with(g, web, "default", [[kind, "stand-in"]])
             check("%s is asked, once, with the stand-in's key" % name, [(a.get("service"), a.get("key")) for a in asked] == [(kind, "stand-in")], asked)
             check("%s: the answer holds the rule's facts %s" % (name, facts), all(f in out for f in facts) and not out.startswith("ERROR"), out[:400])
+            # Text as text: Brave marks the words searched for with <strong> and writes "'" as &#x27;.
+            plain = "Next year's championships begin on the last Monday of June."
+            out, asked = search_with(g, web, "default", [[kind, "stand-in"]], query="who won the mens singles at wimbledon this year")
+            check("%s: the results are plain text, as served (no markup, no entities)" % name, plain in out and
+                  not re.search(r"<strong>|&#x27;|&quot;|&amp;", out), out[:400])
             out, asked = search_with(g, web, "default", [[kind, "not-the-stand-in"]])
             check("%s: a refused key is an ERROR for the model" % name, out.startswith("ERROR") and [a.get("key") for a in asked] == ["other"],
                   (out[:200], asked))
@@ -592,6 +609,99 @@ def search_shapes(root):
                       not re.search(r"[\x00-\x1f]", h.get("title", "")), h.get("title", "")[:80])
                 check("%s: a hostile source and text are capped" % name, size(h, "source") <= 303 and size(h, "text") <= 503,
                       (size(h, "source"), size(h, "text")))
+    finally:
+        web.close()
+
+
+def searches_in_one_run(g, web, fixture, services, n):
+    """N web searches in one run of the app (--chat, against a scripted model that searches once for each message), with
+    SERVICES as the settings' list at the stand-in's FIXTURE: the services the stand-in was asked, in order, and the
+    tool results."""
+    write_services(g, services)
+    script = g.dir + "/search-script.json"
+    with open(script, "w") as f:
+        json.dump({"rules": [{"when": {"last": "user"}, "reply": {"calls": [{"name": "web_search", "args": {"query": SEARCHED}}]}},
+                             {"when": {"last": "tool"}, "reply": {"text": "Done."}}], "default": {"text": "Done."}}, f)
+    model = subprocess.Popen([sys.executable, "-I", os.path.join(TESTS, "mocks", "fake_model.py"), script, g.dir + "/model.log"],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
+    try:
+        line = model.stdout.readline().split()
+        mark = len(web.lines())
+        env = g.env(ZB_EXP_WEB=web.url(fixture), ZB_API_BASE="http://127.0.0.1:%s/v1" % line[2], ZB_API_KEY="test", ZB_FAST_MODE="0")
+        p = subprocess.run([APP, "--chat"], input="".join("search number %d\n" % i for i in range(n)), env=env,
+                           capture_output=True, text=True, timeout=60 + 10 * n)
+        return [a.get("service") for a in web.since(mark)], p.stdout
+    finally:
+        model.stdin.close()
+        model.wait(timeout=10)
+
+
+def search_failover(root):
+    """The failover between search services (src/agent/search/search.cpp), against the stand-in's fixtures that put one
+    service on a bad day: the services are asked in the user's order, the next only when the one before failed or found
+    nothing (never two paid searches otherwise), the answer the model reads is the one that worked, one ERROR sentence
+    when none did; a refused key is never sent again, not even by a later run; a spent service, or one that said nothing
+    is left, is passed over; one that failed twice in a row rests; a slow first service is given 5 s, a service alone
+    the whole 8."""
+    sys.path.insert(0, os.path.join(TESTS, "mocks"))
+    import fake_web
+    rule = fake_web.search_rule(fake_web.FIXTURES["default"], SEARCHED)
+    facts = [fake_web.shown(v) for v in fake_web.facts(rule["id"], 1).values()]
+    TB, BT = [["tavily", "stand-in"], ["brave", "stand-in"]], [["brave", "stand-in"], ["tavily", "stand-in"]]
+    web = StandInWeb(root)
+    try:
+        # One search each: (fixture, the settings' order, the services asked, whether the facts come back).
+        for fixture, order, asked_want, works in (
+                ("default", TB, ["tavily"], True), ("default", BT, ["brave"], True),
+                ("tavily_down", TB, ["tavily", "brave"], True), ("tavily_spent", TB, ["tavily", "brave"], True),
+                ("tavily_empty", TB, ["tavily", "brave"], True), ("brave_busy", BT, ["brave", "tavily"], True),
+                ("brave_spent", BT, ["brave", "tavily"], True), ("all_down", TB, ["tavily", "brave"], False)):
+            g = State(root, "failover-%s-%s" % (fixture, order[0][0]))
+            out, asked = search_with(g, web, fixture, order)
+            label = "%s, %s first" % (fixture, order[0][0])
+            check(label + ": asked " + " then ".join(asked_want), [a.get("service") for a in asked] == asked_want, asked)
+            check(label + ": a second service only after the first failed or found nothing",
+                  all(a["status"] != 200 or fixture == "tavily_empty" for a in asked[:-1]), asked)
+            check(label + ": every request carried the stand-in's key", all(a.get("key") == "stand-in" for a in asked), asked)
+            if works:
+                check(label + ": the facts come back", all(f in out for f in facts) and not out.startswith("ERROR"), out[:300])
+            else:
+                check(label + ": one sentence when none answered", out.startswith("ERROR: web search is not available right now") and
+                      out.count("ERROR") == 1, out[:300])
+
+        # A refused key: the next service answers, and the key is not sent again, by this run or a later one.
+        g = State(root, "failover-refused")
+        out, asked = search_with(g, web, "brave_key_refused", BT)
+        check("brave_key_refused: Brave, then Tavily answers", [a.get("service") for a in asked] == ["brave", "tavily"] and
+              all(f in out for f in facts), (asked, out[:200]))
+        saved = saved_entry(g.file("config", "zero-bot", "settings.json") or {}, "brave")
+        check("the refusal is kept beside the key, as a print of it (16 hex digits), never the key",
+              re.fullmatch(r"[0-9a-f]{16}", saved.get("refused", "")) is not None and "stand-in" not in saved.get("refused", ""), saved)
+        out, asked = search_with(g, web, "default", BT)
+        check("a later run does not send the refused key again", [a.get("service") for a in asked] == ["tavily"], asked)
+
+        # Several searches in one run: what the run remembers of each service.
+        for fixture, order, n, want, why in (
+                ("tavily_down", TB, 3, ["tavily", "brave", "tavily", "brave", "brave"], "two failures in a row: it rests"),
+                ("tavily_spent", TB, 2, ["tavily", "brave", "brave"], "a spent allowance: passed over"),
+                ("brave_left_0", BT, 2, ["brave", "tavily"], "an answer that says nothing is left: passed over after it"),
+                ("brave_busy", BT, 3, ["brave", "tavily", "brave", "tavily", "tavily"], "too many at once is a failure, not a spent month")):
+            g = State(root, "failover-run-%s" % fixture)
+            asked, printed = searches_in_one_run(g, web, fixture, order, n)
+            check("%s, %d searches in one run: %s" % (fixture, n, why), asked == want, (asked, printed[-300:]))
+
+        # Deadlines: a slow first service is left after 5 s and the next answers; a service alone is given 8 s.
+        g = State(root, "failover-slow")
+        started = time.monotonic()
+        out, asked = search_with(g, web, "tavily_slow", TB)
+        took = time.monotonic() - started
+        check("tavily_slow: left after 5 s, Brave answers", 4.5 <= took < fake_web.SLOW_S and all(f in out for f in facts),
+              (round(took, 1), asked, out[:200]))
+        started = time.monotonic()
+        out, asked = search_with(g, web, "tavily_slow", TB[:1])
+        took = time.monotonic() - started
+        check("tavily_slow, Tavily alone: waited for, inside the 8 s", fake_web.SLOW_S <= took < 8.5 and all(f in out for f in facts),
+              (round(took, 1), out[:200]))
     finally:
         web.close()
 
