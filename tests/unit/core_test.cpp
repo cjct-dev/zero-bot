@@ -1,6 +1,7 @@
 // Device-free tests of the core that every thread shares (ZB-037, from the external review):
-// files saved by two threads at once, the settings read and changed on several threads, and the
-// calendar's all-day alerts on the days the clocks change. Also the small shared helpers (ZB-035): the
+// files saved by two threads at once, the settings read and changed on several threads (and their list of
+// web search services, read from an older file too), and the calendar's all-day alerts on the days the
+// clocks change. Also the small shared helpers (ZB-035): the
 // failure shape, the battery, the Wi-Fi list, the default route, the monotonic count and the start of
 // a day, on known inputs; numeric dates spelt out for the model and dates typed in the calendar editor,
 // in both date orders; when a calendar event comes round again; and the breathing exercise's timing.
@@ -198,6 +199,67 @@ void test_settings_threads(const std::string &root) {
     Settings::update([](Settings &s) { s.user_name = "Not saved"; }, false);
     Settings::load();
     CHECK_EQ(Settings::get().user_name, "Saved");
+}
+
+// ---------------------------------------------------------------- web search services in the settings
+// The services are a list (agent/search/). An older file's search_key, always a Tavily key, is read as one
+// Tavily entry and saved as the list; an entry of a kind a newer version wrote is kept whole, its fields
+// included; ZB_SEARCH_KEY is the first entry's key; every key is a secret.
+void test_search_settings(const std::string &root) {
+    g_test = "web search services in the settings";
+    const std::string file = root + "/config/zero-bot/settings.json";
+    auto load = [&](const json &j) {
+        util::save_json(file, j);
+        Settings::load();
+        return Settings::get();
+    };
+    const json before = util::load_json(file, json::object());
+    Settings s = load({{"search_key", "tvly-old"}, {"api_key", "sk-1"}});
+    CHECK(s.search.size() == 1 && s.search[0].kind == "tavily" && s.search[0].key == "tvly-old" && s.search[0].enabled);
+    CHECK_EQ(s.search_key("tavily"), "tvly-old");
+    // What load() read counts as on disk already, so save() alone writes nothing: a change does.
+    const auto resave = [] { Settings::update([](Settings &) {}); };
+    resave();
+    json disk = util::load_json(file, json());
+    CHECK(!disk.contains("search_key"));
+    CHECK(disk.value("search", json()) == json::parse(R"([{"kind": "tavily", "key": "tvly-old", "enabled": true}])"));
+    CHECK(load({{"search_key", ""}}).search.empty());
+    CHECK(load(json::object()).search.empty());
+
+    // The list wins over a search_key beside it; entries keep their order, a newer version's whole.
+    const json list = json::parse(R"([{"kind": "later", "key": "lt-1", "monthly": 5, "region": {"x": 1}},
+                                      {"kind": "tavily", "key": "tvly-2", "enabled": false}, 7, {"kind": "tavily", "key": "tvly-3"}])");
+    s = load({{"search", list}, {"search_key", "tvly-old"}});
+    CHECK(s.search.size() == 3 && s.search[0].kind == "later" && s.search[1].key == "tvly-2" && !s.search[1].enabled &&
+          s.search[2].key == "tvly-3" && s.search[2].enabled);
+    CHECK_EQ(s.search_key("tavily"), "tvly-2");   // the first entry of the kind
+    resave();
+    disk = util::load_json(file, json());
+    CHECK(disk["search"][0] == json::parse(R"({"kind": "later", "key": "lt-1", "monthly": 5, "region": {"x": 1}, "enabled": true})"));
+    CHECK(disk["search"].size() == 3 && !disk.contains("search_key"));
+
+    // Setting a key changes the first entry of its kind, or adds one at the end; an empty key adds nothing.
+    s.set_search_key("tavily", "tvly-new");
+    CHECK(s.search[1].key == "tvly-new" && s.search[2].key == "tvly-3");
+    s.set_search_key("other", "");
+    CHECK_EQ(static_cast<long long>(s.search.size()), 3);
+    s.set_search_key("other", "o-1");
+    CHECK(s.search.size() == 4 && s.search[3].kind == "other" && s.search[3].key == "o-1" && s.search[3].enabled);
+    s.set_search_key("tavily", "");
+    CHECK_EQ(s.search_key("tavily"), "");
+
+    // Every key set is a secret: the AI service's and each service's, whatever its kind.
+    s.api_key = "sk-1";
+    CHECK((s.secret_values() == std::vector<std::string>{"sk-1", "lt-1", "tvly-3", "o-1"}));
+
+    // ZB_SEARCH_KEY is the first entry's key, or makes a Tavily entry when there is none.
+    setenv("ZB_SEARCH_KEY", "env-key", 1);
+    s = load({{"search", list}});
+    CHECK(s.search[0].kind == "later" && s.search[0].key == "env-key" && s.search[1].key == "tvly-2");
+    s = load(json::object());
+    CHECK(s.search.size() == 1 && s.search[0].kind == "tavily" && s.search[0].key == "env-key");
+    unsetenv("ZB_SEARCH_KEY");
+    load(before);
 }
 
 // ---------------------------------------------------------------- all-day alerts and clock changes
@@ -661,6 +723,7 @@ int main(int argc, char **argv) {
     unsetenv("ZB_SEARCH_KEY");
     test_atomic_writes(root);
     test_settings_threads(root);
+    test_search_settings(root);
     test_all_day_alerts(root);
     test_store_writes_unlocked();
     test_ui_wake();

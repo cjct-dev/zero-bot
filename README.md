@@ -151,6 +151,10 @@ create `~/.config/zero-bot/settings.json` on the device over SSH or ADB before f
 { "api_base": "https://your-service/v1", "api_key": "your-key" }
 ```
 
+A web search key (see [Optional extras](#4-optional-extras)) goes in the same file as a list of search
+services, `"search": [{ "kind": "tavily", "key": "your-search-key" }]`; a `"search_key"` written by an
+older version is read as that.
+
 The first time it connects, the app picks a language model, a speech-to-text and a text-to-speech
 model from the service's list, by what the list labels each model for (its `mode`): the language
 model only from those labelled `chat`, never an unlabelled one (that could be a model for
@@ -663,7 +667,8 @@ services. `tests/README.md` says what each test checks, and AGENTS.md section 6 
 ## Project layout
 
 ```
-src/agent/      the conversation loop and what it checks, prompt, tools (one file each in tools/), speech queue and service client
+src/agent/      the conversation loop and what it checks, prompt, tools (one file each in tools/), web search (search/: one
+                file per search service), speech queue and service client
 src/core/       settings, calendar/reminder/timer/memory store, timers, music library, radio stations, utilities
 src/platform/   display, keyboard, audio, camera, infrared, battery, network status, subprocess helpers
 src/ui/         chat screen, menus, settings pages, setup guide, alarm banner, screen off, app controller, screenshots (--shots)

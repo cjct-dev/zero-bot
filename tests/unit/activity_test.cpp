@@ -161,9 +161,13 @@ void test_saving(const std::string &root) {
     check(activity::saved_toast(none) == "Nothing to save yet", "and the toast says so");
     check(activity::saved_count() == 0, "nothing saved yet");
 
-    Settings::update([](Settings &s) { s.api_key = "sk-secret-0123456789"; s.search_key = "tvly-secret-987654"; }, false);
+    // Every key in the settings: the AI service's and each search service's, of whatever kind.
+    Settings::update([](Settings &s) {
+        s.api_key = "sk-secret-0123456789";
+        s.search = {{"tavily", "tvly-secret-987654"}, {"later", "secret-later-5555"}};
+    }, false);
     json msgs = sample();
-    msgs[2]["content"] = "an answer that quotes sk-secret-0123456789 and tvly-secret-987654";
+    msgs[2]["content"] = "an answer that quotes sk-secret-0123456789, tvly-secret-987654 and secret-later-5555";
     umask(022);
     const activity::SaveResult saved = activity::save_conversation(msgs, 0);
     check(!saved.path.empty() && saved.error.empty() && activity::saved_toast(saved) == "Conversation saved", "a save is written");

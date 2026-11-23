@@ -49,7 +49,11 @@ src/agent/          the request loop (agent: Agent::Turn and its steps), what th
                     (the list in the order the model reads it, the schema, "say" confirmations),
                     run.cpp (a call checked against its schema, run, its failure shaped),
                     common.h (argument and schema helpers), say_checks (weekday_slip, claims_new),
-                    web (fetch_json), places and events (what several tools share)
+                    web (fetch_json, with its options: Fetch, Fetched), places and events (what several
+                    tools share); and web search in search/: provider.h (the contract every search
+                    service implements, like smarthome/driver.h), providers/ (one file per service;
+                    registry.cpp lists them), search.{h,cpp} (which service answers, from the user's
+                    list in Settings::search; what the model reads, the same whatever the service)
 src/core/           settings, calendar/reminder/timer/memory store, timers (the timer tool, which
                     timer words mean, the alarm's logic), music library, radio (the user's station
                     file, the radio tool, the check of a stream), breathing timing,
@@ -848,10 +852,12 @@ is `result::fail`, for errors, phrased as an instruction about what to do next) 
 schema (`obj`, `S`, `N`, `B`, `E` from `tools/common.h`; the runner checks argument types against
 it before the tool runs, so the tool keeps only its domain rules; a reply that reads from the
 network uses `fetch_json` from `tools/web.h`, with its address through `experiment::web()`, which
-retries what is safe). If success is fully known from the arguments, give it `takes_say(note,
+retries what is safe; `Fetch` sets headers, a body, the deadline and attempts, and `Fetched` says what came
+back). If success is fully known from the arguments, give it `takes_say(note,
 when)`: the registry adds the "say" parameter, and `when` picks the calls whose say is spoken
 without the model reading the result. `offered` and `spec` are for a tool offered only sometimes
-(web search needs a key) or whose schema is made from the user's data (smart_home, radio). Then one
+(web search needs a service set up: `search::configured`) or whose schema is made from the user's data
+(smart_home, radio). Then one
 line, `X(<name>)`, in `ZB_TOOLS` in `src/agent/tools/registry.cpp`, where the order is the order the
 model reads them in; nothing else changes (CMake builds every file in the folder). A tool that
 creates or moves records (as reminder_set, calendar_add and timer's start do) goes in `claims_new`'s
@@ -940,6 +946,23 @@ needs the same care. A time read on another thread may be from the other side of
 loop has yet to see, or has just seen: the timer tool reads both clocks and passes how far apart
 they were (`Store::reckon`, `add_timer`), so a timer started just then is moved across the step
 once, not twice and not never.
+
+**A web search service.** It is a provider: a class implementing `search::Provider`
+(`src/agent/search/provider.h`) in `src/agent/search/providers/<kind>.cpp`, which defines
+`std::unique_ptr<search::Provider> make_<kind>_provider();`, and one line, `X(<kind>, "<Name>")`, in the
+list in `providers/registry.cpp` (the kind is what the settings' list calls it, `SearchService::kind`).
+Nothing else changes (CMake builds every file in the folder): the web_search tool, its description and
+schema, whether it is offered and what the model reads (`search.cpp`: the summary and four results, each
+capped) are the same whichever service answers, so a new service changes nothing the model sees but the
+words. A provider builds its request, sends it with `fetch_json(experiment::web(address), ..., how, &got)`
+(the deadline and attempts are the layer's, in `how`; the provider adds its headers and body), maps the
+answer onto `Reply` (summary, hits) and says what it meant as an `Outcome` (`outcome_of` for what any HTTP
+service means, plus the service's own codes, as Tavily's 432 and 433 for a spent allowance). It never
+retries, waits, picks another service, counts allowance, caches, writes a file or shapes what the model
+reads: those are done once, in `search.cpp`. The settings hold only generic fields per service (kind, key,
+on or off); an entry of a kind this version does not know is kept and passed over, and every key is
+blanked from saved conversations through `Settings::secret_values()`. Test it against the stand-in web
+(`tests/mocks/fake_web.py`), never a real search, and add the service to the README.
 
 **A smart-home device family.** It is a driver: a class implementing `home::Driver`
 (`src/smarthome/driver.h`) in `src/smarthome/drivers/<family>.{h,cpp}`, which defines

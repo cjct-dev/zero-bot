@@ -15,14 +15,15 @@ namespace {
 std::string t_stock(const json &a, Context &ctx) {
     std::string symbol = util::truncate_utf8(str_arg(a, "symbol"), 80, "");
     if (symbol.empty()) return fail("symbol (a ticker or company name) is required");
-    const std::vector<std::string> hdr = {"Accept: application/json"};
+    Fetch accept;
+    accept.headers = {"Accept: application/json"};
     std::string err, name;
     // Anything that does not look like a ticker is looked up by name first.
     const bool tickerish = symbol.size() <= 8 && symbol.find(' ') == std::string::npos &&
                            std::all_of(symbol.begin(), symbol.end(), [](unsigned char c) { return isupper(c) || isdigit(c) || c == '.' || c == '-' || c == '^' || c == '='; });
     if (!tickerish) {
         const json s = fetch_json(experiment::web("https://query1.finance.yahoo.com/v1/finance/search?quotesCount=3&newsCount=0&q=" +
-                                                  http::url_encode(symbol)), err, ctx, hdr);
+                                                  http::url_encode(symbol)), err, ctx, accept);
         if (!err.empty()) return fail(err);
         if (!s.contains("quotes") || !s["quotes"].is_array() || s["quotes"].empty())
             return fail("no listed company or fund found for '" + symbol + "'");
@@ -31,7 +32,7 @@ std::string t_stock(const json &a, Context &ctx) {
         if (symbol.empty()) return fail("no ticker found for that name");
     }
     const json j = fetch_json(experiment::web("https://query1.finance.yahoo.com/v8/finance/chart/" + http::url_encode(symbol) +
-                                              "?range=5d&interval=1d"), err, ctx, hdr);
+                                              "?range=5d&interval=1d"), err, ctx, accept);
     if (!err.empty()) return fail(err);
     if (!j.contains("chart") || !j["chart"].is_object() || !j["chart"].contains("result") || !j["chart"]["result"].is_array() ||
         j["chart"]["result"].empty() || !j["chart"]["result"][0].is_object() || !j["chart"]["result"][0].contains("meta") ||

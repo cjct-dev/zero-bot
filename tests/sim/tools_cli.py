@@ -9,7 +9,9 @@ written outside the state folder. Tools that need the internet (weather, currenc
 search, a place looked up by name, the photo's description) are run only against the local stand-in
 (tests/mocks/fake_web.py), to check the experiments' guards: ZB_EXP_NO_HARDWARE keeps the camera and the
 infrared transmitter out of a test run, a bad ZB_EXP_WEB stops the run cleanly, and a request to the
-stand-in takes no proxy and follows no redirect. A tool call's arguments and a web service's answer nested
+stand-in takes no proxy and follows no redirect. search_services: web search is offered, and searches with the
+right key, exactly when the settings' list of services sets one up (an older file's search_key and ZB_SEARCH_KEY
+included), and a settings file saved again keeps the list. A tool call's arguments and a web service's answer nested
 deeper than 32 levels are not read (nested_too_deep, against a local server of its own). no_real_web runs
 one case through the live sets' own runner
 (tests/agent/agent_eval.py run_case) against a scripted model (tests/mocks/fake_model.py) that calls every tool
@@ -370,6 +372,7 @@ def run_all(root):
     error(s, "smart_home", {"action": "on", "target": "lamp"}, "no smart-home device")
 
     guards(root)
+    search_services(root)
     nested_too_deep(root)
     no_real_web(root)
     web_wraps()
@@ -441,6 +444,63 @@ class Answering(LocalServer):
             do_GET = do_POST = answer
 
         super().__init__(H)
+
+
+def search_services(root):
+    """Web search is set up by the settings' list of services (Settings::search, src/agent/search/): an entry counts when
+    it is switched on, of a kind this version knows, with a key; an older file's search_key is one Tavily entry, and
+    ZB_SEARCH_KEY is the first entry's key. Exactly then is web_search offered and the prompt says search is available,
+    and the search carries that entry's key (the stand-in takes only its own). A settings file saved again keeps the
+    list, a newer version's entry with its fields included, and no longer holds search_key."""
+    web = subprocess.Popen([sys.executable, "-I", os.path.join(TESTS, "mocks", "fake_web.py")], stdin=subprocess.PIPE,
+                           stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
+    try:
+        line = web.stdout.readline().split()
+        check("the stand-in web starts", line[:2] == ["WEB", "listening"], line)
+        later = {"kind": "later", "key": "later-key", "monthly": 5}
+        forms = (("an older file's search_key", {"search_key": "stand-in"}, None, True),
+                 ("a Tavily entry", {"search": [{"kind": "tavily", "key": "stand-in"}]}, None, True),
+                 ("a newer version's kind first", {"search": [later, {"kind": "tavily", "key": "stand-in"}]}, None, True),
+                 ("ZB_SEARCH_KEY over the first entry's key", {"search": [{"kind": "tavily", "key": "wrong"}]}, "stand-in", True),
+                 ("ZB_SEARCH_KEY without a list", {}, "stand-in", True),
+                 ("an entry switched off", {"search": [{"kind": "tavily", "key": "stand-in", "enabled": False}]}, None, False),
+                 ("only a newer version's kind", {"search": [dict(later, key="stand-in")]}, None, False),
+                 ("an entry without a key", {"search": [{"kind": "tavily", "key": ""}]}, None, False),
+                 ("an older file's empty search_key", {"search_key": ""}, None, False))
+        for i, (name, settings, env_key, works) in enumerate(forms):
+            g = State(root, "search-%d" % i)
+            os.makedirs(g.dir + "/config/zero-bot", exist_ok=True)
+            with open(g.dir + "/config/zero-bot/settings.json", "w") as f:
+                json.dump(settings, f)
+            e = g.env(ZB_EXP_WEB="http://127.0.0.1:%s/default" % line[2], ZB_SEARCH_KEY=env_key)
+            prompt = subprocess.run([APP, "--prompt"], env=e, capture_output=True, text=True, timeout=60).stdout
+            try:
+                names = [t["function"]["name"] for t in json.loads(
+                    subprocess.run([APP, "--schema"], env=e, capture_output=True, text=True, timeout=60).stdout)]
+            except (ValueError, KeyError, TypeError):
+                names = []
+            check("%s: web_search %s" % (name, "offered" if works else "not offered"), names and ("web_search" in names) == works, names)
+            check("%s: the prompt says search is %s" % (name, "available" if works else "not set up"),
+                  ("- Web search: available\n" in prompt) == works and ("- Web search: not set up" in prompt) != works)
+            if works:
+                ok(g, "web_search", {"query": "louvre opening hours on sunday"}, '"results":[{', ZB_EXP_WEB=e["ZB_EXP_WEB"],
+                   ZB_SEARCH_KEY=env_key)
+            else:
+                error(g, "web_search", {"query": "louvre opening hours on sunday"}, "web search is not set up on this device",
+                      ZB_EXP_WEB=e["ZB_EXP_WEB"])
+        g = State(root, "search-2")   # the newer version's entry first: a save keeps it whole, and the list
+        ok(g, "set_timezone", {"place": "Europe/Lisbon"}, '"timezone":"Europe/Lisbon"')
+        saved = g.file("config", "zero-bot", "settings.json") or {}
+        check("a settings file saved again keeps the list in order, a newer version's entry whole",
+              saved.get("search") == [dict(later, enabled=True), {"kind": "tavily", "key": "stand-in", "enabled": True}], saved.get("search"))
+        g = State(root, "search-0")   # the older file's search_key
+        ok(g, "set_timezone", {"place": "Europe/Lisbon"}, '"timezone":"Europe/Lisbon"')
+        saved = g.file("config", "zero-bot", "settings.json") or {}
+        check("an older file's search_key is saved as one Tavily entry, and no longer as search_key",
+              saved.get("search") == [{"kind": "tavily", "key": "stand-in", "enabled": True}] and "search_key" not in saved, saved)
+    finally:
+        web.stdin.close()
+        web.wait(timeout=10)
 
 
 def nested_too_deep(root):

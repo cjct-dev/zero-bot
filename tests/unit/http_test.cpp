@@ -1,8 +1,8 @@
 // The http::Request options smart-home drivers use, against the local peer in http_peer.py:
 // no_redirect, timeout_ms, digest credentials, insecure, a pinned public key, the peer's
 // certificate, a client certificate, and the defaults of a request to a device (no redirects to
-// elsewhere, no proxy); and send_retrying, which sends a read again only after a failure on the
-// way, inside its time budget. Started by http_peer.py, which passes:
+// elsewhere, no proxy); reply headers kept by name (keep_headers); and send_retrying, which sends a
+// read again only after a failure on the way, inside its time budget. Started by http_peer.py, which passes:
 //   http_test HTTP_PORT HTTPS_PORT HTTPS_CLIENT_PORT PIN CLIENT_CERT_FILE CLIENT_KEY_FILE PROXY_PORT
 #include <atomic>
 #include <chrono>
@@ -157,6 +157,25 @@ int main(int argc, char **argv) {
     unsetenv("http_proxy");
     unsetenv("https_proxy");
     check(peer_saw() == "away=0 proxy=1", "the proxy saw only the internet request, the other host nothing", peer_saw());
+
+    // ---- reply headers kept by name (a search service's allowance left): only those asked for, in any case,
+    // and only the last answer's
+    auto kept = [](const http::Response &res) {
+        std::string out;
+        for (const auto &h : res.headers) out += h.first + "=" + h.second + ";";
+        return out;
+    };
+    r = http::Request();
+    r.url = plain + "/headers";
+    res = http::send(r);
+    check(res.status == 200 && res.headers.empty(), "no reply header is kept unless asked for", kept(res));
+    r.keep_headers = {"X-RATELIMIT-REMAINING", "x-missing"};
+    res = http::send(r);
+    check(kept(res) == "x-ratelimit-remaining=42;", "an asked-for header is kept by its lower-case name, trimmed", kept(res));
+    r.url = plain + "/headers-moved";
+    res = http::send(r);
+    check(res.status == 200 && res.body == "target" && res.headers.empty(), "a redirect's headers are not the answer's",
+          seen(res) + ", " + kept(res));
 
     // ---- send_retrying: only failures on the way are sent again, inside the time given
     auto tries = [&](const std::string &key) {

@@ -4,6 +4,7 @@
 
 #include "agent/controls.h"
 #include "agent/experiment.h"
+#include "agent/search/search.h"
 #include "core/music_lib.h"
 #include "core/radio.h"
 #include "core/settings.h"
@@ -138,9 +139,9 @@ std::string today(const Settings &s) {
              "'turn on the bed heater' or 'is the lamp on' mean that tool. When it answers CONFIRM, nothing has "
              "happened yet: ask the user its question and wait for their answer.\n";
     p += std::string("- Web search: ") +
-         (s.search_key.empty() ? "not set up, so you cannot look anything up. Say so when it matters, and say that "
-                                 "an answer from memory may be out of date.\n"
-                               : "available\n");
+         (search::configured(s) ? "available\n"
+                                : "not set up, so you cannot look anything up. Say so when it matters, and say that "
+                                  "an answer from memory may be out of date.\n");
     return p;
 }
 

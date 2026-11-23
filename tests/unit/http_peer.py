@@ -103,6 +103,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.cut(401, challenge)
             else:
                 self.reply(200, b"the login was sent after all")
+        elif self.path == "/headers":                    # what a search service says beside its answer
+            self.reply(200, b"{}", {"X-RateLimit-Remaining": " 42 ", "X-Other": "no"})
+        elif self.path == "/headers-moved":              # a redirect with the header, to a page without it
+            self.reply(302, b"moved", {"Location": "/target", "X-RateLimit-Remaining": "1"})
         elif self.path == "/hello":
             self.reply(200, b"tls ok")
         elif self.path == "/who":

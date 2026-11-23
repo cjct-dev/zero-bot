@@ -7,8 +7,19 @@
 #pragma once
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "core/util.h"
+
+// A web search service the user has set up (agent/search/). Generic fields only: what a kind of
+// service needs is its provider's business. An entry of a kind this version does not know (a newer
+// version wrote it) is kept as it is and passed over.
+struct SearchService {
+    std::string kind;            // as the providers' registry names it: "tavily"
+    std::string key;
+    bool enabled = true;
+    json more;                   // fields this version does not read, written back as they came
+};
 
 struct Settings {
     // Speech + language services (any OpenAI-compatible endpoint).
@@ -25,8 +36,12 @@ struct Settings {
     bool compress_audio = true;  // send and receive speech in compressed form (smaller, same words)
     bool fast_mode = true;       // ask the model to skip its private reasoning step (quicker replies)
 
-    // Web search (Tavily-compatible).
-    std::string search_key;
+    // Web search: the services in the order they are tried. Saved as "search"; a file with the old
+    // "search_key" (always a Tavily key) is read as one Tavily entry. ZB_SEARCH_KEY is the first entry's key.
+    std::vector<SearchService> search;
+    std::string search_key(const std::string &kind) const;   // the first entry of that kind's key, "" if none
+    // Sets that key, adding an entry of the kind at the end when there is none (and the key is not empty).
+    void set_search_key(const std::string &kind, const std::string &key);
 
     // Device
     int volume = 70;
@@ -66,6 +81,9 @@ struct Settings {
     std::string eff_vision_model() const;
     std::string eff_music_dir() const;
     bool configured() const { return !eff_api_base().empty() && !eff_api_key().empty(); }
+    // Every key the settings hold (the AI service's and each search service's), those set: what a saved
+    // conversation blanks out, wherever it appears.
+    std::vector<std::string> secret_values() const;
 
     json to_json() const;
     void from_json(const json &j);

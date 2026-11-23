@@ -42,18 +42,25 @@ struct Setup {
         menu.push(std::move(page));
     }
 
-    MenuItem edit(const std::string &label, std::string Settings::*field, const std::string &help, bool secret = false) {
+    // A text setting, read with `get` and changed with `set`; an empty entry leaves it as it was.
+    MenuItem edit(const std::string &label, std::function<std::string(const Settings &)> get,
+                  std::function<void(Settings &, const std::string &)> set, const std::string &help, bool secret = false) {
         Menu &m = menu;
-        return MenuItem::val(label, [field, secret] {
-            const std::string v = S().*field;
+        return MenuItem::val(label, [get, secret] {
+            const std::string v = get(S());
             return v.empty() ? std::string("not set") : (secret ? masked(v) : short_address(v));
-        }, [&m, label, field, help, secret] {
-            m.edit_text(label, secret ? "" : S().*field, secret, [field](const std::string &t) {
+        }, [&m, label, get, set, help, secret] {
+            m.edit_text(label, secret ? "" : get(S()), secret, [set](const std::string &t) {
                 const std::string v = util::trim(t);
                 if (v.empty()) return;
-                change([&](Settings &s) { s.*field = v; });
+                change([&](Settings &s) { set(s, v); });
             }, help);
         });
+    }
+
+    MenuItem edit(const std::string &label, std::string Settings::*field, const std::string &help, bool secret = false) {
+        return edit(label, [field](const Settings &s) { return s.*field; },
+                    [field](Settings &s, const std::string &v) { s.*field = v; }, help, secret);
     }
 
     // Step 6: optional extras, then done.
@@ -66,8 +73,11 @@ struct Setup {
             Menu::add_paragraph(items, "All optional. You can change these later in settings (SPACE).");
             items.push_back(MenuItem::val("Speak replies", [] { return on_off(S().speak_replies); }, nullptr,
                                           [](int) { change([](Settings &s) { s.speak_replies = !s.speak_replies; }); }));
-            items.push_back(self->edit("Web search key", &Settings::search_key,
-                                       "A Tavily API key lets the assistant search the web. Leave it out to do without.", true));
+            const search::Registered &web = asked_search();
+            const std::string kind = web.provider->kind();
+            items.push_back(self->edit("Web search key", [kind](const Settings &s) { return s.search_key(kind); },
+                                       [kind](Settings &s, const std::string &v) { s.set_search_key(kind, v); },
+                                       "A " + web.name + " API key lets the assistant search the web. Leave it out to do without.", true));
             items.push_back(MenuItem::action("Finish", [self] { self->finish(); }));
             return items;
         };
