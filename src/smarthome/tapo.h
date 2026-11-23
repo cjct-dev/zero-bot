@@ -36,6 +36,9 @@ struct Device {
     // after a router hands this plug's address to another plug of the same account, that plug
     // accepts the same login. So each new session is asked get_device_info first, and a plug that
     // does not name this MAC (another one, or none) gets nothing else (request() fails, saying so).
+    // Until it has, an answer no plug would give (a web server's status at a login step, a reply that
+    // cannot be read) may be another device's, and the error says so, so that the app looks for the
+    // plug at a new address (home::who_answered); after, such an answer is the plug's own.
     // With none saved nothing is compared: such a plug may be read, and is never switched (the driver).
     std::string mac;
 };

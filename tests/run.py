@@ -246,6 +246,8 @@ PATH_RULES = [
     (r"^tests/agent/scorer_test\.py$", ["scorer"], "the scorer's own test"),
     (r"^tests/agent/agent_eval\.py$", ["scorer", "cases", "tools"],
      "the scored set and the scoring both live sets use (tools_cli.py runs its runner against a scripted model)"),
+    (r"^tests/lib/answered\.py$", ["tapo", "wiz", "kasa", "shelly", "homekit", "firetv"],
+     "who answered at a device's address, as the app reads a driver's error (the drivers' end-to-end scripts)"),
     (r"^tests/lib/", ["scorer", "cases", "tools", "loop"],
      "code the test folders share: the cli's account of a run and the stand-in music library (agent_eval.py, agent_loop_test.py)"),
     (r"^tests/agent/agent_suite\.py$", ["scorer", "cases"], "the suite's runner"),
@@ -1308,6 +1310,8 @@ def self_test():
           groups("tests/agent/agent_eval.py"))
     check("the shared parser: the scorer and the loop test", groups("tests/lib/records.py") == ["cases", "scorer", "tools", "loop"],
           groups("tests/lib/records.py"))
+    check("who answered, as the drivers' e2e scripts read it", groups("tests/lib/answered.py") == ["tapo", "wiz", "kasa", "shelly", "homekit", "firetv"],
+          groups("tests/lib/answered.py"))
     check("the suite's runner", groups("tests/agent/agent_suite.py") == ["cases", "scorer"])
     for path, want in (("tests/unit/run_unit.sh", ["unit"]), ("tests/unit/snapshots/plugs_only.json", ["unit"]),
                        ("tests/sim/screens/fixclock.c", ["screens"]), ("tests/sim/tools_cli.py", ["tools"]),

@@ -969,25 +969,18 @@ static void test_writes() {
     eq("status -70402 in words", status_text(-70402, "Hall Lamp"), "Hall Lamp is switched off, or out of range of its bridge.");
     eq("status 70409 without a name", status_text(70409, ""), "The accessory no longer exists on the accessory. Refresh the device in settings.");
     // Every status comes from an accessory that answered: none may read as "it did not answer",
-    // or the app would rescan the network for 2.5 s (the words of control.cpp unreachable()).
+    // or the app would rescan the network for 2.5 s (home::who_answered, driver.h).
     std::string trips;
     for (const long code : {-70401L, -70402L, -70403L, -70404L, -70405L, -70406L, -70407L, -70408L, -70409L, -70410L, -70411L,
                             -70412L, -1L})
-        for (const char *w : {"connect", "reach", "answer", "respond", "timed out", "timeout", "no route", "unreachable"}) {
-            std::string s = status_text(code, "Hall Lamp");
-            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(tolower(c)); });
-            if (s.find(w) != std::string::npos) trips += std::to_string(code) + ":" + w + " ";
-        }
+        if (home::who_answered(status_text(code, "Hall Lamp")) != home::Answered::Device) trips += std::to_string(code) + " ";
     check("no status in words reads as \"did not answer\" to the app", trips.empty(), trips);
     // The same for every error sentence about a problem on this side or from an accessory that
     // answered (a damaged key store, a turned-down session, a garbled reply...).
     trips.clear();
     const std::vector<std::string> sentences = answered_error_texts();
-    for (std::string s : sentences) {
-        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(tolower(c)); });
-        for (const char *w : {"connect", "reach", "answer", "respond", "timed out", "timeout", "no route", "unreachable"})
-            if (s.find(w) != std::string::npos) trips += "[" + s.substr(0, 40) + "...]:" + w + " ";
-    }
+    for (const std::string &s : sentences)
+        if (home::who_answered(s) != home::Answered::Device) trips += "[" + s.substr(0, 40) + "...] ";
     check("no error from this side or from an accessory that answered reads as \"did not answer\" to the app (" +
               std::to_string(sentences.size()) + " sentences)",
           sentences.size() >= 30 && trips.empty(), trips);

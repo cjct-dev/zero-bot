@@ -99,6 +99,7 @@ struct FakeDriver : home::Driver {
     std::map<std::string, json> live;                          // state by "device/thing"
     std::set<std::string> broken;                              // devices that do not answer
     std::map<std::string, std::string> refusing;               // devices that answer every change with this error
+    std::set<std::string> throwing;                            // devices whose answers to reads and changes cannot be taken apart
     std::vector<std::string> log;                              // one line per apply / apply_many
     std::mutex mtx;
     int delay_ms = 0;
@@ -169,6 +170,7 @@ struct FakeDriver : home::Driver {
         contact("read", d.id);
         std::lock_guard<std::mutex> lk(mtx);
         if (broken.count(d.id)) { err = "it did not answer"; return false; }
+        if (throwing.count(d.id)) throw std::runtime_error("unreadable");
         if (things.empty()) things = d.things;
         for (auto &t : things) {
             const auto it = live.find(d.id + "/" + t.id);
@@ -211,6 +213,7 @@ struct FakeDriver : home::Driver {
         std::lock_guard<std::mutex> lk(mtx);
         seen_auth[d.id] = d.auth;
         if (broken.count(d.id)) { err = "it did not answer"; return false; }
+        if (throwing.count(d.id)) throw std::runtime_error("unreadable");
         if (refusing.count(d.id)) { err = refusing[d.id]; return false; }
         if (deadline_ms <= 0 || deadline_ms > 2500) { err = "bad deadline"; return false; }
         log.push_back("apply " + d.id + "/" + t.id + " " + change_text(c));
@@ -230,7 +233,7 @@ struct FakeDriver : home::Driver {
     }
     void reset() {
         std::lock_guard<std::mutex> lk(mtx);
-        listing.clear(); live.clear(); broken.clear(); refusing.clear(); log.clear();
+        listing.clear(); live.clear(); broken.clear(); refusing.clear(); throwing.clear(); log.clear();
         delay_ms = 0; many = false; wants_pairing = false; account_pairing = false; reject.clear(); unpair_unreached = false;
         one_controller = false; paired.clear();
         slow_device.clear(); slow_ms = 0;
@@ -1598,8 +1601,8 @@ void test_stalled_device() {
     g_fake->call_ms = 1400;
     run({{"action", "off"}, {"target", "Bedroom"}});
     CHECK_MSG(applies() == 2, std::to_string(applies()));
-    // Nor is a slow answer that is an error ("answered with error code ..."): unreachable() lets such
-    // words through (another device may have the address), but the device did answer (review of ZB-055).
+    // Nor is a slow answer that is an error ("answered with error code ..."): the device did answer
+    // (review of ZB-055).
     g_fake->refusing["fake:bridge"] = "the bridge answered with error code 7";
     g_fake->calls.clear();
     run({{"action", "off"}, {"target", "Bedroom"}});
@@ -3667,6 +3670,122 @@ void test_names_and_colours() {
     CHECK(hue > 20 && hue < 40 && sat2 > 40 && sat2 < 70);
 }
 
+// Every driver's failures, as the layer reads them (home::who_answered, driver.h): only nobody answering at
+// the saved address, or another device answering there, sends it looking for the device at a new address.
+// An answer that could not be read, an error code or a refusal is the device's, which is where it was
+// (ZB-108). Sentences a driver's header exports are taken from it; the rest are copied as the drivers write
+// them, and the drivers' own tests and end-to-end scripts get those from real exchanges.
+void test_who_answered() {
+    Section s("who answered: every driver's failures, as the layer reads them (ZB-108)");
+    using home::Answered;
+    const Answered nobody = Answered::Nobody, another = Answered::Another, device = Answered::Device;
+    std::vector<std::pair<std::string, Answered>> table = {
+        // the layer's own
+        {"it did not answer", nobody}, {"the device's answer could not be understood", device}, {"it did not do it", device},
+        // Fire TV
+        {firetv::kNoAnswer, nobody},
+        {std::string(firetv::kNoAnswer) + " It may be off or unplugged.", nobody},
+        {std::string(firetv::kNoAnswer) + " It did not come on after a wake-up signal.", nobody},
+        {std::string(firetv::kAlreadyOff) + " It did not answer.", nobody},
+        {std::string(firetv::kAlreadyOff) + " Its remote control service is closed.", device},
+        {firetv::kNotServing, device}, {firetv::kWaking, device}, {firetv::kStarting, device}, {firetv::kNotPaired, device},
+        {firetv::kPairAgain, device}, {firetv::kKeyChanged, device}, {std::string(firetv::kUnsupported) + " volume.", device},
+        {"Only 2 of 5 presses were confirmed by the TV. There was no time for the rest.", device},
+        {"There was no time left to finish that. Try again in a moment.", device},
+        // HomeKit
+        {"The accessory could not be reached. Check that it is switched on and on this network.", nobody},
+        {"The accessory did not answer in time.", nobody},
+        {"The accessory closed the connection.", nobody},
+        {"A different HomeKit accessory answered at this address. Scan the network again. If this accessory was reset to "
+         "factory settings, it now has a new HomeKit identity: pair the one the scan finds, and remove this one.",
+         another},
+        // Kasa
+        {kasa::kNoAnswer, nobody}, {kasa::kRefused, nobody}, {kasa::kOtherDevice, another}, {kasa::kNoMac, another},
+        {kasa::kNoIdentity, device}, {kasa::kNewLogin, device}, {"the Kasa device's reply could not be understood", device},
+        {"the Kasa device refused the command", device}, {"the Kasa device does not support that", device},
+        // Shelly
+        {shelly::kNoAnswer, nobody}, {"The password is saved, but the Shelly did not answer.", nobody},
+        {std::string(shelly::kOtherDevice) + " Scan the network again in Settings, Smart home.", another},
+        {std::string(shelly::kOtherDevice) + " Nothing was sent to it. Scan the network again in Settings, Smart home.", another},
+        {shelly::kNotUnderstood, device}, {"The Shelly's answer was too long to read.", device},
+        {shelly::kNeedsPassword, device}, {shelly::kRefused, device}, {shelly::kThrottled, device},
+        {"The Shelly ran out of time doing that.", device}, {"The Shelly reported an error.", device},
+        {"There was no time left to ask the Shelly. Try again in a moment.", device},
+        // Tapo (the transport, tapo.cpp). An answer no plug would give, from before the plug has named its MAC in the
+        // session, may be another device's (a web server given its address): those say so, and are looked for.
+        {"cannot connect to the plug", nobody}, {"the plug did not answer in time", nobody},
+        {"another plug answered at this plug's saved address, so nothing was sent to it", another},
+        {"the plug that answered at this plug's saved address did not say which plug it is, so nothing was sent to it", another},
+        {"the plug refuses the KLAP login: it has probably switched to TPAP (run discovery again), or another device now "
+         "answers at this plug's address",
+         another},
+        {"the plug answered the first login step unexpectedly (HTTP 404); it may be another device that now answers at this "
+         "plug's address",
+         another},
+        {"the plug answered the login unexpectedly (HTTP 0); it may be another device that now answers at this plug's address",
+         another},
+        {"the plug's answer to the login cannot be used; it may be another device that now answers at this plug's address",
+         another},
+        {"the plug answered with HTTP 404; it may be another device that now answers at this plug's address", another},
+        {"the plug's answer could not be decrypted; it may be another device that now answers at this plug's address", another},
+        {"the plug's answer cannot be read; it may be another device that now answers at this plug's address", another},
+        {"the plug answered with HTTP 500", device}, {"the plug's answer could not be decrypted", device},
+        {"the plug's answer cannot be read", device}, {"the request could not be built or its answer could not be read", device},
+        {"the plug does not accept this e-mail and password (both are case-sensitive)", device},
+        {"the plug rejected the second login step (HTTP 403)", device}, {"the plug sent no session cookie", device},
+        {"the plug did not prove that it knows the password; it is not trusted", device},
+        {"the request to the plug failed: Failure when receiving data from the peer", device},
+        {"the plug dropped a session it had only just opened; giving up", device},
+        {"the strip did not say whether the socket was switched", device},
+        // WiZ
+        {wiz::kNoAnswer, nobody},
+        {"The WiZ device did not answer. Check that it is switched on, and that Allow local communication is on in the WiZ "
+         "app's settings.",
+         nobody},
+        {wiz::kMoved, another}, {wiz::kNoMac, another}, {wiz::kGarbled, device}, {wiz::kRefused, device},
+        {wiz::kNeedsKey, device}, {wiz::kKeyRefused, device}, {wiz::kKeyRefusedNotNoted, device}, {wiz::kKeyUnconfirmed, device},
+        {wiz::kKeyNotSaved, device}, {wiz::kClockNotSet, device}, {wiz::kNoIdentity, device},
+    };
+    // Every code a Tapo plug may answer with is the plug's answer, a session that "has timed out" (9999) included.
+    for (const int code : {-1002, -1003, -1008, -1010, -1501, 9999, -2101, -2201, -2202, -2203, -2402, -40401, 1003, -1})
+        table.push_back({tapo::detail::describe_error(code), device});
+    table.push_back({"the socket: " + tapo::detail::describe_error(-1008), device});
+    // Hue: exactly the three sentences about the bridge not answering (one of them for a certificate that is
+    // not the bridge's: another device at its address).
+    for (const std::string &e : hue::detail::error_texts()) {
+        const bool silent = e == "the Hue Bridge did not answer" || e == "the Hue Bridge did not answer in time" ||
+                            e == "the Hue Bridge did not answer at its saved address";
+        table.push_back({e, silent ? nobody : device});
+    }
+    for (const char *e : {"communication issues", "soft off", "x"})
+        for (const bool group : {false, true}) table.push_back({hue::detail::describe_bridge_error(e, group), device});
+    // HomeKit: everything from this side or from an accessory that answered, and every status in words.
+    for (const std::string &e : homekit::detail::answered_error_texts()) table.push_back({e, device});
+    for (const long code : {-70401L, -70402L, -70403L, -70404L, -70405L, -70406L, -70407L, -70408L, -70409L, -70410L, -70411L,
+                            -70412L, -1L})
+        table.push_back({homekit::detail::status_text(code, "Hall Lamp"), device});
+    // Fire TV: what was asked for, quoted, brings no word of its own in.
+    for (const char *name : {"connect", "Reach", "respond", "timeout"}) {
+        home::Thing tv;
+        tv.id = "tv";
+        home::Change c;
+        c.key = name;
+        std::vector<firetv::detail::Action> acts;
+        std::string err;
+        firetv::detail::plan(tv, c, acts, err);
+        table.push_back({err, device});
+    }
+    const char *const names[] = {"device", "nobody", "another"};
+    std::string wrong;
+    for (const auto &[err, want] : table) {
+        const Answered got = home::who_answered(err);
+        if (got != want) wrong += "\n      " + std::string(names[static_cast<int>(got)]) + " for \"" + err + "\"";
+    }
+    CHECK_MSG(table.size() > 120 && wrong.empty(), std::to_string(table.size()) + " sentences" + wrong);
+    // Capitals do not matter.
+    CHECK(home::who_answered("THE TV DID NOT ANSWER.") == nobody && home::who_answered("Another device now ANSWERS AT THIS address.") == another);
+}
+
 // What the stand-in scan reports, and how often it ran. Answering it "moves" the devices: the
 // fake driver's broken ones answer again from then on.
 std::vector<discovery::Device> g_scan_answer;
@@ -3804,14 +3923,55 @@ void test_moved_devices() {
               r);
     g_fake->refusing.clear();
 
-    // The device answered, only with a refusal: it is not "busy or starting up", whatever the scan says.
+    // The device answered, only wrongly: it is where it was, so it is not looked for (ZB-108), and its error
+    // says nothing of the network. Such answers were looked for (2.5 s) and then said to be "not found at
+    // another address ... switched off at the wall", or "busy or starting up" when the scan heard them.
     home_with_tv();
     g_fake->broken.clear();
     g_fake->refusing["fake:tv"] = "the TV answered with error code -1501";
     g_scan_answer = {found_at("fake:tv", "127.0.0.1")};
     r = run({{"action", "off"}, {"target", "Bedroom TV"}});
     CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": the TV answered with error code -1501. Tell the user" + std::string(kNoInfrared), r);
-    CHECK(applies() == 1);
+    CHECK(applies() == 1 && g_scans == 0);
+    for (const char *said : {shelly::kNotUnderstood, "the plug's answer cannot be read"}) {
+        home_with_tv();
+        g_fake->refusing["fake:tv"] = said;
+        g_scan_answer = {};
+        r = run({{"action", "on"}, {"target", "Bedroom TV"}});
+        CHECK_MSG(has(r, "answer") && !has(r, "another address") && g_scans == 0, r);
+    }
+    // The same for an answer the driver could not take apart at all (it threw), changed or read by name.
+    home_with_tv();
+    g_fake->refusing.clear();
+    g_fake->throwing = {"fake:tv"};
+    g_scan_answer = {};
+    r = run({{"action", "on"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": the device's answer could not be understood. Tell the user" +
+                       std::string(kNoInfrared),
+              r);
+    r = run({{"action", "status"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(r == "ERROR: could not read \"Bedroom TV\": the device's answer could not be understood. Tell the user" +
+                       std::string(kNoInfrared),
+              r);
+    CHECK_MSG(g_scans == 0, std::to_string(g_scans) + " scans");
+    g_fake->throwing.clear();
+    // Another device answering at the saved address is looked for, as silence is; found where it was, it is
+    // not called busy (something answered there).
+    home_with_tv();
+    g_fake->refusing["fake:tv"] = kasa::kOtherDevice;
+    g_scan_answer = {};
+    r = run({{"action", "on"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": " + std::string(kasa::kOtherDevice) + "; it was not found at another "
+                   "address on the network either (it may be switched off at the wall, or out of Wi-Fi range). Tell the user" +
+                       std::string(kNoInfrared),
+              r);
+    CHECK(g_scans == 1);
+    home_with_tv();
+    g_scan_answer = {found_at("fake:tv", "127.0.0.1")};
+    r = run({{"action", "on"}, {"target", "Bedroom TV"}});
+    CHECK_MSG(r == "ERROR: could not change \"Bedroom TV\": " + std::string(kasa::kOtherDevice) + ". Tell the user" +
+                       std::string(kNoInfrared) && g_scans == 1,
+              r);
     g_fake->refusing.clear();
 
     // One scan serves a second device that stops answering within 20 seconds.
@@ -4098,6 +4258,7 @@ int main(int argc, char **argv) {
     test_discovery_shelly();
     test_discovery_every_family();
     test_names_and_colours();
+    test_who_answered();
     test_moved_devices();
     test_rescan_every_family();   // registers every driver: last
 

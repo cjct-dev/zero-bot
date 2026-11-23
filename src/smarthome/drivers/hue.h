@@ -46,8 +46,8 @@
 //  - Device::port, when not 0, is the HTTPS port (default 443). Device::ip must be a numeric
 //    address; host names are refused, so no DNS lookup is ever made.
 //  - Errors: pairing errors are sentences; enumerate/read/apply errors are lower-case clauses the
-//    caller puts after a thing's name. Only an error about the bridge not answering contains
-//    "answer" (the shared layer's cue to look for the bridge at a new address).
+//    caller puts after a thing's name. Only an error about the bridge not answering says "did not
+//    answer" (the shared layer's cue to look for the bridge at a new address: home::who_answered).
 //
 // Sources (hue.cpp says what follows each): Signify's public "Get
 // started" page (POST /api, devicetype, error 101), the openhue-api description of CLIP v2

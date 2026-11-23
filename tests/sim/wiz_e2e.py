@@ -25,6 +25,7 @@ import urllib.request
 TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
 sys.path.insert(0, TESTS)
 import netguard   # noqa: E402
+from lib.answered import looked_for   # noqa: E402  who answered, as the app reads a driver's error
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
 CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "unit", "wiz_cli")
@@ -33,8 +34,6 @@ KEY = "00112233445566778899aabbccddeeff"
 WRONG = "ffeeddccbbaa99887766554433221100"
 TMP = tempfile.mkdtemp(prefix="wiz-e2e-")
 NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-# What the app counts as "it did not answer" (control.cpp unreachable()).
-UNREACHABLE_WORDS = ("connect", "reach", "answer", "respond", "timed out", "timeout", "no route", "unreachable")
 # The MAC each simulated model reports (mock_wiz.py MODELS): what discovery would have saved it under.
 MACS = {"rgb": "a8bb5006033d", "rgb_lowdim": "a8bb50aa0001", "tw": "6c29905a067c", "dw": "a8bb50060001", "old": "a8bb50bdf8d7",
         "typeid": "a8bb502054e3", "socket": "d8a0119906b7", "socket_plain": "a8bb50df7693", "fan": "a8bb50fa0001",
@@ -61,10 +60,6 @@ def first_state(out):
 def params_of(sent, i=0):
     """The params of the i-th request in `sent`, None when there is no such request."""
     return sent[i]["params"] if -len(sent) <= i < len(sent) else None
-
-
-def unreachable(text):
-    return any(w in text.lower() for w in UNREACHABLE_WORDS)
 
 
 class Mock:
@@ -243,9 +238,9 @@ def driver_tests():
     check("tunable white: a colour is refused and nothing is sent", rc == 1 and not sent and "cannot change colour" in err, (rc, err))
 
     rc, err, sent = apply(rgb_st, "light", {"kelvin": 2700, "hs": [0, 100]})
-    check("a white and a colour together are refused before anything is sent", rc == 1 and not sent and not unreachable(err), (rc, err))
+    check("a white and a colour together are refused before anything is sent", rc == 1 and not sent and not looked_for(err), (rc, err))
     rc, err, sent = apply(sock_st, "plug", {"on": True, "brightness": 50})
-    check("a plug is not dimmed: refused, nothing sent", rc == 1 and not sent and not unreachable(err), (rc, err))
+    check("a plug is not dimmed: refused, nothing sent", rc == 1 and not sent and not looked_for(err), (rc, err))
     rc, err, sent = apply(sock_st, "plug", {"on": True})
     check("plug on", rc == 0 and params_of(sent) == {"state": True} and len(sent) == 1 and sock.stats()["pilot"]["state"] is True,
           (rc, err))
@@ -293,12 +288,12 @@ def driver_tests():
     rgb.reset()
     rc, out, err = rgb_st.run("enumerate")
     check("nothing answers (local communication off): enumerate says what to check",
-          rc == 1 and "did not answer" in err and "Allow local communication" in err and unreachable(err), err)
+          rc == 1 and "did not answer" in err and "Allow local communication" in err and looked_for(err), err)
     # A change starts by asking who is at the address (getPilot), with at most half its time.
     rgb.reset()
     rc, err, sent = apply(rgb_st, "light", {"on": True}, deadline=2500)
     asked = rgb.requests()
-    check("nothing answers: a change gives up by its deadline", rc == 1 and unreachable(err) and rgb_st.seconds < 3.2,
+    check("nothing answers: a change gives up by its deadline", rc == 1 and looked_for(err) and rgb_st.seconds < 3.2,
           (err, rgb_st.seconds))
     check("after a few resends of the question who it is, not a flood (at most 6 datagrams), and no change sent",
           2 <= len(asked) <= 6 and {r["method"] for r in asked} == {"getPilot"} and not sent, [r["method"] for r in asked])
@@ -333,7 +328,7 @@ def signed_tests():
     check("then no step is asked", step.get("kind") == "none", step)
     rc, out, err = st.run("apply", "light", '{"on":true,"brightness":50}')
     sent = dev.requests("setPilot")
-    check("the device refuses the wrong key", rc == 1 and "did not accept the signing key" in err and not unreachable(err), err)
+    check("the device refuses the wrong key", rc == 1 and "did not accept the signing key" in err and not looked_for(err), err)
     check("from the device's side: one signed request, its signature wrong", len(sent) == 1 and sent[0]["signed"] and
           sent[0]["sig_ok"] is False, sent)
     check("the refusal is kept in the file", st.secrets().get("wiz", {}).get("refused") is True, st.secrets())
@@ -512,7 +507,7 @@ def moved_tests():
     with open(st.path, "w") as f:
         json.dump(root, f)
     rc, out, err = st.run("apply", "light", '{"on":true}')
-    check("moved: a change for the light, at an address the plug now has, is not made", rc == 1 and unreachable(err), (rc, err))
+    check("moved: a change for the light, at an address the plug now has, is not made", rc == 1 and looked_for(err), (rc, err))
     check("moved: from the plug's side: asked who it is, no change sent, still off",
           [r["method"] for r in plug.requests()] == ["getPilot"] and plug.stats()["pilot"]["state"] is False, plug.requests())
     rc, out, err = st.run("enumerate")
@@ -571,7 +566,7 @@ def identity_tests():
         before = lamp.stats()["pilot"]["state"]
         rc, out, err = st.run("apply", "light", json.dumps({"on": not before}))
         check("identity (%s MAC): a device that does not say who it is gets no change" % mode,
-              rc == 1 and unreachable(err) and not lamp.requests("setPilot") and lamp.stats()["pilot"]["state"] is before and
+              rc == 1 and looked_for(err) and not lamp.requests("setPilot") and lamp.stats()["pilot"]["state"] is before and
               [r["method"] for r in lamp.requests()] == ["getPilot", "getSystemConfig"], (rc, err, [r["method"] for r in lamp.requests()]))
         rc, out, err = st.run("read")
         check("identity (%s MAC): nor is it read as the light" % mode, rc == 1 and "did not say which device" in err, (rc, err))
@@ -590,7 +585,7 @@ def identity_tests():
     lamp.reset()
     rc, out, err = bare.run("apply", "light", '{"on":false}')
     check("identity: a device saved without a MAC is not changed, and nothing is sent",
-          rc == 1 and "No hardware address" in err and not unreachable(err) and lamp.requests() == [], (rc, err, lamp.requests()))
+          rc == 1 and "No hardware address" in err and not looked_for(err) and lamp.requests() == [], (rc, err, lamp.requests()))
 
     if not os.access(APP, os.X_OK):
         return

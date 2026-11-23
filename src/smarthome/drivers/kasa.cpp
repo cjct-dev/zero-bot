@@ -32,7 +32,8 @@ namespace kasa {
 const char *const kNewLogin = "this Kasa device moved to TP-Link's newer login";
 const char *const kNoAnswer = "the Kasa device did not answer";
 const char *const kRefused = "the Kasa device refused the connection";
-// "answers" is one of the words that make the app look for the device at a new address.
+// "answers at this" makes the app look for the device at a new address (home::who_answered, driver.h),
+// as "did not answer" and "refused the connection" above do.
 const char *const kOtherDevice = "another Kasa device now answers at this one's saved address";
 const char *const kNoMac = "the device that answers at this Kasa device's saved address does not say which device it is";
 // None of those words: there is no address to look for it by.

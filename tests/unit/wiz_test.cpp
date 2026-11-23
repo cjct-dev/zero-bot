@@ -61,14 +61,9 @@ static std::string bytes_of_hex(const std::string &hex) {
     return out;
 }
 
-// The words src/smarthome/control.cpp unreachable() looks for (lower case): an error with one of
-// them makes the app look for the device at a new address.
-static bool reads_as_unreachable(std::string err) {
-    for (char &c : err) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    for (const char *w : {"connect", "reach", "answer", "respond", "timed out", "timeout", "no route", "unreachable"})
-        if (err.find(w) != std::string::npos) return true;
-    return false;
-}
+// Whether an error makes the app look for the device at a new address: it says nobody, or another
+// device, answered at the saved one (home::who_answered, driver.h).
+static bool reads_as_unreachable(const std::string &err) { return home::who_answered(err) != home::Answered::Device; }
 
 static home::Thing thing_of(const std::vector<home::Thing> &things, const std::string &id) {
     for (const auto &t : things)

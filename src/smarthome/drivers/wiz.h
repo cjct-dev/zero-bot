@@ -48,8 +48,9 @@
 //    device, and a WiZ device holds no key that would fail elsewhere. Another MAC gives kMoved, none
 //    kNoMac; a device saved without a MAC may be listed and read, never changed (kNoIdentity).
 //  - Errors are short sentences. Only the "did not answer" ones, and the two for another device
-//    answering at the saved address (kMoved, kNoMac), contain a word that control.cpp's unreachable()
-//    looks for, so only they lead to a search for the device at a new address.
+//    answering at the saved address (kMoved, kNoMac), have words home::who_answered() (driver.h)
+//    reads as nobody or another device answering, so only they lead to a search for the device at a
+//    new address. A garbled answer (kGarbled) is the device's: it is not looked for.
 //
 // Depends on the C++ standard library, POSIX sockets, OpenSSL libcrypto and nlohmann/json.
 #pragma once

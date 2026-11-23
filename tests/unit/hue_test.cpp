@@ -490,13 +490,9 @@ static home::Thing light(const std::string &id, uint32_t caps, const json &group
     return t;
 }
 
-static const char *const kUnreachableWords[] = {"connect", "reach", "answer", "respond", "timed out", "timeout", "no route", "unreachable"};
-
-static bool reads_as_no_answer(const std::string &e) {
-    for (const char *w : kUnreachableWords)
-        if (e.find(w) != std::string::npos) return true;
-    return false;
-}
+// Whether the shared layer would look for the bridge at a new address after this error
+// (home::who_answered, driver.h).
+static bool reads_as_no_answer(const std::string &e) { return home::who_answered(e) != home::Answered::Device; }
 
 static void test_changes() {
     const uint32_t all = home::kPower | home::kBrightness | home::kColorTemp | home::kColor;
