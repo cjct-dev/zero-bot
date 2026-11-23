@@ -57,7 +57,7 @@ needs a [Tavily](https://tavily.com) key.
 | **fn**+**S** / **fn**+**D** | Volume down / up. **fn**+**A** mutes and unmutes. On the conversation screen, until **ENTER** starts typing, plain **S** / **D** and **A** do the same. |
 | **fn**+**U** / **fn**+**I** | Screen brightness down / up. |
 | Any key, screen off | Turns the screen back on, and does nothing else. |
-| **fn**+**Q** / **fn**+**W** / **fn**+**E** | Music: pause or resume / previous track / next track. With a radio station on: pause or resume / previous station in your list / next station. On the conversation screen, until **ENTER** starts typing, plain **W** / **E** do the same as **fn**+**W** / **fn**+**E**. |
+| **fn**+**Q** / **fn**+**W** / **fn**+**E** | Music: pause or resume / previous track / next track. With a radio station on: pause or resume / previous station in your list / next station. On the conversation screen, until **ENTER** starts typing, plain **Q** / **W** / **E** do the same as **fn**+**Q** / **fn**+**W** / **fn**+**E**. |
 
 The bottom of the screen names the keys you need most; **H** lists the rest.
 
@@ -289,8 +289,9 @@ the list is empty the assistant is not offered radio at all. Put your stations i
 
 Say "play Harbour FM" or "put on the jazz station"; "stop the radio" or **ESC** stops it. The
 radio pauses while you talk and while the assistant answers, then rejoins the live broadcast.
-**fn**+**Q** pauses and resumes, **fn**+**W** and **fn**+**E** move to the previous and next
-station in your list, and the status bar shows the station's name. If a stream stops and cannot
+**fn**+**Q** (or plain **Q** on the conversation screen) pauses and resumes, **fn**+**W** and
+**fn**+**E** (or **W** and **E**) move to the previous and next station in your list, and the
+status bar shows the station's name. If a stream stops and cannot
 be joined again (the station is off the air, the Wi-Fi has gone), a note on the screen says so. A
 stream does not say what is on; with web search, the assistant can look the schedule up.
 

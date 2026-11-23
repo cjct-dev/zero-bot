@@ -43,6 +43,7 @@ const char *name(ChatKey k) {
         case ChatKey::Type: return "Type";
         case ChatKey::DeleteTap: return "DeleteTap";
         case ChatKey::TypeHint: return "TypeHint";
+        case ChatKey::PlayPause: return "PlayPause";
         case ChatKey::PreviousTrack: return "PreviousTrack";
         case ChatKey::NextTrack: return "NextTrack";
         case ChatKey::Mute: return "Mute";
@@ -84,9 +85,14 @@ void test_chat_keys() {
     expect(key(Key::Delete), ChatKey::DeleteTap, "fn+del");
     expect(key(Key::Backspace, 2), ChatKey::None, "del held");
     // Other letters and digits only say how to type.
-    for (const char *t : {"q", "z", "c", "1", "!"}) expect(text(t), ChatKey::TypeHint, std::string("letter ") + t);
-    expect(text("q", 0), ChatKey::None, "a letter let go");
-    // W, E, A, S, D: the fn layer's media and volume keys without fn (the owner's request, 0.4.2).
+    for (const char *t : {"z", "c", "1", "!"}) expect(text(t), ChatKey::TypeHint, std::string("letter ") + t);
+    expect(text("z", 0), ChatKey::None, "a letter let go");
+    // W, E, A, S, D: the fn layer's media and volume keys without fn (the owner's request, 0.4.2);
+    // Q too (the owner's request, 2026-11-23).
+    expect(text("q"), ChatKey::PlayPause, "Q");
+    expect(text("Q"), ChatKey::PlayPause, "shift+Q");
+    expect(text("q", 2), ChatKey::None, "Q held does not toggle again");
+    expect(text("q", 0), ChatKey::None, "Q let go");
     expect(text("w"), ChatKey::PreviousTrack, "W");
     expect(text("E"), ChatKey::NextTrack, "E");
     expect(text("a"), ChatKey::Mute, "A");
@@ -116,6 +122,9 @@ void test_guide_matches_keys() {
         {"fn+F  fn+X", key(Key::Up), ChatKey::ScrollUp},
         {"ENTER", key(Key::Enter), ChatKey::Type},
         {"del del", key(Key::Backspace), ChatKey::DeleteTap},
+        {"Q", text("q"), ChatKey::PlayPause},
+        {"W  E", text("w"), ChatKey::PreviousTrack},
+        {"W  E", text("e"), ChatKey::NextTrack},
     };
     for (const Said &s : said) {
         bool listed = false;
