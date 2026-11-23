@@ -24,8 +24,8 @@
 //    get_sysinfo answer must name it (its "mac", or "mic_mac" on bulbs), and a change is preceded by
 //    a get_sysinfo (one more connection) so that nothing is switched on another Kasa device that has
 //    taken the address. An answer naming another MAC gives kOtherDevice, one naming none kNoMac;
-//    both make the app look for the device again. A device saved without a MAC may be read but is
-//    never changed (kNoIdentity).
+//    both make the app look for the device again (home::who_answered, driver.h). A device saved
+//    without a MAC may be read but is never changed (kNoIdentity).
 //  - Port: Device::port when not 0 (kind "tplink"), else 9999. One TCP connection per request,
 //    closed after the reply. No pairing and no secrets. Deadlines: apply's deadline_ms for the
 //    check and the change together; 4 s for enumerate and read.

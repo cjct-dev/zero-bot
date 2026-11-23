@@ -87,12 +87,11 @@
 //    to infrared only on Fault::NoAnswer (nothing answered: off, unplugged or moved) and
 //    Fault::Unsupported (the TV does not offer the control over the network). Of the fixed
 //    wording, only the no_answer and already_off messages (but already_off's "remote control
-//    service is closed") contain a word that the app's
-//    control.cpp unreachable() list matches ("answer"), which is right: only then can a
-//    re-discovery at a new address help (a TV that is starting up has not moved: kStarting's
-//    messages have none of those words). But a message that quotes what was asked for (an app,
-//    key or playback control name: "No app called "Reach" is on the TV.") can bring such a word
-//    in with the quote. Classify with fault_of(), not with words.
+//    service is closed") say "did not answer", read by home::who_answered() (driver.h) as
+//    nobody answering, which is right: only then can a re-discovery at a new address help (a TV
+//    that is starting up has not moved: kStarting's messages do not say it). A message that
+//    quotes what was asked for (an app, key or playback control name) carries the quote's words
+//    too. Classify with fault_of(), not with words.
 //  - Ports. The API port is Device::info "api_port" when present (digits), else Device::port
 //    when not 0 and the TV is on a loopback address (a test pointing at a mock, as the common
 //    brief asks), else 8080. A non-zero Device::port is NOT honoured on a real network, because

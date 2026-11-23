@@ -23,7 +23,6 @@
 #include <string>
 #include <thread>
 
-#include "core/util.h"
 #include "smarthome/drivers/tapo_driver.h"
 
 using namespace kasa::detail;
@@ -456,8 +455,8 @@ static void test_identity() {
     blank["mic_mac"] = "";
     check("zeros saved and zeros reported: not the same device", !same_device("00:00:00:00:00:00", blank) &&
                                                                      !same_device("000000000000", blank));
-    const std::string low = util::lower(kasa::kOtherDevice);
-    check("its sentence reads as 'not at that address', so the app looks for the device again", has(low, "answer"));
+    check("its sentence reads as 'not at that address', so the app looks for the device again",
+          home::who_answered(kasa::kOtherDevice) == home::Answered::Another);
 }
 
 // ---------------------------------------------------------------- the driver on 127.0.0.1
@@ -550,11 +549,8 @@ static void test_driver() {
         const bool a = kasa->apply(dev, dev.things[0], on, 2500, err);
         check("moved: read and apply refuse too", !r && !a && has(err, kasa::kNewLogin));
         check("moved: the device was never contacted", !l.pending(200));
-        const std::string low = util::lower(err);
-        bool reads_unreachable = false;
-        for (const char *w : {"connect", "reach", "answer", "respond", "timed out", "timeout", "no route", "unreachable"})
-            reads_unreachable = reads_unreachable || has(low, w);
-        check("moved: the sentence does not read as 'did not answer' (no pointless re-scan)", !reads_unreachable, err);
+        check("moved: the sentence does not read as 'did not answer' (no pointless re-scan)",
+              home::who_answered(err) == home::Answered::Device, err);
     }
 
     // Device::port is honoured, and the request is the plain get_sysinfo.
@@ -685,7 +681,7 @@ static void test_driver() {
             t.join();
             const std::string what = empty ? "an empty MAC" : "no MAC";
             check("an answer with " + what + ": the change is refused, in words that make the app look for the device",
-                  !ok && err == kasa::kNoMac && has(err, "answers"), err);
+                  !ok && err == kasa::kNoMac && home::who_answered(err) == home::Answered::Another, err);
             check("an answer with " + what + ": it was only asked what it is", got == std::vector<std::string>{get} && !l.pending(300),
                   got.empty() ? "" : got.back());
             std::vector<home::Thing> out;
@@ -703,11 +699,8 @@ static void test_driver() {
             dev.mac = "";   // a saved device without a MAC: it cannot be checked, so nothing is sent
             const bool ok = kasa->apply(dev, dev.things[0], on, 2500, err);
             check("no saved MAC: the change is refused, and nothing was sent", !ok && err == kasa::kNoIdentity && !l.pending(300), err);
-            bool reads_unreachable = false;
-            for (const char *w : {"connect", "reach", "answer", "respond", "timed out", "timeout", "no route", "unreachable"})
-                reads_unreachable = reads_unreachable || has(util::lower(err), w);
-            check("no saved MAC: the sentence does not send the app looking for it (there is nothing to know it by)", !reads_unreachable,
-                  err);
+            check("no saved MAC: the sentence does not send the app looking for it (there is nothing to know it by)",
+                  home::who_answered(err) == home::Answered::Device, err);
             dev.mac = "00:00:00:00:00:00";   // zeros name no device (fix round 2, C5)
             check("a saved MAC of zeros: the change is refused, and nothing was sent",
                   !kasa->apply(dev, dev.things[0], on, 2500, err) && err == kasa::kNoIdentity && !l.pending(300), err);

@@ -24,6 +24,7 @@ import urllib.request
 TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
 sys.path.insert(0, TESTS)
 import netguard   # noqa: E402
+from lib.answered import looked_for   # noqa: E402  who answered, as the app reads a driver's error
 netguard.sanitize()   # no key or proxy of the caller's; the app pinned (ZB_EXP_NET) and on the stand-in network
 
 CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "unit", "firetv_cli")
@@ -200,10 +201,9 @@ def message(err):
 
 
 def reads_as_unreachable(err):
-    """Whether the app's control.cpp unreachable() would take this error for "it did not answer"
-    (it then searches the network for 2.5 s and may apply the change again at a new address)."""
-    e = message(err).lower()
-    return any(w in e for w in ("connect", "reach", "answer", "respond", "timed out", "timeout", "no route", "unreachable"))
+    """Whether the app takes this error for nobody, or another device, answering at the TV's address (it then
+    searches the network for 2.5 s and may apply the change again at a new address)."""
+    return looked_for(message(err))
 
 
 def api_requests(st, path=None, method=None):
@@ -444,15 +444,15 @@ def command_tests(m, tv):
     m.reset(state="awake", caps="tv")
     tv.cli("enumerate")
 
-    # A message that quotes what was asked for can carry one of the words control.cpp's
-    # unreachable() looks for in the quote ("Reach"); the fixed words never do, and fault_of()
-    # (the CLI's error[...]) classifies it the same either way (README-snippet: use fault_of()).
-    rc, out, err, _ = tv.apply({"source": "Reach"})
-    rc2, out2, err2, _ = tv.apply({"source": "Hulu"})
-    check("a quoted name can bring the app's 'unreachable' words in, the fixed words do not; fault_of() says other",
+    # A message that quotes what was asked for can carry the words the app reads as nobody answering
+    # ("did not answer") in the quote; the fixed words never do, and fault_of() (the CLI's error[...])
+    # classifies it the same either way (README-snippet: use fault_of()).
+    rc, out, err, _ = tv.apply({"source": "Did not answer"})
+    rc2, out2, err2, _ = tv.apply({"source": "Reach"})
+    check("a quoted name can bring the app's 'did not answer' in, the fixed words do not; fault_of() says other",
           rc == 1 and rc2 == 1 and fault(err) == "other" and fault(err2) == "other" and
-          message(err) == 'No app called "Reach" is on the TV.' and reads_as_unreachable(err) and
-          message(err2) == 'No app called "Hulu" is on the TV.' and not reads_as_unreachable(err2), (err, err2))
+          message(err) == 'No app called "Did not answer" is on the TV.' and reads_as_unreachable(err) and
+          message(err2) == 'No app called "Reach" is on the TV.' and not reads_as_unreachable(err2), (err, err2))
 
     m.reset(state="awake", caps="tv")
     rc, out, err, elapsed = tv.apply({"volume_step": 3})

@@ -7,6 +7,8 @@
 //    threads, no long-lived connections, no subscriptions: state is read on demand.
 //  - Deadlines: about 2.5 s to apply a change, 4 s to list a bridge's things.
 //  - Errors are short sentences a person can be told; never raw protocol text, never a secret.
+//    One that says nothing answered at the device's address, or another device did, uses the
+//    words who_answered() below knows; no other error does.
 //  - Names that come from a device are untrusted: trimmed, control characters removed, capped
 //    at 40 characters.
 //  - Only device types on the driver's allow-list become things. Locks, garage doors, alarms,
@@ -144,6 +146,21 @@ void refuse(const std::string &slot, const std::string &print);
 bool refused(const std::string &slot, const std::string &print);
 void forgive(const std::string &slot);
 }  // namespace trial
+
+// Who answered at a device's saved address, as the shared layer reads a driver's error (defined in
+// control.cpp). The router may have given the device another address: the layer looks for it on the
+// network (a short scan, 2.5 s) when nothing answered at the saved one, or another device did. A
+// device that answered, only wrongly (a reply that could not be read, an error code, a refusal), is
+// where it was: looked for, it was searched for in vain and then called "not found at another address
+// ... switched off at the wall" (ZB-108). The words, in any capitals:
+//   Nobody    "did not answer", "could not be reached", "cannot connect", "refused the connection",
+//             "closed the connection"
+//   Another   "answers at this" or "answered at this" (address): another device, one that would not
+//             say which device it is, or an answer none of the family would give, before the device
+//             has said who it is (Tapo's login comes first: a web server's 404 to it)
+//   Device    any other error: the device answered, or nothing was sent
+enum class Answered { Device, Nobody, Another };
+Answered who_answered(const std::string &err);
 
 class Driver {
 public:

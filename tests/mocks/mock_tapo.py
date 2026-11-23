@@ -21,8 +21,9 @@ which also clears all state. The budget is how many requests each successive ses
 it; locked answers every login step with the lock (-2101) from the first, as a plug another app has locked does, before
 any proof of the password; refuse_set answers every switch command with error -1001 (the plug says no), for tests of
 what the app does after a command fails. deep adds a "pad" nested DEEP levels to otherwise right answers: "login" to
-every TPAP login step's, "reply" to every command's (inside the encryption, KLAP and TPAP), "lost" to the
-plain notice that a TPAP session is no longer known; for tests that the app reads none of them (ZB-093).
+every TPAP login step's, "reply" to every command's (inside the encryption, KLAP and TPAP), "commands" to every
+command's but get_device_info's (so the plug names its MAC first), "lost" to the plain notice that a TPAP session is no
+longer known; for tests that the app reads none of them (ZB-093).
 
 It binds 127.0.0.1 only.
 """
@@ -443,7 +444,8 @@ class Mock:
         reply = {"error_code": code}
         if result is not None:
             reply["result"] = result
-        return padded(json.dumps(reply)) if self.deep == "reply" else json.dumps(reply)
+        deep = self.deep == "reply" or (self.deep == "commands" and req.get("method") != "get_device_info")
+        return padded(json.dumps(reply)) if deep else json.dumps(reply)
 
     # --- KLAP -------------------------------------------------------------------------------
 

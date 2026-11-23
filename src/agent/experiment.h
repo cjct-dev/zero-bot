@@ -31,6 +31,10 @@
 //                          transmitter refuse with an error instead of being used: the live test sets'
 //                          runners set it, so a test run never sends a real photo to the service or
 //                          an infrared code into the room, whatever the model does
+//   ZB_EXP_SCAN=FILE       on the stand-in test network, where nothing is ever scanned, the short search for a
+//                          device that may have moved (control.cpp relocate) is made all the same: it hears
+//                          nothing, and appends a line to FILE. For the end-to-end tests: whether a command
+//                          looked for a device, and what its error then says
 //   ZB_EXP_DECIDE, ZB_EXP_TOOLS, ZB_EXP_CHECK_MODEL   variants retired in November 2026: set to anything,
 //                          they stop the run at start, so that an old command does not measure the
 //                          default under their name
@@ -53,6 +57,7 @@ struct Switches {
     std::string web;                        // ZB_EXP_WEB ("" = the real services)
     bool no_hardware = false;               // ZB_EXP_NO_HARDWARE
     std::string net;                        // ZB_EXP_NET: "loopback" or the one origin allowed besides ("" = unrestricted)
+    std::string scan;                       // ZB_EXP_SCAN: the file each stand-in search is noted in ("" = none)
 };
 
 #if ZB_EXPERIMENTS
@@ -72,6 +77,7 @@ std::string no_infrared();                      // ZB_EXP_NO_HARDWARE: the trans
 std::string net_refusal(const std::string &url);  // ZB_EXP_NET: why a request to url may not be sent, or ""
 inline bool net_pinned() { return !get().net.empty(); }   // ZB_EXP_NET: no redirect is followed
 std::string no_lan();                           // ZB_EXP_NET: why the real network is not identified, or ""
+bool stand_in_scan();                           // ZB_EXP_SCAN: a search on the test network, noted; false when unset
 
 // One request, from the input absorbed to its last word: built up in Agent::Turn.
 class RequestTrace {
@@ -108,6 +114,7 @@ inline std::string no_infrared() { return std::string(); }
 inline std::string net_refusal(const std::string &) { return std::string(); }
 inline bool net_pinned() { return false; }
 inline std::string no_lan() { return std::string(); }
+inline bool stand_in_scan() { return false; }
 class RequestTrace {
 public:
     void absorbing() {}

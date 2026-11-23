@@ -14,6 +14,7 @@
 #include <system_error>
 #include <thread>
 
+#include "agent/experiment.h"
 #include "core/result.h"
 #include "smarthome/color.h"
 #include "smarthome/drivers/support.h"
@@ -512,8 +513,9 @@ std::string question_first(const std::string &sig, std::string reason, const std
 
 // ---------------------------------------------------------------- talking to devices
 // A device whose saved address no longer answers is looked for again by asking the network the
-// way the user's own scan does (on a network they opted in, never on the stand-in test network),
-// and recognised by its identifier, never by going through addresses. One scan serves every device
+// way the user's own scan does (on a network they opted in, never on the stand-in test network,
+// where an end-to-end test may have it noted instead: ZB_EXP_SCAN), and recognised by its
+// identifier, never by going through addresses. One scan serves every device
 // that needs it for 20 seconds. Only addresses change: the saved devices that answered from a new
 // address (or port) are moved there; nothing is added and nothing else of theirs is replaced, since
 // a short scan in the middle of a command is not the user's scan from Settings, which alone adds
@@ -563,7 +565,7 @@ bool look_again(const std::string &network_id) {
 
 Lookup relocate(const std::string &network_id, Saved &device) {
     std::lock_guard<std::mutex> lk(g_lookup_mtx);
-    if (!g_test_scan && test_network()) return Lookup::NotTried;
+    if (!g_test_scan && test_network()) return experiment::stand_in_scan() ? Lookup::NotFound : Lookup::NotTried;
     const bool recent = g_found_on == network_id && g_found_at != 0 && now_ms() - g_found_at <= 20000;
     if (recent) {
         const discovery::Network net = network_now(true);
@@ -581,27 +583,19 @@ Lookup relocate(const std::string &network_id, Saved &device) {
     return Lookup::NotFound;
 }
 
-// Whether a driver's error says the device did answer, only not as hoped ("answered with error
-// code -1501", "the plug's answer could not be read"). unreachable() lets these through too, since
-// another device may have taken the address, but such a device is not "busy or starting up".
-bool answered(const std::string &err) {
-    const std::string e = util::lower(err);
-    return e.find("answered") != std::string::npos || e.find("'s answer") != std::string::npos ||
-           e.find("its answer") != std::string::npos;
-}
-
-// Added to "it did not answer" (`err`) once the device has been looked for on the network. `off`: the
-// change was to switch it off. A device found nowhere then seems to be off already, which is what the
-// user wants; "switched off at the wall, or out of Wi-Fi range" read as a fault, and the model passed it
-// on for a Fire TV in deep standby (ZB-075). A driver that says so itself ("seems to be off already")
-// gets nothing more.
+// Added to the error of a device that may have moved (`err`: nobody, or another device, answered at its
+// address) once it has been looked for on the network. `off`: the change was to switch it off. A device
+// found nowhere then seems to be off already, which is what the user wants; "switched off at the wall, or
+// out of Wi-Fi range" read as a fault, and the model passed it on for a Fire TV in deep standby (ZB-075).
+// A driver that says so itself ("seems to be off already") gets nothing more. One still announcing itself
+// where it was may be busy only if nothing answered there.
 const char *after_lookup(Lookup where, const std::string &err, bool off) {
     if (where == Lookup::NotFound && off)
         return util::lower(err).find("off already") != std::string::npos ? "" : "; it seems to be off already";
     if (where == Lookup::NotFound)
         return "; it was not found at another address on the network either (it may be switched off at the wall, or out of "
                "Wi-Fi range)";
-    if (where == Lookup::StillThere && !answered(err))
+    if (where == Lookup::StillThere && who_answered(err) == Answered::Nobody)
         return "; it still announces itself on the network at the same address, so it may be busy or starting up";
     return "";
 }
@@ -623,13 +617,9 @@ bool repeatable(const Change &c) {
     return !c.volume_step && !c.key && !c.transport;
 }
 
-// Whether a driver's error reads as "it did not answer" rather than "it said no".
-bool unreachable(const std::string &err) {
-    const std::string e = util::lower(err);
-    for (const char *w : {"connect", "reach", "answer", "respond", "timed out", "timeout", "no route", "unreachable"})
-        if (e.find(w) != std::string::npos) return true;
-    return false;
-}
+// Whether a driver's error says the device may have moved: nothing answered at its saved address, or
+// another device did (who_answered, driver.h). One that answered, however wrongly, is where it was.
+bool may_have_moved(const std::string &err) { return who_answered(err) != Answered::Device; }
 
 bool call_apply(Driver *drv, const Device &dev, const Thing &t, const Change &c, std::string &err) {
     try {
@@ -672,8 +662,8 @@ bool apply_together(Driver *drv, const Saved &dev, const std::vector<Step *> &to
 
 // Each thing its own request. A device that spent most of its time on a change and then did not answer
 // is not asked again for each of its other things in this command: a stalled four-relay device cost
-// 2.5 s a relay, and only then was it looked for. A quick "did not answer" (a refused connection, a
-// bridge reporting one lamp out of reach) is asked thing by thing as before. False when the connection
+// 2.5 s a relay, and only then was it looked for. A quick failure (a refused connection, a bridge
+// reporting one lamp out of reach) is asked thing by thing as before. False when the connection
 // moved part-way: the rest are not sent.
 bool apply_each(const std::string &network_id, Driver *drv, const Saved &dev, const std::vector<Step *> &todo) {
     std::string stalled, why;
@@ -686,9 +676,8 @@ bool apply_each(const std::string &network_id, Driver *drv, const Saved &dev, co
         const auto started = std::chrono::steady_clock::now();
         todo[k]->ok = call_apply(drv, dev, todo[k]->item->thing, todo[k]->change, todo[k]->err);
         const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
-        // unreachable() also lets "answered with error code ..." through (another device may
-        // have the address); a device that answered, however slowly, has not stalled.
-        if (!todo[k]->ok && took.count() >= kStalledMs && unreachable(todo[k]->err) && !answered(todo[k]->err))
+        // Something that answered, however slowly (another device at the address included), has not stalled.
+        if (!todo[k]->ok && took.count() >= kStalledMs && who_answered(todo[k]->err) == Answered::Nobody)
             stalled = todo[k]->err;
     }
     return true;
@@ -720,7 +709,7 @@ void apply_device(const std::string &network_id, const Saved &saved, std::vector
         // there once more, and only when the device has turned up at another address, so the first
         // cannot have reached it; and only a change that comes out the same if it did after all.
         const bool none_ok = std::none_of(todo.begin(), todo.end(), [](const Step *s) { return s->ok; });
-        if (attempt > 0 || !none_ok || !unreachable(todo[0]->err)) return;
+        if (attempt > 0 || !none_ok || !may_have_moved(todo[0]->err)) return;
         const Lookup where = relocate(network_id, dev);   // saves the new address itself
         for (auto *s : todo) s->err += after_lookup(where, s->err, s->change.on == false);
         if (where != Lookup::Moved) return;
@@ -797,7 +786,7 @@ void read_now(const std::string &network_id, const NetworkEntry &e, const std::v
                 if (!ok) err = err.empty() ? "it did not answer" : clause(err);
                 // Re-discovery is worth its wait only for things asked about by name. Reading
                 // changes nothing, so it is always asked again at a new address.
-                if (ok || attempt > 0 || !detail || !unreachable(err)) break;
+                if (ok || attempt > 0 || !detail || !may_have_moved(err)) break;
                 const Lookup where = relocate(network_id, dev);
                 err += after_lookup(where, err, false);
                 if (where != Lookup::Moved) break;
@@ -912,6 +901,16 @@ std::string status(const std::string &network_id, const NetworkEntry &e, const s
 }  // namespace
 
 // ---------------------------------------------------------------- helpers shared with the other files
+// The drivers word their errors for this (driver.h lists the words).
+Answered who_answered(const std::string &err) {
+    const std::string e = util::lower(err);
+    for (const char *w : {"answers at this", "answered at this"})
+        if (e.find(w) != std::string::npos) return Answered::Another;
+    for (const char *w : {"did not answer", "could not be reached", "cannot connect", "refused the connection", "closed the connection"})
+        if (e.find(w) != std::string::npos) return Answered::Nobody;
+    return Answered::Device;
+}
+
 std::mutex &device_lock(const std::string &device_id) {
     std::lock_guard<std::mutex> lk(g_locks_mtx);
     auto &slot = g_locks[device_id];

@@ -28,14 +28,10 @@
 using namespace firetv;
 using namespace firetv::detail;
 
-// The words src/smarthome/control.cpp unreachable() looks for (lower case) to decide that a
-// device may have moved; the app then scans the network for 2.5 s and may apply the change again.
-static bool reads_as_unreachable(std::string err) {
-    for (char &c : err) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    for (const char *w : {"connect", "reach", "answer", "respond", "timed out", "timeout", "no route", "unreachable"})
-        if (err.find(w) != std::string::npos) return true;
-    return false;
-}
+// Whether an error says the device may have moved (home::who_answered, driver.h: nobody, or another
+// device, answered at its address); the app then scans the network for 2.5 s and may apply the
+// change again.
+static bool reads_as_unreachable(const std::string &err) { return home::who_answered(err) != home::Answered::Device; }
 
 static uint32_t ip4(const char *text) {
     in_addr a{};
@@ -587,10 +583,10 @@ int main(int argc, char **argv) {
         c.source = "hdmi 2";
         eq("plan: on=true with an input: unsupported as a whole, so the TV is not woken first", planned(c), "ERR(unsupported)");
 
-        // Messages that quote what was asked for (review round 2): the quote can bring in a word
-        // control.cpp's unreachable() list matches; the fixed words never do, and fault_of() puts
-        // them all in Other, whatever the name.
-        for (const char *name : {"connect", "Reach", "respond", "timeout", "zzz"}) {
+        // Messages that quote what was asked for (review round 2): the quote can bring in the words
+        // home::who_answered() reads as nobody answering; the fixed words never do, and fault_of()
+        // puts them all in Other, whatever the name.
+        for (const char *name : {"connect", "Reach", "respond", "timeout", "zzz", "Did not answer"}) {
             home::Thing t;
             t.id = "tv";
             std::vector<Action> acts;
@@ -600,8 +596,9 @@ int main(int argc, char **argv) {
             plan(t, k, acts, err);
             check(std::string("app word list: \"There is no TV key called \"") + name + "\".\" is fault other",
                   fault_of(err) == Fault::Other, err);
-            if (std::string(name) == "zzz") check("app word list: its fixed words do not read as unreachable", !reads_as_unreachable(err), err);
-            if (std::string(name) == "Reach") check("app word list: the quote can (so the app must use fault_of())", reads_as_unreachable(err), err);
+            if (std::string(name) != "Did not answer")
+                check("app word list: its fixed words and a single quoted word do not read as unreachable", !reads_as_unreachable(err), err);
+            else check("app word list: the quote can (so the app must use fault_of())", reads_as_unreachable(err), err);
             k = home::Change();
             k.transport = name;
             plan(t, k, acts, err);

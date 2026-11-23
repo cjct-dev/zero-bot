@@ -401,6 +401,10 @@ using detail::Bytes;
 
 const int kWrongPassword = -2203, kLocked = -2101;
 const char kNoRetry[] = " (not tried again, so that the plug does not lock itself; correct the account details first)";
+// Added to an answer no plug would give, from before the plug in this session has named its MAC (check_plug):
+// the router may have given its address to a web server or another device, so the app looks for the plug at a
+// new address (home::who_answered reads "answers at this"). An address is not an identity.
+const char kMaybeAnother[] = "; it may be another device that now answers at this plug's address";
 
 struct Http {
     long status = 0;
@@ -575,11 +579,12 @@ bool login_klap(const std::string &host, const std::string &base, const std::str
     Http h;
     if (!http_post(host, url + "/handshake1", local, "application/octet-stream", "", h, err)) return false;
     if (h.status == 403) {
-        err = "the plug refuses the KLAP login; it has probably switched to TPAP (run discovery again)";
+        err = "the plug refuses the KLAP login: it has probably switched to TPAP (run discovery again), or another device now "
+              "answers at this plug's address";
         return false;
     }
     if (h.status != 200 || h.body.size() != 48) {
-        err = "the plug answered the first login step unexpectedly (HTTP " + std::to_string(h.status) + ")";
+        err = "the plug answered the first login step unexpectedly (HTTP " + std::to_string(h.status) + ")" + kMaybeAnother;
         return false;
     }
     const Bytes remote = h.body.substr(0, 16);
@@ -619,7 +624,7 @@ bool login_step(const std::string &host, const std::string &base, const json &pa
     resp = h.status == 200 ? util::parse_untrusted_json(h.body) : json();
     long long code = 0;
     if (!get_int(resp, "error_code", code)) {
-        err = "the plug answered the login unexpectedly (HTTP " + std::to_string(h.status) + ")";
+        err = "the plug answered the login unexpectedly (HTTP " + std::to_string(h.status) + ")" + kMaybeAnother;
         return false;
     }
     return true;
@@ -703,7 +708,7 @@ bool pake_register(const std::string &host, const std::string &base, State &st, 
         !detail::unb64(get_str(r, "dev_random"), dev_random) || dev_random.size() != 32 ||
         !detail::unb64(get_str(r, "dev_salt"), salt) || salt.empty() ||
         !detail::unb64(get_str(r, "dev_share"), dev_share)) {
-        err = "the plug's answer to the login cannot be used";
+        err = std::string("the plug's answer to the login cannot be used") + kMaybeAnother;
         return false;
     }
     // Which form of the password the plug holds. Only id 2, the hex SHA-1, can be made from what is stored.
@@ -859,15 +864,17 @@ Sent send(const std::string &host, Session &s, const std::string &plain, json &r
         }
         opened = h.status == 200 && detail::klap_open(s.klap, seq, h.body, text);
     }
+    // Before the plug has named its MAC in this session, an answer no plug would give may be another device's.
+    const char *const unproven = s.mac.empty() ? kMaybeAnother : "";
     if (!opened) {
-        err = h.status != 200 ? "the plug answered with HTTP " + std::to_string(h.status)
-                              : "the plug's answer could not be decrypted";
+        err = (h.status != 200 ? "the plug answered with HTTP " + std::to_string(h.status)
+                               : std::string("the plug's answer could not be decrypted")) + unproven;
         return Sent::failed;
     }
     resp = util::parse_untrusted_json(text);
     long long code = 0;
     if (!get_int(resp, "error_code", code)) {
-        err = "the plug's answer cannot be read";
+        err = std::string("the plug's answer cannot be read") + unproven;
         return Sent::failed;
     }
     if (code == 9999 || code == -40401 || code == -2402) {   // session timed out, said inside the session
