@@ -250,10 +250,10 @@ void sample_home() {
     util::save_json(util::data_dir() + "/smarthome.json", root);
 }
 
-// Made-up web search services for the settings pages: Tavily with what this month's searches and its last word left
-// in the allowance file, then Brave, whose key it refused. In memory only, like the other settings here: never asked.
+// Made-up web search services for the settings pages: Tavily, with its searches this month and the figure it last gave
+// in the allowance file, then Brave, which refused its key. In memory only, like the other settings here: never asked.
 void sample_search() {
-    const SearchService tavily{"tavily", "tvly-sample-key-0001"}, brave{"brave", "BSA-sample-key-0002"};
+    const SearchService tavily{"tavily", "sample-key-0001"}, brave{"brave", "sample-key-0002"};
     Settings::update([&](Settings &s) {
         s.search = {tavily, brave};
         s.search[1].refused = search::key_print(brave.key);
@@ -1164,7 +1164,6 @@ void App::shots_smart_home(Shots &shots) {
 // AI service > Web search, with the sample services (sample_search). From the section's page, and back to it.
 void App::shots_web_search(Shots &shots) {
     auto snap = [&shots](const char *name) { shots.snap(name); };
-    KeyEvent enter; enter.key = Key::Enter; enter.state = 1;
     KeyEvent esc; esc.key = Key::Esc; esc.state = 1;
     KeyEvent right; right.key = Key::Right; right.state = 1;
     KeyEvent left; left.key = Key::Left; left.state = 1;
