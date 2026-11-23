@@ -155,6 +155,18 @@ std::string truncate_utf8(const std::string &s, size_t max_bytes, const char *el
     return s.substr(0, cut) + ellipsis;
 }
 
+void append_utf8(std::string &out, uint32_t cp) {
+    if (cp < 0x80) out += static_cast<char>(cp);
+    else if (cp < 0x800) { out += static_cast<char>(0xC0 | (cp >> 6)); out += static_cast<char>(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) {
+        out += static_cast<char>(0xE0 | (cp >> 12)); out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else {
+        out += static_cast<char>(0xF0 | (cp >> 18)); out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); out += static_cast<char>(0x80 | (cp & 0x3F));
+    }
+}
+
 std::string sanitize_utf8(const std::string &s) {
     std::string out;
     out.reserve(s.size());

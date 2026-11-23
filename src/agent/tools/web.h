@@ -29,6 +29,7 @@ struct Fetched {
     bool timed_out = false;                    // the deadline passed before the answer was in
     bool garbled = false;                      // a success whose body is not JSON this app reads
     std::map<std::string, std::string> headers;   // those Fetch::keep_headers asked for, by lower-case name
+    std::string body;                          // an error answer's body, as it came (a service's own error code)
 };
 
 // The JSON a read of `url` answered; null with `err` set when it failed. `got`, when given, says more.

@@ -32,18 +32,6 @@ const char *kId3v1Genres[] = {
 };
 const int kGenreCount = sizeof(kId3v1Genres) / sizeof(kId3v1Genres[0]);
 
-void append_utf8(std::string &out, uint32_t cp) {
-    if (cp < 0x80) out += static_cast<char>(cp);
-    else if (cp < 0x800) { out += static_cast<char>(0xC0 | (cp >> 6)); out += static_cast<char>(0x80 | (cp & 0x3F)); }
-    else if (cp < 0x10000) {
-        out += static_cast<char>(0xE0 | (cp >> 12)); out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-        out += static_cast<char>(0x80 | (cp & 0x3F));
-    } else {
-        out += static_cast<char>(0xF0 | (cp >> 18)); out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); out += static_cast<char>(0x80 | (cp & 0x3F));
-    }
-}
-
 // Decodes an ID3 text frame body (first byte is the encoding).
 std::string decode_text(const std::string &raw) {
     if (raw.empty()) return "";
@@ -51,7 +39,7 @@ std::string decode_text(const std::string &raw) {
     const std::string body = raw.substr(1);
     std::string out;
     if (enc == 0) {
-        for (unsigned char c : body) { if (!c) break; append_utf8(out, c); }
+        for (unsigned char c : body) { if (!c) break; util::append_utf8(out, c); }
     } else if (enc == 3) {
         out = body.substr(0, body.find('\0'));
     } else {  // UTF-16 with BOM (1) or big-endian without (2)
@@ -72,7 +60,7 @@ std::string decode_text(const std::string &raw) {
                 cu = 0x10000 + ((cu - 0xD800) << 10) + (lo - 0xDC00);
                 i += 2;
             }
-            append_utf8(out, cu);
+            util::append_utf8(out, cu);
         }
     }
     return util::trim(util::sanitize_utf8(out));
@@ -151,7 +139,7 @@ void read_id3v1(FILE *fp, Track &t) {
         std::string s(tag + off, static_cast<size_t>(len));
         s = s.substr(0, s.find('\0'));
         std::string out;
-        for (unsigned char c : s) append_utf8(out, c);
+        for (unsigned char c : s) util::append_utf8(out, c);
         return util::trim(out);
     };
     if (t.title.empty()) t.title = field(3, 30);

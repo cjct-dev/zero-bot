@@ -25,6 +25,7 @@ json search_to_json(const std::vector<SearchService> &list) {
         e["kind"] = s.kind;
         e["key"] = s.key;
         e["enabled"] = s.enabled;
+        if (!s.refused.empty()) e["refused"] = s.refused;
         out.push_back(std::move(e));
     }
     return out;
@@ -43,8 +44,9 @@ std::vector<SearchService> search_from_json(const json &j, std::vector<SearchSer
     std::vector<SearchService> out;
     for (const json &e : *list) {
         if (!e.is_object()) continue;
-        SearchService s{jget(e, "kind", std::string()), jget(e, "key", std::string()), jget(e, "enabled", true), e};
-        for (const char *known : {"kind", "key", "enabled"}) s.more.erase(known);
+        SearchService s{jget(e, "kind", std::string()), jget(e, "key", std::string()), jget(e, "enabled", true), e,
+                        jget(e, "refused", std::string())};
+        for (const char *known : {"kind", "key", "enabled", "refused"}) s.more.erase(known);
         out.push_back(std::move(s));
     }
     return out;
@@ -178,7 +180,11 @@ std::string Settings::search_key(const std::string &kind) const {
 
 void Settings::set_search_key(const std::string &kind, const std::string &key) {
     for (SearchService &s : search)
-        if (s.kind == kind) { s.key = key; return; }
+        if (s.kind == kind) {
+            s.key = key;
+            s.refused.clear();
+            return;
+        }
     if (!key.empty()) search.push_back({kind, key});
 }
 

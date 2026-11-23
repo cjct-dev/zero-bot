@@ -40,7 +40,11 @@ struct Reply {
     Outcome outcome = Outcome::Unreachable;
     std::string summary;           // the service's own short answer, when it gives one
     std::vector<Hit> hits;         // in the service's order
-    std::string error;             // on a failure: a short sentence for the model (fetch_json's words)
+    std::string error;             // on a failure: a short sentence (fetch_json's words)
+    // What the service said of its allowance, where it says: nothing left after this search (an answer), and
+    // in how many seconds it comes back (with that, or with Spent; 0 when it did not say).
+    bool none_left = false;
+    long reset_s = 0;
 };
 
 // The outcome any HTTP service's answer means (fetch_json's `err` and `got`); a provider adds its own
@@ -64,5 +68,16 @@ struct Registered {
 };
 const std::vector<Registered> &registry();
 const Provider *provider_for(const std::string &kind);   // null for a kind this version does not know
+// Adds a service at the end of the registry. The services built into the app are added by
+// register_builtin_providers() (providers/registry.cpp) the first time the registry is read; anything
+// else is a test's stand-in, added before the first search (testing::clear_providers first).
+void register_provider(std::unique_ptr<Provider> provider, const std::string &name);
+void register_builtin_providers();
+
+namespace testing {
+void clear_providers();   // no service at all: not even those built in, now or later
+void set_clock(unsigned long (*clock_ms)());   // the layer's milliseconds (deadlines, rests, allowances)
+void forget_health();     // this run's memory of every service: failures, rests and spent allowances
+}  // namespace testing
 
 }  // namespace search

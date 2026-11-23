@@ -34,6 +34,7 @@ json fetch_json(const std::string &url, std::string &err, Context &ctx, const Fe
         if (res.error == "no connection") err = "no internet connection";
         else if (!res.error.empty()) err = res.error;
         else {
+            seen.body = res.body;
             // An error page is HTML, which says nothing the model can use; a JSON or plain answer may.
             const std::string body = util::trim(res.body);
             err = "the service answered with an error (HTTP " + std::to_string(res.status) + ")";

@@ -10,6 +10,7 @@
 
 #define ZB_SEARCH_PROVIDERS(X) \
     X(tavily, "Tavily") \
+    X(brave, "Brave") \
     /* end of the list */
 
 #define ZB_DECLARE(kind, name) std::unique_ptr<search::Provider> make_##kind##_provider();
@@ -18,21 +19,10 @@ ZB_SEARCH_PROVIDERS(ZB_DECLARE)
 
 namespace search {
 
-const std::vector<Registered> &registry() {
-    static const std::vector<Registered> list = [] {
-        std::vector<Registered> out;
-#define ZB_REGISTER(kind, name) out.push_back({make_##kind##_provider(), name});
-        ZB_SEARCH_PROVIDERS(ZB_REGISTER)
+void register_builtin_providers() {
+#define ZB_REGISTER(kind, name) register_provider(make_##kind##_provider(), name);
+    ZB_SEARCH_PROVIDERS(ZB_REGISTER)
 #undef ZB_REGISTER
-        return out;
-    }();
-    return list;
-}
-
-const Provider *provider_for(const std::string &kind) {
-    for (const Registered &r : registry())
-        if (kind == r.provider->kind()) return r.provider.get();
-    return nullptr;
 }
 
 }  // namespace search

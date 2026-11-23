@@ -1,5 +1,6 @@
 // Paths, time and small string helpers.
 #pragma once
+#include <cstdint>
 #include <ctime>
 #include <string>
 #include <vector>
@@ -44,6 +45,7 @@ std::vector<std::string> split(const std::string &s, char sep);
 bool contains_ci(const std::string &haystack, const std::string &needle);
 std::string truncate_utf8(const std::string &s, size_t max_bytes, const char *ellipsis = "…");
 std::string sanitize_utf8(const std::string &s);     // replaces invalid bytes so JSON never throws
+void append_utf8(std::string &out, uint32_t cp);     // a code point (not a surrogate, at most U+10FFFF) as UTF-8
 std::string base64(const std::string &data);
 
 // Time. The app can run in a different zone from the system (useful when travelling).

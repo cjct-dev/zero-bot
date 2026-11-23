@@ -96,6 +96,16 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
 - `models_test.cpp`: the two model-choosing rules of `ui/models.h`.
 - `llm_stream_test.cpp`: the event stream's lines, the thinking-marker filter and tool calls put together from their
   pieces.
+- `search_test.cpp`: web search's layer (`src/agent/search/`) against stand-in services registered in place of those
+  built in (`search::register_provider` after `search::testing::clear_providers`, as `smarthome_test.cpp` does with a
+  fake driver; no service built in is ever asked, and every proxy variable points at a closed local port): the built-in
+  registry, what each reply means (`outcome_of`), when search counts as set up, what the model reads of an answer
+  (the summary, four results, each part capped, the title cleaned, only a web page's address as the source), and the
+  failover, on a clock of the test's own: the user's order, 5 s for the first of several and 8 s in all, every failure
+  moving on, a refused key never sent again (nor by a later run, until typed again), a spent allowance passed over
+  until it comes back, a rest after two failures in a row, nothing found tried once elsewhere, ESC, and one ERROR
+  sentence when none answered. `run_unit.sh` builds every service in `src/agent/search/providers/` by glob, as it does
+  the drivers.
 - `activity_test.cpp`: saved conversations: what a save holds, keys blanked out, size limits, modes, pruning, nothing
   written unless asked (diagnostic, temporary).
 - `firetv_cli.cpp`, `homekit_cli.cpp`, `hue_cli.cpp`, `kasa_cli.cpp`, `wiz_cli.cpp`, `shelly_cli.cpp`: not tests, the
@@ -152,7 +162,8 @@ several calls; its speech and transcription services can be made to fail too. It
 it sent: the held draft and second look, the claim guards (a table of phrasings that must and must not trip them),
 `say` confirmations, tool errors, steering, talk-over, the round budget and its apology, retries and service errors
 (and what a spoken request that comes to nothing hears), think markers, spelt-out dates, history trimming, smart-home
-questions, a byte-identical system prompt and the first request's size (a tripwire at 32,000 bytes, for a plain set-up
+questions, a byte-identical system prompt (also when web search's allowance runs out mid-conversation, against the
+stand-in web's `tavily_spent`: the tools unchanged too) and the first request's size (a tripwire at 32,000 bytes, for a plain set-up
 and with every tool offered: web search, ten radio stations, a home; raise it knowingly). With no `ZB_EXP_*` variable
 set nothing sent or done changes (checked here). Add a scenario here with any change to `agent.cpp` or `llm.cpp`.
 
@@ -160,7 +171,14 @@ set nothing sent or done changes (checked here). Add a scenario here with any ch
 each in a fresh state folder; it also checks the hardware guard (`ZB_EXP_NO_HARDWARE`), the stand-in web's proxy and
 redirect rules, when web search is set up by the settings' list of services and searches with which key
 (`search_services`: an older file's `search_key`, `ZB_SEARCH_KEY`, an entry switched off, without a key or of a kind a
-newer version wrote), and that a live case reaches no real web service (`no_real_web`, which imports the live sets'
+newer version wrote), that every search service built in (`search_shapes`, which reads
+`src/agent/search/providers/registry.cpp`) has its shape in the stand-in web, is asked there with the stand-in's key and
+gives the model the same facts as the others, as plain text, and that a refused key and a hostile answer
+(`search_hostile`) come back as an ERROR or capped and cleaned, the failover between the services against the stand-in's
+fixtures (`search_failover`: the order asked, a second service only after the first failed or found nothing, the
+answer that worked or one ERROR, a refused key not sent again by a later run, a spent allowance or one that said
+nothing is left passed over and two failures in a row resting a service within a run, 5 s for a slow first service
+and 8 for one alone), and that a live case reaches no real web service (`no_real_web`, which imports the live sets'
 runner, `agent/agent_eval.py`, to run one).
 
 **The package.** `packaging_test.py` (group `packaging`) runs `scripts/package-deb.sh` with a stand-in binary in a
@@ -222,7 +240,14 @@ stand-in web (`mocks/fake_web.py` and its data in `mocks/web/`, through the `cli
 for an `http://127.x` address and compiled out of the device build); `web(fixture)` in a case's env picks a fixture
 other than `default`: forecasts (`rain59`, `rain60`, `rainmissing`), event times (`events`: one published, one not
 announced) and the edges (`search_empty`, `search_error`, `search_irrelevant`, `search_conflict`, `search_stale`,
-`search_long`, `weather_error`, `weather_partial`, `rates_missing`, each with a scored case of its own). **Variety, not
+`search_long`, `weather_error`, `weather_partial`, `rates_missing`, each with a scored case of its own). Search is
+answered in the shape of every search service the app knows (`SEARCH_SHAPES`: Tavily, then Brave, each at its own
+address, taking only the stand-in's key in its own way, each with its own refusal, spent allowance, rate limit, outage
+and hostile reply), all made from the same rules, so the same facts come back whichever service is asked; the fixtures
+for the failover between them put one service on a bad day while the others answer as usual (`tavily_down`,
+`tavily_spent`, `tavily_slow`, `tavily_empty`, `brave_key_refused`, `brave_left_0`, `brave_spent`, `brave_busy`;
+`all_down` fails every one; `search_hostile` sends each one's hostile reply), and are used offline only
+(`sim/tools_cli.py`): the live sets search with one service, Tavily. **Variety, not
 volume:** every answer is drawn from a seed (values, wording, number of results, an unrelated result mixed in;
 forecasts made up for the place and season; rates and prices moved a few per cent), the same for the same seed and
 request, so checks work the right answer out from what was served, never from a number written into the case:

@@ -15,7 +15,8 @@ Covered: plain answers; fast mode's held draft, the note on the newest message a
 look (released on OK, or turned into the tool call it asks for); the unbacked-claim guard in
 English and other languages, and phrases it must leave alone; the "not saved" guard; "say"
 confirmations spoken without a second call, and when they are not; tool errors, unknown tools and
-bad arguments returned to the model; steering during a tool and during a draft; talk-over (nothing
+bad arguments returned to the model; web search's allowance spent mid-conversation (one ERROR, the prompt and
+tools unchanged); steering during a tool and during a draft; talk-over (nothing
 spoken or done while the microphone is open, or the words are on their way after it, every call of a
 batch included, the first after an answer has begun; a correction finished before the calls stops them
 too, the draft withdrawn when none of it was shown; talking over an answer that is heard stops it,
@@ -482,6 +483,32 @@ def tool_error_returned():
     res = text_of(r.messages(2)[-1]) if len(r.requests) > 1 else ""
     check(n + ": the error goes back to the model, phrased as what to do", res.startswith("ERROR: give the length"), res)
     check(n + ": its 'say' is not spoken; the model's reply is", r.answer == "How long should the timer run?" and len(r.requests) == 2, r)
+
+
+@scenario
+def search_spent_mid_conversation():
+    # Web search's allowance runs out in the middle of a conversation (the stand-in web's tavily_spent: the one service
+    # set up refuses every search as spent). The model reads one ERROR sentence, and the system prompt and the tools
+    # stay byte for byte the same in every request (web_search still offered: the service's cached prefix holds).
+    web = subprocess.Popen([sys.executable, "-I", os.path.join(TESTS, "mocks", "fake_web.py")], stdin=subprocess.PIPE,
+                           stdout=subprocess.PIPE, text=True, env=netguard.mock_env())
+    try:
+        port = web.stdout.readline().split()[2]
+        script = {"rules": [{"when": {"said": "louvre", "last": "user"}, "reply": calls(("web_search", {"query": "louvre opening hours on sunday"}))},
+                            {"when": {"last": "tool"}, "reply": {"text": "I could not look that up just now."}}],
+                  "default": {"text": "Hello."}}
+        r = run(script, said=["hello", "when does the louvre open on sunday", "thanks"], settings={"search": [{"kind": "tavily", "key": "stand-in"}]},
+                env={"ZB_EXP_WEB": "http://127.0.0.1:%s/tavily_spent" % port})
+    finally:
+        web.stdin.close()
+        web.wait(timeout=10)
+    n = "web search's allowance spent mid-conversation"
+    check(n + ": the model reads one ERROR sentence", any(str(x).startswith("ERROR: web search is not available right now") for x in r.results()),
+          r.results())
+    systems = {json.dumps(b.get("messages", [{}])[0], sort_keys=True) for b in r.bodies()}
+    tools = {json.dumps(b.get("tools"), sort_keys=True) for b in r.bodies()}
+    check(n + ": the system prompt is the same in every request", len(r.requests) >= 4 and len(systems) == 1, len(systems))
+    check(n + ": so are the tools, web_search among them", len(tools) == 1 and '"web_search"' in next(iter(tools)), len(tools))
 
 
 @scenario
