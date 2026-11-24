@@ -51,9 +51,10 @@ TIMERS="src/core/timers.cpp src/core/store.cpp src/platform/audio.cpp src/platfo
 # The radio needs these on top of the smart-home objects (for its name cleaning; net_status.cpp for the
 # tether) and audio.cpp.
 RADIO="src/core/radio.cpp src/core/tether.cpp"
-# The tools' foundations: the calculator and the check for card and ID numbers, with util.cpp, proc.cpp and
-# consent.cpp from above and common.cpp from SEARCH.
-TOOLS="src/agent/calc.cpp src/agent/tools/sensitive.cpp"
+# The tools' foundations: the calculator, the check for card and ID numbers and the memory tools (with the store,
+# the settings and say's checks), with util.cpp, proc.cpp, sys.cpp and consent.cpp from above and common.cpp from SEARCH.
+TOOLS="src/agent/calc.cpp src/agent/tools/sensitive.cpp src/agent/tools/memory_save.cpp src/agent/tools/memory_delete.cpp
+       src/agent/tools/say_checks.cpp"
 # DIAGNOSTICS (temporary): the activity log and saved conversations, with util.cpp from above.
 DIAG="src/core/activity.cpp src/core/settings.cpp"
 # What an older version left behind (core_test), with util.cpp and proc.cpp from above.
@@ -100,7 +101,9 @@ for src in $RADIO; do radio_objs="$radio_objs $(obj_of "$src")"; done
 $WRAP $CXX -o "$OUT/radio_test" "$OUT/tests_unit_radio_test.o" $radio_objs $objs -lcurl -lcrypto -ldl -lpthread
 $WRAP $CXX -o "$OUT/tools_test" "$OUT/tests_unit_tools_test.o" "$(obj_of src/agent/calc.cpp)" "$(obj_of src/core/util.cpp)" \
     "$(obj_of src/platform/proc.cpp)" "$(obj_of src/agent/tools/sensitive.cpp)" "$(obj_of src/agent/tools/common.cpp)" \
-    "$(obj_of src/agent/consent.cpp)" -lpthread
+    "$(obj_of src/agent/consent.cpp)" "$(obj_of src/agent/tools/memory_save.cpp)" "$(obj_of src/agent/tools/memory_delete.cpp)" \
+    "$(obj_of src/agent/tools/say_checks.cpp)" "$(obj_of src/core/store.cpp)" "$(obj_of src/core/settings.cpp)" \
+    "$(obj_of src/platform/sys.cpp)" -lpthread
 # The Fire TV driver's own tests; firetv_cli is what tests/sim/firetv_e2e.py drives against its mock.
 $WRAP $CXX -o "$OUT/firetv_test" "$OUT/tests_unit_firetv_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/firetv_cli" "$OUT/tests_unit_firetv_cli.o" $objs -lcurl -lcrypto -lpthread

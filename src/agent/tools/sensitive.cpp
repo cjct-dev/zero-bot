@@ -12,44 +12,70 @@ namespace tools {
 
 namespace {
 
-// A run of letters and digits (upper case), and what stands between it and the run before.
+// A run of letters and digits (ASCII, upper case), and what stands between it and the run before.
 struct Group {
     std::string text;
-    char sep = 0;      // ' ' or '-' when that one character alone joins it to the group before; 0 otherwise
+    std::string sep;   // " ", "-", ".", "/" or " - " when that alone joins it to the group before; "" otherwise
     char before = 0;   // the character just before it ('+' in front of a phone number), 0 at the start
 };
 
-// How a character between groups reads: a space (Unicode's other spaces too), a dash (and its look-alikes),
-// or itself ('?' beyond ASCII).
-char gap_char(uint32_t cp) {
-    if (cp == ' ' || cp == 0xA0 || (cp >= 0x2000 && cp <= 0x200A) || cp == 0x202F || cp == 0x205F || cp == 0x3000) return ' ';
-    if (cp == '-' || (cp >= 0x2010 && cp <= 0x2015) || cp == 0x2212 || cp == 0xFE63 || cp == 0xFF0D) return '-';
-    return cp < 0x80 ? static_cast<char>(cp) : '?';
+// The digit zero of every run of ten decimal digits in Unicode (category Nd) beyond ASCII: Arabic-Indic,
+// Devanagari, Thai, full-width, mathematical and the rest.
+const uint32_t kZeros[] = {
+    0x660,   0x6F0,   0x7C0,   0x966,   0x9E6,   0xA66,   0xAE6,   0xB66,   0xBE6,   0xC66,   0xCE6,   0xD66,   0xDE6,
+    0xE50,   0xED0,   0xF20,   0x1040,  0x1090,  0x17E0,  0x1810,  0x1946,  0x19D0,  0x1A80,  0x1A90,  0x1B50,  0x1BB0,
+    0x1C40,  0x1C50,  0xA620,  0xA8D0,  0xA900,  0xA9D0,  0xA9F0,  0xAA50,  0xABF0,  0xFF10,  0x104A0, 0x10D30, 0x11066,
+    0x110F0, 0x11136, 0x111D0, 0x112F0, 0x11450, 0x114D0, 0x11650, 0x116C0, 0x11730, 0x118E0, 0x11950, 0x11C50, 0x11D50,
+    0x11DA0, 0x11F50, 0x16A60, 0x16AC0, 0x16B50, 0x1D7CE, 0x1D7D8, 0x1D7E2, 0x1D7EC, 0x1D7F6, 0x1E140, 0x1E2F0, 0x1E4F0,
+    0x1E950, 0x1FBF0};
+
+// A letter or digit as ASCII, upper case: a decimal digit of any script, a full-width letter; 0 for anything else.
+char ascii_of(uint32_t cp) {
+    if (cp < 0x80) return isalnum(static_cast<int>(cp)) ? static_cast<char>(toupper(static_cast<int>(cp))) : 0;
+    for (const uint32_t zero : kZeros)
+        if (cp >= zero && cp < zero + 10) return static_cast<char>('0' + (cp - zero));
+    if (cp >= 0xFF21 && cp <= 0xFF3A) return static_cast<char>('A' + (cp - 0xFF21));
+    if (cp >= 0xFF41 && cp <= 0xFF5A) return static_cast<char>('A' + (cp - 0xFF41));
+    return 0;
+}
+
+// How a character between groups reads: a space (Unicode's other spaces too), a dash (and its look-alikes), a
+// full stop or a slash (full-width ones too), "" for what joins or styles a character and shows as nothing
+// (clean_text keeps the joiners and the text and emoji styles), or itself ('?' beyond ASCII).
+std::string gap_of(uint32_t cp) {
+    if (cp == ' ' || cp == 0xA0 || (cp >= 0x2000 && cp <= 0x200A) || cp == 0x202F || cp == 0x205F || cp == 0x3000) return " ";
+    if (cp == '-' || (cp >= 0x2010 && cp <= 0x2015) || cp == 0x2212 || cp == 0xFE63 || cp == 0xFF0D) return "-";
+    if (cp == 0xFF0E) return ".";
+    if (cp == 0xFF0F) return "/";
+    if (cp == 0x200C || cp == 0x200D || cp == 0xFE0E || cp == 0xFE0F) return "";
+    return std::string(1, cp < 0x80 ? static_cast<char>(cp) : '?');
 }
 
 std::vector<Group> groups_of(const std::string &raw) {
     const std::string text = clean_text(raw);   // a hidden character inside a number does not split it
     const unsigned char *p = reinterpret_cast<const unsigned char *>(text.data());
     std::vector<Group> out;
-    std::string gap;   // what stands since the last group, as gap_char reads it
+    std::string gap;   // what stands since the last group, as gap_of reads it
     bool in_group = false;
     for (size_t i = 0; i < text.size();) {
         uint32_t cp = 0xFFFD;
         const size_t len = util::utf8_at(p, text.size(), i, cp);
         i += len ? len : 1;
-        if (len && cp < 0x80 && isalnum(static_cast<int>(cp))) {
+        const char c = len ? ascii_of(cp) : 0;
+        if (c) {
             if (!in_group) {
                 Group g;
-                g.sep = !out.empty() && (gap == " " || gap == "-") ? gap[0] : 0;
+                if (!out.empty() && (gap == " " || gap == "-" || gap == "." || gap == "/" || gap == " - ")) g.sep = gap;
                 g.before = gap.empty() ? 0 : gap.back();
                 out.push_back(g);
                 gap.clear();
                 in_group = true;
             }
-            out.back().text += static_cast<char>(toupper(static_cast<int>(cp)));
+            out.back().text += c;
         } else {
-            in_group = false;
-            gap += gap_char(len ? cp : 0xFFFD);
+            const std::string between = gap_of(len ? cp : 0xFFFD);
+            if (!between.empty()) in_group = false;
+            gap += between;
         }
     }
     return out;
@@ -65,7 +91,7 @@ bool digits(const std::string &s) {
 // separator, the same throughout.
 bool joined(const std::vector<Group> &g, size_t first, size_t last) {
     for (size_t k = first + 1; k <= last; ++k)
-        if (!g[k].sep || g[k].sep != g[first + 1].sep) return false;
+        if (g[k].sep.empty() || g[k].sep != g[first + 1].sep) return false;
     return true;
 }
 
@@ -92,17 +118,33 @@ bool card_layout(const std::vector<size_t> &parts) {
     return parts.back() <= 4;
 }
 
+// Whether a number is one a card network issues: its prefix, and a length that network uses.
+bool issued(const std::string &n) {
+    auto from = [&](int lo, int hi) {   // the prefix of as many digits as `lo` has is within lo..hi
+        const int prefix = std::stoi(n.substr(0, std::to_string(lo).size()));
+        return prefix >= lo && prefix <= hi;
+    };
+    const size_t len = n.size();
+    if (from(4, 4)) return len == 13 || len == 16 || len == 19;                     // Visa
+    if (from(51, 55) || from(2221, 2720)) return len == 16;                          // Mastercard
+    if (from(34, 34) || from(37, 37)) return len == 15;                              // American Express
+    if (from(6011, 6011) || from(644, 649) || from(65, 65)) return len >= 16;        // Discover
+    if (from(3528, 3589)) return len >= 16;                                          // JCB
+    if (from(300, 305) || from(36, 36) || from(38, 39)) return len >= 14;            // Diners Club
+    if (from(62, 62)) return len >= 16;                                              // UnionPay
+    return false;
+}
+
 // A card number begins at group i; the number may be followed by more digits (the security code).
 bool card_at(const std::vector<Group> &g, size_t i) {
-    const std::string &first = g[i].text;
-    if (!digits(first) || first[0] < '2' || first[0] > '6' || g[i].before == '+') return false;
+    if (!digits(g[i].text) || g[i].before == '+') return false;
     std::string number;
     std::vector<size_t> parts;
     for (size_t j = i; j < g.size() && digits(g[j].text) && joined(g, i, j); ++j) {
         number += g[j].text;
         parts.push_back(g[j].text.size());
         if (number.size() > 19) break;
-        if (number.size() >= 13 && card_layout(parts) && luhn(number)) return true;
+        if (number.size() >= 13 && card_layout(parts) && issued(number) && luhn(number)) return true;
     }
     return false;
 }
@@ -127,19 +169,24 @@ bool mod97(const std::string &iban) {
     return r == 1;
 }
 
-// An IBAN begins at group i: run together, or in fours with a shorter last part (a word may follow it).
+// An IBAN begins at group i: run together, or in fours with a shorter last part (a word may follow it); the
+// country's code and the check digits may stand apart ("GB 82 WEST 1234 ...").
 bool iban_at(const std::vector<Group> &g, size_t i) {
     const std::string &t = g[i].text;
-    if (t.size() < 4 || !isalpha(static_cast<unsigned char>(t[0])) || !isalpha(static_cast<unsigned char>(t[1])) ||
-        !isdigit(static_cast<unsigned char>(t[2])) || !isdigit(static_cast<unsigned char>(t[3])) || !iban_country(t.substr(0, 2)))
+    const bool apart = t.size() == 2 && i + 1 < g.size() && g[i + 1].text.size() == 2 && digits(g[i + 1].text) &&
+                       joined(g, i, i + 1);
+    const std::string start = apart ? t + g[i + 1].text : t;
+    if (start.size() < 4 || !isalpha(static_cast<unsigned char>(start[0])) || !isalpha(static_cast<unsigned char>(start[1])) ||
+        !digits(start.substr(2, 2)) || !iban_country(start.substr(0, 2)))
         return false;
-    std::string iban;
-    for (size_t j = i; j < g.size() && (j == i || (joined(g, i, j) && g[j - 1].text.size() == 4)); ++j) {
+    std::string iban = start;
+    const size_t first = apart ? i + 1 : i;   // the group the check digits end
+    for (size_t j = first + 1; j < g.size() && joined(g, i, j) && (j == first + 1 ? start.size() == 4 : g[j - 1].text.size() == 4); ++j) {
+        if (iban.size() >= 15 && mod97(iban)) return true;
         iban += g[j].text;
         if (iban.size() > 34) break;
-        if (iban.size() >= 15 && mod97(iban)) return true;
     }
-    return false;
+    return iban.size() >= 15 && iban.size() <= 34 && mod97(iban);
 }
 
 // ---------------------------------------------------------------- UK National Insurance and US Social Security numbers
@@ -167,9 +214,9 @@ bool ssn_at(const std::vector<Group> &g, size_t i) {
     if (i + 2 >= g.size()) return false;
     const std::string &area = g[i].text, &group = g[i + 1].text, &serial = g[i + 2].text;
     if (area.size() != 3 || group.size() != 2 || serial.size() != 4 || !digits(area + group + serial)) return false;
-    if (g[i + 1].sep != '-' || g[i + 2].sep != '-') return false;
-    if (g[i].sep == '-' && digits(g[i - 1].text)) return false;
-    if (i + 3 < g.size() && g[i + 3].sep == '-' && digits(g[i + 3].text)) return false;
+    if (g[i + 1].sep != "-" || g[i + 2].sep != "-") return false;
+    if (g[i].sep == "-" && digits(g[i - 1].text)) return false;
+    if (i + 3 < g.size() && g[i + 3].sep == "-" && digits(g[i + 3].text)) return false;
     return area != "000" && area != "666" && area[0] != '9' && group != "00" && serial != "0000";
 }
 

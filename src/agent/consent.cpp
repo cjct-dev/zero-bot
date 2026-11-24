@@ -3,6 +3,7 @@
 #include "agent/consent.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <mutex>
 
@@ -13,7 +14,8 @@ namespace consent {
 namespace {
 
 constexpr unsigned long kAnswerWithinMs = 3 * 60 * 1000;   // a yes must come within this
-constexpr size_t kMaxPending = 8;
+constexpr size_t kMaxPending = 8;                            // open questions of one kind (Pool)
+constexpr size_t kPools = 2;
 
 // An action that needed the user's yes. It goes ahead only when the identical action is asked for again in
 // the very next user message, that message reads as a yes, and a reply that put the question went to the
@@ -35,7 +37,9 @@ std::string g_last_said;         // the newest user message
 bool g_untrusted = false;             // read since the conversation was last cleared ...
 unsigned long g_untrusted_turn = 0;   // ... most recently during this user message
 unsigned long g_context_from = 0;     // the oldest user message the model still sees
-std::vector<Pending> g_pending;
+std::vector<Pending> g_pending[kPools];   // by Pool
+
+std::vector<Pending> &pending(Pool pool) { return g_pending[static_cast<size_t>(pool)]; }
 
 // Whether text from outside is still in what the model sees. The caller holds g_mtx.
 bool steered_by_outside() { return g_untrusted && g_untrusted_turn >= g_context_from; }
@@ -110,6 +114,68 @@ bool puts_question(const std::string &reply, const Naming &naming) {
     });
 }
 
+// The questions a reply puts, as the words of each sentence that ends in a question mark. A full stop or an
+// exclamation mark followed by a space, or a line break, ends a sentence too; a full stop after one of `dotted`
+// does not, since the text read back has one there ("Dr. Smith").
+std::vector<std::set<std::string>> questions_in(const std::string &reply, const std::set<std::string> &dotted) {
+    std::vector<std::set<std::string>> out;
+    std::string sentence;
+    auto end = [&](bool asks) {
+        if (asks) {
+            const std::vector<std::string> w = words_of(sentence);
+            out.emplace_back(w.begin(), w.end());
+        }
+        sentence.clear();
+    };
+    for (size_t i = 0; i < reply.size(); ++i) {
+        const char c = reply[i];
+        const bool space_after = i + 1 == reply.size() || isspace(static_cast<unsigned char>(reply[i + 1]));
+        if (c == '?') {
+            end(true);
+        } else if (reply.compare(i, 3, "？") == 0) {
+            end(true);
+            i += 2;
+        } else if (reply.compare(i, 2, "؟") == 0) {
+            end(true);
+            i += 1;
+        } else if (reply.compare(i, 3, "。") == 0 || reply.compare(i, 3, "！") == 0) {
+            end(false);
+            i += 2;
+        } else if (c == '\n' || (c == '!' && space_after)) {
+            end(false);
+        } else if (c == '.' && space_after) {
+            const std::vector<std::string> w = words_of(sentence);
+            if (w.empty() || !dotted.count(w.back())) end(false);
+            else sentence += c;
+        } else {
+            sentence += c;
+        }
+    }
+    return out;
+}
+
+// Whether a reply puts a Memory question (see Pool): in one of its questions, every word of `mine` that says
+// something, and a word of mine that none of `others` (the other memories asked about in this request) has.
+bool reads_back(const std::string &reply, const Naming &mine, const std::vector<const Naming *> &others) {
+    if (mine.ways.empty()) return false;
+    const std::vector<std::set<std::string>> &words = mine.ways[0];
+    auto shared = [](const std::set<std::string> &forms, const Naming &other) {
+        for (const auto &theirs : other.ways.empty() ? std::vector<std::set<std::string>>() : other.ways[0])
+            if (std::any_of(forms.begin(), forms.end(), [&](const std::string &f) { return theirs.count(f) > 0; })) return true;
+        return false;
+    };
+    const bool own = std::any_of(words.begin(), words.end(), [&](const std::set<std::string> &forms) {
+        return std::none_of(others.begin(), others.end(), [&](const Naming *o) { return shared(forms, *o); });
+    });
+    if (!own) return false;
+    for (const auto &said : questions_in(reply, mine.dotted))
+        if (std::all_of(words.begin(), words.end(), [&](const std::set<std::string> &forms) {
+                return std::any_of(forms.begin(), forms.end(), [&](const std::string &f) { return said.count(f) > 0; });
+            }))
+            return true;
+    return false;
+}
+
 // What the model reads when the action waits: why, and the question to put; or that the answer was no yes.
 std::string confirm_text(const Question &q, bool not_agreed) {
     const std::string then = "\" Only if they answer yes, " + q.again + ".";
@@ -124,8 +190,9 @@ std::string confirm_text(const Question &q, bool not_agreed) {
 std::string ask_first(const Question &asked, unsigned long now_ms) {
     std::lock_guard<std::mutex> lk(g_mtx);
     Question q = asked;
+    std::vector<Pending> &open = pending(q.pool);
     bool not_agreed = false;
-    for (auto it = g_pending.begin(); it != g_pending.end(); ++it) {
+    for (auto it = open.begin(); it != open.end(); ++it) {
         if (it->q.signature != q.signature) continue;
         // Within one turn the rules give the current answer (the user may have just switched the
         // question off in settings); a question from the turn before stays open whatever they say.
@@ -134,13 +201,13 @@ std::string ask_first(const Question &asked, unsigned long now_ms) {
         const bool ok = answered && sounds_like_yes(g_last_said, it->q.naming.words, it->q.action) &&
                         now_ms - it->at_ms <= kAnswerWithinMs;
         not_agreed = answered && !ok;
-        g_pending.erase(it);
+        open.erase(it);
         if (ok) return "";
         break;
     }
     if (q.reason.empty()) return "";
-    g_pending.push_back({q, now_ms, g_turn, false});
-    if (g_pending.size() > kMaxPending) g_pending.erase(g_pending.begin());
+    open.push_back({q, now_ms, g_turn, false});
+    if (open.size() > kMaxPending) open.erase(open.begin());
     return confirm_text(q, not_agreed);
 }
 
@@ -159,7 +226,7 @@ std::vector<std::string> words_of(const std::string &text) {
     return out;
 }
 
-Naming read_back(const std::string &text, const std::set<std::string> &answer_words, const std::string &user_name) {
+Naming read_back(const std::vector<std::string> &texts, const std::set<std::string> &answer_words, const std::string &user_name) {
     // Words a reading back changes or leaves out: "User is allergic to shellfish" is read back as "you are
     // allergic to shellfish", "My sister's name is Anna" as "your sister's name is Anna".
     static const std::set<std::string> kChanged = {
@@ -167,12 +234,23 @@ Naming read_back(const std::string &text, const std::set<std::string> &answer_wo
         "were", "be", "been", "has", "have", "had", "do", "does", "did", "i", "me", "my", "mine", "you", "your", "yours", "he",
         "him", "his", "she", "her", "hers", "they", "them", "their", "we", "us", "our", "it", "its", "user", "users", "owner",
         "s", "m", "re", "ve", "ll", "d"};
-    const std::vector<std::string> all = words_of(text), name = words_of(user_name);
+    Naming n;
+    std::vector<std::string> all;
+    for (const auto &text : texts) {
+        const std::vector<std::string> words = words_of(text);
+        all.insert(all.end(), words.begin(), words.end());
+        for (size_t at = text.find(". "); at != std::string::npos; at = text.find(". ", at + 1)) {
+            const std::vector<std::string> before = words_of(text.substr(0, at));
+            if (!before.empty()) n.dotted.insert(before.back());
+        }
+    }
+    const std::vector<std::string> name = words_of(user_name);
     std::vector<std::string> says;
     for (const auto &w : all)
-        if (!kChanged.count(w) && std::find(name.begin(), name.end(), w) == name.end()) says.push_back(w);
+        if (!kChanged.count(w) && std::find(name.begin(), name.end(), w) == name.end() &&
+            std::find(says.begin(), says.end(), w) == says.end())
+            says.push_back(w);
     if (says.empty()) says = all;
-    Naming n;
     std::vector<std::set<std::string>> way;
     for (const auto &w : says) {
         std::set<std::string> forms = {w, w + "s"};
@@ -186,10 +264,10 @@ Naming read_back(const std::string &text, const std::set<std::string> &answer_wo
     return n;
 }
 
-std::string read_back_question(const std::string &lead, const std::string &text) {
+std::string read_back_text(const std::string &text) {
     std::string said = text;
     while (!said.empty() && strchr(".!?;:", said.back())) said.pop_back();
-    return lead + said + "?";
+    return said;
 }
 
 // ---------------------------------------------------------------- the conversation
@@ -198,16 +276,24 @@ void user_spoke(const std::string &text) {
     ++g_turn;
     g_last_said = text;
     // A question is answered by the next message or not at all.
-    g_pending.erase(std::remove_if(g_pending.begin(), g_pending.end(), [](const Pending &p) { return p.turn + 1 < g_turn; }),
-                    g_pending.end());
+    for (auto &open : g_pending)
+        open.erase(std::remove_if(open.begin(), open.end(), [](const Pending &p) { return p.turn + 1 < g_turn; }), open.end());
 }
 
 void assistant_replied(const std::string &reply) {
     std::lock_guard<std::mutex> lk(g_mtx);
     // Only a reply that puts an action's question counts as asking it: "Done. Anything else?" or an empty
     // answer leaves it unasked, and asking about one action does not ask about another.
-    for (auto &p : g_pending)
+    for (auto &p : pending(Pool::Home))
         if (p.turn == g_turn && puts_question(reply, p.q.naming)) p.asked = true;
+    std::vector<Pending> &memory = pending(Pool::Memory);
+    for (auto &p : memory) {
+        if (p.turn != g_turn) continue;
+        std::vector<const Naming *> others;
+        for (const auto &o : memory)
+            if (&o != &p && o.turn == g_turn) others.push_back(&o.q.naming);
+        if (reads_back(reply, p.q.naming, others)) p.asked = true;
+    }
 }
 
 void saw_untrusted_text() {
@@ -219,7 +305,7 @@ void saw_untrusted_text() {
 void conversation_reset() {
     std::lock_guard<std::mutex> lk(g_mtx);
     g_untrusted = false;
-    g_pending.clear();   // a yes in the new conversation answers nothing asked in the old one
+    for (auto &open : g_pending) open.clear();   // a yes in the new conversation answers nothing asked in the old one
 }
 
 void context_kept(size_t user_messages) {
@@ -236,7 +322,7 @@ void reset() {
     g_untrusted = false;
     g_untrusted_turn = 0;
     g_context_from = 0;
-    g_pending.clear();
+    for (auto &open : g_pending) open.clear();
 }
 }  // namespace testing
 

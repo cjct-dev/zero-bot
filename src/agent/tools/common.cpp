@@ -58,36 +58,78 @@ bool id_arg(const json &a, const char *key, int &id, std::string &err, const std
 namespace {
 
 // Characters that show as nothing, so that words can hide in them, unseen by the user and read by the model:
-// the soft hyphen, the zero-width space, non-joiner and joiner, the word joiner and the invisible operators,
-// the byte-order mark, the Mongolian vowel separator, the bidirectional marks, embeddings, overrides and
-// isolates, the variation selectors, and Unicode's tag characters (U+E0000 to U+E007F), which can spell out
-// a whole sentence no screen shows.
+// the soft hyphen, the zero-width space, the word joiner and the invisible operators, the byte-order mark, the
+// bidirectional marks, embeddings, overrides and isolates, the variation selectors other than the text and emoji
+// styles, and Unicode's tag characters (U+E0000 to U+E007F), which can spell out a whole sentence no screen
+// shows. The zero-width joiner and non-joiner stay: emoji and Persian, among others, need them.
 bool hidden(uint32_t cp) {
-    return cp == 0x00AD || cp == 0x061C || cp == 0x180E || (cp >= 0x200B && cp <= 0x200F) || (cp >= 0x202A && cp <= 0x202E) ||
-           (cp >= 0x2060 && cp <= 0x2064) || (cp >= 0x2066 && cp <= 0x2069) || (cp >= 0xFE00 && cp <= 0xFE0F) || cp == 0xFEFF ||
+    return cp == 0x00AD || cp == 0x061C || cp == 0x200B || cp == 0x200E || cp == 0x200F || (cp >= 0x202A && cp <= 0x202E) ||
+           (cp >= 0x2060 && cp <= 0x2064) || (cp >= 0x2066 && cp <= 0x2069) || (cp >= 0xFE00 && cp <= 0xFE0D) || cp == 0xFEFF ||
            (cp >= 0xE0000 && cp <= 0xE007F) || (cp >= 0xE0100 && cp <= 0xE01EF);
 }
 
+// The text and emoji styles (VS15, VS16): one is kept after a character, as an emoji or a symbol needs.
+bool style(uint32_t cp) { return cp == 0xFE0E || cp == 0xFE0F; }
+
 // Control characters (C0, DEL, C1) and the line and paragraph separators: each becomes a space.
 bool breaks(uint32_t cp) { return cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) || cp == 0x2028 || cp == 0x2029; }
+
+// The flags of England, Scotland and Wales, the only tag sequences there are: a black flag, the tag letters of
+// the region and a cancel tag. Their length when one begins at s[i], else 0.
+size_t flag_at(const std::string &s, size_t i) {
+    const unsigned char *p = reinterpret_cast<const unsigned char *>(s.data());
+    auto next = [&](size_t &at, uint32_t &cp) {
+        const size_t len = at < s.size() ? util::utf8_at(p, s.size(), at, cp) : 0;
+        at += len;
+        return len > 0;
+    };
+    size_t at = i;
+    uint32_t cp = 0;
+    if (!next(at, cp) || cp != 0x1F3F4) return 0;
+    const size_t after_flag = at;
+    for (const char *region : {"gbeng", "gbsct", "gbwls"}) {
+        at = after_flag;
+        bool same = true;
+        for (const char *r = region; *r && same; ++r) same = next(at, cp) && cp == 0xE0000u + static_cast<unsigned char>(*r);
+        if (same && next(at, cp) && cp == 0xE007F) return at - i;
+    }
+    return 0;
+}
 
 }  // namespace
 
 // Text that is kept and shown again (titles, notes, reminders, memories): control characters, line
 // breaks included, become single spaces, and characters that show as nothing are removed. Memories go
 // into the instructions of every later request, where a line break could pass for a heading or an entry
-// of its own, and hidden characters for words the user never saw.
+// of its own, and hidden characters for words the user never saw. What ordinary text needs stays: the
+// joiners, one text or emoji style after a character, and the three flags made of tags.
 std::string clean_text(const std::string &raw) {
     const unsigned char *p = reinterpret_cast<const unsigned char *>(raw.data());
     std::string s;
+    bool styleable = false;   // what was kept last is a character a style may follow
     for (size_t i = 0; i < raw.size();) {
+        if (const size_t flag = flag_at(raw, i)) {
+            s.append(raw, i, flag);
+            i += flag;
+            styleable = false;
+            continue;
+        }
         uint32_t cp = 0;
         const size_t len = util::utf8_at(p, raw.size(), i, cp);
-        if (!len) { s += raw[i++]; continue; }   // not UTF-8: kept as it is (tools::run makes a result valid)
-        const bool space = breaks(cp) || cp == ' ';
-        if (!hidden(cp) && !(space && (s.empty() || s.back() == ' '))) {
-            if (space) s += ' ';
-            else s.append(raw, i, len);
+        if (!len) {   // not UTF-8: kept as it is (tools::run makes a result valid)
+            s += raw[i++];
+            styleable = false;
+            continue;
+        }
+        if (breaks(cp) || cp == ' ') {
+            if (!s.empty() && s.back() != ' ') s += ' ';
+            styleable = false;
+        } else if (style(cp)) {
+            if (styleable) s.append(raw, i, len);
+            styleable = false;
+        } else if (!hidden(cp)) {
+            s.append(raw, i, len);
+            styleable = true;
         }
         i += len;
     }

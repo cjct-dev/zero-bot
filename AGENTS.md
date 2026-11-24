@@ -132,8 +132,8 @@ through `Settings::update([](Settings &s) { ... })`, which makes it under that l
 Locks to know before adding shared state: the settings (`g_mtx` for the snapshot, `g_file_mtx` for
 one save at a time; settings.cpp), `Store::mtx_` (calendar, reminders, timers, memory: the UI reads
 them every tick and tools change them), the smart-home file (`store.cpp`: `g_mtx` for the file,
-`g_net_mtx` for the network last seen), `consent.cpp` (`g_mtx` for the questions awaiting a yes
-and the text from outside), `control.cpp` (`g_rate_mtx` for the rate limit, `g_locks_mtx` and then one lock per device), web search (`search.cpp`: `g_health_mtx`,
+`g_net_mtx` for the network last seen), `consent.cpp` (`g_mtx` for the questions awaiting a yes,
+one list for each kind, and the text from outside), `control.cpp` (`g_rate_mtx` for the rate limit, `g_locks_mtx` and then one lock per device), web search (`search.cpp`: `g_health_mtx`,
 `g_cache_mtx`, `g_asked_mtx`; `usage.cpp`: `g_mtx` for the allowance as read, `g_file_mtx` for one save at a
 time, written outside `g_mtx`, which the settings page takes too), the time zone (`g_tz_mtx` in
 util.cpp, under which `TZ` is switched), `uiq::mtx()` and curl's share locks (http.cpp), which guard DNS answers
@@ -229,23 +229,33 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   model waits before asking again. For that same span `memory_save` and `memory_delete` wait for a
   yes too (ZB-120): a memory is in the instructions of every later request, so one a page or a sign
   planted would steer them all. Their CONFIRM reads the memory back in the question ("Shall I
-  remember this: Allergic to shellfish?"), and a reply puts it only when it has every word of the
-  memory that says something (`consent::read_back`: "you prefer window seats" for "User prefers
-  window seats", "your desk" for "Sam's desk" when the user's name is Sam). With nothing from outside in view a memory is saved at once, as before. Names in
+  remember this: Allergic to shellfish?"); a replacement (`replace_id`) reads back both, the memory it
+  replaces too ("Shall I replace 'Allergic to penicillin' with 'Prefers window seats'?"), or a page
+  could swap an allergy for a seat preference with a yes to the new words alone. The same call is the
+  same cleaned text in lower case (punctuation kept) and, for a replace or a forget, the same memory by
+  id and words. A memory question (`consent::Pool::Memory`) counts as put only inside a sentence that
+  ends in a question mark, which has every word of the memory that says something
+  (`consent::read_back`: "you prefer window seats" for "User prefers window seats", "your desk" for
+  "Sam's desk" when the user's name is Sam), and only when the memory has a word no other memory asked
+  about in that request has ("Shall I forget that your partner is vegetarian?" does not also forget
+  "Vegetarian"). Smart-home questions keep their own rule and their own eight open questions
+  (`consent::Pool::Home`), unchanged. With nothing from outside in view a memory is saved at once, as before. Names in
   `ERROR`/`CONFIRM` sentences are always in double quotes, and `home::clean_name` removes every kind
   of double quotation mark (typographic and full-width ones too) from every name, so a device's name
   cannot end its quotes and read as an instruction. A result that waits for a yes
   (`result::awaits_yes`) is never confirmed by its `say`: the model has the question to put.
 - **Memories** (ZB-120 to ZB-122): what is kept (`tools::clean_text`) has its control characters as
-  spaces and loses every character that shows as nothing (zero-width and bidirectional marks, the
-  word joiner, the byte-order mark, variation selectors, Unicode's tag characters), which could carry
-  words the user never sees. Each memory is at most 400 characters and all of them 2,000: a save past
+  spaces and loses every character that shows as nothing (the zero-width space, bidirectional marks,
+  the word joiner, the byte-order mark, variation selectors, Unicode's tag characters), which could
+  carry words the user never sees; what ordinary text needs stays (the zero-width joiner and non-joiner
+  of emoji and Persian, one text or emoji style after a character, the three flags made of tags). Each
+  memory is at most 400 bytes and all of them 2,000 (bytes, since bytes are what is sent): a save past
   that is refused with how full memory is and what to do (merge with `replace_id`, or ask the user
   which to forget); memories already past it stay, and a save that shortens them is let through. A
-  memory, and a web search's query, holding a card number (Luhn), an IBAN (mod 97), a UK National
-  Insurance number or a US Social Security number is refused, naming the kind and never the number
-  (`tools::sensitive_number`, `src/agent/tools/sensitive.h`, which says what counts and why phone and
-  order numbers, dates, ISBNs, prices and postcodes do not).
+  memory, and a web search's query, holding a card number (an issuer's prefix and length, and Luhn), an
+  IBAN (mod 97), a UK National Insurance number or a US Social Security number is refused, naming the
+  kind and never the number (`tools::sensitive_number`, `src/agent/tools/sensitive.h`, which says what
+  counts and why phone, order and IMEI numbers, years, dates, ISBNs, prices and postcodes do not).
 - **Context notes** (`Agent::add_context`): something the user saw or heard without the model
   taking part (a timer's alarm) rides along with their next message, within ten minutes, so
   that "give it five more minutes" means something to the model.

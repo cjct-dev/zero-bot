@@ -20,7 +20,16 @@ namespace consent {
 struct Naming {
     std::vector<std::vector<std::set<std::string>>> ways;
     std::set<std::string> words;
+    std::set<std::string> dotted;   // a read-back's words its own text has a full stop after ("dr" of "Dr. Smith")
 };
+
+// The kinds of question, each with its own open questions, so that one kind never pushes out another's.
+//   Home: a smart-home change. A reply puts it when it asks something and names the target anywhere in it.
+//   Memory: a memory saved, replaced or forgotten (read_back). A reply puts it only in a sentence that ends in a
+//   question mark and has every word of the memory that says something, and only when the memory has a word
+//   that no other memory asked about in the same request has: "Shall I forget that your partner is
+//   vegetarian?" does not also ask about forgetting "Vegetarian".
+enum class Pool { Home, Memory };
 
 // An action that may need the user's yes, and how its question is put.
 struct Question {
@@ -31,6 +40,7 @@ struct Question {
     Naming naming;
     std::string undone;      // what has not happened: "changed" (nothing has been changed yet)
     std::string again;       // what the model does after a yes: "call smart_home again with the same request"
+    Pool pool = Pool::Home;
 };
 
 // "" when the action may go ahead: it needs no yes, or it was put to the user as a question in the reply to
@@ -46,14 +56,13 @@ std::string outside_reason(const std::string &rule);
 // The words of a text as questions and answers are compared: letters and digits, lower case (util::plain).
 std::vector<std::string> words_of(const std::string &text);
 
-// How a reply that reads `text` back to the user names it: it has every word of the text that says
-// something (not "the", "my", "is", the user's own name or another word a reading back changes: "Sam's
-// desk" is read back to Sam as "your desk"), as written or with an "s" or "es" more or less ("prefer" for
-// "prefers"). An answer may use the text's words and `answer_words`.
-Naming read_back(const std::string &text, const std::set<std::string> &answer_words, const std::string &user_name);
-// The question that reads `text` back: `lead` ("Shall I remember this: "), the text without its closing
-// punctuation, and a question mark.
-std::string read_back_question(const std::string &lead, const std::string &text);
+// How a reply that reads `texts` back to the user names them (a Memory question): it has every word of them
+// that says something (not "the", "my", "is", the user's own name or another word a reading back changes:
+// "Sam's desk" is read back to Sam as "your desk"), as written or with an "s" or "es" more or less ("prefer"
+// for "prefers"). An answer may use the texts' words and `answer_words`.
+Naming read_back(const std::vector<std::string> &texts, const std::set<std::string> &answer_words, const std::string &user_name);
+// A text as a question reads it back: without its closing punctuation ("Shall I remember this: " + it + "?").
+std::string read_back_text(const std::string &text);
 
 // ---- the conversation, as the request loop reports it
 void user_spoke(const std::string &text);         // a user message: an open question is answered by this or not at all
