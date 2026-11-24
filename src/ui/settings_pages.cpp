@@ -233,7 +233,7 @@ void service_rows(Menu &menu, std::vector<MenuItem> &items) {
             const std::string v = util::trim(t);
             if (v.empty()) { menu.toast("Key left unchanged"); return; }
             change([&v](Settings &s) { s.api_key = v; });
-        }, "Typed text is shown while you enter it. Leave blank to keep the current key.");
+        }, "Each character shows for a moment as you type. Leave blank to keep the current key.");
     }));
     items.push_back(MenuItem::val("Web search", [] { return web_search_value(); }, [&menu] { open_web_search(menu); }));
     items.push_back(MenuItem::val("Compress audio", [] { return on_off(S().compress_audio); }, nullptr,

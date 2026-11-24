@@ -24,6 +24,7 @@ namespace {
 std::mutex g_mtx;
 std::deque<KeyEvent> g_queue;
 std::atomic<bool> g_dump{false};
+std::atomic<bool> g_secret{false};   // set_secret: a secret is being typed
 std::atomic<void (*)()> g_on_key{nullptr};   // start()'s on_key
 
 void push(const KeyEvent &ev) {
@@ -180,7 +181,7 @@ void reader_thread() {
         input_event ie;
         if (read(fd, &ie, sizeof(ie)) != static_cast<ssize_t>(sizeof(ie))) break;
         if (ie.type != EV_KEY) continue;
-        if (g_dump) fprintf(stderr, "[key] code=%d value=%d\n", ie.code, ie.value);
+        if (dumping()) fprintf(stderr, "[key] code=%d value=%d\n", ie.code, ie.value);
         const bool down = ie.value != 0;
         bool modifier = true;
         switch (ie.code) {
@@ -274,5 +275,7 @@ bool poll(KeyEvent &out) {
 }
 
 void set_dump(bool on) { g_dump = on; }
+void set_secret(bool on) { g_secret = on; }
+bool dumping() { return g_dump && !g_secret; }
 
 }  // namespace input

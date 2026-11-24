@@ -317,6 +317,8 @@ void Menu::show_editor(bool on) {
         lv_label_set_text(hint_, "ENTER save   ·   ESC cancel");
     } else {
         lv_obj_add_flag(editor_, LV_OBJ_FLAG_HIDDEN);
+        lv_textarea_set_text(edit_field_, "");   // what was typed (a key) is not left in the hidden field
+        input::set_secret(false);
         edit_done_ = nullptr;
         if (!stack_.empty()) render();
     }
@@ -326,11 +328,14 @@ void Menu::edit_text(const std::string &title, const std::string &initial, bool 
                      std::function<void(const std::string &)> on_done, const std::string &help) {
     lv_label_set_text(edit_title_, title.c_str());
     lv_label_set_text(edit_help_, help.c_str());
-    lv_textarea_set_password_mode(edit_field_, false);
+    lv_textarea_set_password_mode(edit_field_, secret);
     lv_textarea_set_text(edit_field_, secret ? "" : initial.c_str());
+    input::set_secret(secret);
     edit_done_ = std::move(on_done);
     show_editor(true);
 }
+
+std::string Menu::field_shown() const { return lv_label_get_text(lv_textarea_get_label(edit_field_)); }
 
 void Menu::confirm(const std::string &question, const std::string &yes_label, std::function<void()> on_yes) {
     MenuPage page;

@@ -67,7 +67,10 @@ int progress_cb(void *userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t) 
 
 // Every request used to open a fresh connection, paying for DNS, TCP and TLS set-up each time.
 // That costs a few hundred milliseconds on Wi-Fi and seconds on a Bluetooth-tethered phone, so
-// connections, DNS answers and TLS sessions are shared between all requests and threads.
+// DNS answers and TLS sessions are shared between all requests and threads, and each thread keeps
+// its connections for its next request (ThreadHandle). Connections are not shared between threads:
+// libcurl does not support one connection cache used by threads at once, even with these locks
+// (CURLSHOPT_SHARE(3)).
 CURLSH *g_share = nullptr;
 std::mutex g_share_locks[CURL_LOCK_DATA_LAST];
 
@@ -82,7 +85,6 @@ void global_init() {
     curl_share_setopt(g_share, CURLSHOPT_UNLOCKFUNC, share_unlock);
     curl_share_setopt(g_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
     curl_share_setopt(g_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
-    curl_share_setopt(g_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
 }
 
 std::string Response::describe() const {
@@ -99,13 +101,48 @@ std::string Response::describe() const {
 
 namespace {
 
+// A device's own certificate settings: kept apart from the connections and TLS sessions used for the internet.
+bool own_tls(const Request &req) {
+    return req.insecure || !req.pinned_pubkey.empty() || !req.client_cert_pem.empty() || req.want_peer_cert;
+}
+
+// The easy handle this thread keeps between requests, and with it the connections its requests left open: the
+// agent's next call to the AI service goes out on the connection the last one used. Freed with the thread.
+struct ThreadHandle {
+    CURL *curl = nullptr;
+    bool busy = false;   // a request is under way on it (one made from inside its callbacks gets a handle of its own)
+    ~ThreadHandle() {
+        if (curl) curl_easy_cleanup(curl);
+    }
+};
+thread_local ThreadHandle t_handle;
+
+// The handle for one request: this thread's (`kept`), or a fresh one for a device's own TLS settings, which get a
+// connection and TLS session of their own, or while this thread's is busy. nullptr when libcurl cannot make one.
+CURL *open_handle(const Request &req, bool &kept) {
+    const bool shares = !own_tls(req);
+    kept = shares && !t_handle.busy;
+    if (kept && t_handle.curl) {
+        curl_easy_reset(t_handle.curl);   // every option as new; its connections, and the share, stay
+    } else {
+        CURL *curl = curl_easy_init();
+        if (!curl) return nullptr;
+        if (shares && g_share) curl_easy_setopt(curl, CURLOPT_SHARE, g_share);
+        if (!kept) return curl;
+        t_handle.curl = curl;
+    }
+    t_handle.busy = true;
+    return t_handle.curl;
+}
+
+void close_handle(CURL *curl, bool kept) {
+    if (kept) t_handle.busy = false;
+    else curl_easy_cleanup(curl);
+}
+
 // Where the request goes, and how long it may take.
 void set_route(CURL *curl, const Request &req) {
-    // A device's own certificate settings are kept apart from the shared connections and TLS
-    // sessions used for the internet.
-    const bool own_tls = req.insecure || !req.pinned_pubkey.empty() || !req.client_cert_pem.empty() || req.want_peer_cert;
-    const bool local = req.local || own_tls || !req.digest_user.empty();
-    if (g_share && !own_tls) curl_easy_setopt(curl, CURLOPT_SHARE, g_share);
+    const bool local = req.local || own_tls(req) || !req.digest_user.empty();
     curl_easy_setopt(curl, CURLOPT_DNS_CACHE_TIMEOUT, 600L);   // addresses are remembered for ten minutes, not one
     curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, req.no_redirect || local || experiment::net_pinned() ? 0L : 1L);
@@ -229,7 +266,8 @@ Response send(const Request &req) {
     Response res;
     // A test run (ZB_EXP_NET, experiment builds only) sends only to 127.x and the AI service's own origin.
     if (const std::string why = experiment::net_refusal(req.url); !why.empty()) { res.error = why; return res; }
-    CURL *curl = curl_easy_init();
+    bool kept = false;
+    CURL *curl = open_handle(req, kept);
     if (!curl) { res.error = "could not start HTTP client"; return res; }
     Ctx ctx{&req, &res};
 
@@ -246,15 +284,17 @@ Response send(const Request &req) {
     read_outcome(curl, curl_easy_perform(curl), ctx);
     if (mime) curl_mime_free(mime);
     if (headers) curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
+    close_handle(curl, kept);
     return res;
 }
 
 bool transient(const Response &res) {
     if (res.error == "cancelled") return false;
     if (res.error == "timed out") return !res.sent;   // the connection was never made: no time was spent waiting for an answer
-    if (!res.error.empty()) return true;               // no connection, a dropped one, a failed TLS set-up
     const long s = res.status;
+    // No connection, a dropped one, a failed TLS set-up, or a success whose body was cut short. An answer other
+    // than success stands whatever then happened to its body: a 401 cut short is still a refusal.
+    if (!res.error.empty() && s < 300) return true;
     return s == 408 || s == 429 || (s >= 500 && s <= 599 && s != 501 && s != 505);
 }
 

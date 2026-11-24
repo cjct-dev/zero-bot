@@ -105,8 +105,8 @@ void run_pairing(Menu &menu, const std::string &network_id, const std::string &d
             menu.push(std::move(page));
             return;
         }
-        default:   // a code, a password or a token
-            menu.edit_text(step.field.empty() ? std::string("Code") : step.field, "", step.kind != home::Pairing::EnterCode,
+        default:   // a code, a password or a token, hidden while it is typed; or an e-mail or user name
+            menu.edit_text(step.field.empty() ? std::string("Code") : step.field, "", !step.plain,
                            [&menu, network_id, device_id, step](const std::string &text) {
                                if (text.empty()) return;
                                submit_pairing(menu, network_id, device_id, step, text);
@@ -294,7 +294,7 @@ void open_tapo_account(Menu &menu, const std::string &network_id) {
                 if (t.empty()) return;
                 if (home::tapo_account().email.empty()) { menu.toast("Enter the e-mail first"); return; }
                 say_if_unsaved(menu, home::set_tapo_account(home::tapo_account().email, t));
-            }, "Typed text is shown while you enter it. Only a scrambled form is kept.");
+            }, "Each character shows for a moment as you type. Only a scrambled form is kept.");
         }));
         items.push_back(MenuItem::action("Check the plugs", [&menu, network_id] {
             if (!home::tapo_account().set()) { menu.toast("Enter the e-mail and password first"); return; }

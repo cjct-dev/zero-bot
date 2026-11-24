@@ -2,12 +2,14 @@
 // no_redirect, timeout_ms, digest credentials, insecure, a pinned public key, the peer's
 // certificate, a client certificate, and the defaults of a request to a device (no redirects to
 // elsewhere, no proxy); reply headers kept by name (keep_headers); and send_retrying, which sends a
-// read again only after a failure on the way, inside its time budget. Started by http_peer.py, which passes:
-//   http_test HTTP_PORT HTTPS_PORT HTTPS_CLIENT_PORT PIN CLIENT_CERT_FILE CLIENT_KEY_FILE PROXY_PORT
+// read again only after a failure on the way, inside its time budget (an answer's status standing when its body
+// is cut short); and the connections each thread keeps, never used by another. Started by http_peer.py, which passes:
+//   http_test HTTP_PORT HTTPS_PORT HTTPS_CLIENT_PORT PIN CLIENT_CERT_FILE CLIENT_KEY_FILE PROXY_PORT KEEPALIVE_PORT
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 #include <string>
 #include <thread>
 
@@ -30,10 +32,10 @@ std::string seen(const http::Response &r) { return "status " + std::to_string(r.
 }  // namespace
 
 int main(int argc, char **argv) {
-    if (argc < 8) { fprintf(stderr, "usage: http_test HTTP_PORT HTTPS_PORT HTTPS_CLIENT_PORT PIN CERT KEY PROXY_PORT\n"); return 2; }
+    if (argc < 9) { fprintf(stderr, "usage: http_test HTTP_PORT HTTPS_PORT HTTPS_CLIENT_PORT PIN CERT KEY PROXY_PORT KEEPALIVE_PORT\n"); return 2; }
     const std::string plain = std::string("http://127.0.0.1:") + argv[1], tls = std::string("https://127.0.0.1:") + argv[2],
                       tls_client = std::string("https://127.0.0.1:") + argv[3], pin = argv[4],
-                      proxy = std::string("http://127.0.0.1:") + argv[7];
+                      proxy = std::string("http://127.0.0.1:") + argv[7], keep = std::string("http://127.0.0.1:") + argv[8];
     // Whatever proxy the shell running the tests names is not wanted here.
     for (const char *v : {"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"})
         unsetenv(v);
@@ -255,6 +257,16 @@ int main(int argc, char **argv) {
         const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         check(res.error == "cancelled" && s < 1.0 && tries("h") == "1", "cancelling ends the pause at once", seen(res) + ", " + std::to_string(s) + " s");
     }
+    // An answer stands whatever then happens to its body: a refusal cut short is not sent again, a 503 cut short is,
+    // and so is a success cut short (a read, which only lost its body on the way).
+    res = retrying("/cut/401/i", quick);
+    check(res.status == 401 && !res.error.empty() && tries("i") == "1", "a 401 whose body was cut short is not sent again",
+          seen(res) + ", tries " + tries("i"));
+    res = retrying("/cut/503/j", quick);
+    check(res.status == 503 && !res.error.empty() && tries("j") == "2", "a 503 whose body was cut short is", seen(res) + ", tries " + tries("j"));
+    res = retrying("/cut/200/k", quick);
+    check(res.status == 200 && !res.error.empty() && tries("k") == "2", "and so is a success whose body was cut short",
+          seen(res) + ", tries " + tries("k"));
     {
         http::Response t;
         t.status = 500;
@@ -264,8 +276,43 @@ int main(int argc, char **argv) {
         t.status = 0; t.error = "timed out"; t.sent = false; all = all && http::transient(t);
         t.sent = true; all = all && !http::transient(t);
         t.error = "cancelled"; t.sent = false; all = all && !http::transient(t);
-        check(all, "transient(): 500 and 408 yes, 505 no, a timeout only before the request went out, a cancel never", "");
+        t.status = 403; t.error = "transfer closed with 90 bytes remaining to read"; t.sent = true; all = all && !http::transient(t);
+        t.status = 0; all = all && http::transient(t);
+        check(all, "transient(): 500 and 408 yes, 505 no, a timeout only before the request went out, a cancel never, "
+                   "a 403 cut short no, a connection dropped before any answer yes", "");
     }
+
+    // ---- connections: libcurl does not let two threads use one connection at once, so each thread keeps its own
+    // between requests (and uses it again: the agent's next call to the AI service needs no new connection), while a
+    // connection is never used by another thread. The peer numbers its connections and notes which thread's
+    // requests each carried.
+    auto conn = [&](const std::string &tag) {
+        http::Request q;
+        q.url = keep + "/conn/" + tag;
+        q.timeout_ms = 3000;
+        return http::send(q).body;
+    };
+    const std::string mine = conn("main"), again = conn("main");
+    check(!mine.empty() && mine == again, "a thread's next request goes out on the connection its last one left open",
+          mine + " then " + again);
+    std::set<std::string> a_conns, b_conns;
+    std::thread a([&] { for (int i = 0; i < 15; ++i) a_conns.insert(conn("a")); });
+    std::thread b([&] { for (int i = 0; i < 15; ++i) b_conns.insert(conn("b")); });
+    a.join();
+    b.join();
+    auto listed = [](const std::set<std::string> &s) {
+        std::string out;
+        for (const std::string &x : s) out += (out.empty() ? "" : ",") + x;
+        return out;
+    };
+    check(a_conns.size() == 1 && b_conns.size() == 1 && a_conns != b_conns && !a_conns.count(mine) && !b_conns.count(mine),
+          "two threads at once: each keeps one connection of its own, and neither takes another thread's",
+          "a " + listed(a_conns) + ", b " + listed(b_conns) + ", main " + mine);
+    check(conn("main") == mine, "the first thread's connection is still its own afterwards", mine);
+    http::Request q;
+    q.url = keep + "/conns";
+    res = http::send(q);
+    check(res.body == "connections=3 shared=0", "three connections in all, none carrying two threads' requests", seen(res));
 
     printf("%s  http options (%d checks)\n", g_failed ? "FAIL" : "ok  ", g_checks);
     return g_failed ? 1 : 0;

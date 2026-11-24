@@ -2,7 +2,8 @@
 """A local peer for tests/unit/http_test.cpp. Standard library only, plus the openssl command
 to make two throwaway self-signed certificates. Everything binds 127.0.0.1 (and one listener
 127.0.0.2, "another host") on ports the system picks, and stops when the test program has
-finished. What the other host and the pretend proxy received is reported at /seen.
+finished. What the other host and the pretend proxy received is reported at /seen; what the
+listener that keeps connections open saw, at its /conns.
 
 usage: http_peer.py path/to/http_test
 """
@@ -26,6 +27,10 @@ AWAY = {"port": 0}
 # address, by its key; /tries/KEY reports the count.
 TRIES = {}
 TRIES_LOCK = threading.Lock()
+# For the connection checks: the connections the keep-alive listener accepted, numbered from 1, and the
+# tags (the thread that sent it) of the requests each carried.
+CONNS = {"count": 0, "tags": {}}
+CONNS_LOCK = threading.Lock()
 
 
 def count(key):
@@ -130,6 +135,10 @@ class Handler(BaseHTTPRequestHandler):
             count(self.path.split("/")[2])
             self.close_connection = True
             self.connection.shutdown(2)
+        elif self.path.startswith("/cut/"):              # /cut/CODE/KEY: CODE, its body cut short
+            _, _, code, key = self.path.split("/")
+            count(key)
+            self.cut(int(code), {})
         elif self.path.startswith("/slowcount/"):        # /slowcount/KEY: answers after 2 s, by when the client has gone
             count(self.path.split("/")[2])
             time.sleep(2)
@@ -140,6 +149,33 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/tries/"):
             with TRIES_LOCK:
                 self.reply(200, str(TRIES.get(self.path.split("/")[2], 0)).encode())
+        else:
+            self.reply(404)
+
+
+class KeepAlive(Handler):
+    """HTTP/1.1 with its connections kept open, each numbered as it is accepted. /conn/TAG answers with the
+    number of the connection it came on, a little late so that two threads' requests overlap, and notes the
+    tag against it; /conns says how many connections were accepted and how many carried more than one tag."""
+    protocol_version = "HTTP/1.1"
+
+    def setup(self):
+        super().setup()
+        with CONNS_LOCK:
+            CONNS["count"] += 1
+            self.number = CONNS["count"]
+
+    def do_GET(self):
+        if self.path.startswith("/conn/"):
+            with CONNS_LOCK:
+                CONNS["tags"].setdefault(self.number, set()).add(self.path.split("/")[2])
+            time.sleep(0.02)
+            self.reply(200, str(self.number).encode())
+        elif self.path == "/conns":
+            with CONNS_LOCK:
+                shared = sum(1 for tags in CONNS["tags"].values() if len(tags) > 1)
+                body = "connections=%d shared=%d" % (CONNS["count"], shared)
+            self.reply(200, body.encode())
         else:
             self.reply(404)
 
@@ -205,11 +241,12 @@ def main():
         away = ThreadingHTTPServer(("127.0.0.2", 0), Away)
         AWAY["port"] = away.server_address[1]
         proxy = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
-        servers = [plain, tls, tls_client, away, proxy]
+        keep = ThreadingHTTPServer(("127.0.0.1", 0), KeepAlive)
+        servers = [plain, tls, tls_client, away, proxy, keep]
         for s in servers:
             serve(s)
         args = [sys.argv[1], str(plain.server_address[1]), str(tls.server_address[1]), str(tls_client.server_address[1]),
-                pin_of(cert), client_cert, client_key, str(proxy.server_address[1])]
+                pin_of(cert), client_cert, client_key, str(proxy.server_address[1]), str(keep.server_address[1])]
         rc = subprocess.run(args, timeout=60).returncode
     finally:
         for s in servers:
