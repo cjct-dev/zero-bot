@@ -1528,6 +1528,12 @@ def music_genre(now_playing):
         if any(str(now_playing) == "%s by %s" % (title, artist) for title in titles): return genre.lower()
     return None
 
+def music_started(t):
+    """A music play call in the turn worked and started a track, whatever its genre."""
+    started = [r.get("now_playing") for c, r in [(c, results_of(r)) for c, r in _made(t, "music")]
+               if str(c.get("action", "play")).lower() == "play" and isinstance(r, dict) and r.get("now_playing")]
+    return [] if started else ["music should have started, got %s" % tried(t, "music")]
+
 def music_playing(genre):
     """A music play call worked in this turn and what it started is a song of that genre in the library."""
     def check(t):

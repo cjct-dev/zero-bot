@@ -433,6 +433,7 @@ def k_device_set(s): return ev.device_set(s["setting"], s["value"])
 def k_music_playing(s): return ev.music_playing(s["genre"])
 def k_radio_started(s): return ev.radio_started(s["station"])
 def k_radio_none_started(s): return ev.radio_none_started
+def k_music_started(s): return ev.music_started
 def k_home_call(s): return ev.home_call(s["action"], s.get("targets"), **(s.get("values") or {}))
 def k_home_never_on(s): return ev.home_never_on
 def k_home_asked(s): return ev.home_asked_about(s.get("name"))
@@ -486,7 +487,7 @@ SPEC = {"answer": {"re": "re", "what": "str?"}, "not_answer": {"re": "re", "what
         "home_no_action": {"actions": "list"}, "asks": {"name": "str"}, "forecast_seen": {"days": "int", "rain": "int?"},
         "nothing_set": {}, "event_time": {"event": "str", "zone": "str?"}, "unannounced_time": {"usual": "list?"},
         "device_set": {"setting": "str", "value": "num"}, "music_playing": {"genre": "str"}, "radio_started": {"station": "str"},
-        "radio_none_started": {},
+        "radio_none_started": {}, "music_started": {},
         "served": {"rule": "str", "slots": "list", "as": "str?", "any": "bool?"}, "weather_served": {}}
 ONE_OF = {"arg": ("has", "num", "is", "any"), "weekday_of": ("md", "date")}
 TYPES = {"str": str, "num": (int, float), "int": int, "list": list, "dict": dict, "bool": bool}

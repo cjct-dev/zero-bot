@@ -18,8 +18,13 @@ std::string t_radio(const json &a, Context &ctx) {
     return radio::run_tool(a, env);
 }
 
-// A warning about mobile data has to be passed on in the model's own words.
-bool say_confirms(const json &, const std::string &result) { return result.find("\"note\"") == std::string::npos; }
+// A warning about mobile data has to be passed on in the model's own words. A stop never ends the request with its
+// say: the model often stops the station only to play music next (ZB-118: "play some music" got a stop with "Radio
+// off." and nothing more, 2 runs in 5 even once the music tool's description said play replaces the station), so it
+// is asked again; "stop the radio" is answered then.
+bool say_confirms(const json &a, const std::string &result) {
+    return result.find("\"note\"") == std::string::npos && util::lower(str_arg(a, "action")) != "stop";
+}
 
 }  // namespace
 

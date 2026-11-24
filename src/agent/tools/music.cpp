@@ -1,5 +1,6 @@
 // The music tool: music from the user's own library.
 #include "agent/tools/common.h"
+#include "agent/tools/say_checks.h"
 
 #include <algorithm>
 #include <mutex>
@@ -155,10 +156,11 @@ std::string t_music(const json &a, Context &ctx) {
 }
 
 // The other actions return something the model has not seen yet (the track that started), so the answer
-// has to be written after the result.
+// has to be written after the result. A stop that announces what starts next leaves that step to the model
+// (claims_start).
 bool say_confirms(const json &args, const std::string &) {
     const std::string action = util::lower(str_arg(args, "action"));
-    return action == "stop" || action == "next";
+    return action == "next" || (action == "stop" && !claims_start(args));
 }
 
 }  // namespace
