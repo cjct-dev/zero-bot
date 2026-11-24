@@ -106,12 +106,17 @@ keeps working meanwhile: talking, typing, settings, music, the breathing exercis
 
 ### 1. Install the package
 
-Download `zero-bot_<version>_arm64.deb` from the Releases page, copy it to the CardputerZero
-(over SSH, ADB or the microSD card) and install it on the device:
+Download `zero-bot_<version>_arm64.deb` and its `.sha256` file from the Releases page of this
+repository (nowhere else), copy both to the CardputerZero (over SSH, ADB or the microSD card), check
+the package and install it on the device:
 
 ```sh
-sudo apt install ./zero-bot_0.4.9_arm64.deb
+sha256sum -c zero-bot_0.5.1_arm64.deb.sha256     # must say: OK
+sudo apt install ./zero-bot_0.5.1_arm64.deb
 ```
+
+The release notes give the same SHA-256. A package that fails the check, or one from anywhere else,
+should not be installed.
 
 "Zero Bot" then appears in the launcher within a few seconds. To build the package yourself
 instead, see [Building](#building).
