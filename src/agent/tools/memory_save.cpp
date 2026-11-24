@@ -14,9 +14,10 @@ namespace tools {
 namespace {
 
 // Every memory is in the instructions of every request, sent with each call (on a phone's tether too), so
-// one is kept short and all of them together are capped. Counted as the bytes sent.
+// one is kept short and all of them together are capped. Counted as the bytes sent. 2,000 keeps the first request
+// with every tool offered and a full memory under the loop test's tripwire (3,000 went 465 bytes past it).
 constexpr size_t kMaxMemory = 400;
-constexpr size_t kMaxMemories = 3000;
+constexpr size_t kMaxMemories = 2000;
 
 const char *const kWhereIds = "memory ids are listed in your instructions";
 

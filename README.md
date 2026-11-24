@@ -536,7 +536,7 @@ devices, with or without this app.
 - Calendar, reminders, memories and learned remote buttons are plain JSON files in
   `~/.local/share/zero-bot/`. Delete a file to reset that part.
 - What the assistant remembers about you is sent to your AI service with every request, so memories
-  are kept short: 400 characters each and 3,000 in all. When memory is full, a new one is saved only
+  are kept short: 400 characters each and 2,000 in all. When memory is full, a new one is saved only
   once the assistant has merged it into one on the same subject or you have chosen one to forget;
   nothing already saved is removed for it. Characters that show as nothing (zero-width and direction
   marks, Unicode tag characters) are taken out before one is saved. Once the assistant has read a web

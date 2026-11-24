@@ -239,7 +239,7 @@ Things in that loop that exist for a reason; do not remove them without re-runni
 - **Memories** (ZB-120 to ZB-122): what is kept (`tools::clean_text`) has its control characters as
   spaces and loses every character that shows as nothing (zero-width and bidirectional marks, the
   word joiner, the byte-order mark, variation selectors, Unicode's tag characters), which could carry
-  words the user never sees. Each memory is at most 400 characters and all of them 3,000: a save past
+  words the user never sees. Each memory is at most 400 characters and all of them 2,000: a save past
   that is refused with how full memory is and what to do (merge with `replace_id`, or ask the user
   which to forget); memories already past it stay, and a save that shortens them is let through. A
   memory, and a web search's query, holding a card number (Luhn), an IBAN (mod 97), a UK National

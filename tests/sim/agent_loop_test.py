@@ -309,17 +309,17 @@ def first_request_every_tool():
     check(n + ": %d bytes, under %d" % (size, FIRST_REQUEST_LIMIT), size < FIRST_REQUEST_LIMIT, size)
 
 
-# A full memory: 3,000 characters (memory_save's total, ZB-121) in ten memories of the length a person's facts run to.
-FULL_MEMORY = [("Memory %d: " % i + "the user's facts as they told them, " * 9)[:300] for i in range(10)]
+# A full memory: 2,000 characters (memory_save's total, ZB-121) in ten memories of the length a person's facts run to.
+FULL_MEMORY = [("Memory %d: " % i + "the user's facts as they told them, " * 6)[:200] for i in range(10)]
 
 
 @scenario
 def first_request_full_memory():
-    # Every memory rides in every request's instructions. With a full memory the first request of a plain question
-    # stays under the tripwire (about 28.3 kB). With every tool offered as well it is about 32.5 kB, past it (measured
-    # 2026-11-24, ZB-121): whether that combination should count against the tripwire is the owner's call.
-    r = run({"default": {"text": "Lisbon."}}, ask="what is the capital of portugal", memories=FULL_MEMORY)
-    n = "first request with a full memory"
+    # Every memory rides in every request's instructions. The largest first request there can be, every tool offered
+    # and a full memory, stays under the tripwire (the total was 3,000 characters until that came to 32.5 kB, ZB-121).
+    r = run({"default": {"text": "Lisbon."}}, ask="what is the capital of portugal", memories=FULL_MEMORY, home=HOME,
+            radio=STATIONS, search_key="test-search-key")
+    n = "first request with every tool offered and a full memory"
     body = r.requests[0]["body"] if r.requests else {}
     system = text_of((body.get("messages") or [{}])[0])
     check(n + ": every memory is in the instructions", all("] " + m + "\n" in system for m in FULL_MEMORY), system[-400:])

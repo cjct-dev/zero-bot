@@ -320,24 +320,25 @@ def run_all(root):
     check("nothing refused was saved", not any(re.search(r"4111|WEST|AB 12|45-6789", x["text"]) for x in m.file("data", "zero-bot", "memory.json")),
           m.file("data", "zero-bot", "memory.json"))
 
-    # ---- memory's total (ZB-121): 3,000 characters in all; what is saved past it stays, only a save that grows waits
+    # ---- memory's total (ZB-121): 2,000 characters in all; what is saved past it stays, only a save that grows waits
     f = State(root, "memory-full")
-    for i in range(7):
-        ok(f, "memory_save", {"text": "%d" % i + "x" * 399}, "saved as memory %d" % (i + 1))   # 2,800
-    ok(f, "memory_save", {"text": "y" * 200}, "saved as memory 8")                             # 3,000: full, not over
-    out = error(f, "memory_save", {"text": "Likes tea"}, "memory is full: 3000 of its 3000 characters are used",
-                "and this would make 3009", "replace_id", "which memory to forget")
-    error(f, "memory_save", {"text": "z" * 210, "replace_id": 8}, "memory is full")   # a replacement that grows
-    ok(f, "memory_save", {"text": "Likes tea", "replace_id": 8}, "updated memory 8")   # one that shortens is fine
-    ok(f, "memory_save", {"text": "Likes coffee"}, "saved as memory 9")
+    for i in range(4):
+        ok(f, "memory_save", {"text": "%d" % i + "x" * 399}, "saved as memory %d" % (i + 1))   # 1,600
+    ok(f, "memory_save", {"text": "y" * 300}, "saved as memory 5")                             # 1,900
+    ok(f, "memory_save", {"text": "w" * 100}, "saved as memory 6")                             # 2,000: full, not over
+    out = error(f, "memory_save", {"text": "Likes tea"}, "memory is full: 2000 of its 2000 characters are used",
+                "and this would make 2009", "replace_id", "which memory to forget")
+    error(f, "memory_save", {"text": "z" * 150, "replace_id": 6}, "memory is full")   # a replacement that grows
+    ok(f, "memory_save", {"text": "Likes tea", "replace_id": 6}, "updated memory 6")   # one that shortens is fine
+    ok(f, "memory_save", {"text": "Likes coffee"}, "saved as memory 7")
     over = [{"id": i + 1, "text": "%d" % i + "w" * 399, "created": 1} for i in range(9)]   # 3,600, saved before the total
     with open(f.dir + "/data/zero-bot/memory.json", "w") as fh:
         json.dump(over, fh)
-    error(f, "memory_save", {"text": "Likes tea"}, "memory is full: 3600 of its 3000 characters are used")
+    error(f, "memory_save", {"text": "Likes tea"}, "memory is full: 3600 of its 2000 characters are used")
     ok(f, "memory_save", {"text": "Likes tea", "replace_id": 9}, "updated memory 9")
     check("memories saved past the total are never removed for a new one", len(f.file("data", "zero-bot", "memory.json") or []) == 9)
     ok(f, "memory_delete", {"id": 2}, "deleted")
-    ok(f, "memory_save", {"text": "Likes coffee"}, "saved as memory 10")   # 3,600 - 400 - 391 + 12: room again
+    error(f, "memory_save", {"text": "Likes coffee"}, "memory is full")   # 3,600 - 400 - 391 = 2,809: still past it
 
     # ---- time zones that are not zones
     z = State(root, "zones")

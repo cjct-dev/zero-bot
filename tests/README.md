@@ -188,13 +188,13 @@ it sent: the held draft and second look, the claim guards (a table of phrasings 
 questions, a byte-identical system prompt (also when web search's allowance runs out mid-conversation, against the
 stand-in web's `tavily_spent`: the tools unchanged too), a memory saved or forgotten after a photo or a web page (it
 waits for the user's plain yes, read back in the question, and a "no" holds) and one with nothing from outside (saved
-at once), and the first request's size (a tripwire at 32,000 bytes, for a plain set-up, for one with a full memory of
-3,000 characters, and with every tool offered: web search, ten radio stations, a home; raise it knowingly). With no `ZB_EXP_*` variable
+at once), and the first request's size (a tripwire at 32,000 bytes, for a plain set-up, with every tool offered: web
+search, ten radio stations, a home, and with every tool and a full memory of 2,000 characters; raise it knowingly). With no `ZB_EXP_*` variable
 set nothing sent or done changes (checked here). Add a scenario here with any change to `agent.cpp` or `llm.cpp`.
 
 **The tools.** `tools_cli.py` runs the offline tools through the `cli` build, with good, wrong and hostile arguments,
 each in a fresh state folder (memory_save among them: its hidden characters taken out, card and ID numbers refused by
-kind, and the 3,000 characters of all memories, past which only a save that grows them waits); it also checks the radio stations' tags as the radio tool's schema gives them and a
+kind, and the 2,000 characters of all memories, past which only a save that grows them waits); it also checks the radio stations' tags as the radio tool's schema gives them and a
 station played by its tag (`station_tags`), the hardware guard (`ZB_EXP_NO_HARDWARE`), the stand-in web's proxy and
 redirect rules, when web search is set up by the settings' list of services and searches with which key
 (`search_services`: an older file's `search_key`, `ZB_SEARCH_KEY` as the Tavily entry's key, an entry switched off,
