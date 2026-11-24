@@ -270,9 +270,16 @@ public:
         const bool strip = std::any_of(things.begin(), things.end(),
                                        [](const home::Thing &th) { return !util::jget(th.ref, "child", std::string()).empty(); });
         if (strip) {
+            // A strip's state is in its sockets alone. A password on trial is judged first by the strip's own
+            // answer, and its outcome kept, before they are listed: the account's other plugs wait for that, not
+            // for the listing (ZB-113). A refusal during the listing is kept and said all the same (failed()).
+            if (a.on_trial) {
+                json info;
+                if (!tapo::get_info(t, c, info, err, refused)) { failed(refused, a, first, err); return false; }
+                accepted(a, first);
+            }
             json sockets;
             if (!tapo::list_sockets(t, c, sockets, err, refused)) { failed(refused, a, first, err); return false; }
-            accepted(a, first);
             for (auto &th : things) {
                 const std::string child = util::jget(th.ref, "child", std::string());
                 for (const auto &s : sockets)
@@ -371,9 +378,16 @@ private:
             return true;
         }
         const Refusal r = keep_refusal(refused, a);
-        if (r == Refusal::None) err = "The password is saved, but the plug did not answer: " + why;
-        else err = std::string("The plug did not accept this password. Capitals count; type it again.") +
-                   (r == Refusal::NotNoted ? " That refusal could not be noted on this device (its storage may be full)." : "");
+        // "Did not answer" only when nothing did (ZB-115): an error code the plug answered with, another device
+        // at its address or a request never sent leaves the password unchecked, not unanswered.
+        if (r == Refusal::None) {
+            const bool nobody = home::who_answered(why) == home::Answered::Nobody;
+            err = std::string("The password is saved, but ") +
+                  (nobody ? "the plug did not answer: " : "it could not be checked with the plug: ") + why;
+        } else {
+            err = std::string("The plug did not accept this password. Capitals count; type it again.") +
+                  (r == Refusal::NotNoted ? " That refusal could not be noted on this device (its storage may be full)." : "");
+        }
         return false;
     }
 

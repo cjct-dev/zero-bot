@@ -3835,6 +3835,10 @@ void test_who_answered() {
         {"the request to the plug failed: Failure when receiving data from the peer", device},
         {"the plug dropped a session it had only just opened; giving up", device},
         {"the strip did not say whether the socket was switched", device},
+        // Tapo's setup (tapo_driver.cpp), a password neither taken nor refused (ZB-115)
+        {"The password is saved, but the plug did not answer: cannot connect to the plug", nobody},
+        {"The password is saved, but it could not be checked with the plug: the plug rejected the parameters of the request",
+         device},
         // WiZ
         {wiz::kNoAnswer, nobody},
         {"The WiZ device did not answer. Check that it is switched on, and that Allow local communication is on in the WiZ "
