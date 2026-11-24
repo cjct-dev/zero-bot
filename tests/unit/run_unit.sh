@@ -5,7 +5,7 @@
 # countdown, the alarm and its player), the radio (the station file, the tool, the check of a
 # stream, the player's live mode), the keys (what each does on the chat screen, and the key guide),
 # when the screen dims and goes off, what the other tools stand on (calculator, dates, time
-# zones, helper programs), what every thread shares (one file saved by two threads, the settings,
+# zones, helper programs, card and ID numbers, hidden characters, the user's yes), what every thread shares (one file saved by two threads, the settings,
 # all-day alerts when the clocks change, the store's lock while its files are written, the main
 # loop's sleep and what wakes it) and the small shared helpers (failure shape, battery,
 # Wi-Fi list, default route, monotonic count, start of a day, numeric and typed dates, an event's
@@ -42,16 +42,19 @@ trap 'rm -rf "$state"' EXIT INT TERM
 # Every driver in src/smarthome/drivers/ is built: registry.cpp names each family's make_<family>_driver(),
 # so a family registered there (AGENTS.md section 9) links here with nothing else to change.
 DRIVERS=$(echo src/smarthome/drivers/*.cpp)
+# The smart-home layer asks the user's yes through agent/consent.cpp.
 APP="src/smarthome/store.cpp src/smarthome/targets.cpp src/smarthome/control.cpp src/smarthome/tool.cpp
-     src/smarthome/discovery.cpp src/smarthome/tapo.cpp $DRIVERS src/core/util.cpp src/platform/proc.cpp
+     src/smarthome/discovery.cpp src/smarthome/tapo.cpp $DRIVERS src/agent/consent.cpp src/core/util.cpp src/platform/proc.cpp
      src/platform/sys.cpp src/platform/net_status.cpp src/net/http.cpp"
 # The timers need only these, with util.cpp and proc.cpp from above.
 TIMERS="src/core/timers.cpp src/core/store.cpp src/platform/audio.cpp src/platform/codec.cpp"
 # The radio needs these on top of the smart-home objects (for its name cleaning; net_status.cpp for the
 # tether) and audio.cpp.
 RADIO="src/core/radio.cpp src/core/tether.cpp"
-# The tools' foundations need only the calculator, with util.cpp and proc.cpp from above.
-TOOLS="src/agent/calc.cpp"
+# The tools' foundations: the calculator, the check for card and ID numbers and the memory tools (with the store,
+# the settings and say's checks), with util.cpp, proc.cpp, sys.cpp and consent.cpp from above and common.cpp from SEARCH.
+TOOLS="src/agent/calc.cpp src/agent/tools/sensitive.cpp src/agent/tools/memory_save.cpp src/agent/tools/memory_delete.cpp
+       src/agent/tools/say_checks.cpp"
 # DIAGNOSTICS (temporary): the activity log and saved conversations, with util.cpp from above.
 DIAG="src/core/activity.cpp src/core/settings.cpp"
 # What an older version left behind (core_test), with util.cpp and proc.cpp from above.
@@ -97,7 +100,10 @@ radio_objs="$(obj_of src/platform/audio.cpp) $(obj_of src/platform/codec.cpp)"
 for src in $RADIO; do radio_objs="$radio_objs $(obj_of "$src")"; done
 $WRAP $CXX -o "$OUT/radio_test" "$OUT/tests_unit_radio_test.o" $radio_objs $objs -lcurl -lcrypto -ldl -lpthread
 $WRAP $CXX -o "$OUT/tools_test" "$OUT/tests_unit_tools_test.o" "$(obj_of src/agent/calc.cpp)" "$(obj_of src/core/util.cpp)" \
-    "$(obj_of src/platform/proc.cpp)" -lpthread
+    "$(obj_of src/platform/proc.cpp)" "$(obj_of src/agent/tools/sensitive.cpp)" "$(obj_of src/agent/tools/common.cpp)" \
+    "$(obj_of src/agent/consent.cpp)" "$(obj_of src/agent/tools/memory_save.cpp)" "$(obj_of src/agent/tools/memory_delete.cpp)" \
+    "$(obj_of src/agent/tools/say_checks.cpp)" "$(obj_of src/core/store.cpp)" "$(obj_of src/core/settings.cpp)" \
+    "$(obj_of src/platform/sys.cpp)" -lpthread
 # The Fire TV driver's own tests; firetv_cli is what tests/sim/firetv_e2e.py drives against its mock.
 $WRAP $CXX -o "$OUT/firetv_test" "$OUT/tests_unit_firetv_test.o" $objs -lcurl -lcrypto -lpthread
 $WRAP $CXX -o "$OUT/firetv_cli" "$OUT/tests_unit_firetv_cli.o" $objs -lcurl -lcrypto -lpthread
@@ -184,7 +190,7 @@ echo "=== diagnostics: saved conversations (temporary)"
 echo "=== radio"
 TMPDIR="$state" python3 -I tests/unit/radio_peer.py "$OUT/radio_test" || failed=1
 
-echo "=== tools: calculator, dates, time zones, helper programs"
+echo "=== tools: calculator, dates, time zones, helper programs, card and ID numbers, hidden characters, the user's yes"
 TZ=UTC "$OUT/tools_test" "$state" || failed=1
 
 echo "=== timers"

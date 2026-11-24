@@ -225,7 +225,7 @@ std::string tool_run(const json &args, bool dry_run) {
 bool tool_say_ok(const json &args, const std::string &result) {
     const std::string action = util::lower(text_arg(args, "action"));
     if (action.empty() || action == "status" || action == "list" || action == "check") return false;
-    if (result::failed(result) || result.compare(0, 7, "CONFIRM") == 0) return false;
+    if (result::failed(result) || result::awaits_yes(result)) return false;
     const json j = json::parse(result, nullptr, false);
     // A group where something failed has to be reported from the result, not from the sentence.
     return j.is_object() && !j.contains("failed");

@@ -44,8 +44,8 @@ enum class BadUtf8 {
 // byte, as the next byte is looked at afresh.
 std::string sanitize_utf8(const std::string &raw, BadUtf8 bad);
 // The well-formed UTF-8 sequence at p[i] (n bytes in all): its length, with its code point in `cp`;
-// 0 when there is none there.
-size_t utf8_at(const unsigned char *p, size_t n, size_t i, uint32_t &cp);
+// 0 when there is none there: util::utf8_at (core/util.h), which the tools' text cleaning reads with too.
+using util::utf8_at;
 // Unicode's White_Space property (PropList.txt): tab, the line breaks, space, NEL, the no-break and
 // typographic spaces, the line and paragraph separators, the ideographic space.
 bool unicode_space(uint32_t cp);

@@ -111,7 +111,7 @@ std::string confirmation(const std::string &name, const std::string &raw_args, c
     if (!controls::on(controls::Say)) return "";
     const Tool *tool = find(name);
     if (!tool || !tool->say.taken) return "";
-    if (failed(result)) return "";
+    if (failed(result) || result::awaits_yes(result)) return "";   // the model has the user's yes to ask for first
     const json args = util::parse_untrusted_json(raw_args.empty() ? "{}" : raw_args);
     if (!args.is_object()) return "";
     if (tool->say.when && !tool->say.when(args, result)) return "";   // the tool's own exceptions (Say::when)

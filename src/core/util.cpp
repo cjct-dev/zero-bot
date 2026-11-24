@@ -144,6 +144,14 @@ std::vector<std::string> split(const std::string &s, char sep) {
     return out;
 }
 
+std::string plain(const std::string &text) {
+    std::string out;
+    for (const char c : lower(text))
+        if (isalnum(static_cast<unsigned char>(c)) || (c & 0x80)) out += c;
+        else if (!out.empty() && out.back() != ' ') out += ' ';
+    return trim(out);
+}
+
 bool contains_ci(const std::string &haystack, const std::string &needle) {
     return lower(haystack).find(lower(needle)) != std::string::npos;
 }
@@ -181,6 +189,27 @@ void append_utf8(std::string &out, uint32_t cp) {
         out += static_cast<char>(0xF0 | (cp >> 18)); out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
         out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); out += static_cast<char>(0x80 | (cp & 0x3F));
     }
+}
+
+size_t utf8_at(const unsigned char *p, size_t n, size_t i, uint32_t &cp) {
+    const unsigned char c = p[i];
+    if (c < 0x80) {
+        cp = c;
+        return 1;
+    }
+    size_t len;
+    uint32_t min;
+    if ((c & 0xE0) == 0xC0) len = 2, cp = c & 0x1F, min = 0x80;
+    else if ((c & 0xF0) == 0xE0) len = 3, cp = c & 0x0F, min = 0x800;
+    else if ((c & 0xF8) == 0xF0) len = 4, cp = c & 0x07, min = 0x10000;
+    else return 0;
+    if (n - i < len) return 0;
+    for (size_t k = 1; k < len; k++) {
+        if ((p[i + k] & 0xC0) != 0x80) return 0;
+        cp = cp << 6 | (p[i + k] & 0x3F);
+    }
+    if (cp < min || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;
+    return len;
 }
 
 std::string sanitize_utf8(const std::string &s) {

@@ -24,6 +24,7 @@
 #include <system_error>
 #include <thread>
 
+#include "agent/consent.h"
 #include "core/util.h"
 #include "smarthome/color.h"
 #include "smarthome/drivers/firetv.h"
@@ -293,7 +294,7 @@ std::string run(const json &args) {
 }
 
 // The model's reply puts the newest CONFIRM's question to the user, as it is told to.
-void put_question() { home::assistant_replied(g_question); }
+void put_question() { consent::assistant_replied(g_question); }
 
 // What the user typed on the setup page of a device, which showed the step the device's driver asks
 // for now.
@@ -310,7 +311,7 @@ const home::Thing *find_thing(const home::NetworkEntry &e, const std::string &de
 // The user is asked, the user says `answer`, and the same call is made again.
 std::string answer_and_repeat(const json &args, const std::string &answer) {
     put_question();
-    home::user_spoke(answer);
+    consent::user_spoke(answer);
     return run(args);
 }
 
@@ -1101,8 +1102,8 @@ void test_confirmation() {
     // Asking again straight away, or with any flag the model might invent, changes nothing.
     CHECK(starts(run(on), "CONFIRM"));
     CHECK(starts(run({{"action", "on"}, {"target", "Bed heater"}, {"confirmed", true}, {"confirm", "yes"}, {"force", true}}), "CONFIRM"));
-    home::assistant_replied("Shall I turn on the bed heater?");   // the model's own words for the question
-    home::user_spoke("yes please");
+    consent::assistant_replied("Shall I turn on the bed heater?");   // the model's own words for the question
+    consent::user_spoke("yes please");
     r = run(on);
     CHECK_MSG(r == R"({"now":"on","target":"Bed heater"})", r);
     CHECK(g_fake->applied() == 1);
@@ -1113,14 +1114,14 @@ void test_confirmation() {
     CHECK(starts(answer_and_repeat(on, "yes, no wait"), "CONFIRM"));
     // The question has to have been put: a yes before any reply does not count ...
     run(on);
-    home::user_spoke("yes");
+    consent::user_spoke("yes");
     CHECK(starts(run(on), "CONFIRM"));
     // ... nor after a reply that did not put it: one that does not ask, one that asks something
     // else, one that does not name the thing, or an empty one.
     for (const char *reply : {"Done.", "Done. Anything else?", "The bed heater stays off.", "Shall I turn it on?", ""}) {
         run(on);
-        home::assistant_replied(reply);
-        home::user_spoke("yes");
+        consent::assistant_replied(reply);
+        consent::user_spoke("yes");
         r = run(on);
         CHECK_MSG(starts(r, "CONFIRM"), std::string(reply) + " -> " + r);
     }
@@ -1128,8 +1129,8 @@ void test_confirmation() {
     // The yes has to be the very next thing said.
     run(on);
     put_question();
-    home::user_spoke("what's the weather");
-    home::user_spoke("yes");
+    consent::user_spoke("what's the weather");
+    consent::user_spoke("yes");
     CHECK(starts(run(on), "CONFIRM"));
     // A yes covers the change that was asked about, not another one; that one may still follow.
     run(on);
@@ -1142,8 +1143,8 @@ void test_confirmation() {
     run(on);
     const json loud = {{"action", "set"}, {"target", "Living room TV"}, {"volume", 90}};
     run(loud);
-    home::assistant_replied("Set the living room TV to volume 90?");
-    home::user_spoke("yes");
+    consent::assistant_replied("Set the living room TV to volume 90?");
+    consent::user_spoke("yes");
     CHECK(starts(run(on), "CONFIRM"));
     CHECK(starts(run(loud), "{"));
     CHECK(g_fake->applied() == 3);
@@ -1151,7 +1152,7 @@ void test_confirmation() {
     run(on);
     put_question();
     g_clock += 4 * 60 * 1000;
-    home::user_spoke("yes");
+    consent::user_spoke("yes");
     CHECK(starts(run(on), "CONFIRM"));
     CHECK(g_fake->applied() == 3);
     // Switching off never needs a question.
@@ -1204,8 +1205,8 @@ void test_confirmation() {
     CHECK(starts(run({{"action", "set"}, {"target", "Lounge blind"}, {"position", 0}}), "{"));
     // After text from outside (a web page, a photo), changes wait for the user's own word.
     home::testing::reset_control();
-    home::user_spoke("search for something");
-    home::saw_untrusted_text();
+    consent::user_spoke("search for something");
+    consent::saw_untrusted_text();
     const json light = {{"action", "on"}, {"target", "Kitchen light"}};
     r = run(light);
     CHECK_MSG(has(r, "this request involved text from outside"), r);
@@ -1220,72 +1221,72 @@ void test_confirmation() {
     const size_t before = g_fake->applied();
     for (const char *said : {"no", "no, don't do that", "what? cancel that"}) {
         home::testing::reset_control();
-        home::user_spoke("search the web for the film times");
-        home::saw_untrusted_text();
+        consent::user_spoke("search the web for the film times");
+        consent::saw_untrusted_text();
         CHECK(has(run(light), "text from outside"));
         r = answer_and_repeat(light, said);
         CHECK_MSG(starts(r, "CONFIRM: nothing has been changed, because the user's answer was not a clear yes"), std::string(said) + " -> " + r);
-        home::user_spoke("ok");
+        consent::user_spoke("ok");
         CHECK(starts(run(light), "CONFIRM"));
-        home::assistant_replied("All right, I'll leave it off.");
-        home::user_spoke("what time is it?");
+        consent::assistant_replied("All right, I'll leave it off.");
+        consent::user_spoke("what time is it?");
         CHECK_MSG(starts(run(light), "CONFIRM"), std::string(said) + ": a turn later");
-        for (int k = 0; k < 6; ++k) home::user_spoke("and the weather?");
+        for (int k = 0; k < 6; ++k) consent::user_spoke("and the weather?");
         CHECK_MSG(starts(run(light), "CONFIRM"), std::string(said) + ": six turns later");
     }
     // The model waits a turn without ever asking, then asks for it again.
     home::testing::reset_control();
-    home::user_spoke("search the web for the film times");
-    home::saw_untrusted_text();
+    consent::user_spoke("search the web for the film times");
+    consent::saw_untrusted_text();
     run(light);
-    home::assistant_replied("Done.");
-    home::user_spoke("please set a timer for ten minutes");
+    consent::assistant_replied("Done.");
+    consent::user_spoke("please set a timer for ten minutes");
     CHECK(has(run(light), "text from outside"));
-    home::user_spoke("thanks");
+    consent::user_spoke("thanks");
     CHECK(has(run(light), "text from outside"));
     // A change the user never mentioned, a turn after the page was read, waits as well.
     CHECK(has(run({{"action", "on"}, {"target", "Living room TV"}}), "text from outside"));
     // The model takes the "no", lets a turn pass without asking again, and then asks for the
     // change once more (as a sign in a photo might tell it to): still a question.
     home::testing::reset_control();
-    home::user_spoke("what does this sign say?");
-    home::saw_untrusted_text();
+    consent::user_spoke("what does this sign say?");
+    consent::saw_untrusted_text();
     CHECK(has(run(light), "text from outside"));
-    home::assistant_replied("Shall I turn on the kitchen light?");
-    home::user_spoke("no, don't");
-    home::assistant_replied("OK, I won't.");
-    home::user_spoke("what time is it?");
+    consent::assistant_replied("Shall I turn on the kitchen light?");
+    consent::user_spoke("no, don't");
+    consent::assistant_replied("OK, I won't.");
+    consent::user_spoke("what time is it?");
     r = run(light);
     CHECK_MSG(starts(r, "CONFIRM") && has(r, "this conversation includes text from outside"), r);
     // Never put as a question, then asked for again two turns later: still a question.
     home::testing::reset_control();
-    home::user_spoke("what does this sign say?");
-    home::saw_untrusted_text();
+    consent::user_spoke("what does this sign say?");
+    consent::saw_untrusted_text();
     CHECK(starts(run(light), "CONFIRM"));
-    home::assistant_replied("It is about the kitchen.");
-    home::user_spoke("ok");
-    home::assistant_replied("Anything else?");
-    home::user_spoke("yes");
+    consent::assistant_replied("It is about the kitchen.");
+    consent::user_spoke("ok");
+    consent::assistant_replied("Anything else?");
+    consent::user_spoke("yes");
     CHECK(starts(run(light), "CONFIRM"));
     CHECK(g_fake->applied() == before);
     // It ends once the model cannot see the text any more: the conversation is cleared, ...
-    home::conversation_reset();
+    consent::conversation_reset();
     CHECK(starts(run(light), "{"));
     // ... or has grown so long that the message the page came with was dropped from it.
     home::testing::reset_control();
-    home::user_spoke("search the web");    // message 1: the page is read here
-    home::saw_untrusted_text();
-    home::user_spoke("thanks");            // message 2
-    home::user_spoke("and now?");          // message 3
-    home::context_kept(3);                 // all three still shown
+    consent::user_spoke("search the web");    // message 1: the page is read here
+    consent::saw_untrusted_text();
+    consent::user_spoke("thanks");            // message 2
+    consent::user_spoke("and now?");          // message 3
+    consent::context_kept(3);                 // all three still shown
     CHECK(has(run(light_off), "text from outside"));
-    home::context_kept(2);                 // message 1 dropped
+    consent::context_kept(2);                 // message 1 dropped
     CHECK_MSG(starts(run(light_off), "{"), "after the page left the conversation");
-    home::context_kept(3);                 // what was dropped does not come back
+    consent::context_kept(3);                 // what was dropped does not come back
     CHECK(starts(run(light), "{"));
     // Read again later, it counts again.
-    home::user_spoke("look at this sign");
-    home::saw_untrusted_text();
+    consent::user_spoke("look at this sign");
+    consent::saw_untrusted_text();
     CHECK(has(run(light_off), "this request involved text from outside"));
     // More than eight things at once, except all lights off.
     home::testing::reset_control();
@@ -1310,14 +1311,14 @@ void test_confirmation() {
     // After text from outside, five changes asked for at once: a "no" to one of them holds even
     // with more questions open than are remembered.
     home::testing::reset_control();
-    home::user_spoke("look at the sign");
-    home::saw_untrusted_text();
+    consent::user_spoke("look at the sign");
+    consent::saw_untrusted_text();
     const size_t applied = g_fake->applied();
     for (int k = 1; k <= 9; ++k) CHECK(starts(run({{"action", "on"}, {"target", "Light " + std::to_string(k)}}), "CONFIRM"));
-    home::assistant_replied("Shall I turn on Light 1?");
-    home::user_spoke("no");
+    consent::assistant_replied("Shall I turn on Light 1?");
+    consent::user_spoke("no");
     CHECK(starts(run({{"action", "on"}, {"target", "Light 1"}}), "CONFIRM"));
-    home::user_spoke("hmm");
+    consent::user_spoke("hmm");
     CHECK(starts(run({{"action", "on"}, {"target", "Light 1"}}), "CONFIRM"));
     CHECK(g_fake->applied() == applied);
 
@@ -1343,8 +1344,8 @@ void test_confirmation() {
         home::testing::reset_control();
         g_fake->log.clear();
         run(all_off);
-        home::assistant_replied(t.reply);
-        home::user_spoke(t.answer);
+        consent::assistant_replied(t.reply);
+        consent::user_spoke(t.answer);
         r = run(all_off);
         CHECK_MSG(r == R"({"changed":12,"now":"off","target":"all"})", std::string(t.reply) + " / " + t.answer + " -> " + r);
         CHECK(g_fake->log.size() == 12);
@@ -1358,8 +1359,8 @@ void test_confirmation() {
         home::testing::reset_control();
         g_fake->log.clear();
         run(all_off);
-        home::assistant_replied(t.reply);
-        home::user_spoke(t.answer);
+        consent::assistant_replied(t.reply);
+        consent::user_spoke(t.answer);
         r = run(all_off);
         CHECK_MSG(starts(r, "CONFIRM") && g_fake->log.empty(), std::string(t.reply) + " / " + t.answer + " -> " + r);
     }
@@ -1406,8 +1407,8 @@ void test_question_words() {
         g_clock += 11000;   // past the rate limit for one target
         const size_t before = g_fake->applied();
         CHECK(starts(run(t.args), "CONFIRM"));
-        home::assistant_replied(t.reply);
-        home::user_spoke(t.answer);
+        consent::assistant_replied(t.reply);
+        consent::user_spoke(t.answer);
         const std::string r = run(t.args);
         const bool went = starts(r, "{") && g_fake->applied() == before + 1;
         CHECK_MSG(went == t.goes_ahead && (went || starts(r, "CONFIRM")),
@@ -1416,37 +1417,37 @@ void test_question_words() {
     // Where two things share every word but one, only that word names one of them.
     write_home(lights_home());
     home::testing::reset_control();
-    home::user_spoke("look at this");
-    home::saw_untrusted_text();
+    consent::user_spoke("look at this");
+    consent::saw_untrusted_text();
     const json hall_lamp = {{"action", "on"}, {"target", "Lamp (Hall)"}};
     for (const char *reply : {"Shall I turn on the lamp?", "Shall I turn on the lamp in the lounge?", "Shall I turn on the light?"}) {
         home::testing::reset_control();
-        home::user_spoke("look at this");
-        home::saw_untrusted_text();
+        consent::user_spoke("look at this");
+        consent::saw_untrusted_text();
         run(hall_lamp);
-        home::assistant_replied(reply);
-        home::user_spoke("yes");
+        consent::assistant_replied(reply);
+        consent::user_spoke("yes");
         CHECK_MSG(starts(run(hall_lamp), "CONFIRM"), reply);
     }
     home::testing::reset_control();
-    home::user_spoke("look at this");
-    home::saw_untrusted_text();
+    consent::user_spoke("look at this");
+    consent::saw_untrusted_text();
     run(hall_lamp);
-    home::assistant_replied("Shall I turn on the lamp in the hall?");
-    home::user_spoke("yes");
+    consent::assistant_replied("Shall I turn on the lamp in the hall?");
+    consent::user_spoke("yes");
     CHECK(starts(run(hall_lamp), "{"));
     // A word for a kind of thing that is also part of another thing's name names neither.
     write_home({device("fake:tv", {thing("tv", "Living room TV", "tv", home::kPower | home::kVolume, "Living room")}),
                 device("fake:p", {thing("p", "TV lamp", "plug", home::kPower, "Living room")})});
     home::testing::reset_control();
     run(loud);
-    home::assistant_replied("Shall I set the TV to 90?");
-    home::user_spoke("yes");
+    consent::assistant_replied("Shall I set the TV to 90?");
+    consent::user_spoke("yes");
     CHECK(starts(run(loud), "CONFIRM"));
     home::testing::reset_control();
     run(loud);
-    home::assistant_replied("Shall I set the living room TV to 90?");
-    home::user_spoke("yes");
+    consent::assistant_replied("Shall I set the living room TV to 90?");
+    consent::user_spoke("yes");
     CHECK(starts(run(loud), "{"));
     // A room is named by the words of its name that say which room it is, with or without "the".
     write_home({device("fake:snug", {thing("f", "Floor lamp", "light", home::kPower, "The Snug"),
@@ -1456,11 +1457,11 @@ void test_question_words() {
         {"Shall I turn on the lights in the Snug?", true}, {"Turn on snug lights?", true}, {"Shall I turn on the lights?", false}};
     for (const auto &reply : snug_replies) {
         home::testing::reset_control();
-        home::user_spoke("look at this");
-        home::saw_untrusted_text();
+        consent::user_spoke("look at this");
+        consent::saw_untrusted_text();
         CHECK(starts(run(snug_on), "CONFIRM"));
-        home::assistant_replied(reply.first);
-        home::user_spoke("yes");
+        consent::assistant_replied(reply.first);
+        consent::user_spoke("yes");
         const std::string r = run(snug_on);
         CHECK_MSG(starts(r, reply.second ? "{" : "CONFIRM"), std::string(reply.first) + " -> " + r);
     }

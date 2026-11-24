@@ -21,6 +21,7 @@
 #include "agent/controls.h"
 #include "agent/llm.h"
 #include "agent/tools.h"
+#include "core/result.h"
 
 namespace experiment {
 
@@ -327,7 +328,7 @@ void RequestTrace::sentence(const std::string &text) {
 
 void RequestTrace::tool(const std::string &name, long ms, const std::string &result) {
     if (!open_) return;
-    const char *outcome = tools::failed(result) ? "error" : result.compare(0, 7, "CONFIRM") == 0 ? "confirm" : "ok";
+    const char *outcome = tools::failed(result) ? "error" : result::awaits_yes(result) ? "confirm" : "ok";
     ev_["tools"].push_back({{"name", name}, {"ms", ms}, {"outcome", outcome}, {"result_bytes", static_cast<long>(result.size())},
                             {"at_ms", request_ms()}});
 }

@@ -3,6 +3,7 @@
 #include "agent/tools/common.h"
 
 #include "agent/search/search.h"
+#include "agent/tools/sensitive.h"
 #include "core/settings.h"
 
 namespace tools {
@@ -12,6 +13,10 @@ namespace {
 std::string t_web_search(const json &a, Context &ctx) {
     const std::string query = str_arg(a, "query");
     if (query.empty()) return fail("query is required");
+    // A search service keeps what it is asked: a card or ID number never goes to one.
+    if (const std::string kind = sensitive_number(query); !kind.empty())
+        return fail("the query holds " + kind + ", and such numbers are never sent to a search service. Search without "
+                    "it, or tell the user it cannot be searched for");
     return search::run(query, ctx);
 }
 

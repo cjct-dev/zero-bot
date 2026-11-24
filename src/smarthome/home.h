@@ -180,25 +180,12 @@ struct Command {
 inline const char *const kTvKeys[] = {"up",   "down",   "left",          "right",      "ok",           "back", "home",
                                       "menu", "rewind", "fast_forward", "channel_up", "channel_down", "input"};
 // Carries a command out on the current network and returns text for the model: compact JSON,
-// "ERROR: ..." or "CONFIRM: ...". With dry_run nothing is sent to any device.
+// "ERROR: ..." or "CONFIRM: ...". With dry_run nothing is sent to any device. A change that needs
+// the user's yes (the safety rules, or text from outside still in view) goes ahead only by the rule
+// of agent/consent.h, which the request loop reports the conversation to.
 std::string execute(const Command &command, bool dry_run);
 // Switching from the settings page, by hand: no question is asked and no name is matched.
 std::string switch_thing(const std::string &network_id, const std::string &device_id, const std::string &thing_id, bool on);
-// The request loop reports what the user says and every reply that goes to them, so that a
-// change that needs a yes goes ahead only after its question was put (a reply that asks, naming
-// the thing) and the user's very next message answered it with a short, plain yes.
-void user_spoke(const std::string &text);
-void assistant_replied(const std::string &reply);
-// A tool has just handed the model text from outside (a web page, a photo). From now on every
-// change needs the user's yes, for as long as the model can still see that text: until the
-// conversation is cleared, or has grown so long that the message it came with is dropped.
-void saw_untrusted_text();
-// The conversation was cleared: nothing read in it is seen by the model any more, and no
-// question asked in it is still open.
-void conversation_reset();
-// How many of the user's messages (the newest) the model is still shown, reported each time the
-// loop shortens the conversation; text from outside read before the oldest of them is gone.
-void context_kept(size_t user_messages);
 
 // ---- the assistant's tool (tool.cpp); all of it applies to the current network only
 bool available();                                // there is something to control here

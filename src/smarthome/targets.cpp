@@ -124,14 +124,6 @@ std::string list_of(const std::vector<std::string> &names) {
 
 std::string in_quotes(const std::string &name) { return "\"" + name + "\""; }
 
-std::string plain(const std::string &text) {
-    std::string out;
-    for (const char c : util::lower(text))
-        if (isalnum(static_cast<unsigned char>(c)) || (c & 0x80)) out += c;
-        else if (!out.empty() && out.back() != ' ') out += ' ';
-    return util::trim(out);
-}
-
 // Names come from devices and bridges, which is to say from whoever set them up. They are shown
 // on screen and handed to the model as values, so they are kept short and free of anything that
 // could be mistaken for structure. That includes every quotation mark that reads as the end of a

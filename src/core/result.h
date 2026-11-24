@@ -1,5 +1,6 @@
 // The one shape every failure a tool or the smart-home layer reports to the model has:
-// "ERROR: what was wrong. What to do" (AGENTS.md section 4, failed tool calls). Header-only.
+// "ERROR: what was wrong. What to do" (AGENTS.md section 4, failed tool calls), and the one shape of a
+// result that waits for the user's yes, "CONFIRM: ..." (agent/consent.h). Header-only.
 #pragma once
 #include <string>
 
@@ -24,6 +25,10 @@ inline bool failed(const std::string &text, nlohmann::json *decoded = nullptr) {
     if (decoded) *decoded = std::move(j);
     return failure;
 }
+
+// Whether a result waits for the user's yes ("CONFIRM: ..."): nothing was done, and nothing failed; the
+// model has a question to put to the user first.
+inline bool awaits_yes(const std::string &text) { return text.compare(0, 7, "CONFIRM") == 0; }
 
 // A failure's words without the "ERROR: " in front, to quote or show; any other text unchanged.
 inline std::string words(const std::string &text) {
