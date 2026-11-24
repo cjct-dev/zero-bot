@@ -796,11 +796,11 @@ case("radio", ["play some lofi", "stop the radio"], tags=["focus"], must=["radio
 for text, station in [("put on some talk radio", "Northern Radio 4"), ("can you play the news station", "Northern Radio 4"),
                       ("put some classical radio on", "Northern Radio 3"), ("play a pop station", "Harbour FM")]:
     case("radio", text, tags=["tag"], must=["radio"], must_not=["music"], radio="tagged", checks=[radio_started(station)])
-case("radio", "put on a country station", tags=["tag"], must_not=["music"], radio="tagged",
-     checks=[simple("radio_never"), ans(CANNOT + r"|no (country|station)|isn'?t|aren'?t|not (one|in|tagged)|\btags?\b", "that no station is country")])
+case("radio", "put on a country station", tags=["tag"], radio="tagged",
+     checks=[simple("radio_none_started"), ans(CANNOT + r"|no (country|station)|isn'?t|aren'?t|not (one|in|tagged)|\btags?\b", "that no station is country")])
 # Without the tag "focus": no other station is guessed, and the answer says how to add it.
 for text in ["help me focus with some music", "put on some study music"]:
-    case("radio", text, tags=["focus"], radio="eval", checks=[simple("radio_never"), ans(r"\bfocus\b|\btag", "how to add the focus tag")])
+    case("radio", text, tags=["focus"], radio="eval", checks=[simple("radio_none_started"), ans(r"\bfocus\b|\btag", "how to add the focus tag")])
 # Routing: with tagged stations, the other tools and stations still win their own requests.
 for text, must, must_not, checks in [
         ("help me calm down", ["breathe"], ["radio"], []),

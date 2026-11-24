@@ -1280,7 +1280,10 @@ def radio_tag_checks():
            {"answer": "None of your stations has the focus tag yet. Add \"focus\" to a station's tags in your radio file."})
     trips("radio-014: no focus tag, a station guessed fails", c,
           [{"calls": [plays("Night Jazz 24", station="Night Jazz 24")], "answer": "Here is Night Jazz 24; add a focus tag later."}],
-          "radio should not play")
+          "radio should not start a station")
+    passes("radio-014: no focus tag, the tag tried and refused, then said how to add one, passes", c,
+           {"calls": [("radio", {"action": "play", "tag": "focus"}, "ERROR: none of the user's stations has the tag \"focus\"")],
+            "answer": "None of your stations has the focus tag; add it to one in your radio file."})
     trips("radio-014: no focus tag, not said how to add one fails", c, [{"answer": "Your stations are Harbour FM and City Talk."}],
           "how to add the focus tag")
     c = suite_case("route-016")

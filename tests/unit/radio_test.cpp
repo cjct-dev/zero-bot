@@ -338,11 +338,13 @@ void test_tool_spec_and_prompt() {
     const std::string line = radio::prompt_line();
     CHECK_HAS(line, "City Radio 2, Harbour Hits UK");
     CHECK_HAS(line, "radio");
-    // No tags: no tag parameter, and for focus the model is told not to guess a station and where the tag goes.
+    // No tags: no tag parameter, and for focus the model is told not to guess a station and where the tag goes, in
+    // words that are the same in every request (no path of the user's: the service's cached prefix stays usable).
     CHECK(!spec["parameters"]["properties"].contains("tag"));
     const std::string none = spec["description"].get<std::string>();
-    CHECK_HAS(none, "No station has the tag \"focus\": asked for something to help them focus or study, or for lo-fi, do not guess "
-                    "one; say they can add the tag \"focus\" to a station in the file " + radio::shown_path() + ".");
+    CHECK_HAS(none, "No station has the tag \"focus\": asked for focus or study music or lo-fi, or help to focus or study, do not guess "
+                    "a station; say they can add the tag \"focus\" to one in their station file, radio.json.");
+    CHECK(none.find(radio::shown_path()) == std::string::npos);
 }
 
 void test_tool_spec_tags() {
@@ -358,7 +360,7 @@ void test_tool_spec_tags() {
     CHECK_HAS(tag["description"].get<std::string>(), "\"pop\": \"City Radio 2\"; \"talk\", \"news\": \"City Radio 4\"; "
                                                      "\"sport\": \"Second Talk\"; \"focus\", \"study\": \"Calm Waters\"");
     const std::string d = spec["description"].get<std::string>();
-    CHECK_HAS(d, "For something to help them focus, study or concentrate, or for lo-fi, play the tag \"focus\".");
+    CHECK_HAS(d, "For focus or study music or lo-fi, or help to focus, study or concentrate, play the tag \"focus\".");
     CHECK(d.find("No station has") == std::string::npos);
     CHECK(d.find(radio::shown_path()) == std::string::npos);
     // The prompt line is the same with tags as without: the tool's description and schema say them.
@@ -368,11 +370,11 @@ void test_tool_spec_tags() {
     // A station of its own for lo-fi: the focus sentence leaves lo-fi to its tag.
     CHECK(write_stations(R"({"stations": [{"name": "A", "url": "http://e.org/a", "tags": ["lofi"]},
         {"name": "B", "url": "http://e.org/b", "tags": ["focus"]}]})"));
-    CHECK_HAS(radio::tool_spec(false)["description"].get<std::string>(), "For something to help them focus, study or concentrate, play "
-                                                                         "the tag \"focus\".");
+    CHECK_HAS(radio::tool_spec(false)["description"].get<std::string>(), "For focus or study music, or help to focus, study or "
+                                                                         "concentrate, play the tag \"focus\".");
     CHECK(write_stations(R"({"stations": [{"name": "A", "url": "http://e.org/a", "tags": ["lofi"]}]})"));
-    CHECK_HAS(radio::tool_spec(false)["description"].get<std::string>(), "No station has the tag \"focus\": asked for something to help "
-                                                                         "them focus or study, do not guess one");
+    CHECK_HAS(radio::tool_spec(false)["description"].get<std::string>(), "No station has the tag \"focus\": asked for focus or study "
+                                                                         "music, or help to focus or study, do not guess a station");
 }
 
 void test_tool_by_tag() {

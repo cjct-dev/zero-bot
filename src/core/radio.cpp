@@ -153,13 +153,14 @@ std::vector<std::string> read_tags(const json &e, const std::string &named, std:
 }
 
 // For the tool's description: focus mode, or, without its tag, that no station is to be guessed for
-// it and where the user adds the tag.
+// it and where the user adds the tag. No path of the user's here: the description stays the same from
+// one request to the next, so the service can reuse its cached prefix.
 std::string focus_note(const std::vector<Station> &list) {
-    const std::string lofi = tagged(list, kLofiTag) >= 0 ? "" : ", or for lo-fi";
+    const std::string lofi = tagged(list, kLofiTag) >= 0 ? "" : " or lo-fi";
     if (tagged(list, kFocusTag) >= 0)
-        return "For something to help them focus, study or concentrate" + lofi + ", play the tag \"focus\". ";
-    return "No station has the tag \"focus\": asked for something to help them focus or study" + lofi + ", do not guess one; say "
-           "they can add the tag \"focus\" to a station in the file " + shown_path() + ". ";
+        return "For focus or study music" + lofi + ", or help to focus, study or concentrate, play the tag \"focus\". ";
+    return "No station has the tag \"focus\": asked for focus or study music" + lofi + ", or help to focus or study, do not guess a "
+           "station; say they can add the tag \"focus\" to one in their station file, radio.json. ";
 }
 
 // The tags with the station each plays, by station: "talk", "news": "Radio 4"; "jazz": "Jazz 24".

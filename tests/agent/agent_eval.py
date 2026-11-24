@@ -951,6 +951,11 @@ def radio_started(station):
         return ["radio should play %s, got %s" % (station, tried(t, "radio"))]
     return check
 
+def radio_none_started(t):
+    """No radio station started in the turn: a play call that failed (a tag no station has) started none."""
+    played = [c for c in calls(t, "radio") if str(c.get("action", "play")).lower() == "play"]
+    return ["radio should not start a station, got %s" % played] if played else []
+
 def radio_play(station):
     """Problem text unless the turn asked radio to play exactly `station`."""
     def check(t):
@@ -1841,8 +1846,8 @@ CASES = [
          checks=[radio_started("Northern Radio 3")]),
     case("radio_tag_vs_artist", "play some einaudi", must=["music"], must_not=["radio"], radio=EVAL_TAGGED_RADIO,
          checks=[music_playing("classical")]),
-    case("radio_tag_unknown", "play some country radio", must_not=["music"], radio=EVAL_TAGGED_RADIO,
-         checks=[radio_never_plays, not_answer(r"(now )?playing (some )?country|here'?s (some )?country", "claim country radio is playing"),
+    case("radio_tag_unknown", "play some country radio", radio=EVAL_TAGGED_RADIO,
+         checks=[radio_none_started, not_answer(r"(now )?playing (some )?country|here'?s (some )?country", "claim country radio is playing"),
                  answer(CANNOT + r"|no (country|station)|isn'?t|aren'?t|not (one|in|tagged)|\btags?\b", "that no station is country")]),
     # Focus mode is the tag "focus": the owner's three requests and two more play it, each beside a neighbour that
     # must not; by its name it plays like any station; with no such tag no other station is guessed.
@@ -1868,7 +1873,7 @@ CASES = [
     case("radio_focus_by_name", "play lantern fm", must=["radio"], must_not=["music"], radio=EVAL_TAGGED_RADIO,
          checks=[radio_started("Lantern FM")]),
     case("radio_focus_untagged", "play some lofi", radio=EVAL_RADIO,
-         checks=[radio_never_plays, not_answer(r"(now )?playing (some )?lo-?fi|here'?s (some )?lo-?fi", "claim lo-fi is playing"),
+         checks=[radio_none_started, not_answer(r"(now )?playing (some )?lo-?fi|here'?s (some )?lo-?fi", "claim lo-fi is playing"),
                  answer(r"\bfocus\b|\btag", "how to add the focus tag")]),
 
     # Conversations from the evaluation review (19 November 2026), each turn held to what is saved after it.

@@ -16920,12 +16920,10 @@
    "put on a country station"
   ],
   "must": [],
-  "must_not": [
-   "music"
-  ],
+  "must_not": [],
   "checks": [
    {
-    "kind": "radio_never"
+    "kind": "radio_none_started"
    },
    {
     "kind": "answer",
@@ -16951,7 +16949,7 @@
   "must_not": [],
   "checks": [
    {
-    "kind": "radio_never"
+    "kind": "radio_none_started"
    },
    {
     "kind": "answer",
@@ -16977,7 +16975,7 @@
   "must_not": [],
   "checks": [
    {
-    "kind": "radio_never"
+    "kind": "radio_none_started"
    },
    {
     "kind": "answer",
