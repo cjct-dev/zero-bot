@@ -17176,5 +17176,103 @@
   "home": null,
   "steer": null,
   "radio": "tagged"
+ },
+ {
+  "name": "radio-016",
+  "tags": [
+   "radio",
+   "switch",
+   "followup"
+  ],
+  "turns": [
+   "play radio 2",
+   "play some music"
+  ],
+  "must": [],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "music_started",
+    "turn": 1
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-017",
+  "tags": [
+   "radio",
+   "switch",
+   "followup"
+  ],
+  "turns": [
+   "play some lofi",
+   "put some rock music on"
+  ],
+  "must": [],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "music_playing",
+    "genre": "rock",
+    "turn": 1
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-018",
+  "tags": [
+   "radio",
+   "switch",
+   "followup"
+  ],
+  "turns": [
+   "put on harbour fm",
+   "switch to my music instead"
+  ],
+  "must": [],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "music_started",
+    "turn": 1
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-019",
+  "tags": [
+   "radio",
+   "switch",
+   "followup"
+  ],
+  "turns": [
+   "play something by ella fitzgerald",
+   "now put on radio 2"
+  ],
+  "must": [],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Northern Radio 2",
+    "turn": 1
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
  }
 ]

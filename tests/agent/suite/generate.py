@@ -812,6 +812,15 @@ for text, must, must_not, checks in [
         ("play the jazz station", ["radio"], ["music"], [radio_started("Night Jazz 24")])]:
     case("route", text, tags=["radio"], must=must, must_not=must_not, checks=checks, radio="tagged")
 
+# ------------------------------------------------------------------ from the radio to music and back (ZB-118)
+# The owner's saved conversation: "play some music" while a station played got a radio stop alone, whose say
+# ("Turning off the radio and starting your music.") ended the request with no music. The next request must start.
+for turns, check in [(["play radio 2", "play some music"], simple("music_started")),
+                     (["play some lofi", "put some rock music on"], simple("music_playing", genre="rock")),
+                     (["put on harbour fm", "switch to my music instead"], simple("music_started")),
+                     (["play something by ella fitzgerald", "now put on radio 2"], radio_started("Northern Radio 2"))]:
+    case("radio", turns, tags=["switch"], radio="tagged", checks=[on_turn(1, check)])
+
 
 def main():
     text = json.dumps(CASES, indent=1, ensure_ascii=False) + "\n"

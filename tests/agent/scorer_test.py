@@ -1304,6 +1304,24 @@ def radio_tag_checks():
                [{"calls": [jazz], "answer": "Playing So What."}], "radio")
 
 
+# ------------------------------------------------------------------ from the radio to music (ZB-118)
+@test
+def radio_to_music_checks():
+    radio2 = {"calls": [("radio", {"action": "play", "station": "Northern Radio 2"}, json.dumps({"playing": "Northern Radio 2"}))],
+              "answer": "Here is Northern Radio 2."}
+    stop = ("radio", {"action": "stop", "say": "Turning off the radio and starting your music."}, "radio stopped")
+    shuffle = ("music", {"action": "play"}, '{"now_playing": "So What by Miles Davis", "queued_tracks": 12}')
+    c = suite_case("radio-016")
+    passes("radio-016: the radio stopped, then music started, passes", c, radio2,
+           {"calls": [stop, shuffle], "answer": "Playing So What."})
+    passes("radio-016: music started straight away passes", c, radio2, {"calls": [shuffle], "answer": "Playing So What."})
+    trips("radio-016: the radio stopped with a say that promised music, and none started, fails", c,
+          [radio2, {"calls": [stop], "answer": "Turning off the radio and starting your music."}], "music should have started")
+    trips("radio-016: a music play that failed fails", c,
+          [radio2, {"calls": [("music", {"action": "play"}, "ERROR: the music library is empty")], "answer": "Sorry."}],
+          "music should have started")
+
+
 # ------------------------------------------------------------------ what a result can be compared on
 @test
 def case_hash_and_records():

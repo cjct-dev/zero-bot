@@ -2,6 +2,7 @@
 #include "agent/tools/common.h"
 
 #include "agent/search/search.h"
+#include "agent/tools/say_checks.h"
 #include "core/radio.h"
 #include "core/settings.h"
 
@@ -18,8 +19,12 @@ std::string t_radio(const json &a, Context &ctx) {
     return radio::run_tool(a, env);
 }
 
-// A warning about mobile data has to be passed on in the model's own words.
-bool say_confirms(const json &, const std::string &result) { return result.find("\"note\"") == std::string::npos; }
+// A warning about mobile data has to be passed on in the model's own words, and a stop that announces what starts
+// next leaves that step to the model (claims_start).
+bool say_confirms(const json &a, const std::string &result) {
+    if (result.find("\"note\"") != std::string::npos) return false;
+    return !(util::lower(str_arg(a, "action")) == "stop" && claims_start(a));
+}
 
 }  // namespace
 

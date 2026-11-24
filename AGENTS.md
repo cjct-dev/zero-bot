@@ -48,7 +48,7 @@ src/agent/          the request loop (agent: Agent::Turn and its steps), what th
                     (Context, Tool, Say) and tools/, one file per tool (<name>.cpp), registry.cpp
                     (the list in the order the model reads it, the schema, "say" confirmations),
                     run.cpp (a call checked against its schema, run, its failure shaped),
-                    common.h (argument and schema helpers), say_checks (weekday_slip, claims_new),
+                    common.h (argument and schema helpers), say_checks (weekday_slip, claims_new, claims_start),
                     web (fetch_json, with its options: Fetch, Fetched), places and events (what several
                     tools share); and web search in search/: provider.h (the contract every search
                     service implements, like smarthome/driver.h), providers/ (one file per service;
@@ -173,7 +173,10 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   can be measured by switching it off in the cli build (`ZB_EXP_OFF`, tests/README.md); the device and
   simulator builds always have them all on, and nothing the model sends can switch one.
 - **`say`**: tools whose effect is fully known up front (timer, calendar, switch) take the
-  confirmation sentence as a parameter, so success is spoken without a second model call.
+  confirmation sentence as a parameter, so success is spoken without a second model call. A stop of
+  the radio or the music whose say announces what starts next ("Turning off the radio and starting
+  your music") is not spoken as the whole answer (`claims_start`): the model is asked again for the step
+  it announced (ZB-118).
 - **Steering**: input that arrives while a request is being worked on is added to the same
   request. While the microphone is open (`Agent::set_listening`), or what the user said is still
   on its way (the app connects to the phone first: `App::when_online`, `Agent::set_input_coming`),
@@ -582,6 +585,11 @@ key, real audio), say so plainly rather than implying it was.
   music (2 runs in 10 played it) while the radio tool said only "help to focus, study or concentrate";
   naming the phrase and saying to play rather than offer (`radio::focus_note`) made it 9 in 10, with
   its neighbours (a study timer, "help me relax", a focus timer) unchanged.
+- A confirmation that ends the request must claim only what its own call did. Asked "play some music" while a
+  station played, the model stopped the radio first with say "Turning off the radio and starting your music.",
+  meant to start the music in its next call; every call had worked with a say, so the loop spoke that and ended the
+  request, and nothing started (the owner's saved conversation). A stop whose say claims a start now goes back to
+  the model (`claims_start`), as a cancel whose say claims something new is refused (`claims_new`).
 - Nothing that differs between runs belongs in the prompt or a tool's description. The radio tool's
   sentence for a missing focus tag first named the station file's path, which is each test run's own
   folder, so every such case missed the service's cached prefix (about 8 s to the first byte instead
