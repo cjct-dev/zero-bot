@@ -90,28 +90,11 @@ std::string stamp_time(const std::string &content) {
     return "";
 }
 
-// Every text in `j` with each secret replaced by "[removed]". One pass over the original text (the
-// longest secret first where several start at one place): what has been put in is never searched
-// again, so a secret found inside "[removed]" itself (a key "removed") can neither loop for ever
-// nor be blanked twice.
+// Every text in `j` with each secret blanked out (util::blank_out).
 void blank_out(json &j, const std::vector<std::string> &secrets) {
-    if (j.is_string()) {
-        const std::string &s = j.get_ref<const std::string &>();
-        if (std::none_of(secrets.begin(), secrets.end(),
-                         [&](const std::string &x) { return !x.empty() && s.find(x) != std::string::npos; }))
-            return;
-        std::string out;
-        for (size_t i = 0; i < s.size();) {
-            size_t hit = 0;
-            for (const std::string &secret : secrets)
-                if (secret.size() > hit && s.compare(i, secret.size(), secret) == 0) hit = secret.size();
-            if (hit) { out += "[removed]"; i += hit; }
-            else out += s[i++];
-        }
-        j = out;
-    } else if (j.is_structured()) {
+    if (j.is_string()) j = util::blank_out(j.get_ref<const std::string &>(), secrets);
+    else if (j.is_structured())
         for (json &v : j) blank_out(v, secrets);
-    }
 }
 
 struct SavedFile { std::string name; off_t bytes; };
@@ -235,15 +218,12 @@ json conversation_record(const json &messages, size_t dropped, time_t now, const
         do { total -= sizes[first]; ++first; ++dropped; } while (first < out.size() && role_of(out[first]) != "user");
     };
     while (first < out.size() && total > kMaxFileBytes - 1024) drop_turn();
-    std::vector<std::string> real;
-    for (const std::string &s : secrets)
-        if (util::trim(s).size() >= 6) real.push_back(util::trim(s));
     for (;;) {
         json record = {{"format", 1},
                        {"saved_at", util::format_time(now, "%Y-%m-%d %H:%M:%S")},
                        {"earlier_messages_not_kept", dropped},
                        {"messages", std::vector<json>(out.begin() + static_cast<long>(first), out.end())}};
-        blank_out(record, real);
+        blank_out(record, secrets);
         // The reckoning above is close; should it fall short, one more turn goes.
         if (first >= out.size() || record.dump(1, ' ', false, json::error_handler_t::replace).size() <= kMaxFileBytes - 512)
             return record;

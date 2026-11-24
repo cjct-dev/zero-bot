@@ -5,8 +5,6 @@
 
 #include <algorithm>
 
-#include "agent/experiment.h"
-
 namespace search {
 
 namespace {
@@ -23,6 +21,28 @@ void left_of(const json &part, const char *used_field, const char *limit_field, 
     }
 }
 
+// The summary and results of a successful answer, up to the first kMaxHits results that say something. Garbled when
+// the answer is not Tavily's shape (an object, its "answer" text and its "results" a list, where they are given).
+void read_answer(const json &j, Reply &reply) {
+    const json none;
+    const json &answer = j.is_object() && j.contains("answer") ? j["answer"] : none;
+    const json &results = j.is_object() && j.contains("results") ? j["results"] : none;
+    if (!j.is_object() || !(answer.is_null() || answer.is_string()) || !(results.is_null() || results.is_array())) {
+        reply.outcome = Outcome::Garbled;
+        return;
+    }
+    if (answer.is_string()) reply.summary = answer.get<std::string>();
+    size_t saying = 0;
+    if (results.is_array())
+        for (const json &r : results) {
+            if (saying >= kMaxHits) break;
+            Hit hit{util::jget(r, "title", std::string()), util::jget(r, "url", std::string()), util::jget(r, "content", std::string())};
+            saying += says_something(hit);
+            reply.hits.push_back(std::move(hit));
+        }
+    if (reply.summary.empty() && reply.hits.empty()) reply.outcome = Outcome::Empty;
+}
+
 class Tavily : public Provider {
 public:
     const char *kind() const override { return "tavily"; }
@@ -32,16 +52,12 @@ public:
         how.post_body = json{{"query", query}, {"search_depth", "basic"}, {"include_answer", true}, {"max_results", 5}}.dump();
         Reply reply;
         tools::Fetched got;
-        const json j = tools::fetch_json(experiment::web("https://api.tavily.com/search"), reply.error, ctx, how, &got);
-        reply.outcome = outcome_of(got, reply.error);
+        std::string err;
+        const json j = send("https://api.tavily.com/search", how, ctx, got, err);
+        reply.outcome = outcome_of(got, err);
+        reply.status = got.status;
         if (got.status == 432 || got.status == 433) reply.outcome = Outcome::Spent;   // the plan's or the key's limit
-        if (reply.outcome != Outcome::Ok) return reply;
-        reply.summary = util::jget(j, "answer", std::string());
-        if (j.contains("results") && j["results"].is_array())
-            for (const json &r : j["results"])
-                reply.hits.push_back({util::jget(r, "title", std::string()), util::jget(r, "url", std::string()),
-                                      util::jget(r, "content", std::string())});
-        if (reply.summary.empty() && reply.hits.empty()) reply.outcome = Outcome::Empty;
+        if (reply.outcome == Outcome::Ok) read_answer(j, reply);
         return reply;
     }
 
@@ -54,11 +70,15 @@ public:
         how.deadline_ms = 8000;
         Reply reply;
         tools::Fetched got;
-        const json j = tools::fetch_json(experiment::web("https://api.tavily.com/usage"), reply.error, ctx, how, &got);
-        reply.outcome = outcome_of(got, reply.error);
-        if (reply.outcome != Outcome::Ok || !j.is_object()) return reply;
-        left_of(j.contains("key") ? j["key"] : json(), "usage", "limit", reply);
-        left_of(j.contains("account") ? j["account"] : json(), "plan_usage", "plan_limit", reply);
+        std::string err;
+        const json j = send("https://api.tavily.com/usage", how, ctx, got, err);
+        reply.outcome = outcome_of(got, err);
+        reply.status = got.status;
+        if (reply.outcome != Outcome::Ok) return reply;
+        if (j.is_object()) {
+            left_of(j.contains("key") ? j["key"] : json(), "usage", "limit", reply);
+            left_of(j.contains("account") ? j["account"] : json(), "plan_usage", "plan_limit", reply);
+        }
         if (reply.left < 0) reply.outcome = Outcome::Garbled;
         return reply;
     }

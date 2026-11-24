@@ -2,12 +2,15 @@
 #include "agent/search/search.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <vector>
 
+#include "agent/experiment.h"
 #include "agent/search/provider.h"
 #include "agent/search/usage.h"
 #include "agent/tools/common.h"
@@ -47,41 +50,52 @@ struct Health {
 };
 std::mutex g_health_mtx;   // guards g_health
 std::map<std::string, Health> g_health;
+std::atomic<uint64_t> g_learnt{0};   // revision(): what this run has learnt of the services
 
 // Whether the service refused this very key (Settings::search's mark, kept beside the key by its print: another key
 // put in its place, by hand or typed, is not refused).
 bool refused(const SearchService &service) { return !service.refused.empty() && service.refused == key_print(service.key); }
 
 // The key is never sent again until it is typed again (Settings::set_search_key clears the mark), not even by a later
-// run. The settings in memory take the mark at once, for the rest of this run, whether or not the file then can.
-void refuse(const SearchService &service) {
-    const std::string kind = service.kind, key = service.key, print = key_print(key);
+// run. The settings in memory take the mark at once, for the rest of this run, whether or not the file then can. The
+// mark goes only on the key as it was sent: one typed again since (even unchanged, SearchService::typed) is a key to try.
+void refuse(const SearchService &sent) {
+    const std::string print = key_print(sent.key);
     Settings::update([&](Settings &s) {
         for (SearchService &e : s.search)
-            if (e.kind == kind && e.key == key) e.refused = print;
+            if (e.kind == sent.kind && e.key == sent.key && e.typed == sent.typed) e.refused = print;
     });
 }
 
-// A service set up: the user's entry, the provider for its kind, and what this run remembers it by.
+// The entry that stands for `kind`: the first of that kind in the list (the settings keep one per kind; a second put
+// there by other means is passed over by the search, the settings page and the allowance alike).
+const SearchService *entry_of(const Settings &s, const std::string &kind) {
+    for (const SearchService &e : s.search)
+        if (e.kind == kind) return &e;
+    return nullptr;
+}
+
+// A service set up: the user's entry as it was when last looked at, the provider for its kind, and what this run
+// remembers it by.
 struct Usable {
-    const SearchService *service;
+    SearchService service;
     const Provider *provider;
     std::string id;
 };
 
-// The services set up, in the user's order (configured()).
+// The services set up, in the user's order (configured()): the first entry of each kind, switched on, with a key.
 std::vector<Usable> usable(const Settings &s) {
     std::vector<Usable> out;
-    for (const SearchService &service : s.search)
-        if (const Provider *p = provider_for(service.kind); p && service.enabled && !service.key.empty())
-            out.push_back({&service, p, id_of(service)});
+    std::set<std::string> kinds;
+    for (const SearchService &service : s.search) {
+        const Provider *p = provider_for(service.kind);
+        if (kinds.insert(service.kind).second && p && service.enabled && !service.key.empty()) out.push_back({service, p, id_of(service)});
+    }
     return out;
 }
 
 // ---------------------------------------------------------------- what the model reads
-constexpr size_t kMaxResults = 4;      // the results the model reads
 constexpr size_t kMaxSummary = 1000;   // bytes of the service's own summary
-const char *const kNothingFound = "{\"results\":[]}";
 
 // An address the model may pass on as a source: a web page's, cleaned and capped; "" for any other kind.
 std::string source_of(const std::string &url) {
@@ -91,17 +105,30 @@ std::string source_of(const std::string &url) {
     return util::truncate_utf8(u, 300);
 }
 
-// What the model reads, whichever service answered: the summary when there is one, and the first results that say
-// anything, each part capped, the title cleaned of control characters and only a web page's address as the source.
+// A service's answer as the layer goes on with it: the results that say nothing left out, so that one of only such and
+// no summary found nothing (the next service is then asked), and every key the settings hold taken out of its words (a
+// service that echoes the key it was sent must not hand it to the model, the cache or the diagnostics).
+Reply sifted(Reply reply, const std::vector<std::string> &keys) {
+    if (reply.outcome != Outcome::Ok) return reply;
+    reply.hits.erase(std::remove_if(reply.hits.begin(), reply.hits.end(), [](const Hit &h) { return !says_something(h); }),
+                     reply.hits.end());
+    if (util::trim(reply.summary).empty()) reply.summary.clear();
+    if (reply.summary.empty() && reply.hits.empty()) reply.outcome = Outcome::Empty;
+    reply.summary = util::blank_out(reply.summary, keys);
+    for (Hit &h : reply.hits)
+        for (std::string *text : {&h.title, &h.url, &h.text}) *text = util::blank_out(*text, keys);
+    return reply;
+}
+
+// What the model reads, whichever service answered: the summary when there is one, and the first results, each part
+// capped, the title cleaned of control characters and only a web page's address as the source.
 std::string shaped(const Reply &reply) {
     json out = json::object();
     if (!reply.summary.empty()) out["summary"] = util::truncate_utf8(reply.summary, kMaxSummary);
     json results = json::array();
     for (const Hit &h : reply.hits) {
-        if (results.size() >= kMaxResults) break;
-        const std::string title = tools::clean_text(h.title);
-        if (title.empty() && util::trim(h.text).empty()) continue;
-        results.push_back({{"title", util::truncate_utf8(title, 200)}, {"source", source_of(h.url)},
+        if (results.size() >= kMaxHits) break;
+        results.push_back({{"title", util::truncate_utf8(tools::clean_text(h.title), 200)}, {"source", source_of(h.url)},
                            {"text", util::truncate_utf8(h.text, 500)}});
     }
     out["results"] = results;
@@ -124,7 +151,7 @@ struct Cached {
 };
 std::mutex g_cache_mtx;            // guards the two below
 std::vector<Cached> g_cache;       // the oldest first
-std::string g_cache_services;      // the services set up when it was filled (their ids, in order)
+uint64_t g_cache_revision = 0;     // the settings' services when it was filled (Settings::search_revision)
 
 // A query as the cache knows it: in small letters, with its words one space apart.
 std::string cache_key(const std::string &query) {
@@ -139,20 +166,15 @@ std::string cache_key(const std::string &query) {
     return out;
 }
 
-std::string services_key(const std::vector<Usable> &services) {
-    std::string out;
-    for (const Usable &u : services) out += u.id + ";";
-    return out;
-}
-
-// The answer kept for this query, while it is fresh and the services set up are the ones that gave it.
-std::optional<std::string> cached(const std::string &query, const std::vector<Usable> &services) {
-    const std::string key = cache_key(query), set_up = services_key(services);
+// The answer kept for this query, while it is fresh and the settings' services are as they were when it was kept
+// (`revision`, the search's own reading of them): any change since, even one taken back, starts the cache again.
+std::optional<std::string> cached(const std::string &query, uint64_t revision) {
+    const std::string key = cache_key(query);
     const unsigned long now = now_ms();
     std::lock_guard<std::mutex> lk(g_cache_mtx);
-    if (g_cache_services != set_up) {
+    if (g_cache_revision != revision) {
         g_cache.clear();
-        g_cache_services = set_up;
+        g_cache_revision = revision;
     }
     g_cache.erase(std::remove_if(g_cache.begin(), g_cache.end(), [now](const Cached &c) { return now - c.at >= kCacheMs; }),
                   g_cache.end());
@@ -161,8 +183,11 @@ std::optional<std::string> cached(const std::string &query, const std::vector<Us
     return std::nullopt;
 }
 
-void keep(const std::string &query, const std::string &result) {
+// Keeps an answer made under the settings' services of `revision`, unless they changed while it was made.
+void keep(const std::string &query, const std::string &result, uint64_t revision) {
+    const uint64_t now = Settings::get().search_revision;
     std::lock_guard<std::mutex> lk(g_cache_mtx);
+    if (revision != now || revision != g_cache_revision) return;
     const std::string key = cache_key(query);
     g_cache.erase(std::remove_if(g_cache.begin(), g_cache.end(), [&key](const Cached &c) { return c.query == key; }), g_cache.end());
     if (g_cache.size() >= kCacheSize) g_cache.erase(g_cache.begin());
@@ -174,12 +199,14 @@ void keep(const std::string &query, const std::string &result) {
 // while its key stands refused or its allowance spent; one resting after failures is asked only after every other.
 class Search {
 public:
-    Search(const std::string &query, tools::Context &ctx) : query_(query), ctx_(ctx), start_(now_ms()) {}
+    Search(const std::string &query, tools::Context &ctx, const Settings &s)
+        : query_(query), ctx_(ctx), keys_(s.secret_values()), revision_(s.search_revision), start_(now_ms()) {}
     std::string run(const std::vector<Usable> &services);
 
 private:
     std::vector<Usable> order(const std::vector<Usable> &services);
-    tools::Fetch budget(size_t i, size_t count) const;
+    bool still_set_up(Usable &u);
+    tools::Fetch budget(bool more_after, bool others) const;
     void note(const Usable &u, const Reply &reply);
     std::string answered(const Reply &reply) const;
     std::string failed() const;
@@ -188,7 +215,10 @@ private:
 
     const std::string &query_;
     tools::Context &ctx_;
+    const std::vector<std::string> keys_;   // every key the settings hold, taken out of what a service says
+    const uint64_t revision_;               // the settings' services the search began under (the cache's)
     const unsigned long start_;
+    int sent_ = 0;       // services sent the query
     int refusals_ = 0;   // services passed over or failed because their key was refused
     int others_ = 0;     // and for any other reason (spent, no answer, the service's trouble)
 };
@@ -196,11 +226,13 @@ private:
 std::string Search::run(const std::vector<Usable> &services) {
     std::optional<Reply> nothing;   // the first answer that found nothing: another service is asked once
     const std::vector<Usable> list = order(services);
-    if (!list.empty()) usage::sent();
     for (size_t i = 0; i < list.size() && left_ms() >= kLeastMs && !cancelled(); ++i) {
-        const Usable &u = list[i];
-        const Reply reply = u.provider->run(query_, *u.service, budget(i, list.size()), ctx_);
-        if (cancelled()) return result::fail(reply.error.empty() ? "cancelled" : reply.error);
+        Usable u = list[i];
+        if (!still_set_up(u)) continue;
+        const tools::Fetch how = budget(i + 1 < list.size(), list.size() > 1);
+        if (sent_++ == 0) usage::sent();   // a search of the day's is one that sends something
+        const Reply reply = sifted(u.provider->run(query_, u.service, how, ctx_), keys_);
+        if (cancelled()) return result::fail("cancelled");   // never the answer's words: it may quote the key
         note(u, reply);
         if (reply.outcome == Outcome::Ok) return answered(reply);
         if (nothing) break;
@@ -217,7 +249,7 @@ std::vector<Usable> Search::order(const std::vector<Usable> &services) {
     std::vector<Usable> ready, resting;
     const unsigned long now = now_ms();
     for (const Usable &u : services) {
-        if (refused(*u.service)) { ++refusals_; continue; }
+        if (refused(u.service)) { ++refusals_; continue; }
         if (usage::spent(u.id)) { ++others_; continue; }
         std::lock_guard<std::mutex> lk(g_health_mtx);
         (now < g_health[u.id].resting_until ? resting : ready).push_back(u);
@@ -226,21 +258,35 @@ std::vector<Usable> Search::order(const std::vector<Usable> &services) {
     return ready;
 }
 
-// How long the next of `count` services that may be asked may take: the first, when another could follow, 5 s of the
-// 8; any other, what is left. Each is sent once when another service could answer instead (a resend costs the user's
-// wait, and the next service is the better try); one that is the only one may be sent twice, as any read is.
-tools::Fetch Search::budget(size_t i, size_t count) const {
+// Whether a service may still be sent, just before it is: while another was asked, the settings may have changed (its
+// key refused by the settings page's lookup, the service switched off, another key put in, the entry removed) and
+// another search may have found its allowance spent. Its entry as it stands then is what a refusal is marked against.
+bool Search::still_set_up(Usable &u) {
+    const Settings now = Settings::get();
+    const SearchService *e = entry_of(now, u.service.kind);
+    if (!e || !e->enabled || e->key != u.service.key) return false;
+    if (refused(*e)) { ++refusals_; return false; }
+    if (usage::spent(u.id)) { ++others_; return false; }
+    u.service = *e;
+    return true;
+}
+
+// How long the next service may take: the first sent, when another could follow, 5 s of the 8; any other, what is
+// left. Each is sent once when another service could answer instead (`others`: a resend costs the user's wait, and the
+// next service is the better try); one that is the only one may be sent twice, as any read is.
+tools::Fetch Search::budget(bool more_after, bool others) const {
     tools::Fetch how;
     how.deadline_ms = left_ms();
-    if (i == 0 && count > 1) how.deadline_ms = std::min(how.deadline_ms, kFirstMs);
-    how.attempts = count > 1 ? 1 : 2;
+    if (sent_ == 0 && more_after) how.deadline_ms = std::min(how.deadline_ms, kFirstMs);
+    how.attempts = others ? 1 : 2;
     return how;
 }
 
 // What a reply says of the service: its key refused, what it said of its allowance and the search counted (usage.h),
 // or its health (two failures in a row and it rests for two minutes; an answer ends the count).
 void Search::note(const Usable &u, const Reply &reply) {
-    if (reply.outcome == Outcome::KeyRefused) return refuse(*u.service);
+    ++g_learnt;
+    if (reply.outcome == Outcome::KeyRefused) return refuse(u.service);
     usage::note(u.id, reply);
     if (reply.outcome == Outcome::Spent) return;
     const bool ok = reply.outcome == Outcome::Ok || reply.outcome == Outcome::Empty;
@@ -255,11 +301,11 @@ void Search::note(const Usable &u, const Reply &reply) {
     }
 }
 
-// An answer is kept for the same query for ten minutes, unless it found nothing.
+// An answer with results is kept for the same query for ten minutes; one that found nothing, or only a summary, is not.
 std::string Search::answered(const Reply &reply) const {
     home::saw_untrusted_text();   // a web page's words may now steer the model: smart-home changes need a yes
     const std::string out = shaped(reply);
-    if (reply.outcome == Outcome::Ok && out != kNothingFound) keep(query_, out);
+    if (!reply.hits.empty()) keep(query_, out, revision_);
     return out;
 }
 
@@ -276,6 +322,18 @@ std::string Search::failed() const {
 constexpr unsigned long kAskEveryMs = 60 * 1000UL;   // Tavily answers GET /usage at most ten times in ten minutes
 std::mutex g_asked_mtx;                               // guards g_asked
 std::map<std::string, unsigned long> g_asked;         // when each service (id_of) was last asked what is left
+
+// Why a service did not say what is left, in the app's own words: never the service's (its answer may quote the key).
+std::string reason(const Reply &reply) {
+    switch (reply.outcome) {
+        case Outcome::Unreachable: return "it could not be reached";
+        case Outcome::Slow: return "it did not answer in time";
+        case Outcome::Failing:
+            return "it answered with an error" + (reply.status ? " (HTTP " + std::to_string(reply.status) + ")" : std::string());
+        case Outcome::Spent: return "it says the allowance is used up";
+        default: return "its answer could not be read";
+    }
+}
 
 // The end of a spent allowance in words: its day when it is a day or more away, else its time.
 std::string until_words(time_t until) {
@@ -302,6 +360,15 @@ void register_provider(std::unique_ptr<Provider> provider, const std::string &na
 }
 
 std::string key_print(const std::string &key) { return support::hex(support::digest(EVP_sha256(), key)).substr(0, 16); }
+
+bool says_something(const Hit &hit) { return !tools::clean_text(hit.title).empty() || !util::trim(hit.text).empty(); }
+
+json send(const std::string &address, tools::Fetch how, tools::Context &ctx, tools::Fetched &got, std::string &err) {
+    constexpr size_t kMaxReplyBytes = 512 * 1024;   // decompressed: a service's answer is a few kilobytes
+    how.no_redirect = true;
+    how.max_bytes = kMaxReplyBytes;
+    return tools::fetch_json(experiment::web(address), err, ctx, how, &got);
+}
 
 std::string id_of(const SearchService &service) { return service.kind + ":" + key_print(service.key); }
 
@@ -334,28 +401,30 @@ void forget() {
 Outcome outcome_of(const tools::Fetched &got, const std::string &err) {
     if (err.empty()) return Outcome::Ok;
     if (got.garbled) return Outcome::Garbled;
-    if (got.timed_out) return got.sent ? Outcome::Slow : Outcome::Unreachable;
-    if (got.status < 300) return Outcome::Unreachable;   // no answer, or a success cut off on the way
-    if (got.status == 401) return Outcome::KeyRefused;
+    if (got.status == 401) return Outcome::KeyRefused;   // whatever then happened to its body
     if (got.status == 402) return Outcome::Spent;
-    return Outcome::Failing;
+    if (got.status >= 300) return Outcome::Failing;
+    if (got.timed_out) return got.sent ? Outcome::Slow : Outcome::Unreachable;
+    return Outcome::Unreachable;   // no answer, or a success cut off on the way
 }
 
 bool configured(const Settings &s) { return !usable(s).empty(); }
+
+uint64_t revision() { return g_learnt; }
 
 std::string run(const std::string &query, tools::Context &ctx) {
     const Settings s = Settings::get();
     const std::vector<Usable> services = usable(s);
     if (services.empty())
         return failure("web search is not set up on this device (a search key can be added in settings)");
-    if (const std::optional<std::string> kept = cached(query, services)) {
+    if (const std::optional<std::string> kept = cached(query, s.search_revision)) {
         home::saw_untrusted_text();   // the model reads a web page's words again
         return *kept;
     }
     if (usage::today() >= usage::kDailyCap)
         return failure("web search has reached this device's limit of " + std::to_string(usage::kDailyCap) +
                        " searches a day (it starts again tomorrow)");
-    const std::string out = Search(query, ctx).run(services);
+    const std::string out = Search(query, ctx, s).run(services);
     usage::save();
     return out;
 }
@@ -390,10 +459,10 @@ std::string describe(const SearchService &service) {
 
 std::string ask_allowance(const std::string &kind, tools::Context &ctx) {
     const Settings s = Settings::get();
-    const auto entry = std::find_if(s.search.begin(), s.search.end(), [&](const SearchService &e) { return e.kind == kind; });
+    const SearchService *entry = entry_of(s, kind);
     const Provider *p = provider_for(kind);
     if (!p || !p->tells_allowance()) return "This service says what is left only with its searches.";
-    if (entry == s.search.end() || entry->key.empty()) return "Type a key first.";
+    if (!entry || entry->key.empty()) return "Type a key first.";
     if (refused(*entry)) return "The service refused this key, so it is not sent again. Type it again first.";
     const std::string id = id_of(*entry);
     {
@@ -402,14 +471,15 @@ std::string ask_allowance(const std::string &kind, tools::Context &ctx) {
         if (last != g_asked.end() && now_ms() - last->second < kAskEveryMs) return "Asked a moment ago: try again in a minute.";
         g_asked[id] = now_ms();
     }
+    const uint64_t since = usage::revision(id);   // what a search learns meanwhile is newer than this answer
     const Reply reply = p->allowance(*entry, ctx);
+    ++g_learnt;
     if (reply.outcome == Outcome::KeyRefused) {
         refuse(*entry);
         return "The service refused this key, so it is not sent again. Type it again, or a new one.";
     }
-    if (reply.outcome != Outcome::Ok || reply.left < 0)
-        return "The service did not say: " + (reply.error.empty() ? std::string("its answer could not be read") : reply.error) + ".";
-    usage::said(id, reply);
+    if (reply.outcome != Outcome::Ok || reply.left < 0) return "The service did not say: " + reason(reply) + ".";
+    usage::said(id, reply, since);
     usage::save();
     return "";
 }

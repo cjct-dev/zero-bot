@@ -259,8 +259,16 @@ Things in that loop that exist for a reason; do not remove them without re-runni
     not sent again until it is typed again, by this run or a later one (as `home::trial`; only a 401 or
     the service's own word for it counts, never a bare 403, which a firewall or proxy answers too), a spent
     allowance is passed over until it comes back (kept in `search_usage.json`, so by a later run too), two
-    failures in a row rest a service for two minutes, and the order never changes by itself. An answer is
-    kept in memory for ten minutes, so the same query again asks no service; past 100 searches a day
+    failures in a row rest a service for two minutes, and the order never changes by itself. Each service is
+    looked at again just before it is sent (`Search::still_set_up`): a key refused, a service switched off,
+    another key, an entry removed or an allowance found spent while another was asked is not sent, and a
+    refusal marks only the key as it was sent (`SearchService::typed`: one typed again meanwhile is a key to
+    try). Every request to a service goes through `search::send`: no redirect is followed (the key travels in
+    a header) and an answer is read up to 512 kB; an answer's status stands whatever happened to its body (a
+    401 cut short is a refusal, not resent), and a service's own words never reach the model or the settings
+    page (`Reply` has no error text; every key is taken out of what it answered). An answer with results is
+    kept in memory for ten minutes, so the same query again asks no service (any change to the services in
+    the settings, `Settings::search_revision`, starts it afresh); past 100 searches a day
     (`usage::kDailyCap`) the model reads one `ERROR` until the next day.
   - *Never silence.* "Done" in a reply after tool calls that all failed or wait for a yes is
     withdrawn once, like the guard for no tool at all (`claims_done`: an offer put as a question,
@@ -442,6 +450,11 @@ key, real audio), say so plainly rather than implying it was.
   router whose hardware address the system has not learnt yet counts as a move (many home routers
   use the same IP address). A command for several devices asks again before each driver call,
   because it can outlast the Wi-Fi.
+- libcurl sends a header set with the request (Brave's `X-Subscription-Token`) on to whatever host a redirect
+  names; only `Authorization` and cookies stay with the first host. The first search providers followed
+  redirects with their key in such a header, and the test of redirects ran with the stand-in web, which follows
+  none anyway, so it could not see it. Every request to a search service goes through `search::send`, which
+  follows none, and `tests/unit/search_test.cpp` sends to two local origins with the options a provider uses.
 - The Wi-Fi chip's firmware ignored the country code, hiding channels 12 and 13;
   `docs/wifi-channels-12-13.md` has the device-tree fix.
 - libcurl does not let threads use one connection cache at once, even through a share with lock
@@ -989,11 +1002,14 @@ list in `providers/registry.cpp` (the kind is what the settings' list calls it, 
 Nothing else changes (CMake builds every file in the folder): the web_search tool, its description and
 schema, whether it is offered and what the model reads (`search.cpp`: the summary and four results, each
 capped) are the same whichever service answers, so a new service changes nothing the model sees but the
-words. A provider builds its request, sends it with `fetch_json(experiment::web(address), ..., how, &got)`
-(the deadline and attempts are the layer's, in `how`; the provider adds its headers and body), maps the
-answer onto `Reply` (summary, hits) and says what it meant as an `Outcome` (`outcome_of` for what any HTTP
-service means, plus the service's own codes: Tavily's 432 and 433 for a spent allowance, Brave's error code in the
-body, `Fetched::body`, and its allowance in reply headers kept through `Fetch::keep_headers`), with what the service
+words. A provider builds its request, sends it with `search::send(address, how, ctx, got, err)` (`fetch_json` to
+`experiment::web(address)`, never following a redirect and reading at most 512 kB; the deadline and attempts are the
+layer's, in `how`; the provider adds its headers and body, and `Fetch::settled` for an answer a resend cannot change,
+as Brave's 429 for a spent month), maps the answer onto `Reply` (summary, hits, read only up to `kMaxHits` that say
+something; the wrong shape is `Garbled`) and says what it meant as an `Outcome` (`outcome_of` for what any HTTP
+service means, plus the service's own codes: Tavily's 432 and 433 for a spent allowance, Brave's error code with the
+status it belongs to, from the body, `Fetched::body`, and its allowance in reply headers kept through
+`Fetch::keep_headers`, taken only when they are whole numbers in the windows they should be), with what the service
 says of its allowance (`left` and `limit` in its own units, `reset_s`): the layer acts on them (a refused key is never
 sent again, a spent allowance is passed over until it comes back, the figure is kept for the settings page), so a
 refusal must never be reported as a mere failure. A service that can say what is left without spending any of it

@@ -204,7 +204,8 @@ void test_settings_threads(const std::string &root) {
 // ---------------------------------------------------------------- web search services in the settings
 // The services are a list (agent/search/). An older file's search_key, always a Tavily key, is read as one
 // Tavily entry and saved as the list; an entry of a kind a newer version wrote is kept whole, its fields
-// included; ZB_SEARCH_KEY is the first entry's key; every key is a secret.
+// included; only the first entry of each kind is kept; ZB_SEARCH_KEY is the Tavily entry's key, wherever it
+// stands; every key is a secret.
 void test_search_settings(const std::string &root) {
     g_test = "web search services in the settings";
     const std::string file = root + "/config/zero-bot/settings.json";
@@ -226,36 +227,41 @@ void test_search_settings(const std::string &root) {
     CHECK(load({{"search_key", ""}}).search.empty());
     CHECK(load(json::object()).search.empty());
 
-    // The list wins over a search_key beside it; entries keep their order, a newer version's whole.
+    // The list wins over a search_key beside it; entries keep their order, a newer version's whole; a second entry
+    // of a kind is dropped (the settings page, the allowance and the search know a service by its kind).
     const json list = json::parse(R"([{"kind": "later", "key": "lt-1", "monthly": 5, "region": {"x": 1}},
                                       {"kind": "tavily", "key": "tvly-2", "enabled": false}, 7, {"kind": "tavily", "key": "tvly-3"}])");
     s = load({{"search", list}, {"search_key", "tvly-old"}});
-    CHECK(s.search.size() == 3 && s.search[0].kind == "later" && s.search[1].key == "tvly-2" && !s.search[1].enabled &&
-          s.search[2].key == "tvly-3" && s.search[2].enabled);
-    CHECK_EQ(s.search_key("tavily"), "tvly-2");   // the first entry of the kind
+    CHECK(s.search.size() == 2 && s.search[0].kind == "later" && s.search[1].key == "tvly-2" && !s.search[1].enabled);
+    CHECK_EQ(s.search_key("tavily"), "tvly-2");
     resave();
     disk = util::load_json(file, json());
     CHECK(disk["search"][0] == json::parse(R"({"kind": "later", "key": "lt-1", "monthly": 5, "region": {"x": 1}, "enabled": true})"));
-    CHECK(disk["search"].size() == 3 && !disk.contains("search_key"));
+    CHECK(disk["search"].size() == 2 && !disk.contains("search_key"));
 
-    // Setting a key changes the first entry of its kind, or adds one at the end; an empty key adds nothing.
+    // Setting a key changes the entry of its kind, or adds one at the end; an empty key adds nothing.
     s.set_search_key("tavily", "tvly-new");
-    CHECK(s.search[1].key == "tvly-new" && s.search[2].key == "tvly-3");
+    CHECK(s.search[1].key == "tvly-new");
     s.set_search_key("other", "");
-    CHECK_EQ(static_cast<long long>(s.search.size()), 3);
+    CHECK_EQ(static_cast<long long>(s.search.size()), 2);
     s.set_search_key("other", "o-1");
-    CHECK(s.search.size() == 4 && s.search[3].kind == "other" && s.search[3].key == "o-1" && s.search[3].enabled);
+    CHECK(s.search.size() == 3 && s.search[2].kind == "other" && s.search[2].key == "o-1" && s.search[2].enabled);
     s.set_search_key("tavily", "");
     CHECK_EQ(s.search_key("tavily"), "");
 
     // Every key set is a secret: the AI service's and each service's, whatever its kind.
     s.api_key = "sk-1";
-    CHECK((s.secret_values() == std::vector<std::string>{"sk-1", "lt-1", "tvly-3", "o-1"}));
+    CHECK((s.secret_values() == std::vector<std::string>{"sk-1", "lt-1", "o-1"}));
 
-    // ZB_SEARCH_KEY is the first entry's key, or makes a Tavily entry when there is none.
+    // ZB_SEARCH_KEY is the Tavily entry's key wherever it stands (never another service's, whatever the order), or
+    // makes a Tavily entry at the end when there is none; it is a key set, not one typed: a refusal kept beside it stands.
     setenv("ZB_SEARCH_KEY", "env-key", 1);
     s = load({{"search", list}});
-    CHECK(s.search[0].kind == "later" && s.search[0].key == "env-key" && s.search[1].key == "tvly-2");
+    CHECK(s.search[0].kind == "later" && s.search[0].key == "lt-1" && s.search[1].key == "env-key");
+    s = load({{"search", json::parse(R"([{"kind": "brave", "key": "brave-key"}, {"kind": "tavily", "key": "tvly-2", "refused": "abc"}])")}});
+    CHECK(s.search.size() == 2 && s.search[0].key == "brave-key" && s.search[1].key == "env-key" && s.search[1].refused == "abc");
+    s = load({{"search", json::parse(R"([{"kind": "brave", "key": "brave-key"}])")}});
+    CHECK(s.search.size() == 2 && s.search[0].key == "brave-key" && s.search[1].kind == "tavily" && s.search[1].key == "env-key");
     s = load(json::object());
     CHECK(s.search.size() == 1 && s.search[0].kind == "tavily" && s.search[0].key == "env-key");
     unsetenv("ZB_SEARCH_KEY");

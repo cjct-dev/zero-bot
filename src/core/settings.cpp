@@ -1,9 +1,11 @@
 #include "core/settings.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <mutex>
+#include <set>
 
 namespace {
 
@@ -17,6 +19,7 @@ std::string settings_path() { return util::config_dir() + "/settings.json"; }
 
 // The search service the old "search_key" and ZB_SEARCH_KEY have always meant.
 constexpr const char *kFirstSearchKind = "tavily";
+std::atomic<uint64_t> g_typings{0};   // keys typed in this run (SearchService::typed)
 
 json search_to_json(const std::vector<SearchService> &list) {
     json out = json::array();
@@ -31,8 +34,8 @@ json search_to_json(const std::vector<SearchService> &list) {
     return out;
 }
 
-// The services in `j`: its "search" list, else one Tavily entry for an older file's "search_key", else
-// `fallback`.
+// The services in `j`: its "search" list (the first entry of each kind), else one Tavily entry for an older
+// file's "search_key", else `fallback`.
 std::vector<SearchService> search_from_json(const json &j, std::vector<SearchService> fallback) {
     using util::jget;
     const auto list = j.find("search");
@@ -42,14 +45,23 @@ std::vector<SearchService> search_from_json(const json &j, std::vector<SearchSer
         return {SearchService{kFirstSearchKind, old}};
     }
     std::vector<SearchService> out;
+    std::set<std::string> kinds;
     for (const json &e : *list) {
-        if (!e.is_object()) continue;
+        if (!e.is_object() || !kinds.insert(jget(e, "kind", std::string())).second) continue;
         SearchService s{jget(e, "kind", std::string()), jget(e, "key", std::string()), jget(e, "enabled", true), e,
                         jget(e, "refused", std::string())};
         for (const char *known : {"kind", "key", "enabled", "refused"}) s.more.erase(known);
         out.push_back(std::move(s));
     }
     return out;
+}
+
+// Whether two lists of search services hold the same entries, field for field, in the same order.
+bool same_services(const std::vector<SearchService> &a, const std::vector<SearchService> &b) {
+    return std::equal(a.begin(), a.end(), b.begin(), b.end(), [](const SearchService &x, const SearchService &y) {
+        return x.kind == y.kind && x.key == y.key && x.enabled == y.enabled && x.more == y.more && x.refused == y.refused &&
+               x.typed == y.typed;
+    });
 }
 
 // Writes the settings of version `version`, unless a newer version is already on disk.
@@ -72,7 +84,9 @@ Settings Settings::update(const std::function<void(Settings &)> &change, bool sa
     uint64_t version;
     {
         std::lock_guard<std::mutex> lk(g_mtx);
+        const std::vector<SearchService> search_before = g_current.search;
         change(g_current);
+        if (!same_services(search_before, g_current.search)) ++g_current.search_revision;
         version = ++g_version;
         after = g_current;
         if (save_now) j = g_current.to_json();
@@ -140,9 +154,10 @@ void Settings::load() {
     // Environment overrides make development on a PC possible without a settings file.
     if (const char *v = getenv("ZB_API_BASE"); v && *v) s.api_base = v;
     if (const char *v = getenv("ZB_API_KEY"); v && *v) s.api_key = v;
-    if (const char *v = getenv("ZB_SEARCH_KEY"); v && *v) {
-        if (s.search.empty()) s.search.push_back({kFirstSearchKind});
-        s.search.front().key = v;
+    if (const char *v = getenv("ZB_SEARCH_KEY"); v && *v) {   // a key set, not typed: a refusal kept beside it stands
+        const auto is_tavily = [](const SearchService &e) { return e.kind == kFirstSearchKind; };
+        if (std::none_of(s.search.begin(), s.search.end(), is_tavily)) s.search.push_back({kFirstSearchKind});
+        std::find_if(s.search.begin(), s.search.end(), is_tavily)->key = v;
     }
     if (const char *v = getenv("ZB_FAST_MODE"); v && *v) s.fast_mode = *v != '0';
     if (const char *v = getenv("ZB_DATE_ORDER"); v && *v) s.date_order = v;
@@ -150,6 +165,7 @@ void Settings::load() {
     uint64_t version;
     {
         std::lock_guard<std::mutex> lk(g_mtx);
+        s.search_revision = g_current.search_revision + 1;
         g_current = s;
         version = ++g_version;
     }
@@ -183,9 +199,10 @@ void Settings::set_search_key(const std::string &kind, const std::string &key) {
         if (s.kind == kind) {
             s.key = key;
             s.refused.clear();
+            s.typed = ++g_typings;
             return;
         }
-    if (!key.empty()) search.push_back({kind, key});
+    if (!key.empty()) search.push_back({kind, key, true, json(), "", ++g_typings});
 }
 
 std::vector<std::string> Settings::secret_values() const {

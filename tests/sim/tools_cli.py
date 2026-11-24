@@ -19,8 +19,10 @@ cleaned. search_failover: the failover between the services against the stand-in
 (search_usage.json) counts searches and keeps Brave's figure, a spent allowance is passed over by a later run, the day's
 cap stops a search before any service is asked, the same query again in one run is answered from the cache, and
 zero_bot --search-status asks Tavily's GET /usage (a stand-in of its own) for what is left, with the key and nothing
-else. A tool call's arguments and a web service's answer nested deeper than 32 levels are not read (nested_too_deep,
-against a local server of its own). no_real_web runs
+else. search_answers: what the services built in make of answers no fixture holds (too long, '&' everywhere, results
+that say nothing, the wrong shape, Brave's rate-limit figures and error codes, a /usage error). A tool call's arguments
+and a web service's answer nested deeper than 32 levels are not read (nested_too_deep, against a local server of its
+own). no_real_web runs
 one case through the live sets' own runner
 (tests/agent/agent_eval.py run_case) against a scripted model (tests/mocks/fake_model.py) that calls every tool
 that reads the web, with every proxy variable pointing at a trap: no request leaves 127.x (the trap sees
@@ -385,6 +387,7 @@ def run_all(root):
     search_shapes(root)
     search_failover(root)
     search_allowance(root)
+    search_answers(root)
     nested_too_deep(root)
     no_real_web(root)
     web_wraps()
@@ -432,12 +435,14 @@ class Trap(LocalServer):
 
 
 class Answering(LocalServer):
-    """A local HTTP server that answers every request with `body` (JSON; settable between runs), for answers no
-    stand-in fixture holds."""
+    """A local HTTP server that answers every request with `status`, `headers` and `body` (each settable between runs; the
+    body JSON text or bytes), for answers no stand-in fixture holds (tests/mocks/fake_web.py stays as it is: its bytes are
+    hashed into every live case). It notes each request in `seen` (its line, the key it carried as a bearer token and the
+    length of any body sent), and counts in `cut` the answers the other side closed before they were written whole."""
     def __init__(self):
         import http.server
         owner = self
-        self.body = "{}"
+        self.status, self.headers, self.body, self.seen, self.cut = 200, {}, "{}", [], 0
 
         class H(http.server.BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -447,12 +452,18 @@ class Answering(LocalServer):
                 n = int(self.headers.get("Content-Length") or 0)
                 if n:
                     self.rfile.read(n)
-                raw = owner.body.encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(raw)))
-                self.end_headers()
-                self.wfile.write(raw)
+                owner.seen.append((self.requestline, self.headers.get("Authorization", ""), n))
+                raw = owner.body if isinstance(owner.body, bytes) else owner.body.encode()
+                try:
+                    self.send_response(owner.status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(raw)))
+                    for name, value in owner.headers.items():
+                        self.send_header(name, value)
+                    self.end_headers()
+                    self.wfile.write(raw)
+                except (BrokenPipeError, ConnectionResetError):
+                    owner.cut += 1
             do_GET = do_POST = answer
 
         super().__init__(H)
@@ -461,7 +472,7 @@ class Answering(LocalServer):
 def search_services(root):
     """Web search is set up by the settings' list of services (Settings::search, src/agent/search/): an entry counts when
     it is switched on, of a kind this version knows, with a key; an older file's search_key is one Tavily entry, and
-    ZB_SEARCH_KEY is the first entry's key. Exactly then is web_search offered and the prompt says search is available,
+    ZB_SEARCH_KEY is the Tavily entry's key. Exactly then is web_search offered and the prompt says search is available,
     and the search carries that entry's key (the stand-in takes only its own). A settings file saved again keeps the
     list, a newer version's entry with its fields included, and no longer holds search_key."""
     web = subprocess.Popen([sys.executable, "-I", os.path.join(TESTS, "mocks", "fake_web.py")], stdin=subprocess.PIPE,
@@ -473,7 +484,7 @@ def search_services(root):
         forms = (("an older file's search_key", {"search_key": "stand-in"}, None, True),
                  ("a Tavily entry", {"search": [{"kind": "tavily", "key": "stand-in"}]}, None, True),
                  ("a newer version's kind first", {"search": [later, {"kind": "tavily", "key": "stand-in"}]}, None, True),
-                 ("ZB_SEARCH_KEY over the first entry's key", {"search": [{"kind": "tavily", "key": "wrong"}]}, "stand-in", True),
+                 ("ZB_SEARCH_KEY over the Tavily entry's key", {"search": [{"kind": "tavily", "key": "wrong"}]}, "stand-in", True),
                  ("ZB_SEARCH_KEY without a list", {}, "stand-in", True),
                  ("an entry switched off", {"search": [{"kind": "tavily", "key": "stand-in", "enabled": False}]}, None, False),
                  ("only a newer version's kind", {"search": [dict(later, key="stand-in")]}, None, False),
@@ -714,35 +725,6 @@ def search_failover(root):
         web.close()
 
 
-class UsageServer(LocalServer):
-    """A stand-in for Tavily's GET /usage, which tests/mocks/fake_web.py does not serve (its bytes are hashed into every
-    live case): answers every request with `status` and `body` (settable), noting the request line, the key it carried
-    and the length of any body sent."""
-    def __init__(self):
-        import http.server
-        owner = self
-        self.status, self.body, self.seen = 200, "{}", []
-
-        class H(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
-
-            def answer(self):
-                n = int(self.headers.get("Content-Length") or 0)
-                if n:
-                    self.rfile.read(n)
-                owner.seen.append((self.requestline, self.headers.get("Authorization", ""), n))
-                raw = owner.body.encode()
-                self.send_response(owner.status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(raw)))
-                self.end_headers()
-                self.wfile.write(raw)
-            do_GET = do_POST = answer
-
-        super().__init__(H)
-
-
 # Tavily's documented example answer to GET /usage: the key has used 150 of 1,000 credits, the plan 500 of 15,000.
 TAVILY_USAGE = {"key": {"usage": 150, "limit": 1000, "search_usage": 100, "extract_usage": 25, "crawl_usage": 15, "map_usage": 7,
                         "research_usage": 3},
@@ -804,7 +786,7 @@ def search_allowance(root):
     finally:
         web.close()
 
-    server = UsageServer()
+    server = Answering()
     try:
         g = State(root, "allowance-ask")
         write_services(g, BT)
@@ -827,6 +809,109 @@ def search_allowance(root):
         check("and the refused key is not sent again", server.seen == [] and "tavily: key refused" in out, (server.seen, out))
     finally:
         server.close()
+
+
+def search_answers(root):
+    """What the services built in make of answers no stand-in fixture holds (an Answering server of this test's own): an
+    answer far longer than a service sends is cut off, not read to its end, and is no answer; a description full of '&'
+    is read at once; results that say nothing are passed over; an answer of the wrong shape is no answer, not "nothing
+    found"; Brave's rate-limit figures are taken only as whole numbers in windows that match its limit header, and only
+    the month's window at 0 is a spent allowance; Brave's key counts as refused only by a 422 with its code (or a 401); a
+    spent month (429 QUOTA_LIMITED) is not sent again, even by Brave alone; and a GET /usage error reaches --search-status
+    in the app's own words, none of the answer's."""
+    T, B = [["tavily", "stand-in"]], [["brave", "stand-in"]]
+    web = Answering()
+    states = iter(range(1000))
+    fresh = lambda: State(root, "answers-%d" % next(states))   # each check from a first start: no mark kept from another
+
+    def search(g, services, query="anything"):
+        write_services(g, services)
+        del web.seen[:]
+        started = time.monotonic()
+        out = g.run("web_search", {"query": query}, ZB_EXP_WEB=web.url + "/answers")
+        return out, len(web.seen), time.monotonic() - started
+
+    try:
+        web.body = b'{"answer": "Never read.", "results": [], "pad": "' + b"a" * (32 << 20) + b'"}'
+        out, n, took = search(fresh(), T)
+        check("an answer of 32 MB is cut off, not read to its end, and is no answer",
+              out.startswith("ERROR: web search is not available") and web.cut == 1, (out[:120], web.cut))
+        web.body = json.dumps({"answer": "Read whole.", "results": [], "pad": "a" * (400 << 10)})
+        out, n, took = search(fresh(), T)
+        check("an answer of 400 kB is read whole", "Read whole." in out, out[:120])
+
+        took = {}
+        for kb in (120, 480):   # each '&' looks a few characters ahead for its ';', not to the end: no time that grows as its square
+            web.body = json.dumps({"web": {"results": [{"title": "Ampersands", "url": "https://example.com/", "description": "&" * (kb << 10)}]}})
+            out, n, took[kb] = search(fresh(), B)
+        check("a description of 480 kB of '&' takes hardly longer than one of 120 kB",
+              took[480] - took[120] < 0.5 and "Ampersands" in out, ({k: round(v, 2) for k, v in took.items()}, out[:120]))
+
+        blank = [{"title": "", "url": "https://example.com/blank", "content": " "}] * 3
+        good = [{"title": "Result %d" % i, "url": "https://example.com/%d" % i, "content": "Text %d." % i} for i in range(3000)]
+        web.body = json.dumps({"answer": "", "results": blank + good})
+        out, n, took = search(fresh(), T)
+        hits = json.loads(out).get("results", []) if out.startswith("{") else []
+        check("results that say nothing are passed over: four read, from the first that says something",
+              [h.get("title") for h in hits] == ["Result 0", "Result 1", "Result 2", "Result 3"], out[:300])
+
+        for services, body in ((T, "[]"), (T, '{"results": "none"}'), (T, '{"answer": 5, "results": []}'), (B, "[1]"),
+                               (B, '{"web": []}'), (B, '{"web": {"results": {}}}')):
+            web.body = body
+            out, n, took = search(fresh(), services)
+            check("%s answering %s: no answer, not nothing found" % (services[0][0], body),
+                  out.startswith("ERROR: web search is not available"), out[:200])
+        web.body = json.dumps({"type": "search", "query": {"original": "anything"}})
+        out, n, took = search(fresh(), B)
+        check("Brave's answer without web results is nothing found", out == '{"results":[]}', out[:200])
+
+        hit = json.dumps({"web": {"results": [{"title": "T", "url": "https://example.com/", "description": "D."}]}})
+        both = {"X-RateLimit-Limit": "50, 1000", "X-RateLimit-Reset": "1, 3600"}
+        for headers, left, spent, what in (
+                (dict(both, **{"X-RateLimit-Remaining": "49, 812"}), 812, False, "both windows: the month's figure"),
+                (dict(both, **{"X-RateLimit-Remaining": "49, 0"}), 0, True, "the month's window at 0: spent"),
+                (dict(both, **{"X-RateLimit-Remaining": "0, 812"}), 812, False, "the second's window at 0: not spent"),
+                ({"X-RateLimit-Limit": "50", "X-RateLimit-Remaining": "0"}, -1, False, "one window only: which, is not known"),
+                ({"X-RateLimit-Remaining": "49, 0"}, -1, False, "no limit header to match the windows with"),
+                (dict(both, **{"X-RateLimit-Remaining": "49, 812.5"}), -1, False, "not a whole number"),
+                (dict(both, **{"X-RateLimit-Remaining": "49, 8e2"}), -1, False, "not written as a whole number"),
+                (dict(both, **{"X-RateLimit-Remaining": "0, 812, 3"}), -1, False, "more windows than the limit header has")):
+            web.body, web.headers = hit, headers
+            g = fresh()
+            out, n, took = search(g, B)
+            brave = next((v for k, v in (g.file("data", "zero-bot", "search_usage.json") or {}).get("services", {}).items()
+                          if k.startswith("brave:")), {})
+            check("Brave's figures, %s: %s left%s" % (what, left, ", spent" if spent else ""), "D." in out and
+                  brave.get("left", -1) == left and bool(brave.get("spent_until")) == spent, (brave, out[:100]))
+        web.headers = {}
+
+        for status, refused in ((422, True), (401, True), (503, False), (429, False), (400, False)):
+            web.status = status
+            web.body = json.dumps({"type": "ErrorResponse", "error": {"code": "SUBSCRIPTION_TOKEN_INVALID", "detail": "Invalid."}})
+            g = fresh()
+            out, n, took = search(g, B)
+            mark = saved_entry(g.file("config", "zero-bot", "settings.json") or {}, "brave").get("refused", "")
+            check("Brave's SUBSCRIPTION_TOKEN_INVALID in a %d: %s" % (status, "the key refused" if refused else "not a refusal"),
+                  bool(mark) == refused and out.startswith("ERROR"), (mark, out[:120]))
+
+        web.status = 429
+        for body, headers, sends, what in (
+                ({"code": "QUOTA_LIMITED"}, {}, 1, "its month spent (QUOTA_LIMITED): sent once"),
+                ({"code": "OTHER"}, dict(both, **{"X-RateLimit-Remaining": "49, 0"}), 1, "its month's window at 0: sent once"),
+                ({"code": "RATE_LIMITED"}, {}, 2, "too many at once (RATE_LIMITED): sent again, once")):
+            web.body, web.headers = json.dumps({"type": "ErrorResponse", "error": body}), headers
+            out, n, took = search(fresh(), B)
+            check("Brave alone, a 429, " + what, n == sends and out.startswith("ERROR"), (n, out[:120]))
+        web.status, web.headers = 200, {}
+
+        g = fresh()
+        write_services(g, T)
+        web.status, web.body = 500, json.dumps({"detail": {"error": "the token Bearer stand-in is not valid here"}})
+        out = search_status(g, web.url)
+        check("a GET /usage error is told in the app's own words, none of the answer's",
+              "did not say: it answered with an error (HTTP 500)" in out and "Bearer" not in out and "not valid here" not in out, out)
+    finally:
+        web.close()
 
 
 def nested_too_deep(root):
