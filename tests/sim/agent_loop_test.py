@@ -14,8 +14,8 @@ usage: tests/sim/agent_loop_test.py [path/to/zero_bot] [--only substring[,substr
 Covered: plain answers; fast mode's held draft, the note on the newest message and the second
 look (released on OK, or turned into the tool call it asks for); the unbacked-claim guard in
 English and other languages, and phrases it must leave alone; the "not saved" guard; "say"
-confirmations spoken without a second call, and when they are not (a stop whose say announces what starts
-next); tool errors, unknown tools and
+confirmations spoken without a second call, and when they are not (a radio stop, a music stop whose say
+announces what starts next); tool errors, unknown tools and
 bad arguments returned to the model; web search's allowance spent mid-conversation (one ERROR, the prompt and
 tools unchanged); steering during a tool and during a draft; talk-over (nothing
 spoken or done while the microphone is open, or the words are on their way after it, every call of a
@@ -478,23 +478,21 @@ def say_with_unconfirmed_call():
 @scenario
 def stop_say_claims_start():
     # ZB-118: "play some music" while a station played, answered with a radio stop alone whose say announced the
-    # music too. The say ended the request and no music started; now the model is asked again after the stop, and
-    # makes the step it announced. A stop that claims nothing more, or only asks, still ends it with no second call.
+    # music too (later only "Radio off."). The say ended the request and no music started. A radio stop's say now
+    # never ends the request, and a music stop's not when it announces what starts: the model is asked again and
+    # makes the next step. A music stop that claims nothing more, or only asks, still ends it with no second call.
     radio = [{"name": "Night Jazz", "url": "http://127.0.0.1:9/jazz.mp3"}]
-    n = "a stop whose say claims something starts"
-    for tool, say in (("radio", "Turning off the radio and starting your music."),
-                      ("music", "Stopping the music and putting Night Jazz on."),
-                      ("radio", "Switching to your music now.")):
+    for tool, say in (("radio", "Turning off the radio and starting your music."), ("radio", "Radio off."),
+                      ("music", "Stopping the music and putting Night Jazz on."), ("music", "Switching to the radio now.")):
         script = {"rules": [{"when": {"last": "tool"}, "reply": {"text": "Here is your music."}}],
                   "default": calls((tool, {"action": "stop", "say": say}))}
         r = run(script, ask="play some music", radio=radio)
-        check(n + ": the model is asked again (%s, %r)" % (tool, say), len(r.requests) == 2 and r.answer == "Here is your music.", r)
-    for tool, say in (("radio", "The radio is off."), ("music", "Music stopped."),
-                      ("radio", "The radio is off. Shall I play some music?")):
+        check("a stop the model is asked about again (%s, %r)" % (tool, say), len(r.requests) == 2 and r.answer == "Here is your music.", r)
+    for say in ("Music stopped.", "Music stopped. Shall I put the radio on?"):
         script = {"rules": [{"when": {"last": "tool"}, "reply": {"text": "Not expected."}}],
-                  "default": calls((tool, {"action": "stop", "say": say}))}
+                  "default": calls(("music", {"action": "stop", "say": say}))}
         r = run(script, ask="stop", radio=radio)
-        check("a stop whose say claims nothing more is spoken with no second call (%s, %r)" % (tool, say),
+        check("a music stop whose say claims nothing more is spoken with no second call (%r)" % say,
               len(r.requests) == 1 and r.answer == say, r)
 
 

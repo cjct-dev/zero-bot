@@ -87,11 +87,12 @@ std::string claims_new(const json &a, Context &ctx, const std::string &done, con
     return done + ", but say claims more (\"" + m + "\"), so nothing was done. " + fix;
 }
 
-// A stop of the radio or the music whose confirmation announces the next step as well. Asked "play some music"
-// while a station played, the model stopped the radio with say "Turning off the radio and starting your music."
-// meaning to start the music in its next call; every call had worked with a say, so the loop spoke it and ended
-// the request, and no music started (ZB-118, the owner's saved conversation of 2026-11-24). The stop stands (it is
-// what the user wanted, in part); only its say does not end the request. Only English, only words that something
+// A stop whose confirmation announces the next step as well. Asked "play some music" while a station played, the
+// model stopped the radio with say "Turning off the radio and starting your music." meaning to start the music in
+// its next call; every call had worked with a say, so the loop spoke it and ended the request, and no music started
+// (ZB-118, the owner's saved conversation of 2026-11-24). A radio stop now never ends the request (radio.cpp); a
+// music stop that claims a start does not either. The stop stands (it is what the user wanted, in part); only its
+// say does not end the request. Only English, only words that something
 // starts or plays, and not in a question ("Shall I put some music on?"). A stop said in such words ("Stopped
 // playing the radio") costs one model call more, nothing else.
 bool claims_start(const json &a) {

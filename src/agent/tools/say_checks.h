@@ -14,8 +14,8 @@ namespace tools {
 std::string weekday_slip(const json &a, Context &ctx, time_t when, const char *field);
 // A cancel or delete whose say claims something new was set; `done` says what the tool does, `fix` what to do.
 std::string claims_new(const json &a, Context &ctx, const std::string &done, const std::string &fix);
-// A stop whose say claims that something starts ("Turning off the radio and starting your music"): the say is
-// not spoken as the whole answer, so the model is asked again and makes the step it announced.
+// A stop whose say claims that something starts ("Stopping the music and putting Radio 2 on"): the say is not
+// spoken as the whole answer, so the model is asked again and makes the step it announced (the music tool's stop).
 bool claims_start(const json &a);
 
 }  // namespace tools
