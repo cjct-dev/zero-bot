@@ -55,4 +55,7 @@ OUT="$ROOT/dist/zero-bot_${VERSION}_arm64.deb"
 printf '2.0\n' > "$WORK/debian-binary"
 rm -f "$OUT"
 ( cd "$WORK" && ar rc "$OUT" debian-binary control.tar.gz data.tar.gz )
+# Its SHA-256 beside it, named as downloaded, for `sha256sum -c` and the release notes: fake installers of other
+# agents have been offered from lookalike repositories (ZB-123).
+( cd "$ROOT/dist" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
 echo "$OUT"

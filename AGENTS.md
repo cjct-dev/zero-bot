@@ -1103,7 +1103,9 @@ like `tests/sim/tapo_e2e.py` on `ZB_TEST_NETWORK`, and add the family to the REA
 
 **Releasing.** Bump `project(... VERSION ...)` in `CMakeLists.txt`, build all three presets,
 run the full agent set, `scripts/package-deb.sh`, scan tracked files, the binary and the
-package for anything private, then commit, push and attach the `.deb` to a GitHub release.
+package for anything private, then commit, push and attach the `.deb` and its `.sha256` (written beside it
+by `scripts/package-deb.sh`) to a GitHub release, whose notes give the SHA-256 too (ZB-123: lookalike repositories
+have offered fake installers of other agents).
 On the device a release is installed with `dpkg -i` or `apt install ./zero-bot_*.deb`, never with
 `scripts/deploy.sh`, which copies files without running the package's maintainer scripts: the wake
 screen's diversion would never be made.

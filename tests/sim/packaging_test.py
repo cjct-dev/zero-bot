@@ -15,6 +15,7 @@ another package holds is left alone, and a failed diversion stops the install.
 Standard library only.
 """
 import collections
+import hashlib
 import io
 import json
 import os
@@ -123,6 +124,13 @@ def build(tree):
 def check_package(path, version, bindir):
     check("named with version and architecture", os.path.basename(path) == "zero-bot_%s_arm64.deb" % version,
           os.path.basename(path))
+    try:
+        with open(path, "rb") as f:
+            want = "%s  %s\n" % (hashlib.sha256(f.read()).hexdigest(), os.path.basename(path))
+        got = open(path + ".sha256").read()
+    except OSError as e:
+        want, got = "", str(e)
+    check("its SHA-256 beside it, for sha256sum -c in the download folder", want and got == want, got)
     members = ar_members(path) if os.path.exists(path) else None
     check("an ar archive", members is not None)
     if not members:
