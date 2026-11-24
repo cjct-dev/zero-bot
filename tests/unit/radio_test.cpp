@@ -360,7 +360,8 @@ void test_tool_spec_tags() {
     CHECK_HAS(tag["description"].get<std::string>(), "\"pop\": \"City Radio 2\"; \"talk\", \"news\": \"City Radio 4\"; "
                                                      "\"sport\": \"Second Talk\"; \"focus\", \"study\": \"Calm Waters\"");
     const std::string d = spec["description"].get<std::string>();
-    CHECK_HAS(d, "For focus or study music or lo-fi, or help to focus, study or concentrate, play the tag \"focus\".");
+    CHECK_HAS(d, "For focus or study music or lo-fi, or help to focus, study or concentrate (\"help me study\" on its own asks for "
+                 "this), play the tag \"focus\" rather than offering it.");
     CHECK(d.find("No station has") == std::string::npos);
     CHECK(d.find(radio::shown_path()) == std::string::npos);
     // The prompt line is the same with tags as without: the tool's description and schema say them.
@@ -371,7 +372,8 @@ void test_tool_spec_tags() {
     CHECK(write_stations(R"({"stations": [{"name": "A", "url": "http://e.org/a", "tags": ["lofi"]},
         {"name": "B", "url": "http://e.org/b", "tags": ["focus"]}]})"));
     CHECK_HAS(radio::tool_spec(false)["description"].get<std::string>(), "For focus or study music, or help to focus, study or "
-                                                                         "concentrate, play the tag \"focus\".");
+                                                                         "concentrate (\"help me study\" on its own asks for this), "
+                                                                         "play the tag \"focus\" rather than offering it.");
     CHECK(write_stations(R"({"stations": [{"name": "A", "url": "http://e.org/a", "tags": ["lofi"]}]})"));
     CHECK_HAS(radio::tool_spec(false)["description"].get<std::string>(), "No station has the tag \"focus\": asked for focus or study "
                                                                          "music, or help to focus or study, do not guess a station");

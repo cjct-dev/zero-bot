@@ -154,11 +154,13 @@ std::vector<std::string> read_tags(const json &e, const std::string &named, std:
 
 // For the tool's description: focus mode, or, without its tag, that no station is to be guessed for
 // it and where the user adds the tag. No path of the user's here: the description stays the same from
-// one request to the next, so the service can reuse its cached prefix.
+// one request to the next, so the service can reuse its cached prefix. "Help me study" alone was met with an
+// offer of focus music, or "What are you studying?", until the sentence named it and said to play, not offer.
 std::string focus_note(const std::vector<Station> &list) {
     const std::string lofi = tagged(list, kLofiTag) >= 0 ? "" : " or lo-fi";
     if (tagged(list, kFocusTag) >= 0)
-        return "For focus or study music" + lofi + ", or help to focus, study or concentrate, play the tag \"focus\". ";
+        return "For focus or study music" + lofi + ", or help to focus, study or concentrate (\"help me study\" on its own asks for "
+               "this), play the tag \"focus\" rather than offering it. ";
     return "No station has the tag \"focus\": asked for focus or study music" + lofi + ", or help to focus or study, do not guess a "
            "station; say they can add the tag \"focus\" to one in their station file, radio.json. ";
 }

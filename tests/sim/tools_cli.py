@@ -413,7 +413,8 @@ def station_tags(root):
             return next(t["function"] for t in tools if t["function"]["name"] == "radio")
         except (ValueError, KeyError, TypeError, StopIteration):
             return {}
-    focus_on = 'For focus or study music or lo-fi, or help to focus, study or concentrate, play the tag "focus".'
+    focus_on = ('For focus or study music or lo-fi, or help to focus, study or concentrate ("help me study" on its own asks for this), '
+                'play the tag "focus" rather than offering it.')
     focus_off = 'No station has the tag "focus": asked for focus or study music or lo-fi, or help to focus or study, do not guess a station'
     stations = [{"name": "Harbour FM", "nicknames": ["Harbour"], "url": "http://127.0.0.1:9/harbour.mp3", "tags": ["Pop", "local"]},
                 {"name": "Northern Radio 4", "url": "http://127.0.0.1:9/four.mp3", "tags": "talk"},
@@ -440,7 +441,8 @@ def station_tags(root):
               and '"focus" to one in their station file, radio.json.' in spec.get("description", ""), spec)
     spec = radio_spec([dict(stations[0], tags=["lofi"]), stations[3]])
     check("tags: with a station tagged lofi, focus mode leaves lo-fi to that tag",
-          'For focus or study music, or help to focus, study or concentrate, play the tag "focus".' in spec.get("description", ""), spec)
+          'For focus or study music, or help to focus, study or concentrate ("help me study" on its own asks for this), play the tag '
+          '"focus" rather than offering it.' in spec.get("description", ""), spec)
 
 
 class LocalServer:

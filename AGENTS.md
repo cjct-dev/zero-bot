@@ -577,6 +577,15 @@ key, real audio), say so plainly rather than implying it was.
 - nlohmann::json: a function taking `const json &` called with `{x}`, where `x` is already a
   json value, gets a copy of `x`, not a one-element array (nested lists do become arrays). Build
   lists as `std::vector<json>` or `json::array({...})`. It also sorts object keys when dumping.
+- A request that names a need rather than a thing gets a question unless a tool says what it asks
+  for. With a station tagged focus, "help me study" got "What are you studying?" or an offer of focus
+  music (2 runs in 10 played it) while the radio tool said only "help to focus, study or concentrate";
+  naming the phrase and saying to play rather than offer (`radio::focus_note`) made it 9 in 10, with
+  its neighbours (a study timer, "help me relax", a focus timer) unchanged.
+- Nothing that differs between runs belongs in the prompt or a tool's description. The radio tool's
+  sentence for a missing focus tag first named the station file's path, which is each test run's own
+  folder, so every such case missed the service's cached prefix (about 8 s to the first byte instead
+  of under 1 s). A path the model needs goes in a tool's result.
 
 **The loop**
 - Requests chained inside one run shared one budget of rounds and the last was silently
