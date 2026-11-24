@@ -1,11 +1,11 @@
 // The look tool: a photo from the camera, described by the vision model.
 #include "agent/tools/common.h"
 
+#include "agent/consent.h"
 #include "agent/llm.h"
 #include "core/settings.h"
 #include "core/tether.h"
 #include "platform/camera.h"
-#include "smarthome/home.h"
 
 namespace tools {
 
@@ -29,7 +29,7 @@ std::string t_look(const json &a, Context &ctx) {
     const std::string answer = llm::describe_image(jpeg, question, err, ctx.cancel);
     if (!err.empty()) return fail("the photo was taken but could not be analysed: " + err);
     if (answer.empty()) return fail("the vision model returned nothing");
-    home::saw_untrusted_text();   // a sign in the photo must not switch anything by itself
+    consent::saw_untrusted_text();   // a sign in the photo must not switch anything or be remembered by itself
     return answer;
 }
 

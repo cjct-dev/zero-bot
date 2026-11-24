@@ -535,6 +535,17 @@ devices, with or without this app.
   moment), and settings show only a key's last four characters.
 - Calendar, reminders, memories and learned remote buttons are plain JSON files in
   `~/.local/share/zero-bot/`. Delete a file to reset that part.
+- What the assistant remembers about you is sent to your AI service with every request, so memories
+  are kept short: 400 characters each and 3,000 in all. When memory is full, a new one is saved only
+  once the assistant has merged it into one on the same subject or you have chosen one to forget;
+  nothing already saved is removed for it. Characters that show as nothing (zero-width and direction
+  marks, Unicode tag characters) are taken out before one is saved. Once the assistant has read a web
+  page or looked at a photo, it saves or forgets a memory only after reading it back to you and hearing
+  a plain yes, for as long as that is part of the conversation, so that a sign or a page cannot plant
+  anything in what it remembers.
+- Payment card numbers, IBANs, UK National Insurance numbers and US Social Security numbers are never
+  sent in a web search or kept as a memory: the assistant says what kind of number it found (never the
+  number) and leaves it out.
 - Your radio stations are in `~/.config/zero-bot/radio.json`. Their names are sent to your AI
   service with each request so that it can play them; the stream addresses never are. A station
   is played straight from its own server.

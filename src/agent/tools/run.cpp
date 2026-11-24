@@ -187,7 +187,7 @@ std::string run(const std::string &name, const std::string &raw_args, Context &c
     try {
         std::string result = one_shape(util::sanitize_utf8(tool->run(args, ctx)));
         if (props && failed(result)) result += unknown_note(*props, unknown);
-        else if (!failed(result) && result.compare(0, 7, "CONFIRM") != 0) {
+        else if (!failed(result) && !result::awaits_yes(result)) {
             const std::string action = util::lower(str_arg(args, "action"));
             ctx.worked.push_back(action.empty() ? name : name + ":" + action);
         }

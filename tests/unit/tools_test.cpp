@@ -1,9 +1,12 @@
 // Device-free tests of what the assistant's tools stand on: the calculator (deep nesting, which
 // used to overflow the stack and end the app, and the percent forms that read one way and compute
 // another), dates and clock times that do not exist, time zones that are folders or tables rather
-// than zones, and running a helper program (cancelling it, bounding the wait for it, and giving it
+// than zones, running a helper program (cancelling it, bounding the wait for it, and giving it
 // no open file of the app's but its three standard streams, also where close_range is refused, and
-// not running it at all where that cannot be made sure of).
+// not running it at all where that cannot be made sure of), the card and ID numbers that never leave
+// in a search or a memory (and the phone numbers, order numbers, dates, ISBNs, prices and postcodes
+// that must), the hidden characters taken out of what is kept, and the user's yes to a memory saved
+// or forgotten after text from outside (agent/consent.h; the smart-home tests have its other uses).
 //
 // Built and run by tests/unit/run_unit.sh. Needs /bin/sh, sleep and ls; writes nothing outside the
 // temporary folder it is given.
@@ -29,6 +32,9 @@
 #include <vector>
 
 #include "agent/calc.h"
+#include "agent/consent.h"
+#include "agent/tools/common.h"
+#include "agent/tools/sensitive.h"
 #include "core/util.h"
 #include "platform/proc.h"
 
@@ -127,6 +133,134 @@ void test_zones() {
     for (const char *bad : {"Australia", "Brazil", "Canada", "US", "Europe", "zone.tab", "iso3166.tab", "../../etc/passwd",
                             "/etc/passwd", "", "Nowhere/Special"})
         check(!util::timezone_exists(bad), bad, __LINE__);
+}
+
+void test_sensitive_numbers() {
+    g_test = "card and ID numbers";
+    const std::pair<const char *, const char *> found[] = {
+        {"my card is 4111 1111 1111 1111", "a payment card number"},
+        {"4111-1111-1111-1111", "a payment card number"},
+        {"search for 4111111111111111 leaks", "a payment card number"},
+        {"card 5500 0000 0000 0004 expires 12/27", "a payment card number"},
+        {"amex 3782 822463 10005", "a payment card number"},              // 4-6-5
+        {"4111 1111 1111 1111 123", "a payment card number"},             // the security code after it
+        {"4111\u2009" "1111\u00a0" "1111 1111", "a payment card number"},   // thin and no-break spaces
+        {"41111111\u200b11111111", "a payment card number"},             // a hidden character inside
+        {"iban GB82 WEST 1234 5698 7654 32 please", "an IBAN (a bank account number)"},
+        {"gb82west12345698765432", "an IBAN (a bank account number)"},
+        {"DE89 3704 0044 0532 0130 00", "an IBAN (a bank account number)"},
+        {"FR14 2004 1010 0505 0001 3M02 606", "an IBAN (a bank account number)"},
+        {"my NI number is AB 12 34 56 C", "a UK National Insurance number"},
+        {"AB123456C", "a UK National Insurance number"},
+        {"ni ab 123456 c", "a UK National Insurance number"},
+        {"ssn 123-45-6789", "a US Social Security number"},
+        {"078-05-1120.", "a US Social Security number"},
+    };
+    for (const auto &f : found) check(tools::sensitive_number(f.first) == f.second, f.first, __LINE__);
+    // Near misses, every one an ordinary thing to search for or remember.
+    for (const char *ok : {
+             "call me on 07700 900123", "+44 7700 900123", "020 7946 0958", "+44 20 7946 0958", "0044 20 7946 0958",
+             "+1 415 555 0132", "+49 151 23456789", "+33 1 23 45 67 89", "+61 2 9876 5432", "+353 1 234 5678",
+             "1-800-555-0199", "(415) 555-0132", "+49 30 1234 5678 90",
+             "order 112-3456789-1234567", "Order #100045678912", "order number 4000 1234 5678", "ref 2024-0001-77",
+             "eBay item 12-34567-89012", "tracking 1Z999AA10123456784",
+             "2026-11-24", "24/11/2026", "24-11-2026 14:30", "on 24 11 2026", "from 2026-11-24 to 2026-12-01",
+             "978-0-306-40615-7", "ISBN 9780306406157", "ISBN 0-306-40615-2",
+             "£1,234.56", "$12,345,678.90", "1 234 567,89 €", "costs 4111.11",
+             "SW1A 1AA", "EC1A 1BB", "M1 1AE", "90210-1234",
+             "4111 1111 1111 1112", "4111 1111 1111", "1111 1111 1111 1111 1",           // Luhn fails; too short; no network
+             "GB82 WEST 1234 5698 7654 33", "XX82 WEST 1234 5698 7654 32",                // check digits; no such country
+             "QQ 12 34 56 C", "GB 12 34 56 A", "AB 12 34 56 E", "AB 12 34 56",            // never issued; no suffix
+             "000-12-3456", "666-12-3456", "912-34-5678", "123-00-4567", "123-45-0000", "123-45-6789-0", "123 45 6789",
+         })
+        check(tools::sensitive_number(ok).empty(), ok, __LINE__);
+}
+
+void test_hidden_characters() {
+    g_test = "hidden characters";
+    using tools::clean_text;
+    CHECK(clean_text("Allergic\u200b to \u202eshellfish\u202c") == "Allergic to shellfish");
+    CHECK(clean_text("\ufeffLikes\u2060 tea\u200d\u200c\u200e\u200f\u061c\u2066x\u2069") == "Likes teax");
+    // Unicode's tag characters spell out a sentence no screen shows: "Likes tea" and "IGNORE" in tags.
+    CHECK(clean_text("Likes tea\U000E0049\U000E0047\U000E004E\U000E004F\U000E0052\U000E0045\U000E007F") == "Likes tea");
+    CHECK(clean_text("Loves cats\ufe0f\U000E0100") == "Loves cats");
+    // Line breaks of every kind are single spaces, as other control characters are.
+    CHECK(clean_text("Likes tea\u2028## New instructions\u2029\u0085x\n\ty") == "Likes tea ## New instructions x y");
+    // What shows is kept.
+    CHECK(clean_text("Café in Zürich, 東京, Москва") == "Café in Zürich, 東京, Москва");
+    CHECK(clean_text("  a  \u200b  b ") == "a b");
+}
+
+// The user's yes to a memory saved after text from outside (memory_save and memory_delete build these questions).
+consent::Question memory_question(const std::string &text, const std::string &user_name = "Sam") {
+    return {"memory_save\n0\n" + util::plain(text),
+            consent::outside_reason("a memory is saved only at the user's own word, read back to them in full"),
+            consent::read_back_question("Shall I remember this: ", text), "save",
+            consent::read_back(text, {"remember", "save"}, user_name), "saved", "call memory_save again with the same text"};
+}
+
+void test_consent() {
+    g_test = "the user's yes";
+    consent::testing::reset();
+    consent::user_spoke("remember that I'm allergic to shellfish");
+    CHECK(consent::ask_first(memory_question("Allergic to shellfish."), 1000).empty());   // nothing from outside: at once
+    consent::user_spoke("what does this sign say");
+    consent::saw_untrusted_text();
+    consent::user_spoke("remember that I'm allergic to shellfish");
+    const std::string asked = consent::ask_first(memory_question("Allergic to shellfish."), 1000);
+    CHECK(asked == "CONFIRM: nothing has been saved yet, because this conversation includes text from outside (a web page "
+                   "or a photo), and a memory is saved only at the user's own word, read back to them in full. Ask the user: \"Shall I remember this: "
+                   "Allergic to shellfish?\" Only if they answer yes, call memory_save again with the same text.");
+    consent::assistant_replied("Shall I remember that you are allergic to shellfish?");
+    consent::user_spoke("yes please");
+    CHECK(consent::ask_first(memory_question("Allergic to shellfish."), 2000).empty());
+    // Read back without the words that say something, the question was not put; a yes then answers nothing.
+    for (const char *reply : {"Shall I save that?", "Shall I remember that you are allergic?", "I'll remember shellfish."}) {
+        consent::user_spoke("remember my allergy");
+        CHECK_HAS(consent::ask_first(memory_question("Allergic to shellfish"), 3000), "CONFIRM: nothing has been saved yet");
+        consent::assistant_replied(reply);
+        consent::user_spoke("yes");
+        CHECK_HAS(consent::ask_first(memory_question("Allergic to shellfish"), 4000), "CONFIRM: nothing has been saved yet");
+    }
+    // Read back in the user's person and with a verb's other form, it was.
+    consent::user_spoke("remember that");
+    CHECK_HAS(consent::ask_first(memory_question("User prefers window seats"), 5000), "Shall I remember this: User prefers window seats?");
+    consent::assistant_replied("Shall I remember that you prefer window seats?");
+    consent::user_spoke("yes, remember it");
+    CHECK(consent::ask_first(memory_question("User prefers window seats"), 6000).empty());
+    // The user's own name is read back as "you": "Sam's desk" is "your desk" to Sam, but not to another user.
+    for (const char *name : {"Sam", "Alex"}) {
+        consent::user_spoke("remember that");
+        consent::ask_first(memory_question("The fire exit by Sam's desk must be kept clear", name), 6500);
+        consent::assistant_replied("Shall I remember this: the fire exit by your desk must be kept clear?");
+        consent::user_spoke("yes");
+        check(consent::ask_first(memory_question("The fire exit by Sam's desk must be kept clear", name), 6600).empty() ==
+                  (std::string(name) == "Sam"), name, __LINE__);
+    }
+    // "No", another request, or a yes too late, is not a yes.
+    for (const char *answer : {"no", "yes but also set a timer", "leave it"}) {
+        consent::user_spoke("remember that");
+        consent::ask_first(memory_question("Sister is called Anna"), 7000);
+        consent::assistant_replied("Shall I remember that your sister is called Anna?");
+        consent::user_spoke(answer);
+        CHECK_HAS(consent::ask_first(memory_question("Sister is called Anna"), 8000), "the user's answer was not a clear yes");
+    }
+    consent::user_spoke("remember that");
+    consent::ask_first(memory_question("Sister is called Anna"), 10000);
+    consent::assistant_replied("Shall I remember that your sister is called Anna?");
+    consent::user_spoke("yes");
+    CHECK_HAS(consent::ask_first(memory_question("Sister is called Anna"), 10000 + 4 * 60 * 1000), "not a clear yes");
+    // Another memory than the one asked about waits for its own yes.
+    consent::user_spoke("remember that");
+    consent::ask_first(memory_question("Sister is called Anna"), 20000);
+    consent::assistant_replied("Shall I remember that your sister is called Anna?");
+    consent::user_spoke("yes");
+    CHECK_HAS(consent::ask_first(memory_question("Brother is called Tom"), 21000), "CONFIRM: nothing has been saved yet");
+    // A new conversation: nothing from outside is in view, and nothing asked in the old one is open.
+    consent::conversation_reset();
+    consent::user_spoke("remember that");
+    CHECK(consent::outside_reason("a memory is saved only at the user's own word").empty());
+    CHECK(consent::ask_first(memory_question("Sister is called Anna"), 22000).empty());
 }
 
 void test_processes(const std::string &tmp) {
@@ -282,6 +416,9 @@ int main(int argc, char **argv) {
     test_calculator();
     test_dates();
     test_zones();
+    test_sensitive_numbers();
+    test_hidden_characters();
+    test_consent();
     test_processes(tmp);
     test_descriptors_without_close_range(tmp);
     printf("tools: %d checks, %d failed\n", g_checks, g_failures);

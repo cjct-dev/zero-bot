@@ -6,6 +6,7 @@
 #include <optional>
 #include <unistd.h>
 
+#include "agent/consent.h"
 #include "agent/controls.h"
 #include "agent/experiment.h"
 #include "agent/guards.h"
@@ -17,7 +18,6 @@
 #include "core/result.h"
 #include "core/settings.h"
 #include "platform/audio.h"
-#include "smarthome/home.h"
 
 namespace {
 constexpr int kMaxRounds = 8;            // model calls per request, including tool round-trips
@@ -139,7 +139,7 @@ void Agent::reset_conversation() {
         earlier_ = json::array();   // DIAGNOSTICS (temporary)
         earlier_dropped_ = 0;
     }
-    home::conversation_reset();   // a web page read in it no longer holds smart-home changes back
+    consent::conversation_reset();   // a web page read in it no longer holds changes and memories back
 }
 
 void Agent::say(const std::string &text) {
@@ -272,9 +272,9 @@ int Agent::absorb_inputs(bool first, bool *spoken, std::string *missed) {
         }
         const bool steering = !first || added > 0;
         if (ev_.user_message) ev_.user_message(text, steering);
-        // A smart-home change that waits for the user's yes may go ahead only on the very next
-        // thing they say (see home::execute); it is told what that was.
-        home::user_spoke(text);
+        // A smart-home change or a memory that waits for the user's yes may go ahead only on the
+        // very next thing they say (agent/consent.h); it is told what that was.
+        consent::user_spoke(text);
         // The time travels with each message rather than in the system prompt, so the prompt and
         // the earlier conversation stay byte-for-byte the same from call to call and the server can
         // reuse its cached prefix. A prompt that changes every minute costs a second or two per call.
@@ -316,8 +316,8 @@ void Agent::trim_history() {
         }
         for (const auto &m : history_) user_messages += util::jget(m, "role", std::string()) == "user";
     }
-    // Text from outside holds smart-home changes back only while the model can still see it.
-    home::context_kept(user_messages);
+    // Text from outside holds changes and memories back only while the model can still see it.
+    consent::context_kept(user_messages);
 }
 
 // One call of run_turn: a request, with whatever the user added while it was worked on, and any
@@ -741,7 +741,7 @@ Agent::Turn::Then Agent::Turn::run_tools(Round &r) {
             // Refused only for what its "say" claimed, nothing done: it may come again
             // with another say, or after the step it lacked.
             if (!req_.tool_ctx.say_refused) req_.failed_calls.emplace(key, error_words(result));
-        } else if (result.compare(0, 7, "CONFIRM") != 0) {
+        } else if (!result::awaits_yes(result)) {
             req_.any_ok = true;
         }
         const std::string say = a_.cancel_ ? "" : tools::confirmation(c.name, c.args, result);
@@ -784,7 +784,7 @@ Agent::Turn::Then Agent::Turn::finish_answer(Round &r) {
         std::lock_guard<std::mutex> lk(a_.mtx_);
         a_.history_.push_back({{"role", "assistant"}, {"content", r.res.content}});
     }
-    home::assistant_replied(r.res.content);   // it may put the question a smart-home change waits on
+    consent::assistant_replied(r.res.content);   // it may put the question a change or a memory waits on
     a_.last_answer_ = r.res.content;
     if (r.began && a_.ev_.answer_end) a_.ev_.answer_end(r.res.content, false);
     if (r.res.content.empty() && a_.ev_.error) a_.ev_.error("The model returned an empty answer.");
@@ -878,7 +878,7 @@ void Agent::Turn::deliver(const std::string &text) {
         std::lock_guard<std::mutex> lk(a_.mtx_);
         a_.history_.push_back({{"role", "assistant"}, {"content", text}});
     }
-    home::assistant_replied(text);
+    consent::assistant_replied(text);
     a_.last_answer_ = text;
     if (a_.ev_.answer_begin) a_.ev_.answer_begin();
     if (a_.ev_.answer_delta) a_.ev_.answer_delta(text);

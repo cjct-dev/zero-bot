@@ -44,11 +44,15 @@ src/agent/          the request loop (agent: Agent::Turn and its steps), what th
                     reply for and the notes it sends the model (guards), the small-model controls
                     (controls), service client (llm; reading the reply stream: llm_stream.h),
                     system prompt (prompt), sentence queue for speech (speech), the cli build's
-                    measurement switches (experiment), arithmetic (calc), and the tools: tools.h
+                    measurement switches (experiment), arithmetic (calc), the user's yes (consent: the
+                    questions that wait for it, the text from outside that makes a change or a
+                    memory wait for it, what counts as putting a question and as a plain yes), and
+                    the tools: tools.h
                     (Context, Tool, Say) and tools/, one file per tool (<name>.cpp), registry.cpp
                     (the list in the order the model reads it, the schema, "say" confirmations),
                     run.cpp (a call checked against its schema, run, its failure shaped),
                     common.h (argument and schema helpers), say_checks (weekday_slip, claims_new, claims_start),
+                    sensitive (the card and ID numbers no search query or memory carries),
                     web (fetch_json, with its options: Fetch, Fetched), places and events (what several
                     tools share); and web search in search/: provider.h (the contract every search
                     service implements, like smarthome/driver.h), providers/ (one file per service;
@@ -128,8 +132,8 @@ through `Settings::update([](Settings &s) { ... })`, which makes it under that l
 Locks to know before adding shared state: the settings (`g_mtx` for the snapshot, `g_file_mtx` for
 one save at a time; settings.cpp), `Store::mtx_` (calendar, reminders, timers, memory: the UI reads
 them every tick and tools change them), the smart-home file (`store.cpp`: `g_mtx` for the file,
-`g_net_mtx` for the network last seen), `control.cpp` (`g_ctl_mtx` for the questions awaiting a yes
-and the rate limit, `g_locks_mtx` and then one lock per device), web search (`search.cpp`: `g_health_mtx`,
+`g_net_mtx` for the network last seen), `consent.cpp` (`g_mtx` for the questions awaiting a yes
+and the text from outside), `control.cpp` (`g_rate_mtx` for the rate limit, `g_locks_mtx` and then one lock per device), web search (`search.cpp`: `g_health_mtx`,
 `g_cache_mtx`, `g_asked_mtx`; `usage.cpp`: `g_mtx` for the allowance as read, `g_file_mtx` for one save at a
 time, written outside `g_mtx`, which the settings page takes too), the time zone (`g_tz_mtx` in
 util.cpp, under which `TZ` is switched), `uiq::mtx()` and curl's share locks (http.cpp), which guard DNS answers
@@ -206,24 +210,42 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   quiet from a spoken question to the end of its answer when that is spoken. A typed request, and
   one said aloud with spoken replies off, holds nothing (`tools::Context::in_conversation` is false
   for it).
-- **Smart-home questions**: a change that needs the user's yes (a thing with *Ask before
-  switching on*, heating outside 10 to 25 degrees, more than eight things, loud volume, after a
-  web page or photo) makes `home::execute` answer `CONFIRM: ...` and remember the change. The loop
-  reports every user message (`home::user_spoke`) and every final reply, with its text
-  (`home::assistant_replied`). The same change (action, target and values) goes ahead only when
+- **The user's yes** (`src/agent/consent.h`, one rule for every action that waits for it): a
+  smart-home change that needs the user's yes (a thing with *Ask before switching on*, heating
+  outside 10 to 25 degrees, more than eight things, loud volume, after a web page or photo) makes
+  `home::execute` answer `CONFIRM: ...` and remember the change, through `consent::ask_first`. The
+  loop reports every user message (`consent::user_spoke`) and every final reply, with its text
+  (`consent::assistant_replied`). The same change (action, target and values) goes ahead only when
   the question was put (a reply that asks, with a question mark, and names the target in words
   that pick it out: every word of its name, a word of it no other thing's name has, "the TV" for
   the only TV, "everything" or "all the lights" for a group), the very next user message is a
   short, plain yes (every word an agreement, politeness or a word for the target; a new request,
   "leave it off please" or "yes, and..." is not), and it is asked for again in that turn. There is
   deliberately no parameter the model could set to skip this. `web_search` and `look` call
-  `home::saw_untrusted_text()`: from then on every change needs a yes for as long as the model can
-  still see that text, which ends only when the conversation is cleared
-  (`home::conversation_reset`) or trimmed past it (`Agent::trim_history` reports what it keeps
-  through `home::context_kept`). So "no" after a web page or photo holds however long the model
-  waits before asking again. Names in `ERROR`/`CONFIRM` sentences are always in double quotes, and
-  `home::clean_name` removes every kind of double quotation mark (typographic and full-width ones
-  too) from every name, so a device's name cannot end its quotes and read as an instruction.
+  `consent::saw_untrusted_text()`: from then on every change needs a yes for as long as the model
+  can still see that text (`consent::outside_reason`), which ends only when the conversation is
+  cleared (`consent::conversation_reset`) or trimmed past it (`Agent::trim_history` reports what it
+  keeps through `consent::context_kept`). So "no" after a web page or photo holds however long the
+  model waits before asking again. For that same span `memory_save` and `memory_delete` wait for a
+  yes too (ZB-120): a memory is in the instructions of every later request, so one a page or a sign
+  planted would steer them all. Their CONFIRM reads the memory back in the question ("Shall I
+  remember this: Allergic to shellfish?"), and a reply puts it only when it has every word of the
+  memory that says something (`consent::read_back`: "you prefer window seats" for "User prefers
+  window seats", "your desk" for "Sam's desk" when the user's name is Sam). With nothing from outside in view a memory is saved at once, as before. Names in
+  `ERROR`/`CONFIRM` sentences are always in double quotes, and `home::clean_name` removes every kind
+  of double quotation mark (typographic and full-width ones too) from every name, so a device's name
+  cannot end its quotes and read as an instruction. A result that waits for a yes
+  (`result::awaits_yes`) is never confirmed by its `say`: the model has the question to put.
+- **Memories** (ZB-120 to ZB-122): what is kept (`tools::clean_text`) has its control characters as
+  spaces and loses every character that shows as nothing (zero-width and bidirectional marks, the
+  word joiner, the byte-order mark, variation selectors, Unicode's tag characters), which could carry
+  words the user never sees. Each memory is at most 400 characters and all of them 3,000: a save past
+  that is refused with how full memory is and what to do (merge with `replace_id`, or ask the user
+  which to forget); memories already past it stay, and a save that shortens them is let through. A
+  memory, and a web search's query, holding a card number (Luhn), an IBAN (mod 97), a UK National
+  Insurance number or a US Social Security number is refused, naming the kind and never the number
+  (`tools::sensitive_number`, `src/agent/tools/sensitive.h`, which says what counts and why phone and
+  order numbers, dates, ISBNs, prices and postcodes do not).
 - **Context notes** (`Agent::add_context`): something the user saw or heard without the model
   taking part (a timer's alarm) rides along with their next message, within ten minutes, so
   that "give it five more minutes" means something to the model.

@@ -305,6 +305,39 @@ def run_all(root):
     error(m, "memory_save", {"text": "x", "replace_id": 77}, "no memory has id 77")
     ok(m, "memory_delete", {"id": 2}, "deleted")
     error(m, "memory_delete", {"id": 2}, "no memory has id 2")
+    # Characters that show as nothing are taken out (a tag-character sentence too); what shows is kept.
+    ok(m, "memory_save", {"text": "Likes\u200b green\u202e tea\ufeff\U000e0049\U000e0047\U000e004e" + "\u2028in Zürich"}, "saved as memory")
+    mem = m.file("data", "zero-bot", "memory.json") or []
+    check("a memory loses its hidden characters", [x["text"] for x in mem][-1:] == ["Likes green tea in Zürich"], mem)
+    # Card and ID numbers are never kept: the kind is named, never the number.
+    for text, kind in (("Card 4111 1111 1111 1111 expires 12/27", "a payment card number"),
+                       ("Bank IBAN GB82 WEST 1234 5698 7654 32", "an IBAN"), ("NI number AB 12 34 56 C", "a UK National Insurance number"),
+                       ("SSN is 123-45-6789", "a US Social Security number")):
+        out = error(m, "memory_save", {"text": text}, "the text holds " + kind, "without the number")
+        check("the refusal does not repeat the number", not re.search(r"4111|WEST|12 34|45-6789", out), out)
+        error(m, "memory_save", {"text": text, "replace_id": 1}, "the text holds " + kind)
+    ok(m, "memory_save", {"text": "Phone 07700 900123, order 112-3456789-1234567, ISBN 978-0-306-40615-7"}, "saved as memory")
+    check("nothing refused was saved", not any(re.search(r"4111|WEST|AB 12|45-6789", x["text"]) for x in m.file("data", "zero-bot", "memory.json")),
+          m.file("data", "zero-bot", "memory.json"))
+
+    # ---- memory's total (ZB-121): 3,000 characters in all; what is saved past it stays, only a save that grows waits
+    f = State(root, "memory-full")
+    for i in range(7):
+        ok(f, "memory_save", {"text": "%d" % i + "x" * 399}, "saved as memory %d" % (i + 1))   # 2,800
+    ok(f, "memory_save", {"text": "y" * 200}, "saved as memory 8")                             # 3,000: full, not over
+    out = error(f, "memory_save", {"text": "Likes tea"}, "memory is full: 3000 of its 3000 characters are used",
+                "and this would make 3009", "replace_id", "which memory to forget")
+    error(f, "memory_save", {"text": "z" * 210, "replace_id": 8}, "memory is full")   # a replacement that grows
+    ok(f, "memory_save", {"text": "Likes tea", "replace_id": 8}, "updated memory 8")   # one that shortens is fine
+    ok(f, "memory_save", {"text": "Likes coffee"}, "saved as memory 9")
+    over = [{"id": i + 1, "text": "%d" % i + "w" * 399, "created": 1} for i in range(9)]   # 3,600, saved before the total
+    with open(f.dir + "/data/zero-bot/memory.json", "w") as fh:
+        json.dump(over, fh)
+    error(f, "memory_save", {"text": "Likes tea"}, "memory is full: 3600 of its 3000 characters are used")
+    ok(f, "memory_save", {"text": "Likes tea", "replace_id": 9}, "updated memory 9")
+    check("memories saved past the total are never removed for a new one", len(f.file("data", "zero-bot", "memory.json") or []) == 9)
+    ok(f, "memory_delete", {"id": 2}, "deleted")
+    ok(f, "memory_save", {"text": "Likes coffee"}, "saved as memory 10")   # 3,600 - 400 - 391 + 12: room again
 
     # ---- time zones that are not zones
     z = State(root, "zones")
@@ -711,7 +744,7 @@ def search_failover(root):
     nothing (never two paid searches otherwise), the answer the model reads is the one that worked, one ERROR sentence
     when none did; a refused key is never sent again, not even by a later run; a spent service, or one that said nothing
     is left, is passed over; one that failed twice in a row rests; a slow first service is given 5 s, a service alone
-    the whole 8."""
+    the whole 8; a query holding a card or ID number reaches none."""
     sys.path.insert(0, os.path.join(TESTS, "mocks"))
     import fake_web
     rule = fake_web.search_rule(fake_web.FIXTURES["default"], SEARCHED)
@@ -748,6 +781,17 @@ def search_failover(root):
               re.fullmatch(r"[0-9a-f]{16}", saved.get("refused", "")) is not None and "stand-in" not in saved.get("refused", ""), saved)
         out, asked = search_with(g, web, "default", BT)
         check("a later run does not send the refused key again", [a.get("service") for a in asked] == ["tavily"], asked)
+
+        # A card or ID number never goes to a search service (ZB-122): refused before any is asked, naming the kind.
+        g = State(root, "failover-private")
+        for query, kind in (("is 4111 1111 1111 1111 a visa card", "a payment card number"),
+                            ("who owns GB82 WEST 1234 5698 7654 32", "an IBAN"), ("123-45-6789 lookup", "a US Social Security number")):
+            out, asked = search_with(g, web, "default", TB, query=query)
+            check("a query holding %s: refused, naming the kind and not the number, and no service asked" % kind,
+                  out.startswith("ERROR: the query holds " + kind) and "Search without it" in out and
+                  not re.search(r"4111|WEST|6789", out) and asked == [], (out[:200], asked))
+        out, asked = search_with(g, web, "default", TB, query="opening hours of 112-3456789-1234567 order desk 07700 900123")
+        check("a query with a phone and an order number is searched", [a.get("service") for a in asked][:1] == ["tavily"], (out[:200], asked))
 
         # Several searches in one run: what the run remembers of each service.
         for fixture, order, n, want, why in (

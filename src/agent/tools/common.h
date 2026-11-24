@@ -27,7 +27,7 @@ int clamp_int(double v, int lo, int hi);                // a finite value in [lo
 // An id from an earlier result; `where` says how to find it ("use calendar_list to find it").
 bool id_arg(const json &a, const char *key, int &id, std::string &err, const std::string &where);
 bool bool_arg(const json &a, const char *key, bool fallback);
-std::string clean_text(const std::string &raw);         // control characters as single spaces, trimmed
+std::string clean_text(const std::string &raw);         // control characters as single spaces, hidden ones gone, trimmed
 // The error for a date or time that is malformed or not real, with what was sent.
 std::string bad_time(const std::string &field, const std::string &sent, bool date_only = false);
 

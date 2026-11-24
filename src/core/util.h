@@ -41,6 +41,9 @@ std::string trim(const std::string &s);
 // unchanged, for anything else.
 bool to_number(const std::string &text, double &out);
 std::string lower(const std::string &s);
+// Letters and digits only, lower case, words one space apart: "Bed-heater" and "bed heater" are the same thing
+// said aloud. Bytes of a character beyond ASCII count as letters.
+std::string plain(const std::string &text);
 std::vector<std::string> split(const std::string &s, char sep);
 bool contains_ci(const std::string &haystack, const std::string &needle);
 std::string truncate_utf8(const std::string &s, size_t max_bytes, const char *ellipsis = "…");
@@ -51,6 +54,9 @@ std::string sanitize_utf8(const std::string &s);     // replaces invalid bytes s
 // ordinary words).
 std::string blank_out(const std::string &text, const std::vector<std::string> &secrets);
 void append_utf8(std::string &out, uint32_t cp);     // a code point (not a surrogate, at most U+10FFFF) as UTF-8
+// The well-formed UTF-8 sequence at p[i] (n bytes in all): its length, with its code point in `cp`; 0 when there
+// is none there (RFC 3629: no overlong forms, no surrogates, nothing above U+10FFFF).
+size_t utf8_at(const unsigned char *p, size_t n, size_t i, uint32_t &cp);
 std::string base64(const std::string &data);
 
 // Time. The app can run in a different zone from the system (useful when travelling).

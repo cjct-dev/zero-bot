@@ -14,6 +14,7 @@
 #include <system_error>
 #include <thread>
 
+#include "agent/consent.h"
 #include "agent/experiment.h"
 #include "core/result.h"
 #include "smarthome/color.h"
@@ -38,7 +39,6 @@ std::string no_infrared(const Thing &t) {
     return t.type == "tv" ? ", without offering the infrared remote instead (it may send another TV's codes)" : "";
 }
 constexpr size_t kStatusMax = 30;           // things listed by a status of everything
-constexpr unsigned long kAnswerWithinMs = 3 * 60 * 1000;   // a yes must come within this
 constexpr double kMinC = 5, kMaxC = 30;     // heating targets are clamped to this range
 
 const char *const kActions[] = {"on",   "off",      "set",  "status", "scene",  "play",
@@ -60,58 +60,18 @@ std::string number_text(double v) {
 std::mutex g_locks_mtx;
 std::map<std::string, std::unique_ptr<std::mutex>> g_locks;
 
-// ---------------------------------------------------------------- the conversation, as far as this layer needs it
-// How a reply or an answer may refer to what a question is about. A reply names it when, for one
-// of `ways`, it has a word from every set: {"heater"} for a "Fan heater" when no other thing's
-// name has that word, {"heating"} for the only thermostat, {all, every, ...} and {light, lights,
-// ...} for all the lights, or every word of the name as listed. An answer may use any of `words`
-// besides agreeing ("yes, the heating", "yes, turn everything off").
-struct Naming {
-    std::vector<std::vector<std::set<std::string>>> ways;
-    std::set<std::string> words;
-};
-
-// A change that needed the user's yes. It goes ahead only when the identical change is asked for
-// again in the very next user message, that message reads as a yes, and a reply that put the
-// question (a question naming the thing) went to the user in between. Nothing the model passes
-// can stand in for this.
-struct Pending {
-    std::string signature;
-    std::string reason;          // why it needs a yes; kept for as long as the question is open
-    std::string question;        // what the user is to be asked, e.g. "Turn on Bed heater?"
-    std::string action;          // on, off, set, ...
-    Naming naming;               // how a reply that asks, and an answer, refer to the target
-    unsigned long at_ms = 0;
-    unsigned long turn = 0;      // the user message during which it was asked for
-    bool asked = false;          // a reply that put the question went to the user after it
-};
-
-std::mutex g_ctl_mtx;            // guards everything in this group
-unsigned long g_turn = 0;        // user messages so far
-std::string g_last_said;         // the newest user message
-// Text from outside (a web page, what a photo shows) the model has read. It stays in what the
-// model sees until the conversation is cleared or grows past it, and could be steering the model
-// for all that time, so every change needs the user's yes until then: not only in the turn it was
-// read in, and not only a change already put as a question.
-bool g_untrusted = false;             // read since the conversation was last cleared ...
-unsigned long g_untrusted_turn = 0;   // ... most recently during this user message
-unsigned long g_context_from = 0;     // the oldest user message the model still sees
-std::vector<Pending> g_pending;
-constexpr size_t kMaxPending = 8;
+// ---------------------------------------------------------------- the rate limit
+std::mutex g_rate_mtx;           // guards g_rate
 RateLimiter g_rate;
 
-std::vector<std::string> words_of(const std::string &text) {
-    std::vector<std::string> out;
-    for (const auto &w : util::split(plain(text), ' '))
-        if (!w.empty()) out.push_back(w);
-    return out;
-}
-
-// Whether text from outside is still in what the model sees. The caller holds g_ctl_mtx.
-bool steered_by_outside() { return g_untrusted && g_untrusted_turn >= g_context_from; }
+// ---------------------------------------------------------------- how a question names what it is about
+// The rest of the rule of the user's yes (when a change goes ahead, what counts as a yes) is the one every
+// action that waits for a yes shares: agent/consent.h.
+using consent::Naming;
+using consent::words_of;
 
 // Words a question or an answer uses for a group, or for a kind of thing ("the TV", "the
-// heating"), in English and the languages the yes words below cover.
+// heating"), in English and the languages consent.cpp's yes words cover.
 const std::set<std::string> kAllWords = {"all", "every", "everything", "alle", "alles", "tout", "tous", "toutes", "todo",
                                          "todos", "todas", "tutto", "tutti", "tutte", "allemaal"};
 const std::set<std::string> kLightWords = {"light", "lights", "lamp", "lamps", "licht", "lichter", "lampe", "lampen",
@@ -211,77 +171,6 @@ Naming naming_of(const std::vector<Item> &items, const Resolved &r, const std::v
             break;
     }
     return n;
-}
-
-// A short answer that agrees and says nothing else: "yes", "yes please", "sure, go ahead", "yes,
-// the bed heater". Every word has to belong to an agreement, to the politeness around one, or to
-// what the question was about (`names`: the thing's name, the word for its kind, a group's words);
-// a message that also says anything else is a new request ("please set a timer", "ok, what time
-// is it"), and one with a word of refusal in it ("leave it off please", "yes, no wait"), or of the
-// opposite of what was asked ("off" to a question about switching on), is not a yes. An answer
-// that is not recognised only means the question is asked again.
-bool sounds_like_yes(const std::string &text, const std::set<std::string> &names, const std::string &action) {
-    const std::vector<std::string> words = words_of(text);
-    if (words.empty() || words.size() > 10) return false;
-    static const std::set<std::string> kRefusal = {
-        "no", "nope", "nah", "not", "don", "dont", "never", "cancel", "stop", "wait", "later", "leave", "keep", "hold", "maybe",
-        "nein", "nicht", "non", "pas", "não", "nao", "nee", "niet", "nie", "ne", "nem", "nunca", "jamais", "nada"};
-    const bool switching_off = action == "off";
-    for (const auto &w : words)
-        if (kRefusal.count(w) || w == (switching_off ? "on" : "off")) return false;
-    // Words that agree, alone or together; "please" answers a question as a yes only when it is
-    // all that was said.
-    static const char *const kAgreeing[] = {"go ahead", "go on", "go for it", "do it", "do that", "please do", "of course",
-                                            "that s right", "that s fine", "that s ok", "that s okay", "all right", "sounds good",
-                                            "sure thing", "you bet", "uh huh", "mm hmm", "d accord", "bien sûr", "bien sur",
-                                            "vas y", "por supuesto", "mach das", "mach es", "na klar", "va bene", "pode ser",
-                                            "isso mesmo"};
-    static const char *const kPlease[] = {"por favor", "s il vous plaît", "s il vous plait", "s il te plaît", "s il te plait"};
-    static const std::set<std::string> kYes = {"yes", "yeah", "yea", "yep", "yup", "aye", "sure", "ok", "okay", "okey", "alright",
-                                               "fine", "affirmative", "absolutely", "definitely", "certainly", "correct", "confirm",
-                                               "confirmed", "mhm", "si", "sí", "oui", "ja", "jawohl", "genau", "klar", "sim",
-                                               "tak", "da", "vale", "claro", "certo", "dale"};
-    // Allowed around an agreement, never one by themselves ("right" also gives directions).
-    static const std::set<std::string> kAround = {"thanks", "thank", "you", "then", "just", "oh", "um", "uh", "er", "erm", "ah",
-                                                  "well", "now", "right", "mate", "bitte", "danke", "merci", "gracias", "obrigado",
-                                                  "obrigada", "grazie", "the", "it", "them", "that", "one", "all", "of", "turn",
-                                                  "switch", "set", "on", "off"};
-    bool agreed = false, please = false, other = false;
-    std::string joined = " ";
-    for (const auto &w : words) joined += w + " ";
-    auto take = [&](const char *phrase) {
-        bool found = false;
-        for (size_t at; (at = joined.find(" " + std::string(phrase) + " ")) != std::string::npos; found = true)
-            joined.replace(at, strlen(phrase) + 2, " ");
-        return found;
-    };
-    for (const char *phrase : kAgreeing) agreed = take(phrase) || agreed;
-    for (const char *phrase : {"turn it", "switch it", "turn them", "switch them"})
-        agreed = take((std::string(phrase) + (switching_off ? " off" : " on")).c_str()) || agreed;
-    for (const char *phrase : kPlease) please = take(phrase) || please;
-    for (const auto &w : util::split(joined, ' ')) {
-        if (w.empty()) continue;
-        if (kYes.count(w)) agreed = true;
-        else if (w == "please") please = true;
-        else if (kAround.count(w) || names.count(w)) other = true;
-        else return false;   // it says something else as well
-    }
-    return agreed || (please && !other);
-}
-
-// Whether a reply put the question: it asks something, and it names what the question is about
-// (see Naming).
-bool puts_question(const std::string &reply, const Naming &naming) {
-    if (reply.find_first_of("?") == std::string::npos && reply.find("？") == std::string::npos &&
-        reply.find("؟") == std::string::npos)
-        return false;
-    const std::vector<std::string> words = words_of(reply);
-    const std::set<std::string> said(words.begin(), words.end());
-    return std::any_of(naming.ways.begin(), naming.ways.end(), [&](const std::vector<std::set<std::string>> &way) {
-        return !way.empty() && std::all_of(way.begin(), way.end(), [&](const std::set<std::string> &choice) {
-            return std::any_of(choice.begin(), choice.end(), [&](const std::string &w) { return said.count(w) > 0; });
-        });
-    });
 }
 
 // ---------------------------------------------------------------- changes
@@ -448,13 +337,7 @@ std::string needs_yes(const Resolved &r, const Change &base, const std::vector<S
     if (blinds > 1) return "it would move " + std::to_string(blinds) + " blinds at once";
     for (const auto &s : steps)
         if (s.change.volume && *s.change.volume > 70) return "a volume of " + std::to_string(*s.change.volume) + " is loud";
-    std::lock_guard<std::mutex> lk(g_ctl_mtx);
-    if (steered_by_outside())
-        return g_untrusted_turn == g_turn
-                   ? "this request involved text from outside (a web page or a photo), and devices change only at the user's own word"
-                   : "this conversation includes text from outside (a web page or a photo), and devices change only at the user's "
-                     "own word";
-    return "";
+    return consent::outside_reason("devices change only at the user's own word");
 }
 
 // What identifies a change for its question: the action, the target as resolved (so "all" and
@@ -467,48 +350,6 @@ std::string signature(const std::string &action, const std::string &target, cons
     std::string sig = action + "\n" + target;
     for (const auto &p : parts) sig += "\n\n" + p;
     return sig;
-}
-
-// The questions of the design's safety rules, asked in code. Returns "" when the change may go
-// ahead: it needs no yes (`reason` is empty and it was not put to the user as a question), or it
-// was put to the user as a question in the reply to their previous message and they have just
-// said yes. Otherwise the change is remembered and the CONFIRM text for the model is returned.
-// A change once put as a question keeps needing the yes in the next turn even when what made it
-// risky has passed (ask_first was switched off in settings meanwhile), so an answer of "no"
-// stops it. (Text from outside keeps every change waiting for a yes by itself: needs_yes().)
-std::string question_first(const std::string &sig, std::string reason, const std::string &action, const Naming &naming,
-                           const std::string &question) {
-    std::lock_guard<std::mutex> lk(g_ctl_mtx);
-    const unsigned long now = now_ms();
-    bool not_agreed = false;
-    for (auto it = g_pending.begin(); it != g_pending.end(); ++it) {
-        if (it->signature != sig) continue;
-        // Within one turn the rules give the current answer (the user may have just switched the
-        // question off in settings); a question from the turn before stays open whatever they say.
-        if (reason.empty() && it->turn < g_turn) reason = it->reason;
-        const bool answered = it->asked && g_turn == it->turn + 1;
-        const bool ok = answered && sounds_like_yes(g_last_said, it->naming.words, it->action) && now - it->at_ms <= kAnswerWithinMs;
-        not_agreed = answered && !ok;
-        g_pending.erase(it);
-        if (ok) return "";
-        break;
-    }
-    if (reason.empty()) return "";
-    Pending p;
-    p.signature = sig;
-    p.reason = reason;
-    p.question = question;
-    p.action = action;
-    p.naming = naming;
-    p.at_ms = now;
-    p.turn = g_turn;
-    g_pending.push_back(p);
-    if (g_pending.size() > kMaxPending) g_pending.erase(g_pending.begin());
-    if (not_agreed)
-        return "CONFIRM: nothing has been changed, because the user's answer was not a clear yes. If they still want it, ask: \"" +
-               question + "\" Only if they answer yes, call smart_home again with the same request.";
-    return "CONFIRM: nothing has been changed yet, because " + reason + ". Ask the user: \"" + question +
-           "\" Only if they answer yes, call smart_home again with the same request.";
 }
 
 // ---------------------------------------------------------------- talking to devices
@@ -974,42 +815,6 @@ void RateLimiter::reset() {
     per_target_.clear();
 }
 
-// ---------------------------------------------------------------- the conversation
-void user_spoke(const std::string &text) {
-    std::lock_guard<std::mutex> lk(g_ctl_mtx);
-    ++g_turn;
-    g_last_said = text;
-    // A question is answered by the next message or not at all.
-    g_pending.erase(std::remove_if(g_pending.begin(), g_pending.end(), [](const Pending &p) { return p.turn + 1 < g_turn; }),
-                    g_pending.end());
-}
-
-void assistant_replied(const std::string &reply) {
-    std::lock_guard<std::mutex> lk(g_ctl_mtx);
-    // Only a reply that puts a change's question counts as asking it: "Done. Anything else?" or
-    // an empty answer leaves it unasked, and asking about one change does not ask about another.
-    for (auto &p : g_pending)
-        if (p.turn == g_turn && puts_question(reply, p.naming)) p.asked = true;
-}
-
-void saw_untrusted_text() {
-    std::lock_guard<std::mutex> lk(g_ctl_mtx);
-    g_untrusted = true;
-    g_untrusted_turn = g_turn;
-}
-
-void conversation_reset() {
-    std::lock_guard<std::mutex> lk(g_ctl_mtx);
-    g_untrusted = false;
-    g_pending.clear();   // a yes in the new conversation answers nothing asked in the old one
-}
-
-void context_kept(size_t user_messages) {
-    std::lock_guard<std::mutex> lk(g_ctl_mtx);
-    // The messages kept are the newest ones: the oldest of them is this user message.
-    if (user_messages <= g_turn) g_context_from = std::max(g_context_from, g_turn + 1 - user_messages);
-}
-
 // ---------------------------------------------------------------- commands
 namespace {
 // The steps of execute(), in its order. Each returns "" to go on, or the result to give the model.
@@ -1217,13 +1022,15 @@ std::string execute(const Command &cmd, bool dry_run) {
     // The questions of the design's safety rules, asked in code: the model cannot answer them itself.
     std::vector<const Thing *> to_change;
     for (const auto &s : steps) to_change.push_back(&s.item->thing);
-    const std::string confirm = question_first(signature(action, r.label, steps), needs_yes(r, base, steps), action,
-                                               naming_of(items, r, to_change),
-                                               capitalised(describe(action, target_phrase(r, steps), base)) + "?");
+    const std::string confirm = consent::ask_first({signature(action, r.label, steps), needs_yes(r, base, steps),
+                                                    capitalised(describe(action, target_phrase(r, steps), base)) + "?", action,
+                                                    naming_of(items, r, to_change), "changed",
+                                                    "call smart_home again with the same request"},
+                                                   now_ms());
     if (!confirm.empty()) return confirm;
 
     {
-        std::lock_guard<std::mutex> lk(g_ctl_mtx);
+        std::lock_guard<std::mutex> lk(g_rate_mtx);
         if (!g_rate.allow(r.label, now_ms(), err)) return fail(err);
     }
     carry_out(net.id(), e, steps, dry_run);
@@ -1577,13 +1384,8 @@ std::string unpair(const std::string &network_id, const std::string &device_id) 
 // ---------------------------------------------------------------- for the device-free tests
 namespace testing {
 void reset_control() {
-    std::lock_guard<std::mutex> lk(g_ctl_mtx);
-    g_turn = 0;
-    g_last_said.clear();
-    g_untrusted = false;
-    g_untrusted_turn = 0;
-    g_context_from = 0;
-    g_pending.clear();
+    consent::testing::reset();
+    std::lock_guard<std::mutex> lk(g_rate_mtx);
     g_rate.reset();
     std::lock_guard<std::mutex> lookup(g_lookup_mtx);
     g_found.clear();

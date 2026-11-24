@@ -62,8 +62,9 @@ private:
     std::map<std::string, std::deque<unsigned long>> per_target_;
 };
 
-// Letters and digits only, lower case: "Bed-heater" and "bed heater" are the same thing said aloud.
-std::string plain(const std::string &text);
+// Letters and digits only, lower case: "Bed-heater" and "bed heater" are the same thing said aloud
+// (util::plain, which the user's yes compares words with too: agent/consent.h).
+using util::plain;
 
 // A name as it appears inside a sentence for the model: in double quotes, which clean_name()
 // removes from every name, so that no name can end its quotes and read as part of the sentence.
@@ -81,7 +82,7 @@ struct NetworkSource {
 };
 void set_network_source(const NetworkSource *source);
 void set_clock(unsigned long (*clock_ms)());               // nullptr restores the real clock
-void reset_control();                                      // forgets pending questions, rate counts, turn counters, the last lookup
+void reset_control();                                      // forgets the conversation (consent::testing::reset), rate counts, the last lookup
 // Stands in for the scan that looks for a device which stopped answering at its saved address
 // (relocate in control.cpp), and for the settings page's scan (scan() in store.cpp), on the
 // stand-in network too; nullptr restores the real scan.

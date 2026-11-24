@@ -79,7 +79,10 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
   it), the tool absent without stations, the check of a stream
   against `radio_peer.py`, the player's live mode against a stand-in `ffplay`.
 - `tools_test.cpp`: the calculator, dates and zones that do not exist, helper programs: cancelling, time limits, no
-  inherited descriptors.
+  inherited descriptors; the card and ID numbers no search or memory carries (`tools::sensitive_number`: cards by Luhn,
+  IBANs by mod 97, UK National Insurance and US Social Security numbers) beside the phone and order numbers, dates,
+  ISBNs, prices and postcodes that must pass; the hidden characters `tools::clean_text` takes out; the user's yes to a
+  memory saved after text from outside (`agent/consent.h`: read back, asked, a plain yes in the next message).
 - `core_test.cpp`: what every thread shares: one file saved by two threads, the settings read and changed on several
   threads (and their list of web search services: an older file's key, a newer version's entry kept whole, one entry
   per kind, `ZB_SEARCH_KEY` the Tavily entry's key wherever it stands, every key a secret), all-day alerts when the clocks change, the store read at once while a slow
@@ -183,12 +186,15 @@ it sent: the held draft and second look, the claim guards (a table of phrasings 
 `say` confirmations, tool errors, steering, talk-over, the round budget and its apology, retries and service errors
 (and what a spoken request that comes to nothing hears), think markers, spelt-out dates, history trimming, smart-home
 questions, a byte-identical system prompt (also when web search's allowance runs out mid-conversation, against the
-stand-in web's `tavily_spent`: the tools unchanged too) and the first request's size (a tripwire at 32,000 bytes, for a plain set-up
-and with every tool offered: web search, ten radio stations, a home; raise it knowingly). With no `ZB_EXP_*` variable
+stand-in web's `tavily_spent`: the tools unchanged too), a memory saved or forgotten after a photo or a web page (it
+waits for the user's plain yes, read back in the question, and a "no" holds) and one with nothing from outside (saved
+at once), and the first request's size (a tripwire at 32,000 bytes, for a plain set-up, for one with a full memory of
+3,000 characters, and with every tool offered: web search, ten radio stations, a home; raise it knowingly). With no `ZB_EXP_*` variable
 set nothing sent or done changes (checked here). Add a scenario here with any change to `agent.cpp` or `llm.cpp`.
 
 **The tools.** `tools_cli.py` runs the offline tools through the `cli` build, with good, wrong and hostile arguments,
-each in a fresh state folder; it also checks the radio stations' tags as the radio tool's schema gives them and a
+each in a fresh state folder (memory_save among them: its hidden characters taken out, card and ID numbers refused by
+kind, and the 3,000 characters of all memories, past which only a save that grows them waits); it also checks the radio stations' tags as the radio tool's schema gives them and a
 station played by its tag (`station_tags`), the hardware guard (`ZB_EXP_NO_HARDWARE`), the stand-in web's proxy and
 redirect rules, when web search is set up by the settings' list of services and searches with which key
 (`search_services`: an older file's `search_key`, `ZB_SEARCH_KEY` as the Tavily entry's key, an entry switched off,
@@ -199,7 +205,7 @@ gives the model the same facts as the others, as plain text, and that a refused 
 fixtures (`search_failover`: the order asked, a second service only after the first failed or found nothing, the
 answer that worked or one ERROR, a refused key not sent again by a later run, a spent allowance or one that said
 nothing is left passed over and two failures in a row resting a service within a run, 5 s for a slow first service
-and 8 for one alone), the allowance file (`search_allowance`: searches and Brave's figure counted in
+and 8 for one alone, and a query holding a card or ID number refused before any service is asked), the allowance file (`search_allowance`: searches and Brave's figure counted in
 `search_usage.json` with no key or query in it, a spent allowance passed over by a later run, the daily cap stopping
 a search before any service is asked, and `--search-status` asking Tavily's `GET /usage` at a stand-in of its own,
 `Answering`, since `fake_web.py`'s bytes are hashed into every live case: once, with the key and nothing else, its
@@ -325,7 +331,8 @@ case that uses it, and those cases no longer pair with a baseline until they are
 
 **The generated request set.** `suite/generate.py` (fixed seed) writes `suite/cases.json`, about 600 requests in
 categories (timer, reminder, calendar, weather, home, route, ...) with feature tags (`asr`, `lang-xx`, `uk`, `us`,
-`followup`, `compound`, `notool`, `clarify`, `search`, `camera`). Edit the templates, regenerate, read the diff;
+`followup`, `compound`, `notool`, `clarify`, `search`, `camera`, `untrusted`: a memory after a web page or a photo, and a
+card number that must never be searched for). Edit the templates, regenerate, read the diff;
 `--check` says whether the file is current. `agent_suite.py` runs it with the scored set's machinery and the same
 environment: `--list`, `--tags a,b+c` (`+` means both), `--skip-tags`, `--only`, `--sample N --seed S` (a few from
 every category), plus `--repeat`, `--fast`, `--json`. It prints pass rates per tag and the slowest cases. Checks are
@@ -334,7 +341,8 @@ reminder for "in 20 minutes", several right tools, any of the right numbers. A c
 names another (`"turn"`: a number, or `"all"` for every turn; `moved` looks at the whole conversation), and checks of
 changes read the saved state as the scored set's do (`timers_saved`, `events_saved`, `memory`, `memory_lacks`);
 `long_ok` lists the turns that may answer at length, which the owner wants for analytical follow-ups (so `max_words`
-is for simple factual turns only; `max_calls` caps a tool, such as searches in a row). The `dialogue` category holds
+is for simple factual turns only; `max_calls` caps a tool, such as searches in a row; `not_sent` holds that no call
+that went out carried what the app refuses to send). The `dialogue` category holds
 threads of several turns generalised from saved conversations (`suite/from_conversation.py` drafts one). Each case
 gets a small stand-in music library (`MUSIC_LIBRARY`, `lib/music.py`: tags, no sound) unless `ZB_EVAL_MUSIC_DIR`
 names a folder; set it empty for the empty library that runs before 2026-11-19 had (9 music cases then failed on any

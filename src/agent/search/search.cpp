@@ -10,12 +10,12 @@
 #include <set>
 #include <vector>
 
+#include "agent/consent.h"
 #include "agent/experiment.h"
 #include "agent/search/provider.h"
 #include "agent/search/usage.h"
 #include "agent/tools/common.h"
 #include "smarthome/drivers/support.h"
-#include "smarthome/home.h"
 
 namespace search {
 
@@ -303,7 +303,7 @@ void Search::note(const Usable &u, const Reply &reply) {
 
 // An answer with results is kept for the same query for ten minutes; one that found nothing, or only a summary, is not.
 std::string Search::answered(const Reply &reply) const {
-    home::saw_untrusted_text();   // a web page's words may now steer the model: smart-home changes need a yes
+    consent::saw_untrusted_text();   // a web page's words may now steer the model: changes and memories need a yes
     const std::string out = shaped(reply);
     if (!reply.hits.empty()) keep(query_, out, revision_);
     return out;
@@ -418,7 +418,7 @@ std::string run(const std::string &query, tools::Context &ctx) {
     if (services.empty())
         return failure("web search is not set up on this device (a search key can be added in settings)");
     if (const std::optional<std::string> kept = cached(query, s.search_revision)) {
-        home::saw_untrusted_text();   // the model reads a web page's words again
+        consent::saw_untrusted_text();   // the model reads a web page's words again
         return *kept;
     }
     if (usage::today() >= usage::kDailyCap)

@@ -56,7 +56,7 @@ json schema();                                   // OpenAI "tools" array
 const Tool *find(const std::string &name);
 
 // The sentence the model asked to have spoken once this call succeeded ("say"), or "" when
-// the call failed or its result has to be read by the model first.
+// the call failed, waits for the user's yes, or its result has to be read by the model first.
 std::string confirmation(const std::string &name, const std::string &raw_args, const std::string &result);
 
 // Whether a result reports a failure ("ERROR: ...", or a JSON object holding "error": result::failed).
