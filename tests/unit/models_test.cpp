@@ -1,6 +1,7 @@
 // Unit tests for ui/models.h's two rules (ZB-088): what is chosen without the user (only a model
 // labelled "chat" becomes the language model) and what the settings page lists for the user to choose
-// from (the models labelled for it; else the unlabelled ones; else everything: never nothing). Header-only and pure: no screen, nothing linked.
+// from (the models labelled for it; else the unlabelled ones; else everything: never nothing), and a saved model
+// the service no longer lists (ZB-119). Header-only and pure: no screen, nothing linked.
 // Each check prints one line on failure; the exit status is non-zero when any fails.
 #include "ui/models.h"
 
@@ -64,12 +65,52 @@ int main() {
     const List others = {{"ears", "audio_transcription"}, {"voice", "audio_speech"}};
     check(ui::models::offered(others, "chat") == Ids{"ears", "voice"}, "only other kinds: settings list every model");
 
-    // A model already chosen is never replaced.
+    // A model already chosen, that the service still lists, stays, even when it is not the first for its use.
+    const List two_chats = {{"chatty", "chat"}, {"other", "chat"}, {"ears", "audio_transcription"}, {"voice", "audio_speech"},
+                            {"seer", ""}};
     Settings kept;
-    kept.llm_model = "mine";
-    kept.tts_model = "my voice";
-    ui::models::choose(kept, labelled);
-    check(kept.llm_model == "mine" && kept.tts_model == "my voice", "a model already chosen stays");
+    kept.llm_model = "other";
+    kept.vision_model = "seer";
+    kept.tts_model = "voice";
+    check(ui::models::choose(kept, two_chats).empty() && kept.llm_model == "other" && kept.vision_model == "seer" &&
+          kept.tts_model == "voice", "a model chosen that is still listed stays, and nothing is reported");
+    Settings filled;
+    check(ui::models::choose(filled, two_chats).empty(), "an empty setting filled is not reported as replaced");
+
+    // The service replaced its speech model (ZB-119: one speech model by another): a saved model it no longer
+    // lists counts as empty when it labels one for that use, and the change is reported for the chat screen.
+    const List swapped = {{"chatty", "chat"}, {"ears", "audio_transcription"}, {"new-voice", "audio_speech"}};
+    Settings stale;
+    stale.llm_model = "chatty";
+    stale.stt_model = "ears";
+    stale.tts_model = "old-voice";
+    const std::vector<ui::models::Replaced> r = ui::models::choose(stale, swapped);
+    check(stale.tts_model == "new-voice", "a speech model the service no longer lists is replaced by the labelled one (" + stale.tts_model + ")");
+    check(r.size() == 1 && r[0].use == "Text to speech" && r[0].was == "old-voice" && r[0].now == "new-voice",
+          "the replacement is reported with the setting's label, the old model and the new");
+    check(stale.llm_model == "chatty" && stale.stt_model == "ears", "the models still listed stay");
+    Settings gone_chat;
+    gone_chat.llm_model = "retired";
+    ui::models::choose(gone_chat, swapped);
+    check(gone_chat.llm_model == "chatty", "a language model no longer listed is replaced by one labelled chat");
+    Settings gone_vision;
+    gone_vision.vision_model = "retired";
+    const std::vector<ui::models::Replaced> v = ui::models::choose(gone_vision, swapped);
+    check(gone_vision.vision_model.empty() && v.size() == 1 && v[0].use == "Vision model",
+          "a vision model no longer listed falls back to the language model (empty), and is reported");
+
+    // No model labelled for that use, or a service that labels nothing: a saved model it does not list stays
+    // (a service may leave a model that works out of its list).
+    Settings unlisted;
+    unlisted.llm_model = "mine";
+    unlisted.tts_model = "my voice";
+    unlisted.vision_model = "my eyes";
+    check(ui::models::choose(unlisted, unlabelled).empty() && unlisted.llm_model == "mine" && unlisted.tts_model == "my voice" &&
+          unlisted.vision_model == "my eyes", "unlabelled service: models it does not list stay");
+    Settings no_label_for_it;
+    no_label_for_it.tts_model = "my voice";
+    ui::models::choose(no_label_for_it, no_chat);
+    check(no_label_for_it.tts_model == "my voice", "no model labelled for speech: the saved speech model stays");
 
     printf("models: %d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? 1 : 0;
