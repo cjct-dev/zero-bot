@@ -16571,5 +16571,612 @@
   "long_ok": [
    2
   ]
+ },
+ {
+  "name": "radio-001",
+  "tags": [
+   "radio",
+   "focus"
+  ],
+  "turns": [
+   "can you put on some lo-fi"
+  ],
+  "must": [
+   "radio"
+  ],
+  "must_not": [
+   "music",
+   "breathe",
+   "timer"
+  ],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Lantern FM"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-002",
+  "tags": [
+   "radio",
+   "focus"
+  ],
+  "turns": [
+   "i need to focus, put some music on"
+  ],
+  "must": [
+   "radio"
+  ],
+  "must_not": [
+   "music",
+   "breathe",
+   "timer"
+  ],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Lantern FM"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-003",
+  "tags": [
+   "radio",
+   "focus"
+  ],
+  "turns": [
+   "play my focus music"
+  ],
+  "must": [
+   "radio"
+  ],
+  "must_not": [
+   "music",
+   "breathe",
+   "timer"
+  ],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Lantern FM"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-004",
+  "tags": [
+   "radio",
+   "focus"
+  ],
+  "turns": [
+   "im studying, play something chill to help me concentrate"
+  ],
+  "must": [
+   "radio"
+  ],
+  "must_not": [
+   "music",
+   "breathe",
+   "timer"
+  ],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Lantern FM"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-005",
+  "tags": [
+   "radio",
+   "focus",
+   "asr"
+  ],
+  "turns": [
+   "play some uh lofi beats"
+  ],
+  "must": [
+   "radio"
+  ],
+  "must_not": [
+   "music",
+   "breathe",
+   "timer"
+  ],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Lantern FM"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-006",
+  "tags": [
+   "radio",
+   "focus",
+   "asr"
+  ],
+  "turns": [
+   "um help me study"
+  ],
+  "must": [
+   "radio"
+  ],
+  "must_not": [
+   "music",
+   "breathe",
+   "timer"
+  ],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Lantern FM"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-007",
+  "tags": [
+   "radio",
+   "focus",
+   "uk"
+  ],
+  "turns": [
+   "put something on to help me focus please"
+  ],
+  "must": [
+   "radio"
+  ],
+  "must_not": [
+   "music",
+   "breathe",
+   "timer"
+  ],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Lantern FM"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-008",
+  "tags": [
+   "radio",
+   "focus",
+   "followup"
+  ],
+  "turns": [
+   "play some lofi",
+   "stop the radio"
+  ],
+  "must": [
+   "radio|music"
+  ],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Lantern FM",
+    "turn": 0
+   },
+   {
+    "kind": "arg",
+    "tool": "radio|music",
+    "key": "action",
+    "any": [
+     "stop"
+    ]
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-009",
+  "tags": [
+   "radio",
+   "tag"
+  ],
+  "turns": [
+   "put on some talk radio"
+  ],
+  "must": [
+   "radio"
+  ],
+  "must_not": [
+   "music"
+  ],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Northern Radio 4"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-010",
+  "tags": [
+   "radio",
+   "tag"
+  ],
+  "turns": [
+   "can you play the news station"
+  ],
+  "must": [
+   "radio"
+  ],
+  "must_not": [
+   "music"
+  ],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Northern Radio 4"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-011",
+  "tags": [
+   "radio",
+   "tag"
+  ],
+  "turns": [
+   "put some classical radio on"
+  ],
+  "must": [
+   "radio"
+  ],
+  "must_not": [
+   "music"
+  ],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Northern Radio 3"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-012",
+  "tags": [
+   "radio",
+   "tag"
+  ],
+  "turns": [
+   "play a pop station"
+  ],
+  "must": [
+   "radio"
+  ],
+  "must_not": [
+   "music"
+  ],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Harbour FM"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-013",
+  "tags": [
+   "radio",
+   "tag"
+  ],
+  "turns": [
+   "put on a country station"
+  ],
+  "must": [],
+  "must_not": [
+   "music"
+  ],
+  "checks": [
+   {
+    "kind": "radio_never"
+   },
+   {
+    "kind": "answer",
+    "re": "can'?t|cannot|not able|unable|don'?t have|no way|not something|isn'?t something|not set up|only|no access|no (country|station)|isn'?t|aren'?t|not (one|in|tagged)|\\btags?\\b",
+    "what": "that no station is country"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "radio-014",
+  "tags": [
+   "radio",
+   "focus"
+  ],
+  "turns": [
+   "help me focus with some music"
+  ],
+  "must": [],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "radio_never"
+   },
+   {
+    "kind": "answer",
+    "re": "\\bfocus\\b|\\btag",
+    "what": "how to add the focus tag"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "eval"
+ },
+ {
+  "name": "radio-015",
+  "tags": [
+   "radio",
+   "focus"
+  ],
+  "turns": [
+   "put on some study music"
+  ],
+  "must": [],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "radio_never"
+   },
+   {
+    "kind": "answer",
+    "re": "\\bfocus\\b|\\btag",
+    "what": "how to add the focus tag"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "eval"
+ },
+ {
+  "name": "route-013",
+  "tags": [
+   "route",
+   "radio"
+  ],
+  "turns": [
+   "help me calm down"
+  ],
+  "must": [
+   "breathe"
+  ],
+  "must_not": [
+   "radio"
+  ],
+  "checks": [],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "route-014",
+  "tags": [
+   "route",
+   "radio"
+  ],
+  "turns": [
+   "set a 25 minute focus timer"
+  ],
+  "must": [
+   "timer"
+  ],
+  "must_not": [
+   "radio"
+  ],
+  "checks": [
+   {
+    "kind": "timer",
+    "seconds": 1500,
+    "label": null
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "route-015",
+  "tags": [
+   "route",
+   "radio"
+  ],
+  "turns": [
+   "play something by ella fitzgerald"
+  ],
+  "must": [
+   "music"
+  ],
+  "must_not": [
+   "radio"
+  ],
+  "checks": [
+   {
+    "kind": "music_playing",
+    "genre": "jazz"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "route-016",
+  "tags": [
+   "route",
+   "radio"
+  ],
+  "turns": [
+   "play some jazz"
+  ],
+  "must": [
+   "music|radio"
+  ],
+  "must_not": [],
+  "checks": [
+   {
+    "kind": "either",
+    "of": [
+     [
+      {
+       "kind": "music_playing",
+       "genre": "jazz"
+      }
+     ],
+     [
+      {
+       "kind": "radio_started",
+       "station": "Night Jazz 24"
+      }
+     ]
+    ]
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "route-017",
+  "tags": [
+   "route",
+   "radio"
+  ],
+  "turns": [
+   "put on harbour fm"
+  ],
+  "must": [
+   "radio"
+  ],
+  "must_not": [
+   "music"
+  ],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Harbour FM"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "route-018",
+  "tags": [
+   "route",
+   "radio"
+  ],
+  "turns": [
+   "play radio 2"
+  ],
+  "must": [
+   "radio"
+  ],
+  "must_not": [
+   "music"
+  ],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Northern Radio 2"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
+ },
+ {
+  "name": "route-019",
+  "tags": [
+   "route",
+   "radio"
+  ],
+  "turns": [
+   "play the jazz station"
+  ],
+  "must": [
+   "radio"
+  ],
+  "must_not": [
+   "music"
+  ],
+  "checks": [
+   {
+    "kind": "radio_started",
+    "station": "Night Jazz 24"
+   }
+  ],
+  "env": {},
+  "home": null,
+  "steer": null,
+  "radio": "tagged"
  }
 ]

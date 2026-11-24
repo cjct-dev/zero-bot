@@ -33,7 +33,7 @@ is built in.
 | Share prices | "How's the Apple share price doing?" |
 | Time zones | "What time is it in Tokyo?", "I've just landed in New York." |
 | Your music | "Play a random rock song.", "Play something by ABBA." |
-| Internet radio, from your own list of stations | "Play Radio 2.", "Put on the jazz station.", "Stop the radio." |
+| Internet radio, from your own list of stations | "Play Radio 2.", "Put on the jazz station.", "Play talk radio.", "Help me focus." ([focus mode](#focus-mode)), "Stop the radio." |
 | A TV | "Turn on the TV.", "Volume up a bit.", "Channel down." |
 | Smart-home devices on your own network | "Turn on the bed heater.", "Is the kettle on?", "Switch everything off." |
 | The device itself | "Turn your volume down to 40 percent." |
@@ -284,10 +284,12 @@ the list is empty the assistant is not offered radio at all. Put your stations i
 ```json
 {
   "stations": [
-    {"name": "Harbour FM", "nicknames": ["Harbour"], "url": "https://stream.example.org/harbour.mp3"},
+    {"name": "Harbour FM", "nicknames": ["Harbour"], "url": "https://stream.example.org/harbour.mp3",
+     "tags": ["pop", "local"]},
     {"name": "Night Jazz", "nicknames": ["the jazz station"],
      "url": "https://stream.example.org/jazz-128.aac",
-     "low_data_url": "https://stream.example.org/jazz-48.aac"}
+     "low_data_url": "https://stream.example.org/jazz-48.aac",
+     "tags": ["jazz"]}
   ]
 }
 ```
@@ -301,6 +303,10 @@ the list is empty the assistant is not offered radio at all. Put your stations i
   USB cable, where data may cost money. Without one, the assistant mentions that radio uses about
   30 to 70 MB an hour. A phone's Wi-Fi hotspot looks like any other Wi-Fi network to the device,
   so there the main address plays.
+- `tags` (optional) are the kinds of station it is, one or two words each: `"talk"`, `"classical"`,
+  `"news"`. "Play talk radio" plays the first station in your list tagged `talk`, and a station's
+  name still wins when you say it. Up to 8 per station; capitals do not matter. The tag `focus` is
+  [focus mode](#focus-mode).
 - A change to the file is used from the next request; no restart is needed. *Your data → Radio
   stations* shows what the app made of the file (with anything it could not use, and why), and
   plays a station so you can try it (one that will not play says why).
@@ -322,6 +328,28 @@ radio pauses while you talk and while the assistant answers, then rejoins the li
 status bar shows the station's name. If a stream stops and cannot
 be joined again (the station is off the air, the Wi-Fi has gone), a note on the screen says so. A
 stream does not say what is on; with web search, the assistant can look the schedule up.
+
+#### Focus mode
+
+Tag a station `focus` and it is what plays when you ask for something to help you focus, study or
+concentrate: "Help me focus.", "Help me study.", "Put on some study music." "Play some lo-fi" plays it
+too, unless another station is tagged `lofi`. It plays like any other station (by its name too),
+pausing while you talk. Without a station tagged `focus`, the assistant says how to add the tag
+rather than picking another station. For example:
+
+```json
+{"name": "SomaFM Fluid", "nicknames": ["Fluid"], "url": "https://somafm.com/m3u/fluid.m3u",
+ "tags": ["focus", "lofi", "study"]}
+```
+
+Streams that work for it (checked in November 2026):
+
+- SomaFM Fluid, instrumental hip hop and lo-fi beats: `https://somafm.com/m3u/fluid.m3u`
+- SomaFM Groove Salad, ambient and downtempo: `https://somafm.com/m3u/groovesalad.m3u`
+- Nightride FM Chillsynth, calm synthwave: `https://stream.nightride.fm/chillsynth.mp3`
+
+The best-known lo-fi "radios" (Lofi Girl, Chillhop Radio, and lofi.cafe, which shows them) are live
+videos on YouTube, not audio streams, so they cannot be played.
 
 ### Smart home
 

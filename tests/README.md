@@ -75,7 +75,8 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
   keeps everything it writes in a temporary folder of its own, so running it by hand is safe too.
 - `key_guide_test.cpp`: what each key does on the chat screen, and that the key guide says so.
 - `screen_idle_test.cpp`: when the screen dims and goes off, what keeps it lit and what wakes it.
-- `radio_test.cpp`: the station file, names and nicknames, the tool absent without stations, the check of a stream
+- `radio_test.cpp`: the station file, names, nicknames and tags (a station by tag, focus mode as the tool describes
+  it), the tool absent without stations, the check of a stream
   against `radio_peer.py`, the player's live mode against a stand-in `ffplay`.
 - `tools_test.cpp`: the calculator, dates and zones that do not exist, helper programs: cancelling, time limits, no
   inherited descriptors.
@@ -187,7 +188,8 @@ and with every tool offered: web search, ten radio stations, a home; raise it kn
 set nothing sent or done changes (checked here). Add a scenario here with any change to `agent.cpp` or `llm.cpp`.
 
 **The tools.** `tools_cli.py` runs the offline tools through the `cli` build, with good, wrong and hostile arguments,
-each in a fresh state folder; it also checks the hardware guard (`ZB_EXP_NO_HARDWARE`), the stand-in web's proxy and
+each in a fresh state folder; it also checks the radio stations' tags as the radio tool's schema gives them and a
+station played by its tag (`station_tags`), the hardware guard (`ZB_EXP_NO_HARDWARE`), the stand-in web's proxy and
 redirect rules, when web search is set up by the settings' list of services and searches with which key
 (`search_services`: an older file's `search_key`, `ZB_SEARCH_KEY` as the Tavily entry's key, an entry switched off,
 without a key or of a kind a newer version wrote), that every search service built in (`search_shapes`, which reads

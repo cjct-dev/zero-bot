@@ -930,6 +930,26 @@ EVAL_RADIO = {"stations": [
      "low_data_url": "http://127.0.0.1:9/two-low.m3u8"},
     {"name": "Night Jazz 24", "nicknames": ["the jazz station", "Jazz 24"], "url": "http://127.0.0.1:9/jazz.aac"},
     {"name": "City Talk", "url": "http://127.0.0.1:9/talk.mp3"}]}
+# Stations with tags (ZB-058): a tag plays the first of the user's stations that has it ("play talk radio"), and
+# focus mode is the tag "focus". No name says talk, classical, focus or lo-fi, so only the tags lead there; "pop"
+# is on two stations (the first plays), and the jazz station is there to be guessed for "something to concentrate to".
+EVAL_TAGGED_RADIO = {"stations": [
+    {"name": "Harbour FM", "nicknames": ["Harbour"], "url": "http://127.0.0.1:9/harbour.mp3", "tags": ["pop", "local"]},
+    {"name": "Northern Radio 2", "nicknames": ["Radio 2"], "url": "http://127.0.0.1:9/two.m3u8", "tags": ["pop"]},
+    {"name": "Northern Radio 3", "nicknames": ["Radio 3"], "url": "http://127.0.0.1:9/three.m3u8", "tags": ["classical"]},
+    {"name": "Northern Radio 4", "nicknames": ["Radio 4"], "url": "http://127.0.0.1:9/four.m3u8", "tags": ["talk", "news"]},
+    {"name": "Night Jazz 24", "nicknames": ["the jazz station", "Jazz 24"], "url": "http://127.0.0.1:9/jazz.aac", "tags": ["jazz"]},
+    {"name": "Lantern FM", "nicknames": ["Lantern"], "url": "http://127.0.0.1:9/lantern.mp3", "tags": ["lofi", "focus", "study"]}]}
+
+def radio_started(station):
+    """Problem text unless a radio play call in the turn started exactly `station`, asked for by name or by tag:
+    the tool's result names the station that plays."""
+    def check(t):
+        for c, r in _made(t, "radio"):
+            r = results_of(r)
+            if str(c.get("action", "play")).lower() == "play" and isinstance(r, dict) and r.get("playing") == station: return []
+        return ["radio should play %s, got %s" % (station, tried(t, "radio"))]
+    return check
 
 def radio_play(station):
     """Problem text unless the turn asked radio to play exactly `station`."""
@@ -1814,6 +1834,42 @@ CASES = [
     case("radio_none_set_up", "play radio 2", must_not=["radio"],
          checks=[not_answer(r"(now )?playing radio 2|here'?s radio 2|radio 2 is (now )?(on|playing)", "claim Radio 2 is playing"),
                  answer(RADIO_NOT_SET_UP, "that radio is not set up")]),
+    # Tags (ZB-058): a kind of station plays the first station that has it; one no station has plays nothing.
+    case("radio_tag_talk", "play talk radio", must=["radio"], must_not=["music"], radio=EVAL_TAGGED_RADIO,
+         checks=[radio_started("Northern Radio 4")]),
+    case("radio_tag_classical", "play classical radio", must=["radio"], must_not=["music"], radio=EVAL_TAGGED_RADIO,
+         checks=[radio_started("Northern Radio 3")]),
+    case("radio_tag_vs_artist", "play some einaudi", must=["music"], must_not=["radio"], radio=EVAL_TAGGED_RADIO,
+         checks=[music_playing("classical")]),
+    case("radio_tag_unknown", "play some country radio", must_not=["music"], radio=EVAL_TAGGED_RADIO,
+         checks=[radio_never_plays, not_answer(r"(now )?playing (some )?country|here'?s (some )?country", "claim country radio is playing"),
+                 answer(CANNOT + r"|no (country|station)|isn'?t|aren'?t|not (one|in|tagged)|\btags?\b", "that no station is country")]),
+    # Focus mode is the tag "focus": the owner's three requests and two more play it, each beside a neighbour that
+    # must not; by its name it plays like any station; with no such tag no other station is guessed.
+    case("radio_focus_help", "play something to help me focus", must=["radio"], must_not=["music", "breathe"],
+         radio=EVAL_TAGGED_RADIO, checks=[radio_started("Lantern FM")]),
+    case("radio_focus_vs_relax", "help me relax", must=["breathe"], must_not=["radio"], radio=EVAL_TAGGED_RADIO),
+    case("radio_focus_lofi", "play some lofi", must=["radio"], must_not=["music"], radio=EVAL_TAGGED_RADIO,
+         checks=[radio_started("Lantern FM")]),
+    case("radio_focus_vs_jazz", "play some jazz", must=["music|radio"], radio=EVAL_TAGGED_RADIO,
+         checks=[lambda t: [] if not music_playing("jazz")(t) or not radio_started("Night Jazz 24")(t)
+                 else ["jazz should play, from the library or the jazz station, got %s" % tried(t, "music|radio")]]),
+    case("radio_focus_study", "help me study", must=["radio"], must_not=["music", "breathe", "timer"], radio=EVAL_TAGGED_RADIO,
+         checks=[radio_started("Lantern FM")]),
+    case("radio_focus_vs_study_timer", "i want to study for an hour can you set a timer", must=["timer"], must_not=["radio"],
+         radio=EVAL_TAGGED_RADIO, checks=[chk_timer(3600, "stud")]),
+    case("radio_focus_study_music", "put on some study music", must=["radio"], must_not=["music"], radio=EVAL_TAGGED_RADIO,
+         checks=[radio_started("Lantern FM")]),
+    case("radio_focus_vs_breathe", "help me breathe", must=["breathe"], must_not=["radio"], radio=EVAL_TAGGED_RADIO),
+    case("radio_focus_concentrate", "i need something to concentrate to", must=["radio"], must_not=["music", "breathe"],
+         radio=EVAL_TAGGED_RADIO, checks=[radio_started("Lantern FM")]),
+    case("radio_focus_vs_timer", "set a focus timer for 25 minutes", must=["timer"], must_not=["radio"], radio=EVAL_TAGGED_RADIO,
+         checks=[chk_timer(1500)]),
+    case("radio_focus_by_name", "play lantern fm", must=["radio"], must_not=["music"], radio=EVAL_TAGGED_RADIO,
+         checks=[radio_started("Lantern FM")]),
+    case("radio_focus_untagged", "play some lofi", radio=EVAL_RADIO,
+         checks=[radio_never_plays, not_answer(r"(now )?playing (some )?lo-?fi|here'?s (some )?lo-?fi", "claim lo-fi is playing"),
+                 answer(r"\bfocus\b|\btag", "how to add the focus tag")]),
 
     # Conversations from the evaluation review (19 November 2026), each turn held to what is saved after it.
     # Two timers and an ambiguous correction: both start; "one of them" gets a question and changes
@@ -2319,9 +2375,10 @@ def case_hash(c):
     import hashlib
     raw = c.get("source", c)
     checks = raw["checks"] if all(isinstance(x, dict) for x in raw["checks"]) else [_fingerprint(f) for f in raw["checks"]]
-    home = raw.get("home")
-    if isinstance(home, str): home = c.get("home")   # a suite case names its home; the home itself counts
-    body = {"turns": raw["turns"], "held_out_turns": raw.get("held_out_turns"), "checks": checks, "env": raw.get("env") or {}, "home": _fingerprint(home), "radio": raw.get("radio"),
+    home, radio = raw.get("home"), raw.get("radio")
+    if isinstance(home, str): home = c.get("home")     # a suite case names its home; the home itself counts
+    if isinstance(radio, str): radio = c.get("radio")  # and its station file: the stations count
+    body = {"turns": raw["turns"], "held_out_turns": raw.get("held_out_turns"), "checks": checks, "env": raw.get("env") or {}, "home": _fingerprint(home), "radio": radio,
             "must": raw.get("must", []), "must_not": raw.get("must_not", []), "steer": raw.get("steer"), "tried": raw.get("tried", []),
             "long_ok": raw.get("long_ok", []), "quotes_ok": raw.get("quotes_ok", False), "fixtures": fixtures_of(c)}
     return hashlib.sha1(json.dumps(body, sort_keys=True, ensure_ascii=False, default=repr).encode()).hexdigest()

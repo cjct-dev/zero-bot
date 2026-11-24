@@ -1259,6 +1259,48 @@ def music_skip():
         check("%s: a skip in a fresh state is routing: tried" % name, c.get("tried") == ["music"] and not c["must"], c)
 
 
+# ------------------------------------------------------------------ radio tags and focus mode (ZB-058)
+@test
+def radio_tag_checks():
+    def plays(playing, **how): return ("radio", dict({"action": "play"}, **how), json.dumps({"playing": playing}))
+    c = suite_case("radio-001")
+    check("radio-001: the stations with tags", c["radio"] is ev.EVAL_TAGGED_RADIO, c.get("radio"))
+    passes("radio-001: the focus tag played passes", c, {"calls": [plays("Lantern FM", tag="focus")], "answer": "Here is Lantern FM."})
+    passes("radio-001: the focus station by its name passes", c, {"calls": [plays("Lantern FM", station="Lantern FM")], "answer": "Here is Lantern FM."})
+    trips("radio-001: another station guessed fails", c, [{"calls": [plays("Night Jazz 24", station="Night Jazz 24")], "answer": "Here is Night Jazz 24."}],
+          "radio should play Lantern FM")
+    fails_with("radio-001: a tag that played nothing fails", c,
+          [{"calls": [("radio", {"action": "play", "tag": "focus"}, "ERROR: none of the user's stations has the tag")], "answer": "Sorry."}],
+          "radio should play Lantern FM")
+    c = suite_case("radio-009")
+    passes("radio-009: talk radio, the first station tagged talk, passes", c,
+           {"calls": [plays("Northern Radio 4", tag="talk")], "answer": "Here is Northern Radio 4."})
+    c = suite_case("radio-014")
+    passes("radio-014: no focus tag, said how to add one, passes", c,
+           {"answer": "None of your stations has the focus tag yet. Add \"focus\" to a station's tags in your radio file."})
+    trips("radio-014: no focus tag, a station guessed fails", c,
+          [{"calls": [plays("Night Jazz 24", station="Night Jazz 24")], "answer": "Here is Night Jazz 24; add a focus tag later."}],
+          "radio should not play")
+    trips("radio-014: no focus tag, not said how to add one fails", c, [{"answer": "Your stations are Harbour FM and City Talk."}],
+          "how to add the focus tag")
+    c = suite_case("route-016")
+    jazz = ("music", {"action": "play", "genre": "jazz"}, '{"now_playing": "So What by Miles Davis", "queued_tracks": 4}')
+    passes("route-016: play some jazz from the library passes", c, {"calls": [jazz], "answer": "Playing So What."})
+    passes("route-016: or the jazz station passes", c, {"calls": [plays("Night Jazz 24", tag="jazz")], "answer": "Here is Night Jazz 24."})
+    trips("route-016: the focus station for jazz fails", c, [{"calls": [plays("Lantern FM", tag="focus")], "answer": "Here is Lantern FM."}],
+          "none of the right answers")
+    c = case("radio_focus_vs_jazz")
+    passes("radio_focus_vs_jazz: the jazz station passes", c, {"calls": [plays("Night Jazz 24", station="Night Jazz 24")], "answer": "Here is Night Jazz 24."})
+    trips("radio_focus_vs_jazz: the focus station fails", c, [{"calls": [plays("Lantern FM", tag="focus")], "answer": "Here is Lantern FM."}],
+          "jazz should play")
+    s = suite_case("radio-001")
+    other = suite.compile_case(dict(s["source"], radio="eval"))
+    check("case_hash: a suite case's station file is hashed by its stations", ev.case_hash(other) != ev.case_hash(s)
+          and ev.case_hash(suite_case("radio-001")) == ev.case_hash(s))
+    fails_with("radio_focus_lofi: the music library instead fails", case("radio_focus_lofi"),
+               [{"calls": [jazz], "answer": "Playing So What."}], "radio")
+
+
 # ------------------------------------------------------------------ what a result can be compared on
 @test
 def case_hash_and_records():

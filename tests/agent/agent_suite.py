@@ -52,6 +52,7 @@ from lib.records import blank_turn   # noqa: E402
 
 HOMES = {"eval": ev.EVAL_HOME, "tv": ev.TV_HOME, "sockets": ev.SOCKETS_HOME, "tv_silent": ev.TV_SILENT_HOME,
          "tv_closed": ev.TV_CLOSED_HOME}
+RADIOS = {"eval": ev.EVAL_RADIO, "tagged": ev.EVAL_TAGGED_RADIO}
 MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 LANGUAGE = {"es": r"\b(el|la|los|las|de|que|en|hoy|grados|está|minutos|listo|temporizador|tiempo|hace)\b",
@@ -430,6 +431,8 @@ USUALLY = r"\b(usually|typically|normally|generally|traditionally|tends? to|hist
 
 def k_device_set(s): return ev.device_set(s["setting"], s["value"])
 def k_music_playing(s): return ev.music_playing(s["genre"])
+def k_radio_started(s): return ev.radio_started(s["station"])
+def k_radio_never(s): return ev.radio_never_plays
 def k_home_call(s): return ev.home_call(s["action"], s.get("targets"), **(s.get("values") or {}))
 def k_home_never_on(s): return ev.home_never_on
 def k_home_asked(s): return ev.home_asked_about(s.get("name"))
@@ -456,7 +459,8 @@ def compile_check(s):
 def compile_case(c):
     """A case from cases.json in the form tests/agent/agent_eval.py runs and scores ("source" keeps the JSON, for
     the case's hash)."""
-    out = dict(c, checks=[compile_check(s) for s in c["checks"]], home=HOMES[c["home"]] if c.get("home") else None, source=c)
+    out = dict(c, checks=[compile_check(s) for s in c["checks"]], home=HOMES[c["home"]] if c.get("home") else None,
+               radio=RADIOS[c["radio"]] if c.get("radio") else None, source=c)
     return out
 
 
@@ -481,7 +485,8 @@ SPEC = {"answer": {"re": "re", "what": "str?"}, "not_answer": {"re": "re", "what
         "home_switched": {"name": "str"}, "home_not_switched": {"name": "str"}, "home_all_off": {}, "home_step": {"sign": "int"},
         "home_no_action": {"actions": "list"}, "asks": {"name": "str"}, "forecast_seen": {"days": "int", "rain": "int?"},
         "nothing_set": {}, "event_time": {"event": "str", "zone": "str?"}, "unannounced_time": {"usual": "list?"},
-        "device_set": {"setting": "str", "value": "num"}, "music_playing": {"genre": "str"},
+        "device_set": {"setting": "str", "value": "num"}, "music_playing": {"genre": "str"}, "radio_started": {"station": "str"},
+        "radio_never": {},
         "served": {"rule": "str", "slots": "list", "as": "str?", "any": "bool?"}, "weather_served": {}}
 ONE_OF = {"arg": ("has", "num", "is", "any"), "weekday_of": ("md", "date")}
 TYPES = {"str": str, "num": (int, float), "int": int, "list": list, "dict": dict, "bool": bool}
@@ -542,6 +547,7 @@ def validate(cases):
             continue
         if not isinstance(c["tags"], list) or not c["tags"] or not all(isinstance(t, str) for t in c["tags"]): err("tags must name a category first")
         if c["home"] is not None and c["home"] not in HOMES: err("no home called %r" % c["home"])
+        if c.get("radio") is not None and c["radio"] not in RADIOS: err("no station file called %r" % c["radio"])
         n = sum(1 for t in c["turns"] if t != "/new") if isinstance(c["turns"], list) else 0
 
         def one(s, where):

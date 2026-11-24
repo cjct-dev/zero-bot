@@ -8,7 +8,7 @@ dropped article), so the file is the same on every run. Change the templates, ru
 read the diff before committing it. `--check` exits non-zero when cases.json is out of date.
 
 Each case: {"name", "tags", "turns", "must", "must_not", "checks", "env", "home", "steer"}, and
-"long_ok" and "tried" when it has them.
+"long_ok", "tried" and "radio" when it has them.
   turns     what the user says, in order ("/new" starts a new conversation, memories kept)
   must      tools the last turn must call; "a|b" means either; a change must also have worked
   tried     tools the last turn must call whatever came of it: routing, and cases about a failure or
@@ -24,6 +24,8 @@ Each case: {"name", "tags", "turns", "must", "must_not", "checks", "env", "home"
   home      "eval", "tv" or "sockets": a made-up smart home from tests/agent/agent_eval.py; "tv_silent" and
             "tv_closed": its TV, not answering over the network (these cases set env ZB_DRY_RUN null,
             so that the TV on 127.0.0.1 is really asked)
+  radio     "eval" or "tagged": a radio station file from tests/agent/agent_eval.py (EVAL_RADIO, or EVAL_TAGGED_RADIO
+            with tags); without one there are no stations
   tags      the category first, then features: asr, lang, lang-xx, uk, us, followup, compound,
             notool, clarify, home, route, search (the stand-in web's search), camera
 Dates and times in checks are relative ("tomorrow", "next:4" for the coming Friday, "date:12-03"
@@ -47,7 +49,8 @@ MON, TUE, WED, THU, FRI, SAT, SUN = range(7)
 
 
 # ------------------------------------------------------------------ building blocks
-def case(cat, turns, tags=(), must=(), must_not=(), checks=(), env=None, home=None, steer=None, long_ok=(), tried=(), held_out=None):
+def case(cat, turns, tags=(), must=(), must_not=(), checks=(), env=None, home=None, steer=None, long_ok=(), tried=(), held_out=None,
+         radio=None):
     COUNT[cat] = COUNT.get(cat, 0) + 1
     turns = [turns] if isinstance(turns, str) else list(turns)
     tags = [cat] + [t for t in tags if t != cat]
@@ -62,6 +65,7 @@ def case(cat, turns, tags=(), must=(), must_not=(), checks=(), env=None, home=No
     # The held-out question forms: asked instead of turns on a held-out seed (tests/agent/agent_eval.py case_turns).
     if held_out: CASES[-1]["held_out_turns"] = [held_out] if isinstance(held_out, str) else list(held_out)
     if tried: CASES[-1]["tried"] = list(tried)
+    if radio: CASES[-1]["radio"] = radio
 
 
 def ans(pattern, what=None): return {"kind": "answer", "re": pattern, "what": what}
@@ -92,6 +96,7 @@ def moved(first_day, first_times, then_day, then_times, what, title=None):
     its name has every word of title (default what) that says what it is."""
     return {"kind": "moved", "first": [first_day, first_times], "then": [then_day, then_times], "what": what, "title": title or what}
 def memory(has, lacks=()): return {"kind": "memory", "has": has, "lacks": list(lacks)}
+def radio_started(station): return {"kind": "radio_started", "station": station}   # by name or by tag: the station that plays
 
 
 QUESTION = ans(r"\?", "a question")
@@ -773,6 +778,39 @@ case("dialogue", ["whats the stock market listing date for starling bank", "whic
      tags=["uk", "search"], long_ok=[2],
      checks=[on_turn(1, max_words(40)), nans(r"which (company|bank)|what (company|bank)", "ask which company"),
              on_turn(1, served("starling-ipo", "exchange"))])
+
+# ------------------------------------------------------------------ radio tags and focus mode (ZB-058)
+# Kept after the dialogues, with no seeded choices (the slips are written out), so that the cases above keep their
+# names and words. radio "tagged": stations with tags (tests/agent/agent_eval.py EVAL_TAGGED_RADIO), a tag playing the
+# first station that has it, and focus mode the tag "focus" (Lantern FM, whose name says nothing of focus or lo-fi);
+# "eval": the scored set's stations, without tags.
+FOCUS = "Lantern FM"
+STOPS = {"kind": "arg", "tool": "radio|music", "key": "action", "any": ["stop"]}
+for text, tags in [("can you put on some lo-fi", []), ("i need to focus, put some music on", []), ("play my focus music", []),
+                   ("im studying, play something chill to help me concentrate", []), ("play some uh lofi beats", ["asr"]),
+                   ("um help me study", ["asr"]), ("put something on to help me focus please", ["uk"])]:
+    case("radio", text, tags=["focus"] + tags, must=["radio"], must_not=["music", "breathe", "timer"], radio="tagged",
+         checks=[radio_started(FOCUS)])
+case("radio", ["play some lofi", "stop the radio"], tags=["focus"], must=["radio|music"], radio="tagged",
+     checks=[on_turn(0, radio_started(FOCUS)), STOPS])
+for text, station in [("put on some talk radio", "Northern Radio 4"), ("can you play the news station", "Northern Radio 4"),
+                      ("put some classical radio on", "Northern Radio 3"), ("play a pop station", "Harbour FM")]:
+    case("radio", text, tags=["tag"], must=["radio"], must_not=["music"], radio="tagged", checks=[radio_started(station)])
+case("radio", "put on a country station", tags=["tag"], must_not=["music"], radio="tagged",
+     checks=[simple("radio_never"), ans(CANNOT + r"|no (country|station)|isn'?t|aren'?t|not (one|in|tagged)|\btags?\b", "that no station is country")])
+# Without the tag "focus": no other station is guessed, and the answer says how to add it.
+for text in ["help me focus with some music", "put on some study music"]:
+    case("radio", text, tags=["focus"], radio="eval", checks=[simple("radio_never"), ans(r"\bfocus\b|\btag", "how to add the focus tag")])
+# Routing: with tagged stations, the other tools and stations still win their own requests.
+for text, must, must_not, checks in [
+        ("help me calm down", ["breathe"], ["radio"], []),
+        ("set a 25 minute focus timer", ["timer"], ["radio"], [timer(1500)]),
+        ("play something by ella fitzgerald", ["music"], ["radio"], [simple("music_playing", genre="jazz")]),
+        ("play some jazz", ["music|radio"], [], [simple("either", of=[[simple("music_playing", genre="jazz")], [radio_started("Night Jazz 24")]])]),
+        ("put on harbour fm", ["radio"], ["music"], [radio_started("Harbour FM")]),
+        ("play radio 2", ["radio"], ["music"], [radio_started("Northern Radio 2")]),
+        ("play the jazz station", ["radio"], ["music"], [radio_started("Night Jazz 24")])]:
+    case("route", text, tags=["radio"], must=must, must_not=must_not, checks=checks, radio="tagged")
 
 
 def main():
