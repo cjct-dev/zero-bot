@@ -67,8 +67,10 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
 - `support_test.cpp`: the helpers the drivers share (`drivers/support`): the JSON depth check and guarded parse, UTF-8
   repair and decoding, MAC digits, hex, SHA-256/512 and HMAC against FIPS 180-2 and RFC 4231, the PEM certificate read
   and its SHA-256 pin, the RAII socket.
-- `http_test.cpp`: the request options for devices, and reply headers kept by name (a search service's allowance
-  left), against a local peer, `http_peer.py`.
+- `http_test.cpp`: the request options for devices, reply headers kept by name (a search service's allowance left),
+  what `send_retrying` sends again (an answer cut short keeps its status: a 401 is not resent), and the connections
+  each thread keeps (reused for its next request, never used by another thread; the peer numbers them), against a
+  local peer, `http_peer.py`.
 - `timers_test.cpp`: the timer tool, storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it
   keeps everything it writes in a temporary folder of its own, so running it by hand is safe too.
 - `key_guide_test.cpp`: what each key does on the chat screen, and that the key guide says so.
@@ -225,7 +227,9 @@ the script walks to fails the run until the script is given the new label. It al
 code (a key on a dark screen only wakes it, labels fit, the status bar redraws only what changed, the two
 model-choosing rules of `ui/models.h`, where a lookup of the models sends its key, at a stand-in service on 127.0.0.1,
 when the service is asked for its models, that a key a web search service refused shows on the AI service page and
-that Left and Right move a service in the order, that input waiting for the phone goes with a cancelled request, and how
+that Left and Right move a service in the order, that the Web search pages follow a search made while they are open,
+that every key, password and code is typed hidden (bullets, `--keydump` quiet meanwhile, the field emptied when it
+closes) while an e-mail or user name is not, that input waiting for the phone goes with a cancelled request, and how
 long the main loop sleeps: `shots_idle`). `sim/screens/shots_compare.py` renders them into a temporary folder and
 compares each with `sim/screens/golden/` (small tolerance; differences drawn to `build/shots-diff/`), with the wall
 clock pinned (`sim/screens/fixclock.c`, built with `cc` and preloaded) and stand-ins on `PATH` for the audio, volume

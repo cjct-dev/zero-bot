@@ -60,7 +60,9 @@ public:
     // tick() has something to do: a toast to take away, or values on screen that change by themselves.
     bool needs_tick() const { return toast_ticks_ > 0 || (!stack_.empty() && !editing_ && stack_.back().page.live); }
 
-    // Asks for a line of text. on_done receives the result when the user confirms.
+    // Asks for a line of text. on_done receives the result when the user confirms. A `secret` (a key, a password, a
+    // code) starts empty and is shown as bullets while it is typed, each character for a moment as it is typed, and
+    // --keydump logs none of it (input::set_secret). The field is emptied whenever it closes.
     void edit_text(const std::string &title, const std::string &initial, bool secret,
                    std::function<void(const std::string &)> on_done, const std::string &help = "");
     void confirm(const std::string &question, const std::string &yes_label, std::function<void()> on_yes);
@@ -92,6 +94,7 @@ public:
     int cursor() const;
     int row_of(const std::string &label) const;
     std::string value_of(const std::string &label) const;   // that row's value as shown ("" with no such row)
+    std::string field_shown() const;   // the text field as drawn, a secret's as bullets ("" once closed): for --shots
     // The width a Pair row gives its key (the rest is for what it does): for the checks in --shots.
     static constexpr int kPairKeyW = 96;   // DIAGNOSTICS (temporary): 84 without the guide's "SPACE SPACE" line
     static int pair_text_width();

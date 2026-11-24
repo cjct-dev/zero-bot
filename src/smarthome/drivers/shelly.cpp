@@ -980,6 +980,7 @@ public:
                                   : "This Shelly asks for a login, set up in the Shelly app. Type its user name (it is admin "
                                     "unless it was changed); its password is asked for next.";
             step.field = "User name";
+            step.plain = true;
             return step;
         }
         step.kind = home::Pairing::Password;

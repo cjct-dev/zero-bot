@@ -39,4 +39,7 @@ namespace input {
 void start(void (*on_key)());
 bool poll(KeyEvent &out);     // non-blocking; call from the UI thread
 void set_dump(bool on);       // log raw key codes to stderr (for mapping work)
+// A secret (a key, a password, a code) is being typed: nothing is logged until it ends, whatever set_dump says.
+void set_secret(bool on);
+bool dumping();               // a key read now would be logged: set_dump on, and no secret being typed
 }  // namespace input

@@ -182,11 +182,13 @@ public:
             s.kind = home::Pairing::EnterCode;
             s.prompt = "Tapo plugs obey only the Tapo account they were set up with. Type that account's e-mail address.";
             s.field = "Tapo account e-mail";
+            s.plain = true;
         } else if (!tapo::owned_by(transport(dev), a.email)) {
             s.kind = home::Pairing::EnterCode;
             s.prompt = "This plug was set up with a different Tapo account from the one saved. Only one account is kept: "
                        "typing this plug's account replaces the saved one, and its password is asked for next.";
             s.field = "Tapo account e-mail";
+            s.plain = true;
         } else if (a.sha1.empty() || a.refused) {
             s.kind = home::Pairing::Password;
             s.prompt = a.unconfirmed ? "No plug has confirmed the Tapo password typed last (Zero Bot stopped before it knew), so it "

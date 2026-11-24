@@ -63,7 +63,8 @@ src/core/           settings, calendar/reminder/timer/memory store, timers (the 
                     phone tethering, what an upgrade leaves behind (upgrade), the one failure
                     shape (result.h: fail, failed, words), the UI queue (ui_queue.h), the
                     diagnostics (activity; temporary), utilities (dates, files, strings)
-src/net/            libcurl wrapper with a shared connection/DNS/TLS-session cache
+src/net/            libcurl wrapper: DNS answers and TLS sessions shared by every thread, connections kept by
+                    each thread for its next request
 src/platform/       display, keyboard (input, keys.h), audio (recorder, speaker, music), codecs,
                     camera, infrared, subprocess helpers (proc), the battery (power), the Wi-Fi
                     network and the default route (net_status), the monotonic clock (sys.h)
@@ -130,7 +131,8 @@ them every tick and tools change them), the smart-home file (`store.cpp`: `g_mtx
 and the rate limit, `g_locks_mtx` and then one lock per device), web search (`search.cpp`: `g_health_mtx`,
 `g_cache_mtx`, `g_asked_mtx`; `usage.cpp`: `g_mtx` for the allowance as read, `g_file_mtx` for one save at a
 time, written outside `g_mtx`, which the settings page takes too), the time zone (`g_tz_mtx` in
-util.cpp, under which `TZ` is switched), `uiq::mtx()` and curl's share locks (http.cpp). A
+util.cpp, under which `TZ` is switched), `uiq::mtx()` and curl's share locks (http.cpp), which guard DNS answers
+and TLS sessions only: no connection is shared between threads (section 8, Networking). A
 descriptor or pointer read under a lock must not be used after it is let go if another thread may
 close or free it meanwhile (section 8, Audio). `Store` writes no file with `Store::mtx_` held, which
 the UI thread takes every second: it queues a file's new contents under it and writes them once it is
@@ -240,7 +242,8 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   - *Retries.* Only what is safe to repeat is sent again by itself: the AI service, transcription,
     speech, and the tools' reads and searches (`fetch_json`), through `http::send_retrying`, after
     a failure on the way (`http::transient`: no connection, a dropped one, 408, 429, 5xx but 501
-    and 505; never a refusal, and never a timeout once the request had gone out), after a pause
+    and 505; never a refusal, even one whose body was then cut short, and never a timeout once the
+    request had gone out), after a pause
     and inside the request's own time limit. Nothing that changes, logs in or pairs is retried by
     this; a device change is resent only by the smart-home layer, at a device's new address, and
     only when it comes out the same if made twice (on, 40 %, an input; never a volume step, key
@@ -454,6 +457,18 @@ key, real audio), say so plainly rather than implying it was.
   follows none, and `tests/unit/search_test.cpp` sends to two local origins with the options a provider uses.
 - The Wi-Fi chip's firmware ignored the country code, hiding channels 12 and 13;
   `docs/wifi-channels-12-13.md` has the device-tree fix.
+- libcurl does not let threads use one connection cache at once, even through a share with lock
+  functions (`CURLSHOPT_SHARE(3)`), and the app's first share held connections too: the agent's worker,
+  speech, the settings page's lookups and every `background()` thread sent through it together (found by
+  review, not by a crash). The share (`http.cpp`) now holds DNS answers and TLS sessions only, and each
+  thread keeps one easy handle between its requests (`ThreadHandle`, reset for each), and with it its own
+  connections: the agent's next call to the AI service still goes out on the connection the last one left
+  open. A request with a device's own TLS settings, or one made while the thread's handle is busy, gets a
+  handle and a connection of its own. `tests/unit/http_test.cpp` counts the connections at a local peer:
+  reused within a thread, never one used by two.
+- A status received stands whatever then happens to its body: `http::transient` took a 401 whose body
+  was cut short for a dropped connection and sent the request again, refusal and all. Only a success cut
+  short (a read that lost its body on the way) or no answer at all is resent.
 
 **Audio**
 - The music player's default buffer is about 12 ms and skipped whenever the processor was busy.
@@ -903,7 +918,10 @@ model will read. Document it in `README.md`.
 page of its own, opened from the top page: a new header is a new section), the setup guide
 (`setup_guide.cpp`) if a new user needs it, and a line in the README's settings table. Rows read the
 value with `S()` and change it with `change(...)` (`Settings::update`; both in
-`settings_internal.h`), never by writing to a copy. `--shots` walks to rows by label, so a new row
+`settings_internal.h`), never by writing to a copy. A key, password or code is typed with
+`Menu::edit_text`'s `secret`: the field starts empty, shows bullets (each character for a moment as it
+is typed), is emptied whenever it closes, and `--keydump` logs none of it (`input::set_secret`); the
+first versions showed a new key in full while it was typed. `--shots` walks to rows by label, so a new row
 moves no later screenshot; if it walks to a row you rename, rename it in `shots.cpp` too.
 
 **A key.** Chat-screen keys outside the input line are decided in `keyguide::chat_key`
@@ -953,7 +971,8 @@ nothing there should scroll for long: the now-playing text scrolls only when
 it has all of its room, and beside the countdown it is cut short with dots instead. A radio
 station's name, there for hours, never scrolls (`set_now_playing(text, true)`).
 
-**A settings value that changes by itself** (a timer's time left): set `MenuPage::live`.
+**A settings value that changes by itself** (a timer's time left, a web search service's state and
+use, which a search made meanwhile changes): set `MenuPage::live`.
 `Menu::tick` then reads the values on screen 15 times a second and redraws only those whose
 text changed, so their value functions must be cheap: no file reads, no subprocesses. Rows that
 come and go by themselves (a timer ends) also need `MenuPage::revision`, a number that changes
@@ -1020,7 +1039,8 @@ and `tests/unit/run_unit.sh` both build every `.cpp` in `src/smarthome/drivers/`
 shared layer does names, rooms, the tool's schema (it grows with the capabilities a home has),
 the safety questions, rate limits, locking, fan-out and the generic pairing pages (after a
 pairing step, the family's other devices are asked again, so an account typed once serves them
-all). The rules a
+all; what a step asks for is hidden while it is typed unless the driver marks it `PairStep::plain`,
+an e-mail or a user name). The rules a
 driver keeps: map only allow-listed types (lights, plugs, switches, thermostats, covers, fans,
 speakers, TVs, scenes, read-only sensors; never locks, garage doors, alarms, cameras, valves or
 cooking appliances); state in the units and keys documented in `home.h`; secrets only in
