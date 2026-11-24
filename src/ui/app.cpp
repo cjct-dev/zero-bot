@@ -90,7 +90,8 @@ void App::wire_agent() {
     Agent::get().start(ev);
 }
 
-// Picks sensible models the first time, so the app works before settings are touched. The service is
+// Picks sensible models the first time, so the app works before settings are touched, and replaces one the
+// service no longer lists (models::choose), saying so on the chat screen. The service is
 // asked at the address, with the key, that models_wanted read (llm::Service), and its answer is checked
 // against the same two (models_answered).
 void App::auto_select_models() {
@@ -105,12 +106,13 @@ void App::auto_select_models() {
 }
 
 // The service (address and key) to ask for its models, or none when there is nothing to ask. A
-// service's list is read once: what it lacks (since ZB-088 a service that labels none of its models
-// gets no chat model chosen) the user picks in settings, and asking again would only wake the Wi-Fi.
-// Only a service with another address or key is asked again (periodic() looks every model_retry_ms).
+// service's list is read once a run, models chosen or not: a model it no longer lists is replaced
+// (models::choose). What it lacks (since ZB-088 a service that labels none of its models gets no chat
+// model chosen) the user picks in settings, and asking again would only wake the Wi-Fi. Only a service
+// with another address or key is asked again (periodic() looks every model_retry_ms).
 std::optional<llm::Service> App::models_wanted() const {
     const Settings s = Settings::get();
-    if (!s.configured() || (!s.stt_model.empty() && !s.tts_model.empty() && !s.eff_llm_model().empty())) return std::nullopt;
+    if (!s.configured()) return std::nullopt;
     const llm::Service service = llm::Service::of(s);
     if (service == models_listed_for) return std::nullopt;
     return service;
@@ -128,14 +130,18 @@ void App::models_answered(const models::List &list, const std::string &err, cons
     }
     models_listed_for = service;
     model_retry_ms = kModelRetryMs;
-    const Settings st = Settings::update([&list](Settings &s) { models::choose(s, list); });
+    std::vector<models::Replaced> replaced;
+    const Settings st = Settings::update([&list, &replaced](Settings &s) { replaced = models::choose(s, list); });
+    for (const models::Replaced &r : replaced)
+        chat.add_note("The service no longer has " + r.was + ". " + r.use + " is now " + r.now + ".", theme::kThink);
     if ((st.stt_model.empty() || st.tts_model.empty()) && !warned_models) {
         warned_models = true;
         chat.add_note("Choose speech models in settings (SPACE) to use voice.", theme::kThink);
     }
 }
 
-// A connection that comes back asks at once for the models still to be chosen (auto_select_models).
+// A connection that comes back asks at once for the service's models, when this run has not read them yet
+// (auto_select_models).
 void App::follow_connection(bool online) {
     if (online && !was_online) {
         model_retry_ms = kModelRetryMs;

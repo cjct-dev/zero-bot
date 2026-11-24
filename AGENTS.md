@@ -87,8 +87,9 @@ src/ui/             the app controller: app.cpp (wiring, the agent's events, rec
                     registry), setup_guide.cpp (the first-run guide), settings_internal.h (what
                     they share: S, change, background); models (the service's model list and how
                     models are chosen: without the user only one labelled "chat" becomes the
-                    language model, ZB-088, the owner's rule; by hand the settings list those
-                    labelled for the use, else the unlabelled ones, else all); the keys and their
+                    language model, ZB-088, the owner's rule, and a model the service no longer
+                    lists is replaced by the one labelled for its use, ZB-119; by hand the settings
+                    list those labelled for the use, else the unlabelled ones, else all); the keys and their
                     guide (key_guide), when the screen dims and goes off (screen_idle), breathing
                     screen, alarm banner, theme
 tests/              run.py, the entry point that runs the tests in groups by profile (section 6), and
@@ -541,6 +542,10 @@ key, real audio), say so plainly rather than implying it was.
   the owner's rule only a model labelled `chat` is chosen without the user (ZB-088); the settings
   list, where the user chooses, falls back to the unlabelled ones so that it is never empty
   (`ui/models.h`, `tests/unit/models_test.cpp`).
+- A model chosen once is not chosen for ever. The owner's service replaced its text-to-speech model
+  (one speech model by another); the app only filled empty settings, so it kept asking for the old one
+  and every spoken reply failed. The list is read at each start and a model it no longer lists is replaced
+  by the one labelled for that use, with a note on the chat screen (ZB-119).
 - A rule in a tool's description is not always heeded where it matters, and words added to a
   description move routing elsewhere. tv_remote's said "if a listed TV does not answer over the network,
   say so rather than trying this", yet after every network error of a listed TV (35 runs in 35) the reply

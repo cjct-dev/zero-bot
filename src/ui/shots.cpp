@@ -407,7 +407,8 @@ namespace {
 // Only chat models are chosen without the user (ZB-088; ui/models.h): from a service that labels its
 // models, the one labelled "chat", even with an unlabelled one listed first; from one that labels none,
 // nothing (while settings list every model, for the user to choose); from one with no chat model, no
-// language model (settings list the unlabelled ones). A model already chosen stays. Checked, not pictured.
+// language model (settings list the unlabelled ones). A model already chosen stays while the service lists it;
+// one it no longer lists is replaced by the one labelled for that use (ZB-119). Checked, not pictured.
 bool models_chosen_by_rule() {
     const models::List labelled = {{"embed", ""}, {"chatty", "chat"}, {"ears", "audio_transcription"}, {"voice", "audio_speech"}};
     const models::List unlabelled = {{"one", ""}, {"two", ""}};
@@ -415,17 +416,19 @@ bool models_chosen_by_rule() {
     // Only the speech models labelled: the chat model, unlabelled, is not taken without the user,
     // but settings list it for them to choose (else the list for the language model was empty).
     const models::List speech_only = {{"talker", ""}, {"ears", "audio_transcription"}, {"voice", "audio_speech"}};
-    Settings picked, none, no_llm, kept, partial;
-    kept.llm_model = "mine";
+    Settings picked, none, no_llm, kept, partial, gone;
+    kept.llm_model = "embed";
+    gone.tts_model = "retired";
     models::choose(picked, labelled);
     models::choose(none, unlabelled);
     models::choose(no_llm, no_chat);
     models::choose(kept, labelled);
     models::choose(partial, speech_only);
+    models::choose(gone, labelled);
     const bool automatic = picked.llm_model == "chatty" && picked.stt_model == "ears" && picked.tts_model == "voice" &&
                            none.llm_model.empty() && none.stt_model.empty() && none.tts_model.empty() &&
-                           no_llm.llm_model.empty() && no_llm.stt_model == "ears" && kept.llm_model == "mine" &&
-                           partial.llm_model.empty() && partial.tts_model == "voice";
+                           no_llm.llm_model.empty() && no_llm.stt_model == "ears" && kept.llm_model == "embed" &&
+                           partial.llm_model.empty() && partial.tts_model == "voice" && gone.tts_model == "voice";
     const bool by_hand = models::offered(labelled, "chat") == std::vector<std::string>{"chatty"} &&
                          models::offered(unlabelled, "chat") == std::vector<std::string>{"one", "two"} &&
                          models::offered(unlabelled, "audio_speech") == std::vector<std::string>{"one", "two"} &&
