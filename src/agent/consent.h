@@ -20,15 +20,18 @@ namespace consent {
 struct Naming {
     std::vector<std::vector<std::set<std::string>>> ways;
     std::set<std::string> words;
-    std::set<std::string> dotted;   // a read-back's words its own text has a full stop after ("dr" of "Dr. Smith")
+    std::set<std::string> read;     // every word of what a Memory question reads back (never taken as its action's)
 };
 
 // The kinds of question, each with its own open questions, so that one kind never pushes out another's.
 //   Home: a smart-home change. A reply puts it when it asks something and names the target anywhere in it.
-//   Memory: a memory saved, replaced or forgotten (read_back). A reply puts it only in a sentence that ends in a
-//   question mark and has every word of the memory that says something, and only when the memory has a word
-//   that no other memory asked about in the same request has: "Shall I forget that your partner is
-//   vegetarian?" does not also ask about forgetting "Vegetarian".
+//   Memory: a memory saved, replaced or forgotten (read_back; Question::action "save", "replace" or "forget"). A
+//   reply puts it only in a sentence that ends in a question mark and has every word of the memory that says
+//   something, a word for its action ("remember", "save", "note", "keep"; "replace", "change", "update", "swap";
+//   "forget", "delete", "remove", "erase") and none for another, besides the memory's own words, so "You're
+//   vegetarian, right?" does not ask to forget "Vegetarian"; and only when the memory has a word that no other
+//   memory asked about in the same request has: "Shall I forget that your partner is vegetarian?" does not also
+//   ask about forgetting "Vegetarian". Sentences end where the reply ends them, never where the memory does.
 enum class Pool { Home, Memory };
 
 // An action that may need the user's yes, and how its question is put.

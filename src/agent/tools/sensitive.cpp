@@ -1,6 +1,7 @@
 // Card and ID numbers in text: see sensitive.h.
 #include "agent/tools/sensitive.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstring>
@@ -46,6 +47,7 @@ std::string gap_of(uint32_t cp) {
     if (cp == ' ' || cp == 0xA0 || (cp >= 0x2000 && cp <= 0x200A) || cp == 0x202F || cp == 0x205F || cp == 0x3000) return " ";
     if (cp == '-' || (cp >= 0x2010 && cp <= 0x2015) || cp == 0x2212 || cp == 0xFE63 || cp == 0xFF0D) return "-";
     if (cp == 0xFF0E) return ".";
+    if (cp == 0xFF0B) return "+";
     if (cp == 0xFF0F) return "/";
     if (cp == 0x200C || cp == 0x200D || cp == 0xFE0E || cp == 0xFE0F) return "";
     return std::string(1, cp < 0x80 ? static_cast<char>(cp) : '?');
@@ -118,21 +120,34 @@ bool card_layout(const std::vector<size_t> &parts) {
     return parts.back() <= 4;
 }
 
+// The card networks: the prefixes each issues (lo to hi, as many digits as lo has) and the lengths, as bits.
+struct Network {
+    int lo, hi;
+    unsigned lengths;
+};
+constexpr unsigned lengths(int from, int to) { return from > to ? 0 : (1u << from) | lengths(from + 1, to); }
+const Network kNetworks[] = {
+    {4, 4, lengths(13, 13) | lengths(16, 16) | lengths(19, 19)},                             // Visa
+    {51, 55, lengths(16, 16)},      {2221, 2720, lengths(16, 16)},                            // Mastercard
+    {34, 34, lengths(15, 15)},      {37, 37, lengths(15, 15)},                                // American Express
+    {6011, 6011, lengths(16, 19)},  {644, 649, lengths(16, 19)},  {65, 65, lengths(16, 19)},  // Discover
+    {3528, 3589, lengths(16, 19)},                                                            // JCB
+    {300, 305, lengths(14, 19)},    {36, 36, lengths(14, 19)},    {38, 39, lengths(14, 19)},  // Diners Club
+    {62, 62, lengths(16, 19)},                                                                // UnionPay
+    {2200, 2204, lengths(16, 19)},                                                            // Mir
+    {50, 50, lengths(12, 19)},      {56, 58, lengths(12, 19)},    {6759, 6759, lengths(12, 19)},   // Maestro
+    {60, 60, lengths(16, 16)},      {65, 65, lengths(16, 16)},    {81, 82, lengths(16, 16)},
+    {508, 508, lengths(16, 16)},                                                              // RuPay
+    {5061, 5061, lengths(16, 19)},  {650002, 650027, lengths(16, 19)},                        // Verve
+};
+
 // Whether a number is one a card network issues: its prefix, and a length that network uses.
 bool issued(const std::string &n) {
-    auto from = [&](int lo, int hi) {   // the prefix of as many digits as `lo` has is within lo..hi
-        const int prefix = std::stoi(n.substr(0, std::to_string(lo).size()));
-        return prefix >= lo && prefix <= hi;
-    };
-    const size_t len = n.size();
-    if (from(4, 4)) return len == 13 || len == 16 || len == 19;                     // Visa
-    if (from(51, 55) || from(2221, 2720)) return len == 16;                          // Mastercard
-    if (from(34, 34) || from(37, 37)) return len == 15;                              // American Express
-    if (from(6011, 6011) || from(644, 649) || from(65, 65)) return len >= 16;        // Discover
-    if (from(3528, 3589)) return len >= 16;                                          // JCB
-    if (from(300, 305) || from(36, 36) || from(38, 39)) return len >= 14;            // Diners Club
-    if (from(62, 62)) return len >= 16;                                              // UnionPay
-    return false;
+    return std::any_of(std::begin(kNetworks), std::end(kNetworks), [&](const Network &net) {
+        const size_t digits = std::to_string(net.lo).size();
+        const int prefix = std::stoi(n.substr(0, digits));
+        return prefix >= net.lo && prefix <= net.hi && n.size() < 32 && (net.lengths >> n.size() & 1u);
+    });
 }
 
 // A card number begins at group i; the number may be followed by more digits (the security code).
@@ -144,7 +159,7 @@ bool card_at(const std::vector<Group> &g, size_t i) {
         number += g[j].text;
         parts.push_back(g[j].text.size());
         if (number.size() > 19) break;
-        if (number.size() >= 13 && card_layout(parts) && issued(number) && luhn(number)) return true;
+        if (number.size() >= 12 && card_layout(parts) && issued(number) && luhn(number)) return true;
     }
     return false;
 }

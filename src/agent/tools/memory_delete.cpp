@@ -23,7 +23,7 @@ std::string wait_for_yes(int id, const std::string &saved) {
     q.reason = consent::outside_reason("a memory is forgotten only at the user's own word, read back to them in full");
     q.question = "Shall I forget this: " + consent::read_back_text(text) + "?";
     q.action = "forget";
-    q.naming = consent::read_back({text}, {"forget", "delete", "remove"}, Settings::get().user_name);
+    q.naming = consent::read_back({text}, {"forget", "delete", "remove", "erase"}, Settings::get().user_name);
     q.undone = "forgotten";
     q.again = "call memory_delete again with the same id";
     q.pool = consent::Pool::Memory;

@@ -234,11 +234,14 @@ Things in that loop that exist for a reason; do not remove them without re-runni
   could swap an allergy for a seat preference with a yes to the new words alone. The same call is the
   same cleaned text in lower case (punctuation kept) and, for a replace or a forget, the same memory by
   id and words. A memory question (`consent::Pool::Memory`) counts as put only inside a sentence that
-  ends in a question mark, which has every word of the memory that says something
-  (`consent::read_back`: "you prefer window seats" for "User prefers window seats", "your desk" for
-  "Sam's desk" when the user's name is Sam), and only when the memory has a word no other memory asked
-  about in that request has ("Shall I forget that your partner is vegetarian?" does not also forget
-  "Vegetarian"). Smart-home questions keep their own rule and their own eight open questions
+  ends in a question mark (where the reply ends it: never where the memory's own text has a full stop,
+  which a page could plant; an abbreviation's full stop and a question mark inside a web address end
+  nothing), which has every word of the memory that says something (`consent::read_back`: "you prefer
+  window seats" for "User prefers window seats", "your desk" for "Sam's desk" when the user's name is
+  Sam), a word for its action and none for another, besides the memory's own ("You're vegetarian,
+  right?" asks nothing; "Shall I forget that you love ShopX?" does not ask to save it), and only when
+  the memory has a word no other memory asked about in that request has ("Shall I forget that your
+  partner is vegetarian?" does not also forget "Vegetarian"). Smart-home questions keep their own rule and their own eight open questions
   (`consent::Pool::Home`), unchanged. With nothing from outside in view a memory is saved at once, as before. Names in
   `ERROR`/`CONFIRM` sentences are always in double quotes, and `home::clean_name` removes every kind
   of double quotation mark (typographic and full-width ones too) from every name, so a device's name
@@ -247,8 +250,9 @@ Things in that loop that exist for a reason; do not remove them without re-runni
 - **Memories** (ZB-120 to ZB-122): what is kept (`tools::clean_text`) has its control characters as
   spaces and loses every character that shows as nothing (the zero-width space, bidirectional marks,
   the word joiner, the byte-order mark, variation selectors, Unicode's tag characters), which could
-  carry words the user never sees; what ordinary text needs stays (the zero-width joiner and non-joiner
-  of emoji and Persian, one text or emoji style after a character, the three flags made of tags). Each
+  carry words the user never sees; what ordinary text needs stays, and no more of it (a zero-width joiner
+  or non-joiner only between two characters that show, as emoji and Persian need, one text or emoji
+  style after a character, one ideographic variant after an ideograph, the three flags made of tags). Each
   memory is at most 400 bytes and all of them 2,000 (bytes, since bytes are what is sent): a save past
   that is refused with how full memory is and what to do (merge with `replace_id`, or ask the user
   which to forget); memories already past it stay, and a save that shortens them is let through. A

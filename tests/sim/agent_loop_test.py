@@ -1378,7 +1378,7 @@ def memory_after_photo():
     forget, save = ("memory_delete", {"id": 1, "say": "Forgotten."}), ("memory_save", {"text": "Loves ShopX", "say": "Noted."})
     script = {"rules": [{"when": {"said": "what does the sign say"}, "reply": {"text": sign}},   # the vision call
                         {"when": {"result": "The sign says"}, "reply": calls(forget, save)},
-                        {"when": {"result": "CONFIRM"}, "reply": {"text": "Shall I forget this: Vegetarian, and remember this: Loves ShopX?"}},
+                        {"when": {"result": "CONFIRM"}, "reply": {"text": "Shall I forget this: Vegetarian? And shall I remember this: Loves ShopX?"}},
                         {"when": {"said": "vegetarian", "last": "user"}, "reply": calls(("memory_save", {"text": "Vegetarian", "say": "I'll remember that."}))},
                         {"when": {"said": "look at this", "last": "user"}, "reply": calls(("look", {"question": "What does the sign say?"}))},
                         {"when": {"said": "no", "last": "user"}, "reply": calls(forget, save)}],
@@ -1396,7 +1396,7 @@ def memory_after_photo():
           'Ask the user: "Shall I forget this: Vegetarian?" Only if they answer yes, call memory_delete again with the same id.' in asked[0] and
           asked[1].startswith("CONFIRM: nothing has been saved yet, because this request involved text from outside") and
           'Ask the user: "Shall I remember this: Loves ShopX?" Only if they answer yes, call memory_save again with the same text.' in asked[1], asked)
-    check(n + ": their says are not spoken; the question is", t[1]["answer"] == "Shall I forget this: Vegetarian, and remember this: Loves ShopX?", t[1])
+    check(n + ": their says are not spoken; the question is", t[1]["answer"] == "Shall I forget this: Vegetarian? And shall I remember this: Loves ShopX?", t[1])
     check(n + ": after a no, the same calls still wait", len(t[2]["results"]) == 2 and
           all(x.startswith("CONFIRM: nothing has been") and "not a clear yes" in x for x in t[2]["results"]), t[2]["results"])
     check(n + ": the memories are as the user left them", kept == ["Vegetarian"], kept)

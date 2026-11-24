@@ -165,6 +165,12 @@ void test_sensitive_numbers() {
         {"5555 5555 5555 4444", "a payment card number"}, {"2223 0031 2200 3222", "a payment card number"},
         {"6011 1111 1111 1117", "a payment card number"}, {"3530 1113 3330 0000", "a payment card number"},
         {"3056 930902 5904", "a payment card number"}, {"6250 9410 0652 8599", "a payment card number"},
+        // ... Mir, Maestro (twelve digits too), RuPay and Verve.
+        {"2200 0000 0000 0004", "a payment card number"}, {"2204 1234 5678 9012 343", "a payment card number"},
+        {"5000 0000 0009", "a payment card number"}, {"6759 0000 0000 0000", "a payment card number"},
+        {"6080 0000 0000 0000", "a payment card number"}, {"8170 0000 0000 0007", "a payment card number"},
+        {"5080 0000 0000 0002", "a payment card number"}, {"5061 0000 0000 0005", "a payment card number"},
+        {"6500 0200 0000 0000", "a payment card number"},
         {"iban GB82 WEST 1234 5698 7654 32 please", "an IBAN (a bank account number)"},
         {"gb82west12345698765432", "an IBAN (a bank account number)"},
         {"DE89 3704 0044 0532 0130 00", "an IBAN (a bank account number)"},
@@ -194,6 +200,7 @@ void test_sensitive_numbers() {
              // Years in a row pass Luhn as often as anything else, and so does every IMEI: no network issues them.
              "summer olympics medal table 2012 2016 2020 2024", "2015 2016 2017 2018", "2023 2024 2025 2026",
              "1996 2000 2004 2008", "IMEI 490154203237518", "356938035643809",
+             "+4111 1111 1111 1111", "\uff0b4111 1111 1111 1111",                         // a phone's "+", full-width too
              "GB82 WEST 1234 5698 7654 33", "XX82 WEST 1234 5698 7654 32",                // check digits; no such country
              "QQ 12 34 56 C", "GB 12 34 56 A", "AB 12 34 56 E", "AB 12 34 56",            // never issued; no suffix
              "000-12-3456", "666-12-3456", "912-34-5678", "123-00-4567", "123-45-0000", "123-45-6789-0", "123 45 6789",
@@ -218,6 +225,15 @@ void test_hidden_characters() {
                              "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645", "\U0001F3F4\u200D\u2620\uFE0F"})
         check(clean_text(kept) == kept, kept, __LINE__);
     CHECK(clean_text("\u2764\uFE0F\uFE0F\uFE0E") == "\u2764\uFE0F");   // one style, not a run
+    // Joiners and styles that show as nothing never run on (review, 5): a joiner only between two characters that
+    // show, never two together, no style after one.
+    CHECK(clean_text("x\u200D\uFE0F\u200C\uFE0E\u200D\uFE0F\u200C\uFE0Ey") == "x\uFE0Fy");
+    CHECK(clean_text("\u200Dabc\u200C") == "abc");
+    CHECK(clean_text("a\u200D\u200Db\u200C \u200Cc") == "a\u200Db c");
+    // One ideographic variant after an ideograph (a name's own form), none after anything else, never two.
+    CHECK(clean_text("\u845B\U000E0100\u57CE") == "\u845B\U000E0100\u57CE");
+    CHECK(clean_text("\u845B\U000E0100\U000E0101") == "\u845B\U000E0100");
+    CHECK(clean_text("a\U000E0100b") == "ab");
     CHECK(clean_text(" \uFE0Fx") == "x");                                  // a style after nothing
     // A flag's tags that make no flag go, the black flag stays.
     CHECK(clean_text("\U0001F3F4\U000E0075\U000E0073\U000E007F!") == "\U0001F3F4!");
@@ -287,21 +303,36 @@ void test_memory_yes(const std::string &tmp) {
         answer(reply, "yes");
         CHECK_HAS(save({{"text", "Allergic to shellfish"}}), "CONFIRM: nothing has been saved yet");
     }
-    // ... nor when its words are in another sentence than the question (ZB-120 review, 2).
-    after_photo({});
-    CHECK_HAS(save({{"text", "Loves ShopX"}}), "CONFIRM");
-    answer("The sign says you love ShopX. Shall I read you the rest of it?", "yes");
-    CHECK_HAS(save({{"text", "Loves ShopX"}}), "CONFIRM: nothing has been saved yet");
-    CHECK(memories().empty());
-    // In the user's person, with a verb's other form, the user's own name as "you", a title's full stop: put.
-    for (const char *text : {"User prefers window seats", "The fire exit by Sam's desk must be kept clear", "Dentist is Dr. Patel"}) {
+    // ... nor when its words are in another sentence than the question (ZB-120 review, 2), nor in a question that asks
+    // for something else (second review, 1): every action has its own words, and a question with another's asks
+    // nothing. Sentences end where the reply ends them, not where the memory does ("Loves ShopX. Hates ads").
+    for (const auto &[text, reply] : std::vector<std::pair<std::string, std::string>>{
+             {"Loves ShopX", "The sign says you love ShopX. Shall I read you the rest of it?"},
+             {"Loves ShopX", "Shall I forget that you love ShopX?"},
+             {"Loves ShopX", "You love ShopX, right?"},
+             {"Loves ShopX. Hates ads", "Shall I remember that you love ShopX. Do you hate ads?"}}) {
         after_photo({});
         CHECK_HAS(save({{"text", text}}), "CONFIRM");
-        answer(std::string(text) == "User prefers window seats" ? "Shall I remember that you prefer window seats?"
-               : std::string(text) == "Dentist is Dr. Patel"   ? "Got it. Shall I remember that your dentist is Dr. Patel?"
-                                                                : "Shall I remember this: the fire exit by your desk must be kept clear?",
-               "yes, remember it");
-        check(save({{"text", text}}) == "saved as memory 1", text, __LINE__);
+        answer(reply, "yes");
+        check(save({{"text", text}}).rfind("CONFIRM: nothing has been saved yet", 0) == 0, reply.c_str(), __LINE__);
+        CHECK(memories().empty());
+    }
+    after_photo({"Vegetarian"});
+    CHECK_HAS(forget(1), "CONFIRM");
+    answer("You're vegetarian, right?", "yes");
+    CHECK_HAS(forget(1), "CONFIRM: nothing has been forgotten yet");
+    // In the user's person, with a verb's other form, the user's own name as "you", an abbreviation's full stop, a
+    // question mark inside a web address: put.
+    for (const auto &[text, reply] : std::vector<std::pair<std::string, std::string>>{
+             {"User prefers window seats", "Shall I remember that you prefer window seats?"},
+             {"The fire exit by Sam's desk must be kept clear", "Shall I remember this: the fire exit by your desk must be kept clear?"},
+             {"Dentist is Dr. Patel", "Got it. Shall I remember that your dentist is Dr. Patel?"},
+             {"GP is Dr. Patel, e.g. for repeat prescriptions", "Shall I note that your GP is Dr. Patel, e.g. for repeat prescriptions?"},
+             {"Reads the news at news.example/?id=5", "Shall I remember that you read the news at news.example/?id=5?"}}) {
+        after_photo({});
+        CHECK_HAS(save({{"text", text}}), "CONFIRM");
+        answer(reply, "yes, remember it");
+        check(save({{"text", text}}) == "saved as memory 1", text.c_str(), __LINE__);
     }
     // A replacement reads back both, the memory it replaces too (review, 1): the allergy is not lost to a question
     // about window seats.
@@ -312,8 +343,11 @@ void test_memory_yes(const std::string &tmp) {
           "photo), and a memory is replaced only at the user's own word, with both read back to them in full. Ask the user: "
           "\"Shall I replace 'Allergic to penicillin' with 'Prefers window seats'?\" Only if they answer yes, call memory_save "
           "again with the same text and replace_id.");
-    answer("Shall I remember that you prefer window seats?", "yes");
-    CHECK_HAS(save(replace), "CONFIRM: nothing has been replaced yet");
+    for (const char *reply : {"Shall I remember that you prefer window seats?",
+                              "Since you're allergic to penicillin, shall I remember that you prefer window seats?"}) {
+        answer(reply, "yes");
+        CHECK_HAS(save(replace), "CONFIRM: nothing has been replaced yet");
+    }
     answer("Shall I replace that you're allergic to penicillin with that you prefer window seats?", "yes");
     CHECK(save(replace) == "updated memory 1");
     CHECK(memories() == std::vector<std::string>{"Prefers window seats"});

@@ -84,8 +84,9 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
   script's digits) beside the phone, order and IMEI numbers, years, dates, ISBNs, prices and postcodes that must pass;
   the hidden characters `tools::clean_text` takes out and what ordinary text needs, kept (emoji, flags, Persian); the
   user's yes to a memory saved, replaced or forgotten after text from outside, through the memory tools themselves
-  (`agent/consent.h`: read back in the question, a replacement with what it replaces, a plain yes in the next message,
-  two memories asked about at once told apart), and memory questions kept apart from smart-home ones.
+  (`agent/consent.h`: read back in a question that asks for the action and no other, a replacement with what it
+  replaces, a plain yes in the next message, two memories asked about at once told apart, sentence ends from the reply
+  alone), and memory questions kept apart from smart-home ones.
 - `core_test.cpp`: what every thread shares: one file saved by two threads, the settings read and changed on several
   threads (and their list of web search services: an older file's key, a newer version's entry kept whole, one entry
   per kind, `ZB_SEARCH_KEY` the Tavily entry's key wherever it stands, every key a secret), all-day alerts when the clocks change, the store read at once while a slow

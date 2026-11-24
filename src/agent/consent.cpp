@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <map>
 #include <mutex>
 
 #include "core/util.h"
@@ -114,10 +115,35 @@ bool puts_question(const std::string &reply, const Naming &naming) {
     });
 }
 
+// Whether a mark at reply[i] ends a sentence: a space, a line break or the end follows it, after any closing quotes or
+// brackets ("...shellfish?" with its quote); inside a web address something else does.
+bool ends_sentence(const std::string &reply, size_t i) {
+    size_t at = i + 1;
+    for (bool closing = true; closing && at < reply.size();) {
+        closing = false;
+        for (const char *mark : {"\"", "'", ")", "]", "\u201D", "\u2019", "\u00BB", "\u300D"})
+            if (reply.compare(at, strlen(mark), mark) == 0) {
+                at += strlen(mark);
+                closing = true;
+                break;
+            }
+    }
+    return at == reply.size() || isspace(static_cast<unsigned char>(reply[at]));
+}
+
+// Whether the full stop at reply[i] is an abbreviation's: after a single letter ("e.g.", "a.m.") or two letters
+// beginning with a capital ("Dr.", "St.", "Mr.").
+bool abbreviation(const std::string &reply, size_t i) {
+    size_t start = i;
+    while (start > 0 && isalpha(static_cast<unsigned char>(reply[start - 1]))) --start;
+    const size_t letters = i - start;
+    const bool word_starts = start == 0 || !isalnum(static_cast<unsigned char>(reply[start - 1]));
+    return word_starts && (letters == 1 || (letters == 2 && isupper(static_cast<unsigned char>(reply[start]))));
+}
+
 // The questions a reply puts, as the words of each sentence that ends in a question mark. A full stop or an
-// exclamation mark followed by a space, or a line break, ends a sentence too; a full stop after one of `dotted`
-// does not, since the text read back has one there ("Dr. Smith").
-std::vector<std::set<std::string>> questions_in(const std::string &reply, const std::set<std::string> &dotted) {
+// exclamation mark ends a sentence too, and a line break; the reply alone says where (ends_sentence, abbreviation).
+std::vector<std::set<std::string>> questions_in(const std::string &reply) {
     std::vector<std::set<std::string>> out;
     std::string sentence;
     auto end = [&](bool asks) {
@@ -129,8 +155,7 @@ std::vector<std::set<std::string>> questions_in(const std::string &reply, const 
     };
     for (size_t i = 0; i < reply.size(); ++i) {
         const char c = reply[i];
-        const bool space_after = i + 1 == reply.size() || isspace(static_cast<unsigned char>(reply[i + 1]));
-        if (c == '?') {
+        if (c == '?' && ends_sentence(reply, i)) {
             end(true);
         } else if (reply.compare(i, 3, "？") == 0) {
             end(true);
@@ -141,12 +166,9 @@ std::vector<std::set<std::string>> questions_in(const std::string &reply, const 
         } else if (reply.compare(i, 3, "。") == 0 || reply.compare(i, 3, "！") == 0) {
             end(false);
             i += 2;
-        } else if (c == '\n' || (c == '!' && space_after)) {
+        } else if (c == '\n' || (c == '!' && ends_sentence(reply, i)) ||
+                   (c == '.' && ends_sentence(reply, i) && !abbreviation(reply, i))) {
             end(false);
-        } else if (c == '.' && space_after) {
-            const std::vector<std::string> w = words_of(sentence);
-            if (w.empty() || !dotted.count(w.back())) end(false);
-            else sentence += c;
         } else {
             sentence += c;
         }
@@ -154,9 +176,29 @@ std::vector<std::set<std::string>> questions_in(const std::string &reply, const 
     return out;
 }
 
+// The words a Memory question asks for its action with (Question::action).
+const std::map<std::string, std::set<std::string>> kAsking = {
+    {"save", {"remember", "remembered", "save", "saved", "note", "noted", "keep", "kept"}},
+    {"replace", {"replace", "replaced", "change", "changed", "update", "updated", "swap", "swapped"}},
+    {"forget", {"forget", "forgotten", "delete", "deleted", "remove", "removed", "erase", "erased"}}};
+
+// Whether a question asks for `action` and for no other (see Pool): the memory's own words (`read`) do not count.
+bool asks_for(const std::set<std::string> &said, const std::string &action, const std::set<std::string> &read) {
+    bool mine = false;
+    for (const auto &[a, words] : kAsking)
+        for (const auto &w : words)
+            if (said.count(w) && !read.count(w)) {
+                if (a != action) return false;
+                mine = true;
+            }
+    return mine;
+}
+
 // Whether a reply puts a Memory question (see Pool): in one of its questions, every word of `mine` that says
-// something, and a word of mine that none of `others` (the other memories asked about in this request) has.
-bool reads_back(const std::string &reply, const Naming &mine, const std::vector<const Naming *> &others) {
+// something and a word for its action, and a word of mine that none of `others` (the other memories asked about in
+// this request) has.
+bool reads_back(const std::string &reply, const Question &q, const std::vector<const Naming *> &others) {
+    const Naming &mine = q.naming;
     if (mine.ways.empty()) return false;
     const std::vector<std::set<std::string>> &words = mine.ways[0];
     auto shared = [](const std::set<std::string> &forms, const Naming &other) {
@@ -168,8 +210,8 @@ bool reads_back(const std::string &reply, const Naming &mine, const std::vector<
         return std::none_of(others.begin(), others.end(), [&](const Naming *o) { return shared(forms, *o); });
     });
     if (!own) return false;
-    for (const auto &said : questions_in(reply, mine.dotted))
-        if (std::all_of(words.begin(), words.end(), [&](const std::set<std::string> &forms) {
+    for (const auto &said : questions_in(reply))
+        if (asks_for(said, q.action, mine.read) && std::all_of(words.begin(), words.end(), [&](const std::set<std::string> &forms) {
                 return std::any_of(forms.begin(), forms.end(), [&](const std::string &f) { return said.count(f) > 0; });
             }))
             return true;
@@ -239,11 +281,8 @@ Naming read_back(const std::vector<std::string> &texts, const std::set<std::stri
     for (const auto &text : texts) {
         const std::vector<std::string> words = words_of(text);
         all.insert(all.end(), words.begin(), words.end());
-        for (size_t at = text.find(". "); at != std::string::npos; at = text.find(". ", at + 1)) {
-            const std::vector<std::string> before = words_of(text.substr(0, at));
-            if (!before.empty()) n.dotted.insert(before.back());
-        }
     }
+    n.read.insert(all.begin(), all.end());
     const std::vector<std::string> name = words_of(user_name);
     std::vector<std::string> says;
     for (const auto &w : all)
@@ -292,7 +331,7 @@ void assistant_replied(const std::string &reply) {
         std::vector<const Naming *> others;
         for (const auto &o : memory)
             if (&o != &p && o.turn == g_turn) others.push_back(&o.q.naming);
-        if (reads_back(reply, p.q.naming, others)) p.asked = true;
+        if (reads_back(reply, p.q, others)) p.asked = true;
     }
 }
 

@@ -48,9 +48,9 @@ std::string wait_for_yes(const std::string &text, const Memory *old) {
                                            : "a memory is saved only at the user's own word, read back to them in full");
     q.question = old ? "Shall I replace '" + consent::read_back_text(was) + "' with '" + consent::read_back_text(text) + "'?"
                      : "Shall I remember this: " + consent::read_back_text(text) + "?";
-    q.action = "save";
+    q.action = old ? "replace" : "save";
     q.naming = consent::read_back(old ? std::vector<std::string>{was, text} : std::vector<std::string>{text},
-                                  {"remember", "save", "keep", "note", "replace", "change", "update"}, Settings::get().user_name);
+                                  {"remember", "save", "keep", "note", "replace", "change", "update", "swap"}, Settings::get().user_name);
     q.undone = old ? "replaced" : "saved";
     q.again = old ? "call memory_save again with the same text and replace_id" : "call memory_save again with the same text";
     q.pool = consent::Pool::Memory;
