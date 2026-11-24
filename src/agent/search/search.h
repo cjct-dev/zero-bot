@@ -24,6 +24,7 @@
 // another key, a refusal), even one taken back since, empties it; an answer that came while they changed is
 // not kept.
 #pragma once
+#include <cstdint>
 #include <string>
 
 #include "agent/tools.h"
@@ -48,6 +49,10 @@ enum class State { Off, NoKey, KeyRefused, Spent, Resting, FailedLast, Working, 
 State state_of(const SearchService &service);
 // The same in a few words: "working", "key refused: type it again", "allowance used until 1 December", ...
 std::string describe(const SearchService &service);
+// Counts what this run has learnt of the services: each answer a search had (or did not have) from one, each
+// answer to ask_allowance. A page that shows how they stand can build its rows again when it changes, with one
+// read. Time passing changes no count (a rest or a spent allowance running out): describe() says that.
+uint64_t revision();
 
 // Asks the user's service of this kind what is left of its allowance, in a way that costs none of it
 // (Provider::tells_allowance), at most once a minute: what it said is kept in the allowance file (unless a

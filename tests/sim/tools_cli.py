@@ -20,8 +20,9 @@ cleaned. search_failover: the failover between the services against the stand-in
 cap stops a search before any service is asked, the same query again in one run is answered from the cache, and
 zero_bot --search-status asks Tavily's GET /usage (a stand-in of its own) for what is left, with the key and nothing
 else. search_answers: what the services built in make of answers no fixture holds (too long, '&' everywhere, results
-that say nothing, the wrong shape, Brave's rate-limit figures and error codes, a /usage error). A tool call's arguments and a web service's answer nested deeper than 32 levels are not read (nested_too_deep,
-against a local server of its own). no_real_web runs
+that say nothing, the wrong shape, Brave's rate-limit figures and error codes, a /usage error). A tool call's arguments
+and a web service's answer nested deeper than 32 levels are not read (nested_too_deep, against a local server of its
+own). no_real_web runs
 one case through the live sets' own runner
 (tests/agent/agent_eval.py run_case) against a scripted model (tests/mocks/fake_model.py) that calls every tool
 that reads the web, with every proxy variable pointing at a trap: no request leaves 127.x (the trap sees

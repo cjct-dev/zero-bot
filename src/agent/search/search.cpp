@@ -2,6 +2,7 @@
 #include "agent/search/search.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <map>
 #include <mutex>
@@ -49,6 +50,7 @@ struct Health {
 };
 std::mutex g_health_mtx;   // guards g_health
 std::map<std::string, Health> g_health;
+std::atomic<uint64_t> g_learnt{0};   // revision(): what this run has learnt of the services
 
 // Whether the service refused this very key (Settings::search's mark, kept beside the key by its print: another key
 // put in its place, by hand or typed, is not refused).
@@ -283,6 +285,7 @@ tools::Fetch Search::budget(bool more_after, bool others) const {
 // What a reply says of the service: its key refused, what it said of its allowance and the search counted (usage.h),
 // or its health (two failures in a row and it rests for two minutes; an answer ends the count).
 void Search::note(const Usable &u, const Reply &reply) {
+    ++g_learnt;
     if (reply.outcome == Outcome::KeyRefused) return refuse(u.service);
     usage::note(u.id, reply);
     if (reply.outcome == Outcome::Spent) return;
@@ -407,6 +410,8 @@ Outcome outcome_of(const tools::Fetched &got, const std::string &err) {
 
 bool configured(const Settings &s) { return !usable(s).empty(); }
 
+uint64_t revision() { return g_learnt; }
+
 std::string run(const std::string &query, tools::Context &ctx) {
     const Settings s = Settings::get();
     const std::vector<Usable> services = usable(s);
@@ -468,6 +473,7 @@ std::string ask_allowance(const std::string &kind, tools::Context &ctx) {
     }
     const uint64_t since = usage::revision(id);   // what a search learns meanwhile is newer than this answer
     const Reply reply = p->allowance(*entry, ctx);
+    ++g_learnt;
     if (reply.outcome == Outcome::KeyRefused) {
         refuse(*entry);
         return "The service refused this key, so it is not sent again. Type it again, or a new one.";

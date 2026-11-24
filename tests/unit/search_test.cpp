@@ -733,8 +733,13 @@ void test_states(Trio &t) {
     t.reset(kAB);
     const SearchService a{"alpha", "key-a"};
     check(search::describe(a) == "ready", "a service not asked yet in this run: ready");
+    uint64_t learnt = search::revision();
     search_for("one");
     check(search::describe(a) == "working", "it answered: working");
+    check(search::revision() > learnt, "what a search learnt is counted (revision)");
+    learnt = search::revision();
+    search_for("one");
+    check(search::revision() == learnt, "an answer from the cache learns nothing");
     t.a.will({failure(Outcome::Failing, 503)});
     search_for("two");
     check(search::describe(a) == "failed last time", "one failure: failed last time");
@@ -765,8 +770,10 @@ void test_ask_allowance(Trio &t) {
     t.a.allowance_reply.outcome = Outcome::Ok;
     t.a.allowance_reply.left = 850;
     t.a.allowance_reply.limit = 1000;
+    const uint64_t learnt = search::revision();
     check(search::ask_allowance("alpha", ctx).empty() && usage::of(kIdA).left == 850 && usage::of(kIdA).limit == 1000,
           "asked what is left: the figure is kept");
+    check(search::revision() > learnt, "and counted (revision)");
     check(util::jget(usage_file()["services"][kIdA], "left", 0) == 850 && usage::today() == 0 && usage::of(kIdA).used == 0,
           "in the file, and asking is no search");
     check(search::ask_allowance("alpha", ctx).rfind("Asked a moment ago", 0) == 0 && t.a.allowance_asked == 1, "at most once a minute");
