@@ -17,6 +17,7 @@ struct Station {
     std::vector<std::string> nicknames;   // other names the user calls it ("Harbour")
     std::string url;                      // the stream
     std::string url_low;                  // optional: a low-data stream, used on a phone's connection
+    std::vector<std::string> tags;        // kinds of station, in lower case ("talk", "classical", "focus")
 };
 
 constexpr size_t kMaxStations = 50;
@@ -35,6 +36,10 @@ std::vector<Station> parse(const std::string &text, std::vector<std::string> &pr
 // words ("radio two" is "Radio 2"), or words that pick out exactly one station ("six music").
 // Returns -1 when none does or several do.
 int find(const std::vector<Station> &list, const std::string &said);
+// The station a tag plays: the first in the user's order that has it (ignoring case), or -1.
+int tagged(const std::vector<Station> &list, const std::string &tag);
+// Every tag the stations have, each once, in the order they first appear.
+std::vector<std::string> all_tags(const std::vector<Station> &list);
 
 // Whether the internet connection is a phone's (its Bluetooth tether or a USB link of the kind
 // phones and mobile modems use), where data may cost money. ZB_TEST_TETHER=1 pretends it is.
@@ -59,7 +64,8 @@ void check_async(const Station &s, std::function<void(const Check &)> done);
 
 // ---- the radio tool (wired up in agent/tools/radio.cpp)
 // Its description and parameters for the model, made from the station list (names as allowed
-// values, nicknames as data), or null when there are no stations: the tool is then left out.
+// values, nicknames as data, tags as allowed values with the station each plays, focus mode), or null
+// when there are no stations: the tool is then left out.
 json tool_spec(bool can_search);
 // The system prompt's line about radio, or "" when there are no stations.
 std::string prompt_line();

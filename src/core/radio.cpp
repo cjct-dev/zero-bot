@@ -25,6 +25,12 @@ using result::fail;
 // every name: a name cannot close its quotes and read as part of the sentence.
 std::string in_quotes(const std::string &name) { return "\"" + name + "\""; }
 
+std::string in_quotes(const std::vector<std::string> &names) {
+    std::string out;
+    for (size_t i = 0; i < names.size(); ++i) out += (i ? ", " : "") + in_quotes(names[i]);
+    return out;
+}
+
 bool starts_with(const std::string &s, const char *prefix) { return s.compare(0, strlen(prefix), prefix) == 0; }
 
 // Only http and https: the address goes straight to the player, which would open a local file or
@@ -122,10 +128,78 @@ void refresh_locked(Cache &c) {
     for (const auto &q : problems) c.problem += (c.problem.empty() ? "" : "; ") + q;
 }
 
-std::string names_in_quotes(const std::vector<Station> &list) {
-    std::string out;
-    for (size_t i = 0; i < list.size(); ++i) out += (i ? ", " : "") + in_quotes(list[i].name);
+constexpr size_t kMaxTags = 8;
+// Focus mode is a tag: what plays for something to help the user focus or study (and for lo-fi, unless
+// a station has a tag of its own for that).
+const char *const kFocusTag = "focus";
+const char *const kLofiTag = "lofi";
+
+// A station's tags: words in lower case, each once, at most kMaxTags; a single word for a list.
+std::vector<std::string> read_tags(const json &e, const std::string &named, std::vector<std::string> &problems) {
+    std::vector<std::string> out;
+    const auto it = e.find("tags");
+    if (it == e.end() || it->is_null()) return out;
+    const json tags = it->is_string() ? json::array({*it}) : *it;
+    if (!tags.is_array()) { problems.push_back(named + ": tags should be a list of words"); return out; }
+    for (const json &t : tags) {
+        if (!t.is_string()) continue;
+        const std::string tag = util::lower(home::clean_name(t.get<std::string>()));
+        if (plain(tag).empty() || std::any_of(out.begin(), out.end(), [&tag](const std::string &x) { return plain(x) == plain(tag); }))
+            continue;
+        if (out.size() >= kMaxTags) { problems.push_back(named + ": only the first " + std::to_string(kMaxTags) + " tags are used"); break; }
+        out.push_back(tag);
+    }
     return out;
+}
+
+// For the tool's description: focus mode, or, without its tag, that no station is to be guessed for
+// it and where the user adds the tag. No path of the user's here: the description stays the same from
+// one request to the next, so the service can reuse its cached prefix. "Help me study" alone was met with an
+// offer of focus music, or "What are you studying?", until the sentence named it and said to play, not offer.
+std::string focus_note(const std::vector<Station> &list) {
+    const std::string lofi = tagged(list, kLofiTag) >= 0 ? "" : " or lo-fi";
+    if (tagged(list, kFocusTag) >= 0)
+        return "For focus or study music" + lofi + ", or help to focus, study or concentrate (\"help me study\" on its own asks for "
+               "this), play the tag \"focus\" rather than offering it. ";
+    return "No station has the tag \"focus\": asked for focus or study music" + lofi + ", or help to focus or study, do not guess a "
+           "station; say they can add the tag \"focus\" to one in their station file, radio.json. ";
+}
+
+// The tags with the station each plays, by station: "talk", "news": "Radio 4"; "jazz": "Jazz 24".
+std::string tags_played(const std::vector<Station> &list) {
+    std::string out;
+    for (size_t i = 0; i < list.size(); ++i) {
+        std::vector<std::string> mine;
+        for (const auto &t : list[i].tags)
+            if (tagged(list, t) == static_cast<int>(i)) mine.push_back(t);
+        if (!mine.empty()) out += (out.empty() ? "" : "; ") + in_quotes(mine) + ": " + in_quotes(list[i].name);
+    }
+    return out;
+}
+
+std::string names_in_quotes(const std::vector<Station> &list) {
+    std::vector<std::string> names;
+    for (const auto &s : list) names.push_back(s.name);
+    return in_quotes(names);
+}
+
+// The station a play call means: by its name when that finds one (a name wins over a tag), else by its
+// tag. -1 when neither does, with `why` for the model.
+int chosen(const std::vector<Station> &list, const std::string &said, const std::string &tag, std::string &why) {
+    const int named = said.empty() ? -1 : find(list, said);
+    if (named >= 0 || tag.empty()) {
+        if (named < 0)
+            why = "the user has no station called " + in_quotes(home::clean_name(said)) + ", so nothing was played. Their stations are " +
+                  names_in_quotes(list);
+        return named;
+    }
+    const int i = tagged(list, tag);
+    if (i >= 0) return i;
+    const std::vector<std::string> tags = all_tags(list);
+    why = "none of the user's stations has the tag " + in_quotes(util::lower(home::clean_name(tag))) + ", so nothing was played. " +
+          (tags.empty() ? std::string("Their stations have no tags") : "Their tags are " + in_quotes(tags)) +
+          ". The user can add tags to their stations in the file " + shown_path();
+    return -1;
 }
 
 constexpr size_t kHead = 16 * 1024;   // what the check reads of a stream before it is satisfied
@@ -283,6 +357,7 @@ std::vector<Station> parse(const std::string &text, std::vector<std::string> &pr
             seen.push_back({p, out.size()});
             s.nicknames.push_back(name);
         }
+        s.tags = read_tags(e, named, problems);
         out.push_back(s);
     }
     return out;
@@ -341,6 +416,23 @@ int find(const std::vector<Station> &list, const std::string &said) {
     return tie ? -1 : found;
 }
 
+int tagged(const std::vector<Station> &list, const std::string &tag) {
+    const std::string want = plain(tag);
+    if (want.empty()) return -1;
+    for (size_t i = 0; i < list.size(); ++i)
+        for (const auto &t : list[i].tags)
+            if (plain(t) == want) return static_cast<int>(i);
+    return -1;
+}
+
+std::vector<std::string> all_tags(const std::vector<Station> &list) {
+    std::vector<std::string> out;
+    for (const auto &s : list)
+        for (const auto &t : s.tags)
+            if (std::none_of(out.begin(), out.end(), [&t](const std::string &x) { return plain(x) == plain(t); })) out.push_back(t);
+    return out;
+}
+
 bool metered_link() {
     if (const char *t = getenv("ZB_TEST_TETHER")) return *t && strcmp(t, "0") != 0;
     const std::string iface = tether::default_link();
@@ -388,7 +480,7 @@ json tool_spec(bool can_search) {
         for (const auto &nick : s.nicknames) aka += (aka.empty() ? "" : "; ") + in_quotes(nick) + " is " + in_quotes(s.name);
     }
     const std::string description =
-        "Live radio from the user's own list of stations: 'play " + list[0].name + "', 'turn the radio off'. "
+        "Live radio from the user's own list of stations: 'play " + list[0].name + "', 'turn the radio off'. " + focus_note(list) +
         "action=play starts a station once you have finished speaking, in place of any music playing; action=stop ends "
         "it (music stop does too). Songs, artists and albums from the user's collection are music, not radio. " +
         std::string(can_search ? "The stream does not say which programme or song is on; to find out, use web_search."
@@ -398,6 +490,11 @@ json tool_spec(bool can_search) {
     props["station"] = {{"type", "string"},
                         {"description", "For play: the station" + (aka.empty() ? std::string() : ". Other names the user has for them: " + aka)},
                         {"enum", names}};
+    if (const std::vector<std::string> tags = all_tags(list); !tags.empty())
+        props["tag"] = {{"type", "string"},
+                        {"description", "For play, a kind of station instead of a station: the first of theirs that has it plays. "
+                                        "The tags, with the station each plays: " + tags_played(list)},
+                        {"enum", tags}};
     props["say"] = {{"type", "string"},
                     {"description", "The one short sentence to speak to the user once this has worked, in their language, e.g. "
                                     "\"Here is " + list[0].name + ".\""}};
@@ -418,6 +515,7 @@ std::string prompt_line() {
 std::string run_tool(const json &a, const ToolEnv &env) {
     const std::string action = util::lower(util::trim(util::jget<std::string>(a, "action", "")));
     const std::string said = util::trim(util::jget<std::string>(a, "station", ""));
+    const std::string tag = util::trim(util::jget<std::string>(a, "tag", ""));
     audio::Music &player = audio::Music::get();
     if (action == "stop") {
         if (!env.dry_run) player.stop();
@@ -427,12 +525,11 @@ std::string run_tool(const json &a, const ToolEnv &env) {
     if (list.empty())
         return fail("no radio stations are set up, so nothing was played. Tell the user that they can add their own in the file " +
                     shown_path() + "; settings, Your data, Radio stations says how");
-    if (action != "play" && !(action.empty() && !said.empty())) return fail("action must be play or stop");
-    if (said.empty()) return fail("give the station to play: one of " + names_in_quotes(list));
-    const int i = find(list, said);
-    if (i < 0)
-        return fail("the user has no station called " + in_quotes(home::clean_name(said)) + ", so nothing was played. Their "
-                    "stations are " + names_in_quotes(list));
+    if (action != "play" && !(action.empty() && (!said.empty() || !tag.empty()))) return fail("action must be play or stop");
+    if (said.empty() && tag.empty()) return fail("give the station to play: one of " + names_in_quotes(list));
+    std::string why;
+    const int i = chosen(list, said, tag, why);
+    if (i < 0) return fail(why);
     const Station &s = list[static_cast<size_t>(i)];
     const bool metered = metered_link();
     json out = {{"playing", s.name}};

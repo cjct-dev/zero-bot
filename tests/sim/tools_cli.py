@@ -9,7 +9,8 @@ written outside the state folder. Tools that need the internet (weather, currenc
 search, a place looked up by name, the photo's description) are run only against the local stand-in
 (tests/mocks/fake_web.py), to check the experiments' guards: ZB_EXP_NO_HARDWARE keeps the camera and the
 infrared transmitter out of a test run, a bad ZB_EXP_WEB stops the run cleanly, and a request to the
-stand-in takes no proxy and follows no redirect. search_services: web search is offered, and searches with the
+stand-in takes no proxy and follows no redirect. station_tags: the radio stations' tags as the radio tool's schema gives
+them (with the station each plays, and focus mode), and a station played by its tag. search_services: web search is offered, and searches with the
 right key, exactly when the settings' list of services sets one up (an older file's search_key and ZB_SEARCH_KEY
 included), and a settings file saved again keeps the list. search_shapes: every search service built in (read from
 src/agent/search/providers/registry.cpp) has its shape in the stand-in web, is asked there with the stand-in's key, gives
@@ -382,6 +383,7 @@ def run_all(root):
     # ---- nothing outside the state folder: the smart-home tool on an empty test network
     error(s, "smart_home", {"action": "on", "target": "lamp"}, "no smart-home device")
 
+    station_tags(root)
     guards(root)
     search_services(root)
     search_shapes(root)
@@ -393,6 +395,54 @@ def run_all(root):
     web_wraps()
     test_network_everywhere(root)
     network_pin(root)
+
+
+def station_tags(root):
+    """The stations' tags as the model reads them (the radio tool's schema, --schema) and as the tool plays them: the
+    tags an allowed value each, with the station each plays (the first in the user's order); focus mode is the tag
+    "focus", and without it the model is told not to guess a station and where the tag goes; a tag plays through the
+    radio's own path, a name wins over a tag, and a tag no station has is an ERROR naming the tags there are."""
+    g = State(root, "tags")
+    os.makedirs(g.dir + "/config/zero-bot", exist_ok=True)
+
+    def radio_spec(stations):
+        with open(g.dir + "/config/zero-bot/radio.json", "w") as f:
+            json.dump({"stations": stations}, f)
+        try:
+            tools = json.loads(subprocess.run([APP, "--schema"], env=g.env(), capture_output=True, text=True, timeout=60).stdout)
+            return next(t["function"] for t in tools if t["function"]["name"] == "radio")
+        except (ValueError, KeyError, TypeError, StopIteration):
+            return {}
+    focus_on = ('For focus or study music or lo-fi, or help to focus, study or concentrate ("help me study" on its own asks for this), '
+                'play the tag "focus" rather than offering it.')
+    focus_off = 'No station has the tag "focus": asked for focus or study music or lo-fi, or help to focus or study, do not guess a station'
+    stations = [{"name": "Harbour FM", "nicknames": ["Harbour"], "url": "http://127.0.0.1:9/harbour.mp3", "tags": ["Pop", "local"]},
+                {"name": "Northern Radio 4", "url": "http://127.0.0.1:9/four.mp3", "tags": "talk"},
+                {"name": "City Talk", "url": "http://127.0.0.1:9/talk.mp3", "tags": ["talk", "news"]},
+                {"name": "Lantern FM", "url": "http://127.0.0.1:9/lantern.mp3", "tags": ["focus", "study", "focus"]}]
+    spec = radio_spec(stations)
+    tag = spec.get("parameters", {}).get("properties", {}).get("tag", {})
+    check("tags: each once, in lower case, as the tag's allowed values", tag.get("enum") == ["pop", "local", "talk", "news", "focus", "study"], tag)
+    check("tags: the station each plays", '"pop", "local": "Harbour FM"; "talk": "Northern Radio 4"; "news": "City Talk"; '
+          '"focus", "study": "Lantern FM"' in tag.get("description", ""), tag)
+    check("tags: focus mode named in the description", focus_on in spec.get("description", "") and focus_off not in spec.get("description", ""),
+          spec.get("description"))
+    ok(g, "radio", {"action": "play", "tag": "talk"}, '{"playing":"Northern Radio 4"}')
+    ok(g, "radio", {"action": "play", "tag": "focus"}, '{"playing":"Lantern FM"}')
+    ok(g, "radio", {"action": "play", "station": "City Talk", "tag": "focus"}, '{"playing":"City Talk"}')
+    ok(g, "radio", {"action": "play", "station": "harbour"}, '{"playing":"Harbour FM"}')
+    error(g, "radio", {"action": "play", "tag": "jazz"}, 'none of the user\'s stations has the tag "jazz"',
+          'Their tags are "pop", "local", "talk", "news", "focus", "study"', "radio.json")
+    error(g, "radio", {"action": "play", "tag": 5}, "give the station to play")   # not text: as no tag, like a station
+    for name, odd in (("not a list", {"a": 1}), ("a list of numbers", [1, 2]), ("empty words", ["", "  "])):
+        spec = radio_spec([dict(stations[0], tags=odd)])
+        check("tags %s: no tag parameter, and focus mode says how to add the tag" % name,
+              "tag" not in spec.get("parameters", {}).get("properties", {}) and focus_off in spec.get("description", "")
+              and '"focus" to one in their station file, radio.json.' in spec.get("description", ""), spec)
+    spec = radio_spec([dict(stations[0], tags=["lofi"]), stations[3]])
+    check("tags: with a station tagged lofi, focus mode leaves lo-fi to that tag",
+          'For focus or study music, or help to focus, study or concentrate ("help me study" on its own asks for this), play the tag '
+          '"focus" rather than offering it.' in spec.get("description", ""), spec)
 
 
 class LocalServer:

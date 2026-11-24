@@ -294,7 +294,7 @@ MODEL_FACING = [
     (r"^src/agent/search/", ["search"]),                        # a service's answer, mapped, is what the model reads
     (r"^src/smarthome/(tool|control)\.cpp$", ["home", "tv"]),   # the schema; the sentences results carry
     (r"^src/core/timers\.cpp$", ["timer", "countdown"]),
-    (r"^src/core/radio\.cpp$", {"scored": ["radio_"]}),        # the suite has no radio case; the scored set's radio_*
+    (r"^src/core/radio\.cpp$", {"scored": ["radio_"], "tags": ["radio"]}),   # the scored set's radio_*, the suite's radio
 ]
 # Words in a changed line (or the function it is in) that point at a suite category.
 TAG_WORDS = [
@@ -304,7 +304,7 @@ TAG_WORDS = [
     ("music", r"music"), ("memory", r"memor|remember"), ("date", r"date_info"),
     ("world_time", r"world_time|time ?zone"), ("timezone", r"time ?zone"), ("breathe", r"breath"),
     ("look", r"\blook\b|camera|photo"), ("tv", r"\btv\b|infrared|\bir_"), ("home", r"smart_home"),
-    ("device", r"battery|brightness|volume|wi-?fi"),
+    ("device", r"battery|brightness|volume|wi-?fi"), ("radio", r"\bradio\b"),
 ]
 # The same for the scored set's cases, by name.
 SCORED_WORDS = [("radio_", r"radio")]
@@ -1341,11 +1341,11 @@ def self_test():
     check("the tools' shared code, naming no tool: a sample of everything", tags == "all", tags)
     check("the tools' interface (tools.h) is not model-facing", model_facing_tags(["src/agent/tools.h"])[1] == [])
     tags, _, scored = model_facing_tags(["src/core/radio.cpp"])
-    check("radio.cpp: the scored set's radio cases, no suite tag", tags == [] and scored == ["radio_"], (tags, scored))
+    check("radio.cpp: the scored set's radio cases and the suite's", tags == ["radio"] and scored == ["radio_"], (tags, scored))
     tags, _, scored = model_facing_tags(["src/agent/tools/registry.cpp"], lambda p: "+ the radio station list")
-    check("the tools' registry: a radio change asks for the scored set's radio cases", tags == [] and scored == ["radio_"], (tags, scored))
+    check("the tools' registry: a radio change asks for both sets' radio cases", tags == ["radio"] and scored == ["radio_"], (tags, scored))
     tags, _, scored = model_facing_tags(["src/agent/tools/radio.cpp"], lambda p: "+ a line")
-    check("the radio tool's file asks for the scored set's radio cases", tags == [] and scored == ["radio_"], (tags, scored))
+    check("the radio tool's file asks for both sets' radio cases", tags == ["radio"] and scored == ["radio_"], (tags, scored))
     tags, hit, _ = model_facing_tags(["src/agent/search/providers/tavily.cpp", "src/agent/search/search.cpp"])
     check("the web search layer and a search service ask for the search cases", tags == ["search"] and len(hit) == 2, (tags, hit))
     tags, _, _ = model_facing_tags(["src/smarthome/tool.cpp"], categories={"home", "timer"})
@@ -1363,9 +1363,9 @@ def self_test():
     try:
         o = parse(["--profile", "change", "--live"])
         chosen = choose(o)[0]
-        check("change --live on radio.cpp runs the scored set's radio cases five times",
-              "live-scored" in chosen and "live-suite" not in chosen and o.scored_only == "radio_" and o.repeat == 5,
-              (chosen, o.scored_only, o.repeat))
+        check("change --live on radio.cpp runs both sets' radio cases five times",
+              "live-scored" in chosen and "live-suite" in chosen and o.scored_only == "radio_" and o.tags == "radio" and o.repeat == 5,
+              (chosen, o.scored_only, o.tags, o.repeat))
     finally:
         changed_paths, diff_reader = saved_git
 
