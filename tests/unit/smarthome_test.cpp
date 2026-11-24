@@ -2019,17 +2019,18 @@ home::Device tapo_plug(const std::string &id, int port, const std::string &mac) 
 }
 
 // A Tapo plug on 127.0.0.1 that takes one account over KLAP, as tests/mocks/mock_tapo.py does, from the
-// transport's own building blocks: it answers get_device_info (naming `mac`, which may be changed or emptied),
-// set_device_info and get_energy_usage (after `energy_ms`). As a `strip` it has no switch of its own and lists
-// two sockets (after `sockets_ms`). With `changed_at_energy` its password is changed (in the Tapo app) as it is
-// asked for its energy readings: it forgets the session and takes the account no more. One connection at a
-// time; logins, switches, energy questions and socket lists are counted as they arrive.
+// transport's own building blocks: it answers get_device_info (naming `mac`, which may be changed or emptied;
+// with `info_error`, that error code instead), set_device_info and get_energy_usage (after `energy_ms`). As a
+// `strip` it has no switch of its own and lists two sockets (after `sockets_ms`). With `changed_at_energy` (or
+// `changed_at_sockets`) its password is changed (in the Tapo app) as it is asked for its energy readings (its
+// sockets): it forgets the session and takes the account no more. One connection at a time; logins, switches,
+// energy questions and socket lists are counted as they arrive.
 struct KlapPlug {
     int fd = -1, port = 0;
     std::mutex mtx;
     std::string mac;
-    std::atomic<int> logins{0}, switched{0}, energy_asked{0}, energy_ms{0}, sockets_asked{0}, sockets_ms{0};
-    std::atomic<bool> stop{false}, strip{false}, changed_at_energy{false};
+    std::atomic<int> logins{0}, switched{0}, energy_asked{0}, energy_ms{0}, sockets_asked{0}, sockets_ms{0}, info_error{0};
+    std::atomic<bool> stop{false}, strip{false}, changed_at_energy{false}, changed_at_sockets{false};
     std::string auth, local, remote = "remote-seed-0001";
     tapo::detail::KlapKeys keys;
     std::thread loop;
@@ -2057,10 +2058,16 @@ struct KlapPlug {
         std::lock_guard<std::mutex> lk(mtx);
         mac = m;
     }
+    // Its password changed in the Tapo app: the session is gone, and the account is no longer taken.
+    json changed() {
+        auth = std::string(32, 'x');
+        return {{"error_code", 9999}};
+    }
     // The decrypted request's answer, as the plug's JSON.
     json command(const json &req) {
         const std::string method = req.value("method", "");
         if (method == "get_device_info") {
+            if (info_error) return {{"error_code", info_error.load()}};
             std::lock_guard<std::mutex> lk(mtx);
             json info = {{"device_id", "80225a0b0001"}, {"mac", mac}, {"model", strip ? "P304M" : "P110"}, {"type", "SMART.TAPOPLUG"}};
             if (!strip) info["device_on"] = false;
@@ -2072,15 +2079,13 @@ struct KlapPlug {
         }
         if (method == "get_energy_usage") {
             ++energy_asked;
-            if (changed_at_energy) {
-                auth = std::string(32, 'x');                   // no longer the account's
-                return {{"error_code", 9999}};                  // the session is gone
-            }
+            if (changed_at_energy) return changed();
             std::this_thread::sleep_for(std::chrono::milliseconds(energy_ms.load()));
             return {{"error_code", 0}, {"result", {{"today_energy", 12}, {"current_power", 5000}}}};
         }
         if (method == "get_child_device_list" && strip) {
             ++sockets_asked;
+            if (changed_at_sockets) return changed();
             std::this_thread::sleep_for(std::chrono::milliseconds(sockets_ms.load()));
             json list = json::array();
             for (const char *id : {"socket-1", "socket-2"})
@@ -2305,6 +2310,56 @@ void test_tapo_strip_first_try() {
     tapo::forget_sessions();
 }
 
+// Nor while a strip's state is read (ZB-113), which is in its sockets alone: they were listed under the first
+// try. A refusal during the listing, after the trial has ended, is kept and said as any other: with a file that
+// takes the trial's start and end and nothing more, it is held by this run's memory, and said not to be noted.
+void test_tapo_strip_read_first_try() {
+    Section s("tapo driver: a strip's state is read after the first try of a password has ended; a refusal then is kept");
+    home::testing::new_run();
+    tapo::forget_sessions();
+    auto tapo = make_tapo_driver();
+    FillingSecrets store;
+    store.room = 100;
+    tapo->attach(&store);
+    store.all["tapo"] = {{"email", "user@example.com"}, {"password_sha1", tapo::sha1_hex("right")}, {"trial", "typed"}};
+    KlapPlug strip("AA-BB-CC-00-00-0A", "user@example.com", "right"), other("AA-BB-CC-00-00-0B", "user@example.com", "right");
+    strip.strip = true;
+    strip.sockets_ms = 1500;
+    home::Device a = tapo_plug("tapo:strip", strip.port, "aa:bb:cc:00:00:0a"), b = tapo_plug("tapo:b", other.port, "aa:bb:cc:00:00:0b");
+    a.things[0].ref = {{"child", "socket-2"}};   // one of its sockets, as enumerate() saved it
+    std::vector<home::Thing> things;
+    std::string err_a, err_b;
+    bool read_ok = false;
+    std::thread reading([&] { read_ok = tapo->read(a, things, err_a); });
+    for (int i = 0; i < 400 && strip.sockets_asked == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    home::Change on;
+    on.on = true;
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool switched = tapo->apply(b, b.things[0], on, 2500, err_b);
+    const long long waited =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    reading.join();
+    CHECK_MSG(strip.sockets_asked == 1 && switched && other.switched == 1 && waited < 1000,
+              std::to_string(waited) + " ms; " + err_a + " / " + err_b);
+    CHECK_MSG(read_ok && strip.logins == 1 && things.size() == 1 && things[0].state == json({{"on", false}}), err_a);
+    CHECK(!store.get("tapo").contains("trial"));
+
+    home::testing::new_run();
+    tapo::forget_sessions();
+    store.all["tapo"] = {{"email", "user@example.com"}, {"password_sha1", tapo::sha1_hex("right")}, {"trial", "typed"}};
+    store.room = 2;
+    strip.sockets_ms = 0;
+    strip.changed_at_sockets = true;
+    const int logins = strip.logins, other_logins = other.logins;
+    things.clear();
+    CHECK_MSG(!tapo->read(a, things, err_a) && strip.logins == logins + 2 && has(err_a, "does not accept") &&
+                  has(err_a, "could not be noted"),
+              err_a);
+    CHECK_MSG(!tapo->read(a, things, err_a) && strip.logins == logins + 2 && has(err_a, "did not accept the saved password"), err_a);
+    CHECK_MSG(!tapo->apply(b, b.things[0], on, 2500, err_b) && other.logins == other_logins && has(err_b, "did not accept"), err_b);
+    tapo::forget_sessions();
+}
+
 // The same password typed again while a login with it is on its way (fix round 4, E2). Each typing is an entry
 // of its own (a generation): the late refusal of the earlier one is not the new one's, which gets the try it
 // was typed for. It was first refused with the earlier one, in memory and in the file, before any plug saw it.
@@ -2354,6 +2409,49 @@ void test_tapo_energy_refusal() {
     std::string err;
     CHECK_MSG(!tapo->read(a, things, err) && metered.logins == 2 && has(err, "does not accept") && has(err, "could not be noted"), err);
     CHECK_MSG(!tapo->read(a, things, err) && metered.logins == 2 && has(err, "did not accept the saved password"), err);
+    tapo::forget_sessions();
+}
+
+// The password typed while setting up a plug, whose first answer says neither yes nor no to it (ZB-115): the
+// password is saved, and "did not answer" is said only when nothing answered (home::who_answered, driver.h). It
+// was said of an error code the plug answered with too, and of another device at its address.
+void test_tapo_pairing_words() {
+    Section s("tapo driver: setting up says the plug did not answer only when nothing answered");
+    home::testing::new_run();
+    auto tapo = make_tapo_driver();
+    FillingSecrets store;
+    store.room = 100;
+    tapo->attach(&store);
+    KlapPlug plug("AA-BB-CC-00-00-0A", "user@example.com", "right");
+    plug.info_error = -1008;   // what it answers get_device_info with
+    int gone = 0;
+    {
+        KlapPlug unplugged("AA-BB-CC-00-00-0C", "user@example.com", "right");
+        gone = unplugged.port;   // nothing listens there once it has gone
+    }
+    struct Case {
+        const char *what;
+        home::Device dev;
+        home::Answered said;
+    };
+    const Case cases[] = {
+        // Saved without a MAC, it is asked nothing before the request, which it answers with the error code.
+        {"an error code", tapo_plug("tapo:a", plug.port, ""), home::Answered::Device},
+        // Asked who it is, it answers with the error code: it may be another device at the plug's address.
+        {"who it is unsaid", tapo_plug("tapo:a", plug.port, "aa:bb:cc:00:00:0a"), home::Answered::Another},
+        {"nothing there", tapo_plug("tapo:c", gone, "aa:bb:cc:00:00:0c"), home::Answered::Nobody},
+    };
+    for (const Case &c : cases) {
+        tapo::forget_sessions();
+        store.all["tapo"] = {{"email", "user@example.com"}};
+        home::Device d = c.dev;
+        std::string err;
+        const bool asked = tapo->next_step(d).kind == home::Pairing::Password;
+        CHECK_MSG(asked && !tapo->pair(d, "right", err) && has(err, "The password is saved") &&
+                      has(err, "did not answer") == (c.said == home::Answered::Nobody) && home::who_answered(err) == c.said,
+                  std::string(c.what) + ": " + err);
+    }
+    CHECK(plug.logins == 2);
     tapo::forget_sessions();
 }
 
@@ -3737,6 +3835,10 @@ void test_who_answered() {
         {"the request to the plug failed: Failure when receiving data from the peer", device},
         {"the plug dropped a session it had only just opened; giving up", device},
         {"the strip did not say whether the socket was switched", device},
+        // Tapo's setup (tapo_driver.cpp), a password neither taken nor refused (ZB-115)
+        {"The password is saved, but the plug did not answer: cannot connect to the plug", nobody},
+        {"The password is saved, but it could not be checked with the plug: the plug rejected the parameters of the request",
+         device},
         // WiZ
         {wiz::kNoAnswer, nobody},
         {"The WiZ device did not answer. Check that it is switched on, and that Allow local communication is on in the WiZ "
@@ -4238,8 +4340,10 @@ int main(int argc, char **argv) {
     test_tapo_identity();
     test_tapo_first_try_released();
     test_tapo_strip_first_try();
+    test_tapo_strip_read_first_try();
     test_tapo_typed_again();
     test_tapo_energy_refusal();
+    test_tapo_pairing_words();
     test_unconfirmed_pairing();
     test_pairing_not_handed_over();
     test_pairing_twice_at_once();
