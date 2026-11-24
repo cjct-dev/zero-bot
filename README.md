@@ -160,19 +160,23 @@ Web search*, and kept in the same file as a list of search services, in the orde
 ```
 
 A `"search_key"` written by an older version is read as one Tavily entry, and `"enabled": false` sets a
-service aside without losing its key. With more than one service set up, they are tried in that order
+service aside without losing its key. Each service has one entry: should the file list a kind twice, only the
+first is read (and kept when the settings are saved). `ZB_SEARCH_KEY` in the environment is the Tavily
+entry's key, wherever it stands in the list. With more than one service set up, they are tried in that order
 without the assistant having to ask again: when one cannot be reached, is slow (5 seconds; a search takes
 8 at most), fails, has used up its allowance or found nothing, the next one is asked. A key a service
 refuses is not sent again, even after a restart, until it is typed again or changed (the app marks it
 `"refused"` in the file); a used-up allowance is skipped until it comes back, after a restart too, and a
-service that failed twice in a row is asked last for two minutes.
+service that failed twice in a row is asked last for two minutes. A key goes only to its own service's
+address: a redirect elsewhere is not followed.
 
 What each service has been used for is counted in `~/.local/share/zero-bot/search_usage.json`: the searches
 it answered this month, what the service itself last said is left (Brave says so with every answer;
 Tavily when asked from its settings page), and today's searches. Counts and dates only, never what was
 searched for. At most 100 searches are sent a day, a guard against a fault spending a month's allowance;
-past that the assistant says search is unavailable until the next day. The same question asked again
-within ten minutes is answered from memory, without a search (nothing of it is written to disk).
+past that the assistant says search is unavailable until the next day (a clock that steps back does not
+start the day again). The same question asked again within ten minutes is answered from memory, without a
+search (nothing of it is written to disk); a change to the search settings starts that memory afresh.
 
 The first time it connects, the app picks a language model, a speech-to-text and a text-to-speech
 model from the service's list, by what the list labels each model for (its `mode`): the language
@@ -510,8 +514,10 @@ devices, with or without this app.
   diagnose problems: see [Diagnostics (temporary)](#diagnostics-temporary).
 - What you say, type and photograph is sent to the AI service you configured. Web searches go to
   the search services you set up (Tavily, Brave Search; Brave keeps its query logs for up to 90 days).
-  The device keeps no record of what was searched for: answers are held in memory for ten minutes
-  only, and the allowance file holds counts and dates.
+  Apart from the temporary diagnostic records below, the device keeps no record of what was searched
+  for: answers are held in memory for ten minutes only, and the allowance file holds counts and dates.
+  Should a search service echo the key it was sent, the key is taken out before the assistant reads the
+  answer.
   Weather, currency and share-price lookups go to Open-Meteo, open.er-api.com and Yahoo Finance.
 - Python runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox with no
   network, no access to your files, a 20-second limit and a memory cap.

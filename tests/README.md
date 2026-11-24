@@ -78,8 +78,8 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
 - `tools_test.cpp`: the calculator, dates and zones that do not exist, helper programs: cancelling, time limits, no
   inherited descriptors.
 - `core_test.cpp`: what every thread shares: one file saved by two threads, the settings read and changed on several
-  threads (and their list of web search services: an older file's key, a newer version's entry kept whole,
-  `ZB_SEARCH_KEY`, every key a secret), all-day alerts when the clocks change, the store read at once while a slow
+  threads (and their list of web search services: an older file's key, a newer version's entry kept whole, one entry
+  per kind, `ZB_SEARCH_KEY` the Tavily entry's key wherever it stands, every key a secret), all-day alerts when the clocks change, the store read at once while a slow
   write of its file is under way (fsync wrapped), the main loop's sleep and what wakes it (`uiq::wait`); what an older version left behind; and the
   shared helpers: failure shape, battery, Wi-Fi list, default route, monotonic count, start of a day; numeric dates
   spelt out for the model (`util::spell_numeric_dates`) and dates typed in the calendar editor (`util::parse_typed`),
@@ -111,8 +111,18 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
   cache (the same query in other capitals and spacing asks no service and counts nothing, ten minutes, 32 answers,
   failures and empty answers not kept, emptied when the services set up change); what the settings page says of each
   service (`describe`); and asking a service what is left (`ask_allowance`: once a minute, the figure kept, nothing left
-  marking it spent, a 401 marking the key refused). `run_unit.sh` builds every service in
-  `src/agent/search/providers/` by glob, as it does the drivers.
+  marking it spent, a 401 marking the key refused, an error in the app's own words). And the review's fixes: what is
+  sent for real (`search::send`, through a stand-in that sends to a local `Peer` of the test's own: a redirect not
+  followed, so the key goes nowhere else; a 401 whose body is cut short or stalls read as a refusal and not sent again;
+  an answer of 32 MB cut off, one of 400 kB read whole), a key a service echoes taken out of what the model reads and
+  the cache keeps, results that say nothing making an answer that found nothing, the settings changed while another
+  service was asked (a key refused, switched off, changed or removed, an allowance found spent: not sent; one kind
+  twice; a refusal of a key typed again meanwhile marking nothing), a lookup's late answer not undoing a newer spent
+  mark, a spent allowance learnt before the clock was set kept by a later run, the time left read from one reading of
+  the clock, the counts when the clock steps back (kept; followed when it is put right after running far ahead), a
+  search cancelled before anything was sent not counted, and the cache emptied by any change to the services, even
+  one taken back, and a refusal. `run_unit.sh` builds every service in `src/agent/search/providers/` by glob, as it
+  does the drivers.
 - `activity_test.cpp`: saved conversations: what a save holds, keys blanked out, size limits, modes, pruning, nothing
   written unless asked (diagnostic, temporary).
 - `firetv_cli.cpp`, `homekit_cli.cpp`, `hue_cli.cpp`, `kasa_cli.cpp`, `wiz_cli.cpp`, `shelly_cli.cpp`: not tests, the
@@ -177,8 +187,8 @@ set nothing sent or done changes (checked here). Add a scenario here with any ch
 **The tools.** `tools_cli.py` runs the offline tools through the `cli` build, with good, wrong and hostile arguments,
 each in a fresh state folder; it also checks the hardware guard (`ZB_EXP_NO_HARDWARE`), the stand-in web's proxy and
 redirect rules, when web search is set up by the settings' list of services and searches with which key
-(`search_services`: an older file's `search_key`, `ZB_SEARCH_KEY`, an entry switched off, without a key or of a kind a
-newer version wrote), that every search service built in (`search_shapes`, which reads
+(`search_services`: an older file's `search_key`, `ZB_SEARCH_KEY` as the Tavily entry's key, an entry switched off,
+without a key or of a kind a newer version wrote), that every search service built in (`search_shapes`, which reads
 `src/agent/search/providers/registry.cpp`) has its shape in the stand-in web, is asked there with the stand-in's key and
 gives the model the same facts as the others, as plain text, and that a refused key and a hostile answer
 (`search_hostile`) come back as an ERROR or capped and cleaned, the failover between the services against the stand-in's
@@ -188,9 +198,15 @@ nothing is left passed over and two failures in a row resting a service within a
 and 8 for one alone), the allowance file (`search_allowance`: searches and Brave's figure counted in
 `search_usage.json` with no key or query in it, a spent allowance passed over by a later run, the daily cap stopping
 a search before any service is asked, and `--search-status` asking Tavily's `GET /usage` at a stand-in of its own,
-`UsageServer`, since `fake_web.py`'s bytes are hashed into every live case: once, with the key and nothing else, its
-figure kept, a 401 marking the key refused and nothing sent after it), and that a live case reaches no real web service (`no_real_web`, which imports the live sets'
-runner, `agent/agent_eval.py`, to run one).
+`Answering`, since `fake_web.py`'s bytes are hashed into every live case: once, with the key and nothing else, its
+figure kept, a 401 marking the key refused and nothing sent after it), what the services built in make of answers no
+fixture holds (`search_answers`, at `Answering` too: 32 MB cut off and no answer, 400 kB read whole, a description of
+'&' read in time that does not grow as its square, results that say nothing passed over, the wrong shape no answer,
+Brave's rate-limit figures taken only as whole numbers in windows matching its limit header and only the month's at 0
+a spent allowance, Brave's key refused only by a 422 with its code or a 401, a 429 for a spent month sent once and one
+for too many at once sent twice, and a `GET /usage` error shown in the app's words, none of the answer's), and that a
+live case reaches no real web service (`no_real_web`, which imports the live sets' runner, `agent/agent_eval.py`, to
+run one).
 
 **The package.** `packaging_test.py` (group `packaging`) runs `scripts/package-deb.sh` with a stand-in binary in a
 temporary copy of what it reads, reads the package back with its own ar and tar reader (files, owners, modes, control

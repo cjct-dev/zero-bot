@@ -30,6 +30,7 @@ namespace {
 constexpr time_t kClockSetFrom = 1767225600;               // 1 January 2026: a clock that reads earlier has not been set
 constexpr unsigned long kSpentForMs = 6 * 3600 * 1000UL;   // a spent allowance whose service did not say when it comes back
 constexpr long kLongestResetS = 40 * 86400L;               // a service's own reset time is believed up to this
+constexpr time_t kPutRightS = 2 * 86400;                   // a step back further than this is a clock put right
 
 bool clock_set(time_t t) { return t >= kClockSetFrom; }
 
@@ -40,12 +41,14 @@ struct Entry {
     time_t said_at = 0;
     unsigned long spent_ms = 0;   // spent until then, on the monotonic clock (0: not spent)
     time_t spent_wall = 0;        // spent until then, as the file had it: put on the monotonic clock once the wall clock is set
+    uint64_t revision = 0;        // what this run has learnt of it (note, said), in memory only
 };
 
 struct State {
     bool loaded = false;
     std::string day;              // the day `today` counts in, "2026-11-23"
     int today = 0;
+    time_t latest = 0;            // the latest time the clock has said since it was set (0: none): the counts' period
     std::map<std::string, Entry> services;   // by id_of
     bool changed = false;         // since the last save
     uint64_t version = 0;         // counts changes saved, so that an older save never overwrites a newer one
@@ -66,6 +69,7 @@ void load_locked() {
     if (!j.is_object()) return;
     g_state.day = jget(j, "day", std::string());
     g_state.today = std::max(0, jget(j, "today", 0));
+    g_state.latest = static_cast<time_t>(jget(j, "latest", 0LL));
     const auto services = j.find("services");
     if (services == j.end() || !services->is_object()) return;
     for (const auto &[id, e] : services->items()) {
@@ -77,14 +81,21 @@ void load_locked() {
         x.limit = jget(e, "limit", -1L);
         x.said_at = static_cast<time_t>(jget(e, "said_at", 0LL));
         x.spent_wall = static_cast<time_t>(jget(e, "spent_until", 0LL));
+        // An end learnt while the clock was not set: the time it still had then, counted from this run's start.
+        const long spent_for = std::min(kLongestResetS, jget(e, "spent_for", 0L));
+        if (!x.spent_wall && spent_for > 0) x.spent_ms = now_ms() + static_cast<unsigned long>(spent_for) * 1000UL;
     }
 }
 
-// The month and day the clock says now; nothing while it is not set.
+// The month and day the counts are in now: those of the latest time the clock has said, so that a clock that steps
+// back leaves them where they are, unless it steps back more than two days (put right after running ahead: a date set
+// wrong by hand, a time sync gone wrong), when the counts follow it rather than stand still until the wrong date
+// comes round. Nothing while the clock is not set.
 bool period_now(std::string &month, std::string &day) {
     const time_t now = wall_now();
     if (!clock_set(now)) return false;
-    day = util::format_time(now, "%Y-%m-%d");
+    if (now > g_state.latest || g_state.latest - now > kPutRightS) g_state.latest = now;
+    day = util::format_time(g_state.latest, "%Y-%m-%d");
     month = day.substr(0, 7);
     return true;
 }
@@ -117,10 +128,9 @@ Entry &entry_locked(const std::string &id) {
     return e;
 }
 
-// Whether the allowance is used up now. An end the file held is put on this run's clock once the wall clock can say
-// how far away it is; until then it stands.
-bool spent_locked(Entry &e) {
-    const unsigned long now = now_ms();
+// Whether the allowance is used up at `now` (the monotonic clock, read once by the caller for all it works out). An end
+// the file held is put on this run's clock once the wall clock can say how far away it is; until then it stands.
+bool spent_locked(Entry &e, unsigned long now) {
     if (e.spent_wall) {
         const time_t wall = wall_now();
         if (!clock_set(wall)) return true;
@@ -135,12 +145,18 @@ bool spent_locked(Entry &e) {
     return e.spent_ms != 0;
 }
 
-// The end of a spent allowance on the wall clock: what the file said while the clock is not set, else 0 when not spent.
-time_t spent_until_locked(Entry &e) {
-    if (!spent_locked(e)) return 0;
+// Whole seconds, rounded up, until a spent allowance on this run's clock comes back; 0 when it is not spent at `now`.
+long spent_left_s(const Entry &e, unsigned long now) {
+    return e.spent_ms > now ? static_cast<long>((e.spent_ms - now + 999) / 1000) : 0;
+}
+
+// The end of a spent allowance on the wall clock at `now`: what the file said while the clock is not set; 0 when not
+// spent, or when it was learnt in this run while the clock is not set.
+time_t spent_until_locked(Entry &e, unsigned long now) {
+    if (!spent_locked(e, now)) return 0;
     if (e.spent_wall) return e.spent_wall;
     const time_t wall = wall_now();
-    return clock_set(wall) ? wall + static_cast<time_t>((e.spent_ms - now_ms() + 999) / 1000) : 0;
+    return clock_set(wall) ? wall + spent_left_s(e, now) : 0;
 }
 
 void mark_spent_locked(Entry &e, long reset_s) {
@@ -156,12 +172,18 @@ void keep_figure_locked(Entry &e, const Reply &reply) {
     e.said_at = clock_set(wall) ? wall : 0;
 }
 
+// The file: a spent allowance's end as a wall time when the clock can say it, else as the time it still has to run.
 json to_json_locked() {
+    const unsigned long now = now_ms();
     json services = json::object();
-    for (auto &[id, e] : g_state.services)
+    for (auto &[id, e] : g_state.services) {
+        const time_t until = spent_until_locked(e, now);
         services[id] = {{"month", e.month}, {"used", e.used}, {"left", e.left}, {"limit", e.limit},
-                        {"said_at", static_cast<long long>(e.said_at)}, {"spent_until", static_cast<long long>(spent_until_locked(e))}};
-    return {{"version", 1}, {"day", g_state.day}, {"today", g_state.today}, {"services", services}};
+                        {"said_at", static_cast<long long>(e.said_at)}, {"spent_until", static_cast<long long>(until)},
+                        {"spent_for", until ? 0L : spent_left_s(e, now)}};
+    }
+    return {{"version", 1}, {"day", g_state.day}, {"today", g_state.today}, {"latest", static_cast<long long>(g_state.latest)},
+            {"services", services}};
 }
 
 void write(const json &j, uint64_t version) {
@@ -178,19 +200,20 @@ time_t wall_now() { return g_test_wall ? g_test_wall() : time(nullptr); }
 Figures of(const std::string &id) {
     std::lock_guard<std::mutex> lk(g_mtx);
     Entry &e = entry_locked(id);
+    const unsigned long now = now_ms();
     Figures f;
     f.used = e.used;
     f.left = e.left;
     f.limit = e.limit;
     f.said_at = e.said_at;
-    f.spent_until = spent_until_locked(e);
-    f.spent = spent_locked(e);
+    f.spent = spent_locked(e, now);
+    f.spent_until = spent_until_locked(e, now);
     return f;
 }
 
 bool spent(const std::string &id) {
     std::lock_guard<std::mutex> lk(g_mtx);
-    return spent_locked(entry_locked(id));
+    return spent_locked(entry_locked(id), now_ms());
 }
 
 void note(const std::string &id, const Reply &reply) {
@@ -204,13 +227,16 @@ void note(const std::string &id, const Reply &reply) {
     }
     keep_figure_locked(e, reply);
     if (reply.outcome == Outcome::Spent || (answered && reply.left == 0)) mark_spent_locked(e, reply.reset_s);
+    ++e.revision;
     g_state.changed = true;
 }
 
-void said(const std::string &id, const Reply &reply) {
+void said(const std::string &id, const Reply &reply, uint64_t since) {
     if (reply.outcome != Outcome::Ok || reply.left < 0) return;
     std::lock_guard<std::mutex> lk(g_mtx);
     Entry &e = entry_locked(id);
+    if (e.revision != since) return;
+    ++e.revision;
     keep_figure_locked(e, reply);
     if (reply.left == 0) {
         mark_spent_locked(e, reply.reset_s);
@@ -219,6 +245,11 @@ void said(const std::string &id, const Reply &reply) {
         e.spent_wall = 0;
     }
     g_state.changed = true;
+}
+
+uint64_t revision(const std::string &id) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    return entry_locked(id).revision;
 }
 
 int today() {

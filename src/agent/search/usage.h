@@ -7,8 +7,13 @@
 // The wall clock: a board without a battery-backed clock starts in 1970 and is set by a time sync some while later
 // (AGENTS.md section 9, "Wall-clock time"). While it reads a year before 2026 nothing rolls over (the month's and the
 // day's counts go on in the period they were counted in), no figure is dated, and a spent allowance whose end the file
-// holds stays spent. An end learnt in this run is kept on the monotonic clock, which setting the wall clock does not move.
+// holds stays spent. An end learnt in this run is kept on the monotonic clock, which setting the wall clock does not
+// move; the file keeps it as a wall time, or, while the clock is not set, as the time it still had to run, which a
+// later run counts from its own start. A clock that steps back keeps the counts in the period they were counted in (the
+// latest it said), so that a step back across midnight is no new day; one that steps back further than two days was
+// put right after running ahead, and the counts follow it.
 #pragma once
+#include <cstdint>
 #include <ctime>
 #include <string>
 
@@ -36,11 +41,14 @@ bool spent(const std::string &id);
 // it comes back: when the service says, else for six hours.
 void note(const std::string &id, const Reply &reply);
 // What the service said when asked what is left (Provider::allowance): the figure is kept; nothing left marks it
-// spent, something left takes a spent mark away.
-void said(const std::string &id, const Reply &reply);
+// spent, something left takes a spent mark away. Only when nothing was learnt of its allowance since the question was
+// asked (`since`, revision() then): a late answer never undoes what a search learnt meanwhile.
+void said(const std::string &id, const Reply &reply, uint64_t since);
+// Counts what this run has learnt of the service's allowance (each note and said).
+uint64_t revision(const std::string &id);
 
 int today();   // searches sent today
-void sent();   // one more search sent today
+void sent();   // one more search sent today: the layer calls it as the first service is sent the query
 
 // Writes the file when anything changed: the layer calls it once a search is done, and after asking a service what is
 // left. A service no longer in the settings' list is left out of it.

@@ -155,6 +155,22 @@ std::string truncate_utf8(const std::string &s, size_t max_bytes, const char *el
     return s.substr(0, cut) + ellipsis;
 }
 
+std::string blank_out(const std::string &text, const std::vector<std::string> &secrets) {
+    std::vector<std::string> found;
+    for (const std::string &s : secrets)
+        if (const std::string t = trim(s); t.size() >= 6 && text.find(t) != std::string::npos) found.push_back(t);
+    if (found.empty()) return text;
+    std::string out;
+    for (size_t i = 0; i < text.size();) {
+        size_t hit = 0;
+        for (const std::string &secret : found)
+            if (secret.size() > hit && text.compare(i, secret.size(), secret) == 0) hit = secret.size();
+        if (hit) { out += "[removed]"; i += hit; }
+        else out += text[i++];
+    }
+    return out;
+}
+
 void append_utf8(std::string &out, uint32_t cp) {
     if (cp < 0x80) out += static_cast<char>(cp);
     else if (cp < 0x800) { out += static_cast<char>(0xC0 | (cp >> 6)); out += static_cast<char>(0x80 | (cp & 0x3F)); }

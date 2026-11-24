@@ -5,6 +5,7 @@
 // out a snapshot, copied under a lock, that cannot be written to and stays as it was for as long
 // as it is used; every change goes through update(), made under the same lock, then saved.
 #pragma once
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
@@ -13,7 +14,8 @@
 
 // A web search service the user has set up (agent/search/). Generic fields only: what a kind of
 // service needs is its provider's business. An entry of a kind this version does not know (a newer
-// version wrote it) is kept as it is and passed over.
+// version wrote it) is kept as it is and passed over. One entry per kind: the settings page, the
+// allowance and the search all know a service by its kind (a file with two of a kind keeps the first).
 struct SearchService {
     std::string kind;            // as the providers' registry names it: "tavily"
     std::string key;
@@ -23,6 +25,9 @@ struct SearchService {
     // again, by this run or a later one, until it is typed again (set_search_key clears it); another key
     // put in its place is not refused. Saved as "refused" (agent/search/search.cpp).
     std::string refused;
+    // Which typing of the key this is, in this run only (0: as read): each set_search_key gives a new one, so
+    // that a refusal of the key as sent before it was typed again marks nothing. Not saved.
+    uint64_t typed = 0;
 };
 
 struct Settings {
@@ -41,12 +46,16 @@ struct Settings {
     bool fast_mode = true;       // ask the model to skip its private reasoning step (quicker replies)
 
     // Web search: the services in the order they are tried. Saved as "search"; a file with the old
-    // "search_key" (always a Tavily key) is read as one Tavily entry. ZB_SEARCH_KEY is the first entry's key.
+    // "search_key" (always a Tavily key) is read as one Tavily entry. ZB_SEARCH_KEY is the Tavily entry's
+    // key, wherever it stands in the list (never another service's: a Tavily key must not go to Brave).
     std::vector<SearchService> search;
-    std::string search_key(const std::string &kind) const;   // the first entry of that kind's key, "" if none
+    std::string search_key(const std::string &kind) const;   // the key of the entry of that kind, "" if none
     // Sets that key, adding an entry of the kind at the end when there is none (and the key is not empty).
     // A key typed is a key to try: whatever the service refused before is forgotten.
     void set_search_key(const std::string &kind, const std::string &key);
+    // Counts the changes to `search` in this run (any field of an entry, an entry added or removed, the order),
+    // in memory only: what search keeps of an answer (its cache) is used only under the count it was made under.
+    uint64_t search_revision = 0;
 
     // Device
     int volume = 70;

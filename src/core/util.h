@@ -45,6 +45,11 @@ std::vector<std::string> split(const std::string &s, char sep);
 bool contains_ci(const std::string &haystack, const std::string &needle);
 std::string truncate_utf8(const std::string &s, size_t max_bytes, const char *ellipsis = "…");
 std::string sanitize_utf8(const std::string &s);     // replaces invalid bytes so JSON never throws
+// `text` with each secret in it replaced by "[removed]": the keys in the settings, out of what is saved or passed on.
+// One pass over the text (the longest secret first where several start at one place), so what has been put in is
+// never searched again. A secret is looked for trimmed, and one shorter than 6 bytes blanks nothing (it would blank
+// ordinary words).
+std::string blank_out(const std::string &text, const std::vector<std::string> &secrets);
 void append_utf8(std::string &out, uint32_t cp);     // a code point (not a surrogate, at most U+10FFFF) as UTF-8
 std::string base64(const std::string &data);
 

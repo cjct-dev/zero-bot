@@ -4,10 +4,10 @@
 // Each service is one file, providers/<kind>.cpp, defining
 //     std::unique_ptr<search::Provider> make_<kind>_provider();
 // and one line in providers/registry.cpp. What a provider does: build its request, send it with
-// tools::fetch_json(experiment::web(address), ..., how), map the answer onto Reply and say what it meant.
-// What it never does, because search.cpp and usage.cpp do it once for every service: retry or wait (fetch_json
-// does what `how` says), pick another service, count allowance, cache, write files, or shape what the model
-// reads (a provider fills Reply with the service's own words; search.cpp alone caps and cleans them).
+// search::send(address, how, ...), map the answer onto Reply and say what it meant. What it never does,
+// because search.cpp and usage.cpp do it once for every service: retry or wait (fetch_json does what `how`
+// says), pick another service, count allowance, cache, write files, or shape what the model reads (a
+// provider fills Reply with the service's own words; search.cpp alone filters, caps and cleans them).
 #pragma once
 #include <ctime>
 #include <memory>
@@ -25,6 +25,13 @@ struct Hit {
     std::string title, url, text;
 };
 
+// The results the model reads, at most: a provider stops reading an answer once it holds this many that say
+// something (a long answer is not turned into results the model never reads).
+constexpr size_t kMaxHits = 4;
+// Whether a result says something: a title (once cleaned of control characters) or some text. One that does not
+// is left out, and an answer of only such, without a summary, found nothing.
+bool says_something(const Hit &hit);
+
 // What a search came to. Every outcome but Ok and Empty is a failure.
 enum class Outcome {
     Ok,            // a summary or results
@@ -34,14 +41,17 @@ enum class Outcome {
     Failing,       // the service's own trouble or a refusal of the request: 5xx, 429, 408, 403, any other 3xx or 4xx
     KeyRefused,    // the key was refused (401, or the service's own word for it)
     Spent,         // the allowance is used up
-    Garbled,       // a success whose body is not what the service sends
+    Garbled,       // a success whose body is not what the service sends (not JSON, the wrong shape, far too long)
 };
 
+// What a reply holds is the service's words and figures, never its error text: an answer may quote the key it was
+// sent, so what went wrong reaches the model and the settings page only as the outcome (and status), in the app's
+// own words.
 struct Reply {
     Outcome outcome = Outcome::Unreachable;
+    long status = 0;               // the HTTP status the service answered with (0: none came)
     std::string summary;           // the service's own short answer, when it gives one
     std::vector<Hit> hits;         // in the service's order
-    std::string error;             // on a failure: a short sentence (fetch_json's words)
     // What the service said of its allowance, where it says: how much is left after this search, of how much, in
     // its own units (-1 when it did not say; 0 left is spent), and in how many seconds it comes back (with that, or
     // with Spent; 0 when it did not say).
@@ -49,8 +59,16 @@ struct Reply {
     long reset_s = 0;
 };
 
+// How a provider sends a request: tools::fetch_json to experiment::web(address) with `how`, never following a
+// redirect (the request carries the key, and libcurl hands a header of the service's own, Brave's
+// X-Subscription-Token, to whatever host a redirect names) and reading at most half a megabyte of the answer,
+// decompressed (an answer is a few kilobytes; a longer one is cut off and is Garbled). `err` is set when it
+// failed: outcome_of(got, err) says what that meant.
+json send(const std::string &address, tools::Fetch how, tools::Context &ctx, tools::Fetched &got, std::string &err);
+
 // The outcome any HTTP service's answer means (fetch_json's `err` and `got`); a provider adds its own
-// codes on top (Tavily's 432 and 433 for a spent allowance, Brave's error codes). Only 401 says the key was
+// codes on top (Tavily's 432 and 433 for a spent allowance, Brave's error codes). An answer's status stands
+// whatever then happened to its body (a 401 cut short or stalled is a refusal). Only 401 says the key was
 // refused: a bare 403 is what a firewall, a proxy or a country block answers as well, and a refusal is kept
 // until the key is typed again, so it would switch search off for a fault that is not the key's.
 Outcome outcome_of(const tools::Fetched &got, const std::string &err);
