@@ -12,7 +12,7 @@ procedure and the rule that no test uses a live web service are in `AGENTS.md` s
 | `unit/` | offline unit tests in C++, built and run by `unit/run_unit.sh`, with the schema snapshots in `unit/snapshots/` |
 | `sim/` | offline end-to-end tests against simulated devices and services, and the screenshot check (`sim/screens/`) |
 | `agent/` | the live sets (a real AI service with simulated tools) and their tooling: the generated suite (`agent/suite/`), the scorer's own test, the gate and the reports |
-| `tools/` | real services, no AI: `web_contract.py` |
+| `tools/` | real services, no AI: `web_contract.py`; and each search service's documented contract, `search_contract.py` with `contracts/` |
 | `mocks/` | simulated devices, chat services, the stand-in web and the fixtures, shared by all |
 
 Python test scripts and mocks use the standard library only. A script finds `netguard.py`, `lib/` and `mocks/` in
@@ -46,6 +46,9 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
   turns. The live sets' scorer (`agent/agent_eval.py`) and the loop's offline test (`sim/agent_loop_test.py`) use it.
 - `music.py`: the stand-in music library (`MUSIC_LIBRARY`: tags, no sound) both live sets and
   `sim/agent_loop_test.py` play from.
+- `search_services.py`: the web search services built into the app, read from its registry
+  (`src/agent/search/providers/registry.cpp`) and each one's provider file, so `sim/tools_cli.py`'s search checks and
+  `tools/search_contract.py` go through every service the app has.
 - `answered.py`: who answered at a smart-home device's address, as the app reads a driver's error (`who_answered`,
   `looked_for`): the app looks for the device at a new address only when nobody, or another device, answered there
   (ZB-108). Its words are read from `home::who_answered` in `src/smarthome/control.cpp` itself, so they cannot drift.
@@ -131,8 +134,9 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
   mark, a spent allowance learnt before the clock was set kept by a later run, the time left read from one reading of
   the clock, the counts when the clock steps back (kept; followed when it is put right after running far ahead), a
   search cancelled before anything was sent not counted, and the cache emptied by any change to the services, even
-  one taken back, and a refusal. `run_unit.sh` builds every service in `src/agent/search/providers/` by glob, as it
-  does the drivers.
+  one taken back, and a refusal; and each service asked noted in the activity log (`test_measured`: its kind,
+  outcome, status and time, the cache's answer too, neither the query nor the answer's words). `run_unit.sh` builds
+  every service in `src/agent/search/providers/` by glob, as it does the drivers.
 - `activity_test.cpp`: saved conversations: what a save holds, keys blanked out, size limits, modes, pruning, nothing
   written unless asked (diagnostic, temporary).
 - `firetv_cli.cpp`, `homekit_cli.cpp`, `hue_cli.cpp`, `kasa_cli.cpp`, `wiz_cli.cpp`, `shelly_cli.cpp`: not tests, the
@@ -211,7 +215,9 @@ gives the model the same facts as the others, as plain text, and that a refused 
 fixtures (`search_failover`: the order asked, a second service only after the first failed or found nothing, the
 answer that worked or one ERROR, a refused key not sent again by a later run, a spent allowance or one that said
 nothing is left passed over and two failures in a row resting a service within a run, 5 s for a slow first service
-and 8 for one alone, and a query holding a card or ID number refused before any service is asked), the allowance file (`search_allowance`: searches and Brave's figure counted in
+and 8 for one alone, and a query holding a card or ID number refused before any service is asked), each service asked
+noted in the experiments' trace and the activity log (`search_measured`: kind, outcome, status, time and whether the
+cache answered, in its own request in a conversation; no words of the query or the answer), the allowance file (`search_allowance`: searches and Brave's figure counted in
 `search_usage.json` with no key or query in it, a spent allowance passed over by a later run, the daily cap stopping
 a search before any service is asked, and `--search-status` asking Tavily's `GET /usage` at a stand-in of its own,
 `Answering`, since `fake_web.py`'s bytes are hashed into every live case: once, with the key and nothing else, its
@@ -356,7 +362,9 @@ model). Run a sample or the tags you touched, not the whole set, unless asked.
 
 **The scorer's own test.** `scorer_test.py` (offline, no service) feeds deliberately wrong transcripts that must fail
 and right ones that must pass, one per check, each asserting its problem text; run it after any change to a check, and
-add a wrong transcript for any new kind of mistake.
+add a wrong transcript for any new kind of mistake. It also runs the live sets' runner against a stand-in app, whose
+trace can carry web searches (`trace_with_searches`): each turn keeps its own request's lines, and the summary, the
+reports and the held-out judge read them as before.
 
 **The gate** (`exp_compare.py`, its `--self-test` in the runner group) compares a variant with a baseline case by
 case and by tag (repeat the same cases the same number of times on both sides before pooling) and ends with a verdict
@@ -383,6 +391,25 @@ run) is in AGENTS.md section 6.
 to the real weather, place-name, exchange-rate and stock-price services, and checks that the stand-in's shapes (keys
 and types, and every field the app reads) still match theirs. It needs the internet, so it is in no profile; it never
 calls the search. `--self-test` checks the comparison itself offline (the runner group).
+
+`search_contract.py` (group `search-contract`, offline, in the quick, offline and release profiles) holds each web
+search service to its public documentation, for every service in the app's registry: `contracts/<kind>.json` is a
+sample of what the documentation says (the address and method, how the key travels, where the query goes and the
+parameters the app sends with their documented ranges, an answer's fields with their types and an example, the
+headers an answer carries, and the answers to a refused key, a spent allowance, too many at once and a fault), with
+the pages it was read from and the date. It compares the stand-in's shape of the service (`SEARCH_SHAPES` in
+`mocks/fake_web.py`: its answer that found something and one that did not, and its bad days) and the app's provider
+(`src/agent/search/providers/<kind>.cpp`: where it sends, the key's header, the query and parameters, the fields and
+headers it reads, the service's own codes) with it, and the documentation's example with its own fields. A
+difference the contract lists under `known`, with why, is reported and passes (the stand-in's are fixed when it
+changes anyway, since its bytes are in every case's hash); any other fails, and so does a known one that no longer
+happens. Its `notes` are printed with it (what the documentation leaves open). `--spend KIND --key-file PATH` makes
+exactly one real search of a fixed question, with the key from a file only its owner can read, after the kind is
+typed again at the terminal, and prints the status, whether the answer's shape matches, the time and the allowance
+headers, never the key or a result's words. It spends the owner's allowance, so it is his alone: `run.py` refuses
+any group whose command holds `--spend` or `--key-file` (`spends`), and the script refuses without a terminal or
+inside a test's network boundary. `--self-test` (the same group) checks the comparison, each kind of difference
+found, and `--spend`'s refusals and report against a local peer.
 
 ## mocks/: simulated devices and services, and fixtures
 
@@ -416,8 +443,9 @@ addresses are contacted and nothing is scanned; use it for any smart-home test o
 
 **Measurement switches** (`src/agent/experiment.h`; compiled into the `cli` build only, CMake option
 `ZB_EXPERIMENTS`, which CMake refuses outside the `cli` build): `ZB_EXP_TRACE=file` appends a JSON line per model call
-(purpose, timings, token counts the service reports, size sent) and per request (first sentence, tools, guards, second
-look); no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`. `ZB_EXP_OFF=NAME[,NAME...]|all`
+(purpose, timings, token counts the service reports, size sent), per request (first sentence, tools, guards, second
+look) and per service a web search asks (`search`: its kind, outcome, status and time, or the cache's answer; `req`
+when it was in a request); no words, keys or model ids. `ZB_EXP_CACHE_BUST=1`, `ZB_EXP_TTS_PROBE=1`. `ZB_EXP_OFF=NAME[,NAME...]|all`
 switches small-model controls off (`src/agent/controls.h`: `second_look`, `decide_note`, `claim_guards`, `say`,
 `weekday_check`, `cancel_claims`, `date_spelling`); an unknown name stops the run, and the trace's start line names
 those off. The variants once measured against the default (`ZB_EXP_TOOLS`, shorter tool text; `ZB_EXP_DECIDE`,

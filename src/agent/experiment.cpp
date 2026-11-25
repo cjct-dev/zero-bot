@@ -262,6 +262,19 @@ void trace_call(const json &call) {
     trace(ev);
 }
 
+// In the request it belongs to, when one is under way ("req"), so a live run's turn carries its own searches; a search
+// made outside one (--tool) has none.
+void trace_search(const json &search) {
+    if (!tracing()) return;
+    json ev = search;
+    ev["ev"] = "search";
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        if (g_in_request) ev["req"] = g_req;
+    }
+    trace(ev);
+}
+
 json numbers_only(const json &v) {
     if (v.is_number() || v.is_boolean()) return v;
     if (v.is_object()) {

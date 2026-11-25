@@ -103,7 +103,8 @@ tests/              run.py, the entry point that runs the tests in groups by pro
                     chat services, the offline tools, the package, the golden screenshots in
                     sim/screens/), agent/ (the live sets: the scored set, the generated suite in
                     suite/, the scorer's own test, the gate and the reports), tools/ (the stand-in
-                    web against the real services), mocks/ (simulated devices, chat services, the
+                    web against the real services; each search service's documented contract in
+                    contracts/, against the stand-in and the app), mocks/ (simulated devices, chat services, the
                     stand-in web, fixtures), lib/ (code they share); tests/README.md says what each is
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
 packaging/          the launcher entry and icon, Zero's picture for the launcher's wake screen
@@ -399,6 +400,12 @@ groups need first. Which to use:
   one is fitted to the everyday answers; never tune on the held-out results. **Before a release**, also run
   `tests/run.py --groups web-contract` (or `tests/tools/web_contract.py`): the stand-in web's shapes against the
   real services (tests/README.md, tools/). It needs the internet, so it is in no profile; it never calls the search.
+  The search services are checked offline instead (group `search-contract`, in the quick, offline and release profiles,
+  `tests/tools/search_contract.py`): each one's documented request and answers (`tests/tools/contracts/<kind>.json`, with
+  the pages and the date they were read) against the stand-in's shape and the app's provider. Its `--spend KIND
+  --key-file PATH` makes one real search, with the owner's key from a file he names, and is his alone, typed by hand:
+  `tests/run.py` refuses it in every group and profile (`spends`), and it refuses to run without a terminal or inside a
+  test's network boundary.
 
 **A release is measured against the roster**, every case defined in this tree (the scored
 set's `CASES` and `cases.json`, by name and current `case_hash`, with the critical cases read from the
@@ -441,8 +448,10 @@ key, real audio), say so plainly rather than implying it was.
 
 - **Diagnosing what the assistant did**: the app's output goes to the launcher's socket, not to
   the journal. `~/.cache/zero-bot/activity.log` on the device (`src/core/activity.cpp`) has every
-  tool call with its arguments, result and duration, request by request; read it as root over ADB.
-  It holds no words of the user's and no secrets; keep it that way.
+  tool call with its arguments, result and duration, request by request, and each service a web search
+  asked (`search tavily -> failing, HTTP 503 (412 ms)`, or `search (cache) -> ok`: the figures for the services'
+  order and deadlines, ZB-103); read it as root over ADB. It holds no words of the user's and no secrets; keep it
+  that way.
 - **Saved conversations**: SPACE twice on the chat screen writes the conversation so far, as the
   model saw it, to `/home/pi/.local/share/zero-bot/conversations/` (one JSON file per save, named
   by the time). Pull them as root, check the copy, and keep them out of the repository (they hold
@@ -1085,7 +1094,10 @@ real search: one entry in `SEARCH_SHAPES` in `tests/mocks/fake_web.py` (its addr
 is wrapped, how it refuses a key and says the allowance is spent, one hostile reply), and `tests/sim/tools_cli.py`'s
 search checks, which read the registry, run it with nothing more to write; `tests/unit/search_test.cpp` tests the layer
 with stand-in providers (`search::register_provider`). The stand-in's bytes are hashed into every live case, so a new
-shape needs a new baseline of both live sets (section 6). Add the service to the README.
+shape needs a new baseline of both live sets (section 6). Its contract, `tests/tools/contracts/<kind>.json`, holds what
+the service's public documentation says (address, method, key, query and parameters, an answer's fields and an example,
+its errors, with the pages and the date they were read): `tests/tools/search_contract.py` reads the registry too, so a
+service without one fails. Add the service to the README.
 
 **A smart-home device family.** It is a driver: a class implementing `home::Driver`
 (`src/smarthome/driver.h`) in `src/smarthome/drivers/<family>.{h,cpp}`, which defines

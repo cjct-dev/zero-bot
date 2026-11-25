@@ -141,6 +141,14 @@ void tool(const std::string &name, const std::string &args, const std::string &r
     write_line(flat(name, 40) + " " + flat(args, 400) + " -> " + flat(result, 600) + " (" + std::to_string(ms) + " ms)");
 }
 
+// "search tavily -> failing, HTTP 503 (412 ms)", "search (cache) -> ok (0 ms)": a tool line's shape, so one reading
+// of the log finds both.
+void search(const std::string &kind, const std::string &outcome, long status, long ms, bool cached) {
+    const std::string http = status > 0 ? ", HTTP " + std::to_string(status) : "";
+    write_line("search " + (cached ? std::string("(cache)") : flat(kind, 40)) + " -> " + flat(outcome, 40) + http + " (" +
+               std::to_string(ms) + " ms)");
+}
+
 std::string conversations_dir() { return util::data_dir() + "/conversations"; }
 
 json compact(const json &message) {

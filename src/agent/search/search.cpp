@@ -15,6 +15,7 @@
 #include "agent/search/provider.h"
 #include "agent/search/usage.h"
 #include "agent/tools/common.h"
+#include "core/activity.h"
 #include "smarthome/drivers/support.h"
 
 namespace search {
@@ -140,6 +141,31 @@ std::string failure(const std::string &what) {
     return result::fail(what + ", so this could not be looked up. Tell the user that; if you answer from memory, say it may be out of date");
 }
 
+// ---------------------------------------------------------------- what each search did, for measuring
+// An outcome in a word, as the experiments' trace and the activity log write it.
+const char *outcome_word(Outcome outcome) {
+    switch (outcome) {
+        case Outcome::Ok: return "ok";
+        case Outcome::Empty: return "empty";
+        case Outcome::Unreachable: return "unreachable";
+        case Outcome::Slow: return "slow";
+        case Outcome::Failing: return "failing";
+        case Outcome::KeyRefused: return "key_refused";
+        case Outcome::Spent: return "spent";
+        case Outcome::Garbled: return "garbled";
+    }
+    return "unknown";
+}
+
+// One service asked (its kind, what its answer came to, its status and how long it took), or with `cached` the cache's
+// answer in its place, in the experiments' trace and the activity log: the service's kind and figures only, never the
+// query or the answer's words. A week of them from the device gives the order and the deadlines real figures (ZB-103).
+void measured(const std::string &kind, Outcome outcome, long status, long ms, bool cached) {
+    experiment::trace_search({{"kind", cached ? json() : json(kind)}, {"outcome", outcome_word(outcome)}, {"status", status},
+                              {"ms", ms}, {"cached", cached}});
+    activity::search(kind, outcome_word(outcome), status, ms, cached);   // DIAGNOSTICS (temporary): the activity log
+}
+
 // ---------------------------------------------------------------- the cache
 constexpr size_t kCacheSize = 32;
 constexpr unsigned long kCacheMs = 10 * 60 * 1000UL;
@@ -231,7 +257,9 @@ std::string Search::run(const std::vector<Usable> &services) {
         if (!still_set_up(u)) continue;
         const tools::Fetch how = budget(i + 1 < list.size(), list.size() > 1);
         if (sent_++ == 0) usage::sent();   // a search of the day's is one that sends something
+        const unsigned long asked = now_ms();
         const Reply reply = sifted(u.provider->run(query_, u.service, how, ctx_), keys_);
+        measured(u.provider->kind(), reply.outcome, reply.status, static_cast<long>(now_ms() - asked), false);
         if (cancelled()) return result::fail("cancelled");   // never the answer's words: it may quote the key
         note(u, reply);
         if (reply.outcome == Outcome::Ok) return answered(reply);
@@ -419,6 +447,7 @@ std::string run(const std::string &query, tools::Context &ctx) {
         return failure("web search is not set up on this device (a search key can be added in settings)");
     if (const std::optional<std::string> kept = cached(query, s.search_revision)) {
         consent::saw_untrusted_text();   // the model reads a web page's words again
+        measured("", Outcome::Ok, 0, 0, true);
         return *kept;
     }
     if (usage::today() >= usage::kDailyCap)

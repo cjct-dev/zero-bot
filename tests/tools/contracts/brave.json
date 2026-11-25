@@ -1,0 +1,107 @@
+{
+  "kind": "brave",
+  "name": "Brave",
+  "read": "2026-11-25",
+  "sources": [
+    {"url": "https://api-dashboard.search.brave.com/api-reference/web/search/get",
+     "what": "the reference of GET /v1/web/search (served as index.html.md): base URL, the x-subscription-token header, the query parameters with their limits, the 200 answer's fields as a table, and the fields of the 404, 422 and 429 answers (no example bodies)"},
+    {"url": "https://api-dashboard.search.brave.com/documentation/guides/rate-limiting",
+     "what": "the rate-limit headers every answer carries (X-RateLimit-Limit, -Policy, -Remaining, -Reset: per second, then per month) with examples, and 429 past a limit"},
+    {"url": "https://api-dashboard.search.brave.com/documentation/guides/authentication",
+     "what": "the key in the X-Subscription-Token header"},
+    {"url": "https://raw.githubusercontent.com/brave/brave-search-skills/main/skills/web-search/SKILL.md",
+     "what": "Brave's own example answer of the web search (its JSON example; the placeholders for videos and news left out), the source of meta_url's fields, which the reference names without listing for web results"}
+  ],
+  "search": {
+    "method": "GET",
+    "url": "https://api.search.brave.com/res/v1/web/search",
+    "key": {"header": "X-Subscription-Token", "prefix": ""},
+    "query": {"in": "params", "name": "q"},
+    "params": {"q": "text", "count": {"from": 1, "to": 20}},
+    "app": {"count": 5},
+    "sample_request": {"q": "brave search"},
+    "answer": {
+      "status": 200,
+      "fields": {"type": "text?", "query": "object?", "query.original": "text", "query.show_strict_warning": "bool?",
+                 "query.altered": "text?", "query.is_navigational": "bool?", "query.spellcheck_off": "bool?",
+                 "query.country": "text?", "query.bad_results": "bool?", "query.should_fallback": "bool?",
+                 "query.more_results_available": "bool?", "mixed": "object?", "mixed.type": "text?", "mixed.main": "list?",
+                 "mixed.main[]": "object", "mixed.main[].type": "text", "mixed.main[].index": "number?",
+                 "mixed.main[].all": "bool?", "mixed.top": "list?", "mixed.top[]": "object", "mixed.top[].type": "text",
+                 "mixed.top[].index": "number?", "mixed.top[].all": "bool?", "mixed.side": "list?", "mixed.side[]": "object",
+                 "mixed.side[].type": "text", "mixed.side[].index": "number?", "mixed.side[].all": "bool?",
+                 "web": "object?", "web.type": "text?", "web.results": "list", "web.results[]": "object",
+                 "web.results[].title": "text", "web.results[].url": "text", "web.results[].is_source_local": "bool?",
+                 "web.results[].is_source_both": "bool?", "web.results[].description": "text?", "web.results[].age": "text?",
+                 "web.results[].language": "text?", "web.results[].family_friendly": "bool?", "web.results[].type": "text?",
+                 "web.results[].subtype": "text?", "web.results[].is_live": "bool?", "web.results[].meta_url": "object?",
+                 "web.results[].meta_url.scheme": "text", "web.results[].meta_url.netloc": "text",
+                 "web.results[].meta_url.hostname": "text?", "web.results[].meta_url.path": "text",
+                 "web.results[].meta_url.favicon": "text", "web.results[].thumbnail": "object?",
+                 "web.results[].thumbnail.src": "text", "web.results[].thumbnail.original": "text?",
+                 "web.results[].extra_snippets": "list?", "web.results[].extra_snippets[]": "text",
+                 "web.family_friendly": "bool?", "rich": "object?", "rich.type": "text?", "rich.hint": "object?",
+                 "rich.hint.vertical": "text", "rich.hint.callback_key": "text"},
+      "reads": {"web": "object?", "web.results": "list", "web.results[].title": "text", "web.results[].url": "text",
+                "web.results[].description": "text?"},
+      "headers": {"X-RateLimit-Limit": "1, 15000", "X-RateLimit-Policy": "1;w=1, 15000;w=2592000",
+                  "X-RateLimit-Remaining": "0, 14523", "X-RateLimit-Reset": "1, 1234567"},
+      "header_reads": ["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
+      "sample": {
+        "type": "search",
+        "query": {"original": "python frameworks", "altered": "python web frameworks", "spellcheck_off": false,
+                  "more_results_available": true},
+        "web": {
+          "type": "search",
+          "results": [
+            {"title": "Top Python Web Frameworks", "url": "https://example.com/python-frameworks",
+             "description": "A comprehensive guide to Python web frameworks...", "age": "2 days ago", "language": "en",
+             "meta_url": {"scheme": "https", "netloc": "example.com", "hostname": "example.com", "path": "/python-frameworks"},
+             "thumbnail": {"src": "https://...", "original": "https://original-image-url.com/img.jpg"},
+             "extra_snippets": ["Additional excerpt 1...", "Additional excerpt 2..."]}
+          ],
+          "family_friendly": true
+        },
+        "mixed": {"type": "mixed",
+                  "main": [{"type": "web", "index": 0, "all": false}, {"type": "web", "index": 1, "all": false},
+                           {"type": "videos", "all": true}],
+                  "top": [], "side": []},
+        "rich": {"type": "rich", "hint": {"vertical": "weather", "callback_key": "<callback_key_hex>"}}
+      }
+    },
+    "error_fields": {"type": "text?", "error": "object", "error.id": "text", "error.status": "number", "error.detail": "text?",
+                     "error.meta": "object?", "error.code": "text", "time": "number?"},
+    "error_reads": {"error": "object", "error.code": "text"},
+    "open_fields": ["error.meta"],
+    "errors": {
+      "refused": {"status": [422], "code": "SUBSCRIPTION_TOKEN_INVALID",
+                  "code_from": "a user's report: the reference lists 422 and the error's fields, not what a refused key answers",
+                  "body": {"type": "ErrorResponse",
+                           "error": {"id": "an id", "status": 422, "code": "SUBSCRIPTION_TOKEN_INVALID", "detail": "a sentence",
+                                     "meta": {}},
+                           "time": 1}},
+      "spent": {"status": [429], "code": "QUOTA_LIMITED",
+                "code_from": "not in the reference, which lists 429 and the error's fields (the rate-limit guide: a limit passed answers 429); the code as the app reads a spent month (brave.cpp)",
+                "body": {"type": "ErrorResponse",
+                         "error": {"id": "an id", "status": 429, "code": "QUOTA_LIMITED", "detail": "a sentence", "meta": {}},
+                         "time": 1}},
+      "busy": {"status": [429], "code": "RATE_LIMITED", "app_reads_code": false,
+               "code_from": "not in the reference, which lists 429 and the error's fields; the app reads too many at once as a 429 that is neither QUOTA_LIMITED nor a month at 0 (brave.cpp)",
+               "body": {"type": "ErrorResponse",
+                        "error": {"id": "an id", "status": 429, "code": "RATE_LIMITED", "detail": "a sentence", "meta": {}},
+                        "time": 1}},
+      "down": {"status": [], "body": {"type": "ErrorResponse",
+                                      "error": {"id": "an id", "status": 503, "code": "a code", "detail": "a sentence", "meta": {}},
+                                      "time": 1}}
+    }
+  },
+  "notes": [
+    "No example error body is documented: the error samples here are the reference's fields with stand-in values.",
+    "X-RateLimit-Limit's month is 0 for an unlimited plan (rate-limit guide). The app takes the month's figures as they come (brave.cpp monthly); what X-RateLimit-Remaining says on such a plan is not documented.",
+    "The query may hold at most 600 characters and 75 words (the reference's q); the app sends the model's query whole. What a longer one is answered is not documented: any refusal of the request reads as the service's own trouble (Failing), and the next service is asked."
+  ],
+  "known": [
+    {"difference": "the stand-in's down: status 503, the documentation lists none",
+     "why": "the reference documents no 5xx answer; the app reads every 5xx alike (outcome_of: Failing)"}
+  ]
+}

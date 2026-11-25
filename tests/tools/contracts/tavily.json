@@ -1,0 +1,92 @@
+{
+  "kind": "tavily",
+  "name": "Tavily",
+  "read": "2026-11-25",
+  "sources": [
+    {"url": "https://docs.tavily.com/documentation/api-reference/endpoint/search",
+     "what": "the OpenAPI description of POST /search (served as search.md): the request's fields, the bearer key, the 200 answer's fields and their examples, and the error answers 400, 401, 422, 429, 432, 433, 434 and 500 with an example body each"},
+    {"url": "https://docs.tavily.com/documentation/api-reference/endpoint/usage",
+     "what": "the OpenAPI description of GET /usage: the key's and the account's credits used and limits, with examples; 401 and 429"}
+  ],
+  "search": {
+    "method": "POST",
+    "url": "https://api.tavily.com/search",
+    "key": {"header": "Authorization", "prefix": "Bearer "},
+    "query": {"in": "body", "name": "query"},
+    "params": {"query": "text", "search_depth": ["advanced", "basic", "fast", "ultra-fast"],
+               "include_answer": [true, false, "basic", "advanced"], "max_results": {"from": 0, "to": 20}},
+    "app": {"search_depth": "basic", "include_answer": true, "max_results": 5},
+    "sample_request": {"query": "who is Leo Messi?"},
+    "answer": {
+      "status": 200,
+      "fields": {"query": "text", "answer": "text", "images": "list", "images[]": "object", "images[].url": "text",
+                 "images[].description": "text", "results": "list", "results[]": "object", "results[].title": "text",
+                 "results[].url": "text", "results[].content": "text", "results[].score": "number",
+                 "results[].raw_content": "text?", "results[].published_date": "text?", "results[].favicon": "text",
+                 "results[].images": "list", "results[].id": "text", "auto_parameters": "object",
+                 "auto_parameters.topic": "text", "auto_parameters.search_depth": "text", "response_time": "number",
+                 "usage": "object", "usage.credits": "number", "request_id": "text"},
+      "reads": {"answer": "text", "results": "list", "results[].title": "text", "results[].url": "text",
+                "results[].content": "text"},
+      "sample": {
+        "query": "Who is Leo Messi?",
+        "answer": "Lionel Messi, born in 1987, is an Argentine footballer widely regarded as one of the greatest players of his generation. He spent the majority of his career playing for FC Barcelona, where he won numerous domestic league titles and UEFA Champions League titles. Messi is known for his exceptional dribbling skills, vision, and goal-scoring ability. He has won multiple FIFA Ballon d'Or awards, numerous La Liga titles with Barcelona, and holds the record for most goals scored in a calendar year. In 2014, he led Argentina to the World Cup final, and in 2015, he helped Barcelona capture another treble. Despite turning 36 in June, Messi remains highly influential in the sport.",
+        "images": [],
+        "results": [
+          {"title": "Lionel Messi Facts | Britannica", "url": "https://www.britannica.com/facts/Lionel-Messi",
+           "content": "Lionel Messi, an Argentine footballer, is widely regarded as one of the greatest football players of his generation. Born in 1987, Messi spent the majority of his career playing for Barcelona, where he won numerous domestic league titles and UEFA Champions League titles. Messi is known for his exceptional dribbling skills, vision, and goal",
+           "score": 0.81025416, "raw_content": null, "published_date": "Tue, 11 Mar 2025 17:00:00 GMT",
+           "favicon": "https://britannica.com/favicon.png", "id": "a3f9c2-04"}
+        ],
+        "auto_parameters": {"topic": "general", "search_depth": "basic"},
+        "response_time": "1.67",
+        "usage": {"credits": 1},
+        "request_id": "123e4567-e89b-12d3-a456-426614174111"
+      }
+    },
+    "error_fields": {"detail": "object", "detail.error": "text"},
+    "errors": {
+      "refused": {"status": [401], "body": {"detail": {"error": "Unauthorized: missing or invalid API key."}}},
+      "spent": {"status": [432, 433],
+                "body": {"detail": {"error": "This request exceeds the pay-as-you-go limit. You can increase your limit on the Tavily dashboard."}}},
+      "busy": {"status": [429],
+               "body": {"detail": {"error": "Your request has been blocked due to excessive requests. Please reduce the rate of requests."}}},
+      "down": {"status": [500], "body": {"detail": {"error": "Internal Server Error"}}}
+    }
+  },
+  "allowance": {
+    "method": "GET",
+    "url": "https://api.tavily.com/usage",
+    "key": {"header": "Authorization", "prefix": "Bearer "},
+    "answer": {
+      "status": 200,
+      "fields": {"key": "object", "key.usage": "number", "key.limit": "number?", "key.search_usage": "number",
+                 "key.extract_usage": "number", "key.crawl_usage": "number", "key.map_usage": "number",
+                 "key.research_usage": "number", "account": "object", "account.current_plan": "text",
+                 "account.plan_usage": "number", "account.plan_limit": "number", "account.paygo_usage": "number",
+                 "account.paygo_limit": "number", "account.search_usage": "number", "account.extract_usage": "number",
+                 "account.crawl_usage": "number", "account.map_usage": "number", "account.research_usage": "number"},
+      "reads": {"key": "object", "key.usage": "number", "key.limit": "number?", "account": "object",
+                "account.plan_usage": "number", "account.plan_limit": "number"},
+      "sample": {
+        "key": {"usage": 150, "limit": 1000, "search_usage": 100, "extract_usage": 25, "crawl_usage": 15, "map_usage": 7,
+                "research_usage": 3},
+        "account": {"current_plan": "Bootstrap", "plan_usage": 500, "plan_limit": 15000, "paygo_usage": 25, "paygo_limit": 100,
+                    "search_usage": 350, "extract_usage": 75, "crawl_usage": 50, "map_usage": 15, "research_usage": 10}
+      }
+    }
+  },
+  "notes": [
+    "The documentation also lists 400 (a bad request), 422 (a field that fails validation) and 434 (the flex tier's capacity used up, for now); the app reads each as the service's own trouble (Failing), and the next service is asked. A 429 may carry Retry-After, which the app does not read."
+  ],
+  "known": [
+    {"difference": "the documentation's own example: response_time: it has text, the documentation says number",
+     "why": "the OpenAPI example and schema disagree; the stand-in sends a number, as the schema says"},
+    {"difference": "the stand-in's answer: follow_up_questions: the documentation has no such field",
+     "why": "an older answer's field; the app reads only answer and results. To go when the stand-in changes anyway (ZB-106), since every byte of it is hashed into every live case"},
+    {"difference": "the stand-in's empty answer: follow_up_questions: the documentation has no such field",
+     "why": "the same field in the answer that found nothing"},
+    {"difference": "the stand-in's down: status 503, the documentation lists 500",
+     "why": "a service's gateway answers 503 when it is down; the app reads every 5xx alike (outcome_of: Failing)"}
+  ]
+}

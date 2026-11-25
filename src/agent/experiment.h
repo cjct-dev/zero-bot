@@ -7,11 +7,12 @@
 // exactly what it would without this file.
 //
 // The trace holds no words of the user's or the model's, no tool arguments or results, no keys,
-// headers or model ids: counts, sizes, times, tool names and which guard fired. So a trace file is
-// as safe to keep as the activity log.
+// headers or model ids: counts, sizes, times, tool names, search services' kinds and which guard
+// fired. So a trace file is as safe to keep as the activity log.
 //
 //   ZB_EXP_TRACE=FILE      append one JSON line per model call ("call"), per request ("request"),
-//                          per speech probe ("tts") and one at start ("start") to FILE
+//                          per speech probe ("tts"), per service a web search asks and per answer
+//                          from its cache ("search") and one at start ("start") to FILE
 //   ZB_EXP_CACHE_BUST=1    a random line at the top of the system prompt, once per process, so the
 //                          service cannot answer from a cached prefix of an earlier run
 //   ZB_EXP_TTS_PROBE=1     synthesise (never play) each request's first sentence on a thread of its
@@ -68,6 +69,7 @@ void trace(json event);                         // appends one line; adds "ev" i
 std::string cache_bust_line();                  // "" unless ZB_EXP_CACHE_BUST
 long request_ms();                              // ms since the current request began (-1 if none)
 void trace_call(const json &call);              // one model call of the current request (numbered here)
+void trace_search(const json &search);          // one service a web search asked, or its cache's answer (search.cpp)
 json numbers_only(const json &v);               // a copy keeping only numbers, booleans and objects of them
 void wait_probes(int max_ms);                   // lets speech probes still running finish (command line)
 std::string web(const std::string &url);        // ZB_EXP_WEB: the stand-in's address for url, or url
@@ -105,6 +107,7 @@ inline void trace(const json &) {}
 inline std::string cache_bust_line() { return ""; }
 inline long request_ms() { return -1; }
 inline void trace_call(const json &) {}
+inline void trace_search(const json &) {}
 inline json numbers_only(const json &) { return nullptr; }
 inline void wait_probes(int) {}
 inline std::string web(std::string url) { return url; }
