@@ -23,12 +23,11 @@ namespace art {
 namespace {
 
 // The chat's stage: art rows 9 to 75, screen rows 18 to 151, between the status bar and the bottom row.
-constexpr int kFirstRow = theme::kStatusH / 2;
-constexpr int kRows = (theme::kScreenH - theme::kStatusH - theme::kFooterH) / 2;
-constexpr int kStageW = kW * 2, kStageH = kRows * 2;
-constexpr size_t kStagePixels = static_cast<size_t>(kStageW) * kStageH;
+constexpr int kStageFirstRow = theme::kStatusH / 2;
+constexpr int kStageRows = (theme::kScreenH - theme::kStatusH - theme::kFooterH) / 2;
+constexpr int kWidth = kW * 2;                        // in screen pixels, whatever the place
 constexpr int kBlock = 4;                             // the dissolve's blocks: 2x2 art pixels
-constexpr int kBlockColumns = kStageW / kBlock;
+constexpr int kBlockColumns = kWidth / kBlock;
 constexpr unsigned long kLightingEveryMs = 60000;    // how often the lighting is looked at while a scene shows
 
 Source embedded() {
@@ -39,10 +38,10 @@ Source embedded() {
     };
 }
 
-// The dissolve's blocks (row * kBlockColumns + column), shuffled once with a fixed seed: the same pattern every
-// time, and in every --shots run.
-std::vector<uint16_t> shuffled_blocks() {
-    const int rows = (kStageH + kBlock - 1) / kBlock;
+// The dissolve's blocks (row * kBlockColumns + column) over `height` screen rows, shuffled once with a fixed seed:
+// the same pattern every time, and in every --shots run.
+std::vector<uint16_t> shuffled_blocks(int height) {
+    const int rows = (height + kBlock - 1) / kBlock;
     std::vector<uint16_t> order(static_cast<size_t>(kBlockColumns * rows));
     for (size_t i = 0; i < order.size(); ++i) order[i] = static_cast<uint16_t>(i);
     uint32_t seed = 7;
@@ -60,25 +59,26 @@ void set_hidden(lv_obj_t *obj, bool hidden) {
 
 }  // namespace
 
-ArtView::ArtView() : assets_(embedded()) {}
+ArtView::ArtView(Place place)
+    : first_row_(place == Place::Stage ? kStageFirstRow : 0), rows_(place == Place::Stage ? kStageRows : kH), assets_(embedded()) {}
 
 void ArtView::create(lv_obj_t *parent) {
     // The RGB565 plane, then the alpha plane LVGL reads right after it while the view dissolves (RGB565A8).
-    stage_.assign(kStagePixels + kStagePixels / 2, 0);
-    order_ = shuffled_blocks();
+    stage_.assign(pixels() + pixels() / 2, 0);
+    order_ = shuffled_blocks(rows_ * 2);
     for (lv_image_dsc_t *dsc : {&solid_, &holed_}) {
         const bool solid = dsc == &solid_;
         dsc->header.magic = LV_IMAGE_HEADER_MAGIC;
         dsc->header.cf = solid ? LV_COLOR_FORMAT_RGB565 : LV_COLOR_FORMAT_RGB565A8;
-        dsc->header.w = kStageW;
-        dsc->header.h = kStageH;
-        dsc->header.stride = kStageW * 2;
-        dsc->data_size = static_cast<uint32_t>(kStagePixels * (solid ? 2 : 3));
+        dsc->header.w = kWidth;
+        dsc->header.h = static_cast<uint32_t>(rows_ * 2);
+        dsc->header.stride = kWidth * 2;
+        dsc->data_size = static_cast<uint32_t>(pixels() * (solid ? 2 : 3));
         dsc->data = reinterpret_cast<const uint8_t *>(stage_.data());
     }
     img_ = lv_image_create(parent);
     lv_obj_remove_flag(img_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(img_, 0, theme::kStatusH);
+    lv_obj_set_pos(img_, 0, 2 * first_row_);
     set_opaque(true);
     set_hidden(img_, true);
     title_ = theme::label(img_, "", theme::bold(), theme::kText);
@@ -107,7 +107,7 @@ void ArtView::load(const std::string &scene) {
     scene_ = scene.empty() ? nullptr : make(scene);
     if (!scene_) return;
     const Spot spot = scene_->title_spot();
-    lv_obj_set_pos(title_, 2 * spot.x, 2 * (spot.y - kFirstRow));
+    lv_obj_set_pos(title_, 2 * spot.x, 2 * (spot.y - first_row_));
     lv_obj_set_width(title_, 2 * spot.w);
 }
 
@@ -149,7 +149,7 @@ bool ArtView::catch_up(unsigned long now) {
 bool ArtView::begin(unsigned long ms, bool night) {
     canvas_.clear();
     assets_.clear();
-    const Moment m{ms, night};
+    const Moment m{ms, night, level_};
     started_ = scene_->start(canvas_, assets_, m);
     if (!started_) {
         fprintf(stderr, "art: the %s scene's pictures are missing\n", name_.c_str());
@@ -168,7 +168,7 @@ bool ArtView::begin(unsigned long ms, bool night) {
 void ArtView::draw_frame(unsigned long now) {
     const unsigned long ms = now - clock_;
     frame_ = ms / scene_->period_ms();
-    scene_->frame(canvas_, {ms, night_});
+    scene_->frame(canvas_, {ms, night_, level_});
     ++frames_;
     draw(canvas_.compose());
 }
@@ -176,9 +176,10 @@ void ArtView::draw_frame(unsigned long now) {
 // Copies what changed into the stage and has LVGL redraw exactly that.
 void ArtView::draw(const std::vector<Rect> &areas) {
     for (const Rect &a : areas) {
-        const Rect r = scale2x(canvas_, a, stage_.data(), kFirstRow, kRows);
+        const Rect r = scale2x(canvas_, a, stage_.data(), first_row_, rows_);
         if (r.empty()) continue;
-        const lv_area_t area{r.x, theme::kStatusH + r.y, r.x + r.w - 1, theme::kStatusH + r.y + r.h - 1};
+        const int top = 2 * first_row_ + r.y;
+        const lv_area_t area{r.x, top, r.x + r.w - 1, top + r.h - 1};
         lv_obj_invalidate_area(img_, &area);
     }
 }
@@ -211,11 +212,11 @@ bool ArtView::on_screen() const { return img_ && !lv_obj_has_flag(img_, LV_OBJ_F
 // meanwhile let go of).
 void ArtView::step() {
     const size_t from = order_.size() * static_cast<size_t>(step_) / kSteps, to = order_.size() * static_cast<size_t>(step_ + 1) / kSteps;
-    uint8_t *alpha = reinterpret_cast<uint8_t *>(stage_.data() + kStagePixels);
+    uint8_t *alpha = reinterpret_cast<uint8_t *>(stage_.data() + pixels());
     for (size_t i = from; i < to; ++i) {
         const int x = order_[i] % kBlockColumns * kBlock, y = order_[i] / kBlockColumns * kBlock;
-        for (int row = y; row < y + kBlock && row < kStageH; ++row)
-            memset(alpha + static_cast<size_t>(row) * kStageW + static_cast<size_t>(x), front_ ? 0xFF : 0, kBlock);
+        for (int row = y; row < y + kBlock && row < rows_ * 2; ++row)
+            memset(alpha + static_cast<size_t>(row) * kWidth + static_cast<size_t>(x), front_ ? 0xFF : 0, kBlock);
     }
     lv_obj_invalidate(img_);
     if (++step_ < kSteps) return;
@@ -236,7 +237,7 @@ void ArtView::set_opaque(bool opaque) {
     lv_image_set_src(img_, opaque ? &solid_ : &holed_);
 }
 
-void ArtView::fill_alpha(uint8_t alpha) { memset(stage_.data() + kStagePixels, alpha, kStagePixels); }
+void ArtView::fill_alpha(uint8_t alpha) { memset(stage_.data() + pixels(), alpha, pixels()); }
 
 void ArtView::show_at(unsigned long now, unsigned long ms, bool night) {
     if (!scene_) return;
