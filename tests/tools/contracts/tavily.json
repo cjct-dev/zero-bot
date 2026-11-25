@@ -76,6 +76,9 @@
       }
     }
   },
+  "notes": [
+    "The documentation also lists 400 (a bad request), 422 (a field that fails validation) and 434 (the flex tier's capacity used up, for now); the app reads each as the service's own trouble (Failing), and the next service is asked. A 429 may carry Retry-After, which the app does not read."
+  ],
   "known": [
     {"difference": "the documentation's own example: response_time: it has text, the documentation says number",
      "why": "the OpenAPI example and schema disagree; the stand-in sends a number, as the schema says"},

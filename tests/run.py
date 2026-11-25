@@ -211,6 +211,7 @@ GROUPS = [
                "requests, never the search; needs the internet): on demand, before a release, in no profile"),
 ]
 BY_NAME = {g["name"]: g for g in GROUPS}
+NAME_W = max(len(n) for n in BY_NAME)   # the column of group names in the plan, the lines and the summary
 OFFLINE = [g["name"] for g in GROUPS if not g.get("live") and not g.get("auto") and not g.get("build") and not g.get("heldout")
            and not g.get("ondemand")]
 LIVE = [g["name"] for g in GROUPS if g.get("live")]
@@ -862,7 +863,7 @@ def print_plan(chosen, why, notes, advice, o, out=None):
             flags.append("skipped: no case of this set is selected")
         elif count:
             flags.append(plural(count, "case") + (" x%d" % o.repeat if o.repeat > 1 else ""))
-        print("  %-12s ~%-6s %s%s" % (n, duration(group_secs(n, o)), why.get(n, ""),
+        print("  %-*s ~%-6s %s%s" % (NAME_W, n, duration(group_secs(n, o)), why.get(n, ""),
                                      ("; " + "; ".join(flags)) if flags else ""), file=out)
         for c in commands_of(g, o, "<run>"):
             print("      " + command_text(c), file=out)
@@ -1122,7 +1123,7 @@ def execute(chosen, why, notes, advice, o):
         if release_mode(o):   # the binary the package is made from: a problem fails the release
             status, line = device_check(broken)
             rows.append(("device", status, line, 0))
-            print("%-4s  %-12s %5d s  %s" % (status.upper(), "device", 0, line), flush=True)
+            print("%-4s  %-*s %5d s  %s" % (status.upper(), NAME_W, "device", 0, line), flush=True)
         for n in chosen:
             g = BY_NAME[n]
             needs = {x.split(":")[0] for x in g["needs"]}
@@ -1134,7 +1135,7 @@ def execute(chosen, why, notes, advice, o):
             if n in LIVE and status != "skip":
                 o.live_ran = getattr(o, "live_ran", []) + [n]
             log = os.path.join(rel, n + ".log")
-            print("%-4s  %-12s %5d s  %s%s" % (status.upper(), n, secs, line,
+            print("%-4s  %-*s %5d s  %s%s" % (status.upper(), NAME_W, n, secs, line,
                                                "   (%s)" % log if status == "fail" else ""), flush=True)
     except KeyboardInterrupt:
         print("interrupted")
@@ -1164,7 +1165,7 @@ def judged(rows, run):
                    "the gate's verdict: %s" % verdict.get("verdict") if verdict.get("verdict") != "passes" else "")
             if why:
                 status, line = "fail", "%s; failed cases, and %s" % (line, why)
-                print("FAIL  %-12s        %s" % (n, line), flush=True)
+                print("FAIL  %-*s        %s" % (NAME_W, n, line), flush=True)
         out.append((n, status, line, secs))
     return out
 
@@ -1178,7 +1179,7 @@ def summary_lines(rows, warnings, advice, o, rel, secs):
         head += ", %d live runs judged by the gate" % n["ran"]
     out = ["", "summary: %s in %s" % (head, duration(secs))]
     for name, status, line, s in rows:
-        out.append("  %-12s %-4s %5d s  %s" % (name, status, s, line))
+        out.append("  %-*s %-4s %5d s  %s" % (NAME_W, name, status, s, line))
     for note, names in warnings.items():
         out.append("warning: %s; ran %s with it (--build rebuilds)" % (note, ", ".join(names)))
     out += advice_lines(advice, o)
@@ -1191,7 +1192,7 @@ def print_list():
     print("groups (in run order):")
     for g in GROUPS:
         needs = ", ".join(g["needs"] + ["(%s if built)" % u for u in g.get("uses", [])]) or "-"
-        print("  %-12s ~%-6s needs %s\n      %s" % (g["name"], duration(g["secs"]), needs, g["about"]))
+        print("  %-*s ~%-6s needs %s\n      %s" % (NAME_W, g["name"], duration(g["secs"]), needs, g["about"]))
     print("profiles:")
     for name, (about, groups) in PROFILES.items():
         print("  %-8s %s%s" % (name, about, (": " + ", ".join(groups)) if groups else ""))
