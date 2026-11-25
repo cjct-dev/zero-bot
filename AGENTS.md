@@ -26,7 +26,7 @@ Scan staged changes and the built binary (`strings`) before every push. The buil
 | Part | Detail | Consequence |
 |---|---|---|
 | CPU / RAM | Raspberry Pi CM0: four Cortex-A53 at 1 GHz, about 350 MB usable RAM, zram swap | Starting a process is expensive (ffmpeg: 1 to 3 s; ffplay and rpicam-jpeg: 1 to 2 s). Prefer in-process work or a kept-open helper. Never spawn on the UI thread. |
-| Screen | 320x170, RGB565, `/dev/fb0`, driven over SPI | Sending pixels costs several times what drawing them does. Redraw only what changed; keep animated areas small; 8 to 12 updates a second is plenty. |
+| Screen | 320x170, RGB565, `/dev/fb0`, driven over SPI | Sending pixels costs several times what drawing them does. Redraw only what changed; keep animated areas small; 8 to 12 updates a second is plenty. The kernel sends at most one update every 50 ms, a full-width band from the first to the last 4 KiB page written in that time: the cost follows the rows between the highest and the lowest change, not the area. |
 | Keyboard | TCA8418 keypad, `/dev/input/by-path/platform-3f804000.i2c-event` | The driver's fn layer sends its own key codes (arrows on fn+F/Z/X/C, volume on fn+A/S/D, brightness on fn+U/I, media on fn+Q/W/E, F1..F10 on fn+digits). The sym layer also arrives as dedicated codes. No auto-repeat from the driver: `input.cpp` synthesizes it. |
 | Audio | ES8389 codec through PipeWire (`pw-cat`), tiny speaker, weak microphone | The mic needs digital gain and normalising. Use `pw-cat`/`wpctl`, not ALSA directly. Bluetooth headsets must stay output-only (see lessons). |
 | Camera | IMX219 via `rpicam-jpeg`, mounted upside down | Photos are rotated 180 degrees by default (`camera_flip`). |
@@ -85,7 +85,8 @@ src/smarthome/      discovery (mDNS, SSDP, TP-Link and WiZ broadcasts); driver.h
 src/ui/             the app controller: app.cpp (wiring, the agent's events, recording, the
                     first-run guide's start, run_app and the main loop), app_keys.cpp (what each
                     key does), app_status.cpp (footer and status bar, timers and the alarm banner,
-                    reminders, the screen's light, the periodic work), app_impl.h (the App struct,
+                    reminders, the screen's light, the art's scene of what plays: follow_art, the
+                    periodic work), app_impl.h (the App struct,
                     shared by those and shots.cpp only), shots.cpp (--shots, one function per
                     group of screens); chat screen (chat_view), menu system (menu); settings
                     pages: settings_pages.cpp (the top page and sections, the status page, the
@@ -97,10 +98,16 @@ src/ui/             the app controller: app.cpp (wiring, the agent's events, rec
                     language model, ZB-088, the owner's rule, and a model the service no longer
                     lists is replaced by the one labelled for its use, ZB-119; by hand the settings
                     list those labelled for the use, else the unlabelled ones, else all); the keys and their
-                    guide (key_guide), when the screen dims and goes off (screen_idle), breathing
-                    screen, alarm banner, theme
-tests/              run.py, the entry point that runs the tests in groups by profile (section 6), and
-                    netguard.py, the network boundary of every test process; unit/ (the C++ unit
+                    guide (key_guide), when the screen dims and goes off and when a scene comes in
+                    front of the chat (screen_idle), breathing screen, alarm banner, theme; and art/,
+                    the moving pictures (ZB-061): canvas (indexed pictures composed into RGB565, only
+                    what changed; no LVGL), assets (the PNGs, read with libpng), scene.h (a scene's
+                    interface, Moment), scenes.cpp (the registry), scenes/ (one file per scene),
+                    art_view (the LVGL side: one image on the chat's stage, its title, the
+                    dissolve; dusk or night from core/dusk.h)
+tests/              run.py, the entry point that runs the tests in groups by profile (section 6),
+                    netguard.py, the network boundary of every test process, and art_check.py, the
+                    art's pictures; unit/ (the C++ unit
                     tests, built and run by run_unit.sh), sim/ (offline end to end against simulated
                     devices and services: each driver's e2e, the request loop against scripted
                     chat services, the offline tools, the package, the golden screenshots in
@@ -110,6 +117,8 @@ tests/              run.py, the entry point that runs the tests in groups by pro
                     contracts/, against the stand-in and the app), mocks/ (simulated devices, chat services, the
                     stand-in web, fixtures), lib/ (code they share); tests/README.md says what each is
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
+assets/art/         the scenes' pictures, a folder per scene (indexed PNGs: tests/art_check.py), built
+                    into the program by cmake/embed.cmake
 packaging/          the launcher entry and icon, Zero's picture for the launcher's wake screen
                     (lockscreen.png), and the package's maintainer scripts (preinst, postrm)
 ```
@@ -345,7 +354,8 @@ The three builds share all the sources except that `cli` leaves out `src/ui/` an
 and input code. Libraries: libcurl, libcrypto (OpenSSL 3.5 on the device, possibly newer on a
 PC: use only non-deprecated interfaces), FreeType and libpng for the UI. MP3 encoding (libmp3lame),
 MP3 decoding for music (libmpg123) and Opus decoding (libopusfile) are loaded at run time with
-`dlopen` and are optional. The device build (`cp0`) is `-O2` with every function in a section of its
+`dlopen` and are optional. The art's pictures (`assets/art/`) are built into the program as a C table
+(`cmake/embed.cmake`, plain CMake, run again whenever a picture changes; not in the `cli` build). The device build (`cp0`) is `-O2` with every function in a section of its
 own and `--gc-sections`, LVGL included (a quarter smaller than `-O3` without them); `scripts/deploy.sh`
 and `scripts/package-deb.sh` install it stripped, and `build/cp0/zero_bot` keeps the symbols for
 reading a crash.
@@ -868,6 +878,14 @@ key, real audio), say so plainly rather than implying it was.
   handler) before the process ends as it would have. A modifier tapped on its own, and a key the
   app has no use for, reach `handle_key` as a `Key::None` press (`LoneModifier`): it wakes the
   screen and does nothing else.
+- An image with an alpha channel never covers what lies under it (LVGL's cover check), so LVGL draws the
+  chat under it at every frame. The art's view is RGB565 while it shows and RGB565A8 (the alpha plane right
+  after the colours) only while it dissolves, switched in a step that redraws it whole anyway.
+- The art's night pictures are the dusk ones relit, but not quite a palette swap: about 40 land pixels
+  (lit windows, glints) have colours of their own, and one index space for both lightings needed 25
+  colours. So every picture has its own palette, the land is one picture with a palette per lighting, and
+  what a lighting adds lies in a layer of its own (`lights-night`). The canvas, fed the exported pictures,
+  gives the finished animation's frames pixel for pixel (`art_test`'s hashes).
 - A test that walks menus by counted key presses breaks without a word when a row is added: every
   later screenshot shifted. `--shots` walks by row label (`Shots::menu_to`), pressing the keys a
   user would, and the pictures came out identical, pixel for pixel.
@@ -1031,6 +1049,23 @@ lookup read the settings again to build its request, so an address saved meanwhi
 holds the setup guide's late answers in the UI queue until the user has moved on, then delivers
 them (`late_setup_answers_ignored`, `returned_setup_answers_ignored`); it notes where each lookup's
 key went at a stand-in service on 127.0.0.1 (`lookups_keep_their_service`).
+
+**A scene of the art** (the moving picture of what plays; ZB-061). Its pictures go in `assets/art/<name>/`:
+8-bit indexed PNGs of 160x85 art pixels (each shown 2x2), each with its own palette of at most 24 colours exact
+in RGB565, index 0 clear, holding nothing but IHDR, PLTE, tRNS, IDAT and IEND (`tests/art_check.py` checks it
+all; no picture, file name or commit may say how the art was made). A `sky-<lighting>` and a `land-<lighting>`
+for dusk and night, the land the same pixels in both (two palettes); what one lighting adds on the land (lit
+windows) in a layer of its own; a sprite sheet drawn in both lightings the same pixels in both. What moves behind
+the land (the radio's rings) is added between the sky and the land. The scene is
+`src/ui/art/scenes/<name>.cpp`, implementing `art::Scene` (scene.h): `start` adds its pictures to the canvas in
+the order they are drawn, `frame` works out everything from `Moment::ms` alone (nothing stepped frame by frame),
+`period_ms` is its one clock (every part steps on it, never under 50 ms: the panel's limit), `title_spot` a band
+where nothing moves. Then one line, `X(<name>)`, in `ZB_SCENES` in `src/ui/art/scenes.cpp`; a budget in
+`kBudgetKBps` (`tests/unit/art_test.cpp`: what it may send the panel, the test fails without one) and a test of
+its frames there; its frames in `App::shots_art`; and what plays it in `App::playing` (app_status.cpp). CMake
+embeds the pictures and `run_unit.sh` links every file in `scenes/` by themselves. Keep what moves in every frame
+within few rows: the panel is sent whole rows from the first changed to the last (section 2). When it shows, and
+how it hands over to the chat, is `screen_idle`'s and `ArtView`'s, the same for every scene.
 
 **Something shown over every screen** (the timer's alarm banner, `AlarmView`): make it a child
 of the screen, created after the other views, and `raise()` it again whenever another view

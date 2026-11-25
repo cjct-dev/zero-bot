@@ -8,6 +8,7 @@ procedure and the rule that no test uses a live web service are in `AGENTS.md` s
 |---|---|
 | `run.py` | the runner: groups, profiles, the path map from changed files to groups, the release |
 | `netguard.py` | the network boundary of every test process (below) |
+| `art_check.py` | the art's pictures, `assets/art/` (below) |
 | `lib/` | code the folders share: `records.py` reads the cli build's account of a run as turns (its records file, or its printed output), `music.py` makes the stand-in music library, `answered.py` reads a smart-home driver's error as the app does |
 | `unit/` | offline unit tests in C++, built and run by `unit/run_unit.sh`, with the schema snapshots in `unit/snapshots/` |
 | `sim/` | offline end-to-end tests against simulated devices and services, and the screenshot check (`sim/screens/`) |
@@ -38,6 +39,15 @@ exactly the AI service's scheme, host and port (read by libcurl's own URL parser
 request, so another port, a subdomain or a redirect is refused before it leaves. `sim/tools_cli.py` (`no_real_web`,
 `web_wraps`) proves it: a case run by the live sets' runner itself against a scripted model that calls every web
 tool makes no request outside 127.x, and every `fetch_json` address goes through `experiment::web()`.
+
+## art_check.py: the art's pictures
+
+`art_check.py` (group `art`) reads every picture under `assets/art/<scene>/`, standard library only: each an 8-bit
+indexed PNG holding only IHDR, PLTE, tRNS, IDAT and IEND (no text, time, colour profile or other metadata), its
+checksums right, index 0 its one clear entry, at most 24 colours each exact in RGB565, no pixel outside its palette;
+only PNGs, named in small letters, digits and dashes; each scene's layers 160x85, a sky and a land for dusk and for
+night, the land the same pixels in both (two palettes), and so every other part drawn in both but the sky and what
+each lighting adds (`lights`, `twinkle`). `--self-test` runs it against pictures made wrong on purpose.
 
 ## lib/: shared code
 
@@ -77,7 +87,9 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
 - `timers_test.cpp`: the timer tool, storage, the countdown, the alarm, its player against a stand-in `pw-cat`; it
   keeps everything it writes in a temporary folder of its own, so running it by hand is safe too.
 - `key_guide_test.cpp`: what each key does on the chat screen, and that the key guide says so.
-- `screen_idle_test.cpp`: when the screen dims and goes off, what keeps it lit and what wakes it.
+- `screen_idle_test.cpp`: when the screen dims and goes off, what keeps it lit and what wakes it; when a scene of the
+  art comes in front of the chat (20 s unused, never over the menu, a text field or the alarm banner), that it keeps
+  the screen on, dimmed, and the Dynamic art setting's choices.
 - `dusk_test.cpp`: the scenes' dusk and night (`core/dusk.h`): sunrise and sunset against an almanac's times
   (timeanddate.com: Southampton in winter, summer and either side of the clocks going forward, Sydney in summer and
   winter, Tromso in March) within 2.5 minutes, the midnight sun and the polar night, the night's edges and the blend,
@@ -85,6 +97,12 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
   either side of the clocks changing, the zone tables' coordinates (a table's lines, the system's own, zones with
   none), where the sun is reckoned for from the settings, and the home city's place saved and forgotten when the city
   or country changes.
+- `art_test.cpp`: the art engine without its view (`src/ui/art/`): the canvas (pictures in order, clear pixels, the
+  edges, the areas it returns: every change in one, none bigger than its changes, at most 16), the 2x copy for the
+  screen, PNG decoding (the repository's pictures; broken, cut-short and other kinds of PNG refused), every scene for
+  20 s through a model of the panel (an update every 50 ms at most, whole 4 KiB pages) against its budget in
+  `kBudgetKBps` (a tripwire: raise it knowingly; a scene without one fails), the radio's 16 frames at dusk and at night
+  against the hashes of its finished animation's frames (pixel for pixel, the loop included), and the registry.
 - `radio_test.cpp`: the station file, names, nicknames and tags (a station by tag, focus mode as the tool describes
   it), the tool absent without stations, the check of a stream
   against `radio_peer.py`, the player's live mode against a stand-in `ffplay`.
@@ -260,8 +278,10 @@ model-choosing rules of `ui/models.h`, where a lookup of the models sends its ke
 when the service is asked for its models, that a key a web search service refused shows on the AI service page and
 that Left and Right move a service in the order, that the Web search pages follow a search made while they are open,
 that every key, password and code is typed hidden (bullets, `--keydump` quiet meanwhile, the field emptied when it
-closes) while an e-mail or user name is not, that input waiting for the phone goes with a cancelled request, and how
-long the main loop sleeps: `shots_idle`). `sim/screens/shots_compare.py` renders them into a temporary folder and
+closes) while an e-mail or user name is not, that input waiting for the phone goes with a cancelled request, the art's
+rules end to end (the radio's scene in front after 20 s unused, dissolving in and out in 50 ms steps, nothing composed
+while it is away, the screen kept on dimmed, never over the menu, under the alarm banner, as Dynamic art is set:
+`art_rules_ok`), and how long the main loop sleeps: `shots_idle`). `sim/screens/shots_compare.py` renders them into a temporary folder and
 compares each with `sim/screens/golden/` (small tolerance; differences drawn to `build/shots-diff/`), with the wall
 clock pinned (`sim/screens/fixclock.c`, built with `cc` and preloaded) and stand-ins on `PATH` for the audio, volume
 and network helpers, so it plays no sound and changes nothing on the PC (plain `--shots` plays a chime and sets the

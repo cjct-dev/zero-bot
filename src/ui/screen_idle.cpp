@@ -33,6 +33,28 @@ std::string off_label(int minutes) {
     return std::to_string(minutes) + (minutes == 1 ? " minute" : " minutes");
 }
 
+namespace {
+const char *const kArtModes[] = {"on", "off", "plugged"};   // in the order the setting steps through them
+}  // namespace
+
+bool art_allowed(const std::string &mode, bool on_battery) {
+    if (mode == "off") return false;
+    return mode != "plugged" || !on_battery;
+}
+
+std::string art_label(const std::string &mode) {
+    if (mode == "off") return "Off";
+    return mode == "plugged" ? "When plugged in" : "On";
+}
+
+std::string step_art_mode(const std::string &mode, int dir) {
+    const int n = static_cast<int>(sizeof kArtModes / sizeof kArtModes[0]);
+    int at = 0;   // a value that is none of them (a hand-edited file) counts as "on", the default
+    for (int i = 0; i < n; ++i)
+        if (mode == kArtModes[i]) at = i;
+    return kArtModes[((at + (dir > 0 ? 1 : -1)) % n + n) % n];
+}
+
 Light Idle::use(unsigned long now) {
     const Light was = light_;
     light_ = Light::Lit;
@@ -40,18 +62,22 @@ Light Idle::use(unsigned long now) {
     return was;
 }
 
-Light Idle::update(unsigned long now, bool busy, int off_after_min) {
+Light Idle::update(unsigned long now, bool busy, int off_after_min, bool scene) {
     if (busy) {
         use(now);
         return light_;
     }
     // A use stamped a moment after the time this tick read is no idle time at all, not a very long one.
-    const unsigned long idle = now > last_use_ ? now - last_use_ : 0;
+    const unsigned long idle = unused_for(now);
     Light want = Light::Lit;
-    if (off_after_min > 0 && idle >= static_cast<unsigned long>(off_after_min) * 60000UL) want = Light::Off;
+    if (!scene && off_after_min > 0 && idle >= static_cast<unsigned long>(off_after_min) * 60000UL) want = Light::Off;
     else if (idle >= kDimAfterMs) want = Light::Dimmed;
     if (static_cast<int>(want) > static_cast<int>(light_)) light_ = want;
     return light_;
+}
+
+bool scene_in_front(const Idle &idle, unsigned long now, bool wanted, bool blocked) {
+    return wanted && !blocked && idle.light() != Light::Off && idle.unused_for(now) >= kSceneAfterMs;
 }
 
 }  // namespace screen

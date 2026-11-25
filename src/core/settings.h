@@ -72,6 +72,9 @@ struct Settings {
     int brightness = 80;
     int screen_off_min = 5;      // minutes unused before the screen goes off (against burn-in); 0 = never
     int mic_gain = 100;
+    // Moving pictures while something plays (ui/art): "on", "off", or "plugged" (only while the battery is not
+    // discharging). Any other value in the file reads as "on".
+    std::string dynamic_art = "on";
 
     // Personalisation
     std::string agent_name = "Zero";

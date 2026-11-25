@@ -221,7 +221,7 @@ settings from any page.
 | Section | What is there |
 |---|---|
 | Assistant | Language, vision, speech-to-text and text-to-speech models; voice; spoken replies on/off; fast replies; the assistant's name |
-| Device | Volume, brightness, screen off after, microphone gain, time zone, internet via phone, use phone when offline, microphone, flip camera image, home city and country, your name, date order, units |
+| Device | Volume, brightness, screen off after, dynamic art, microphone gain, time zone, internet via phone, use phone when offline, microphone, flip camera image, home city and country, your name, date order, units |
 | Your data | Calendar (edit, add, delete, delete all), reminders and timers (cancel one or all), memory (edit, add, delete, forget everything), TV remote, smart home (devices by room, setting up, the Tapo account), music library, radio stations (what was read from your list, play one to try it), saved conversations (how many, delete them all; see [Diagnostics (temporary)](#diagnostics-temporary)), start a new conversation |
 | AI service | Address, API key, web search (each service's key, on or off, the order they are asked in, how each stands: working, key refused, allowance used up until when, resting after failures; its searches this month and what it last said is left, which Tavily can be asked for; today's searches), compress audio |
 | About | Status and connection test, the setup guide again, exit to launcher |
@@ -252,6 +252,18 @@ so a stray press is harmless (**fn** or shift tapped on its own wakes it too). I
 you are talking, while a request is worked on or its answer spoken, during a breathing exercise
 and while a timer's alarm rings; an alarm or a reminder turns it on at once. If the app should
 crash while the screen is off or dimmed, the backlight is put back at the brightness you set.
+
+*Dynamic art* (under *Device*: on, off, or when plugged in; on by default) shows a moving picture of
+what plays while you are not using the device: for the radio, a mast on a hill at dusk or at night
+(night from 45 minutes after sunset where you are, without the network: your home city or your time
+zone tells where), sending out rings of radio waves, with the station's name. It
+comes by itself after 20 seconds without a key, and any key takes you back to the conversation at
+once with a short dissolve, while the key does its own job too (**TAB** starts listening straight
+away). It never comes over settings, text being typed, the breathing exercise or a timer's alarm.
+While it shows, the screen dims after 45 seconds as usual but does not go off at *Screen off
+after*; that costs a little battery, so *When plugged in* shows it only while the device is on
+USB power (charging or full), and *Off* leaves the conversation screen as it was, with the station
+in the status bar.
 
 ### Calendar
 
@@ -333,7 +345,8 @@ Say "play Harbour FM" or "put on the jazz station"; "stop the radio" or **ESC** 
 radio pauses while you talk and while the assistant answers, then rejoins the live broadcast.
 **fn**+**Q** (or plain **Q** on the conversation screen) pauses and resumes, **fn**+**W** and
 **fn**+**E** (or **W** and **E**) move to the previous and next station in your list, and the
-status bar shows the station's name. If a stream stops and cannot
+status bar shows the station's name. Left alone for 20 seconds, the screen shows the radio's
+picture (see *Dynamic art* under [Settings](#settings)). If a stream stops and cannot
 be joined again (the station is off the air, the Wi-Fi has gone), a note on the screen says so. A
 stream does not say what is on; with web search, the assistant can look the schedule up.
 
@@ -685,8 +698,11 @@ The groups are:
   the check of a stream against a pretend radio server), the keys and their guide, when the screen
   dims and goes off, the speaker, the microphone with a plug in the headphone socket, the music
   player, which models are chosen, reading the service's streamed replies, the calculator, dates,
-  time zones and helper programs, the breathing exercise's timing, what every thread shares, and
-  saved conversations;
+  time zones and helper programs, the breathing exercise's timing, what every thread shares, the
+  art (its drawing, its pictures, each scene frame by frame and what it sends the screen), and saved
+  conversations;
+- the art's pictures (`tests/art_check.py`): plain indexed PNGs with nothing in them but pixels and
+  a palette of screen-exact colours, the sizes each scene expects, and the same land at dusk and night;
 - the offline tools through the command-line build, with good, wrong and hostile arguments
   (`tests/sim/tools_cli.py`);
 - the conversation loop against scripted chat services (`tests/sim/agent_loop_test.py`;
@@ -754,11 +770,13 @@ src/agent/      the conversation loop and what it checks, prompt, tools (one fil
                 file per search service, the failover, the allowance and the cache), speech queue and service client
 src/core/       settings, calendar/reminder/timer/memory store, timers, music library, radio stations, utilities
 src/platform/   display, keyboard, audio, camera, infrared, battery, network status, subprocess helpers
-src/ui/         chat screen, menus, settings pages, setup guide, alarm banner, screen off, app controller, screenshots (--shots)
+src/ui/         chat screen, menus, settings pages, setup guide, alarm banner, screen off, app controller, screenshots (--shots);
+                art/: the moving pictures (a canvas, the PNG loader, one file per scene in scenes/, the view)
+assets/art/     the pictures of each scene (indexed PNGs), built into the program
 src/net/        HTTP client (libcurl)
 src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers and their shared helpers
 scripts/        toolchain setup, packaging, deployment
-tests/          the test runner (run.py) and the tests by kind: unit/ (unit tests), sim/ (end to end with simulated devices and chat services, stored screenshots), agent/ (scored agent test sets), tools/, mocks/; tests/README.md lists them
+tests/          the test runner (run.py), the art's check (art_check.py) and the tests by kind: unit/ (unit tests), sim/ (end to end with simulated devices and chat services, stored screenshots), agent/ (scored agent test sets), tools/, mocks/; tests/README.md lists them
 licenses/       third-party notices and the Apache-2.0 text
 packaging/      launcher entry, icon, wake-screen picture and the package's maintainer scripts
 extras/         device-tree overlay for the Wi-Fi channel fix
@@ -767,7 +785,8 @@ third_party/    nlohmann/json (MIT)
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE). Bundled: [nlohmann/json](https://github.com/nlohmann/json) (MIT).
+MIT. See [LICENSE](LICENSE). The pixel art in `assets/art/` was drawn for Zero Bot and is under the
+same licence. Bundled: [nlohmann/json](https://github.com/nlohmann/json) (MIT).
 Built with [LVGL](https://lvgl.io) (MIT). The Tapo login follows parts of the `tapo` crate (MIT);
 the Fire TV driver follows parts of firehose-remote and hms-firetv (both MIT); the HomeKit driver
 follows parts of aiohomekit and Apple's HomeKit ADK (both Apache-2.0); the Hue driver follows parts

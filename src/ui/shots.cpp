@@ -324,6 +324,15 @@ bool without_power_on(Menu &menu, const char *page, std::initializer_list<const 
 // The screenshots change settings in memory only.
 void set(const std::function<void(Settings &)> &change) { Settings::update(change, false); }
 
+// One exchange in the chat: what the user asked, the tool that worked on it, the answer.
+void exchange(ChatView &chat, const char *asked, const char *tool, const char *answer) {
+    chat.add_user(asked, false);
+    chat.add_tool(tool);
+    chat.begin_answer();
+    chat.append_answer(answer);
+    chat.end_answer("", false);
+}
+
 // Moves the cursor of the page on top to the row with this label, one Up or Down press at a time as
 // a user would (the screens come out as they did from counted presses), wherever the row is: a row
 // added to a page shifts no later screen. False, with nothing pressed, when the page has no such row.
@@ -669,6 +678,108 @@ bool title_still_beside_countdown(ChatView &chat, time_t t0) {
     return fits && still && moves;
 }
 
+// The colour shown at x, y now (0xRRGGBB).
+uint32_t pixel_at(int x, int y) {
+    lv_draw_buf_t *snap = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_XRGB8888);
+    if (!snap) return 0xFFFFFFFF;
+    const uint8_t *p = snap->data + static_cast<size_t>(y) * snap->header.stride + static_cast<size_t>(x) * 4;
+    const uint32_t colour = static_cast<uint32_t>(p[2]) << 16 | static_cast<uint32_t>(p[1]) << 8 | p[0];
+    lv_draw_buf_destroy(snap);
+    return colour;
+}
+
+// The steps of a dissolve after its first (made by the pass at `from` that started it), a pass of the main loop
+// for each; returns when the dissolve is over.
+unsigned long dissolve(App &app, const App::Playing &what, unsigned long from) {
+    for (int i = 1; i < art::kSteps; ++i) app.follow_art(from + static_cast<unsigned long>(i) * art::kStepMs, what);
+    return from + art::kSteps * art::kStepMs;
+}
+
+// The radio's scene comes in front of the chat 20 s after the last use, dissolving in 50 ms steps, and plays at 4
+// frames a second with the main loop asleep in between; while it shows, the screen dims but stays on past "Screen off
+// after"; a key takes it away with a dissolve, after which nothing is composed and nothing is due; 20 s later it is
+// back. `t` is left at that moment.
+bool art_comes_and_goes(App &app, const App::Playing &radio, unsigned long &t) {
+    app.wake_screen(t);
+    app.follow_art(t + screen::kSceneAfterMs - 1, radio);
+    const bool waits = !app.art.in_front();
+    t += screen::kSceneAfterMs;
+    app.follow_art(t, radio);
+    const bool comes = app.art.in_front() && app.art.on_screen() && app.art.ms_to_next(t) == art::kStepMs;
+    t = dissolve(app, radio, t);
+    const unsigned long frames = app.art.frames();
+    app.follow_art(t + 250, radio);
+    const bool plays = app.art.frames() > frames && app.art.ms_to_next(t + 250) <= 250 && app.sleep_ms(t + 250) <= 250;
+    app.tick_screen(t + 10 * 60 * kSecondMs, false);
+    const bool kept_on = app.idle.light() == screen::Light::Dimmed && !display::screen_is_off();
+    t += 10 * 60 * kSecondMs + kSecondMs;
+    app.wake_screen(t);                                       // a key
+    app.follow_art(t, radio);
+    const bool leaves = !app.art.in_front() && app.art.on_screen();
+    t = dissolve(app, radio, t);
+    const unsigned long still = app.art.frames();
+    app.follow_art(t + 2000, radio);
+    const bool rests = !app.art.on_screen() && app.art.frames() == still && app.art.ms_to_next(t + 2000) == art::kNever;
+    t += screen::kSceneAfterMs;
+    app.follow_art(t, radio);
+    const bool back = app.art.in_front();
+    if (!(waits && comes && plays && kept_on && leaves && rests && back))
+        fprintf(stderr, "the radio's scene came or went wrongly (waits 20 s %d, comes %d, plays %d, keeps the screen on %d, leaves on a "
+                        "key %d, rests while away %d, back after 20 s %d)\n", waits, comes, plays, kept_on, leaves, rests, back);
+    return waits && comes && plays && kept_on && leaves && rests && back;
+}
+
+// From `t`, 20 s or more after the last use: the scene never comes over the menu, the alarm banner lies over it, and
+// it does not come with Dynamic art off, or set to "When plugged in" on battery.
+bool art_stays_behind(App &app, const App::Playing &radio, unsigned long t) {
+    app.open_menu();
+    app.follow_art(t, radio);
+    const bool not_over_menu = !app.art.on_screen();
+    app.menu.close();
+    t += screen::kSceneAfterMs;
+    app.follow_art(t, radio);
+    t = dissolve(app, radio, t);
+    app.banner.show("Time's up", "Tea");
+    app.follow_art(t, radio);
+    lv_refr_now(nullptr);
+    const bool banner_over = pixel_at(300, 100) == theme::kThink;   // the banner's right-hand side, over the stage
+    app.banner.hide();
+    bool follows_setting = true;
+    for (const char *mode : {"off", "plugged"}) {
+        set([mode](Settings &s) { s.dynamic_art = mode; });
+        app.on_battery = true;
+        t += screen::kSceneAfterMs;
+        app.follow_art(t, radio);
+        follows_setting = follows_setting && !app.art.in_front();
+    }
+    app.on_battery = false;
+    app.follow_art(t + 10, radio);
+    follows_setting = follows_setting && app.art.in_front();       // plugged in again
+    if (!(not_over_menu && banner_over && follows_setting))
+        fprintf(stderr, "the radio's scene came over what it should not (kept from the menu %d, under the banner %d, follows "
+                        "Dynamic art %d)\n", not_over_menu, banner_over, follows_setting);
+    return not_over_menu && banner_over && follows_setting;
+}
+
+// The art's rules end to end, at made-up times after the screenshots, through follow_art (every pass of the main
+// loop runs it) and wake_screen (every key calls it). Checked, not pictured; the light, the clock of the screen's
+// idle time and the settings are put back.
+bool art_rules_ok(App &app) {
+    const App::Playing radio{"radio", "Harbour Classic FM"};
+    const Settings was = Settings::get();
+    set([](Settings &s) { s.dynamic_art = "on"; s.screen_off_min = 1; });
+    unsigned long t = sys::now_ms() + 600 * kSecondMs;
+    const bool comes_and_goes = art_comes_and_goes(app, radio, t);
+    const bool stays_behind = art_stays_behind(app, radio, t + screen::kSceneAfterMs);
+    app.wake_screen(t + 30 * kSecondMs);
+    app.art.front(false, t, true);
+    app.art.play("", "");
+    app.idle = screen::Idle();                                     // the made-up times forgotten
+    app.idle.use(sys::now_ms());
+    set([&was](Settings &s) { s.dynamic_art = was.dynamic_art; s.screen_off_min = was.screen_off_min; });
+    return comes_and_goes && stays_behind;
+}
+
 }  // namespace
 
 // ------------------------------------------------------------ screenshots
@@ -680,6 +791,7 @@ int App::render_shots(const std::string &dir) {
     shots_dark_chat(shots);
     shots_keys(shots);
     shots_volume(shots);
+    shots_art(shots);
     shots_breathing(shots);
     shots_timers(shots);
     shots_sample_data(shots);
@@ -721,11 +833,8 @@ void App::shots_chat(Shots &shots) {
     }
 
     chat.clear();
-    chat.add_user("What's the weather like in Lisbon tomorrow?", false);
-    chat.add_tool("Checking the weather");
-    chat.begin_answer();
-    chat.append_answer("Tomorrow in Lisbon looks wet: rain most of the day, 18 to 21 degrees, with a 70 percent chance of showers. Take an umbrella.");
-    chat.end_answer("", false);
+    exchange(chat, "What's the weather like in Lisbon tomorrow?", "Checking the weather",
+             "Tomorrow in Lisbon looks wet: rain most of the day, 18 to 21 degrees, with a 70 percent chance of showers. Take an umbrella.");
     snap("answer");
 
     chat.add_user("How much is 85 euros in pounds, split three ways?", false);
@@ -923,6 +1032,41 @@ void App::shots_volume(Shots &shots) {
     level_until = 0;
 }
 
+// The art (ui/art): the radio's scene over the chat at dusk and at night, with the station's name, its frame at
+// 250 ms (two rings out, the light on); half-way through its dissolve into the chat after a key; with Dynamic art
+// off, the chat as it was, the station in the status bar. Then its rules, checked end to end (art_rules_ok).
+void App::shots_art(Shots &shots) {
+    auto snap = [&shots](const char *name) { shots.snap(name); };
+    menu.close();
+    chat.clear();
+    exchange(chat, "Play Harbour Classic FM", "Radio", "Here is Harbour Classic FM.");
+    chat.footer_hints(keyguide::idle_hint(true));
+    chat.set_status(Settings::get().agent_name, theme::kFaint);
+    chat.set_now_playing("Harbour Classic FM", true);
+    const unsigned long t = sys::now_ms();
+    art.play("radio", "Harbour Classic FM");
+    art.show_at(t, 250, false);
+    snap("radio-scene-dusk");
+    art.show_at(t, 250, true);
+    snap("radio-scene-night");
+    art.front(false, t, false);
+    for (unsigned long step = 0; step < art::kSteps / 2; ++step) art.tick(t + step * art::kStepMs);
+    snap("radio-scene-dissolving");
+    art.front(false, t, true);
+    const std::string mode = Settings::get().dynamic_art;
+    set([](Settings &s) { s.dynamic_art = "off"; });
+    wake_screen(t);
+    follow_art(t + screen::kSceneAfterMs, {"radio", "Harbour Classic FM"});
+    snap("radio-art-off");
+    if (art.in_front()) {
+        fprintf(stderr, "the radio's scene came with Dynamic art off\n");
+        shots.failed = true;
+    }
+    set([&mode](Settings &s) { s.dynamic_art = mode; });
+    if (!art_rules_ok(*this)) shots.failed = true;
+    chat.set_now_playing("");
+}
+
 void App::shots_breathing(Shots &shots) {
     auto snap = [&shots](const char *name) { shots.snap(name); };
     for (const auto &shot : {std::make_pair("box", 2500L), std::make_pair("box", 6000L), std::make_pair("sigh", 9000L)}) {
@@ -939,22 +1083,15 @@ void App::shots_timers(Shots &shots) {
     const time_t t0 = shots.t0;
     {
         chat.clear();
-        chat.add_user("The food needs to come out of the oven in 5 mins", false);
-        chat.add_tool("Timers");
-        chat.begin_answer();
-        chat.append_answer("Your 5 minute timer for the food is running.");
-        chat.end_answer("", false);
+        exchange(chat, "The food needs to come out of the oven in 5 mins", "Timers", "Your 5 minute timer for the food is running.");
         chat.footer_hints(keyguide::idle_hint(true));
         chat.set_status(Settings::get().agent_name, theme::kFaint);
         chat.set_now_playing("So What");                       // short enough not to scroll
         chat.set_timer(timers::badge({t0 + 300}, t0 + 1));
         snap("timer-one");
         if (!title_still_beside_countdown(chat, t0)) failed = true;
-        chat.add_user("I want to study for an hour, can you set a timer", false);
-        chat.add_tool("Timers");
-        chat.begin_answer();
-        chat.append_answer("Your study timer is set for an hour. The food has 4 minutes 41 seconds left.");
-        chat.end_answer("", false);
+        exchange(chat, "I want to study for an hour, can you set a timer", "Timers",
+                 "Your study timer is set for an hour. The food has 4 minutes 41 seconds left.");
         chat.set_now_playing("");
         chat.set_timer(timers::badge({t0 + 300, t0 + 19 + 3600}, t0 + 19));
         snap("timer-two");

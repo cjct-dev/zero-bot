@@ -94,6 +94,17 @@ file(GLOB_RECURSE ZB_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 if(ZB_CLI_ONLY)
     list(FILTER ZB_SOURCES EXCLUDE REGEX "/src/ui/|/platform/display\\.cpp$|/platform/input\\.cpp$")
+else()
+    # The art's pictures (assets/art/*.png), built into the program as a C table (cmake/embed.cmake), written
+    # again whenever a picture changes.
+    file(GLOB_RECURSE ZB_ART_PICTURES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/art/*.png")
+    set(ZB_ART_TABLE "${CMAKE_BINARY_DIR}/art_files.c")
+    add_custom_command(OUTPUT "${ZB_ART_TABLE}"
+        COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/art" "-DOUT=${ZB_ART_TABLE}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed.cmake"
+        DEPENDS ${ZB_ART_PICTURES} "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed.cmake"
+        COMMENT "Building the art's pictures into the program" VERBATIM)
+    list(APPEND ZB_SOURCES "${ZB_ART_TABLE}")
 endif()
 
 # The app's own libraries: libcurl (every request) and libcrypto (the smart-home drivers), from the

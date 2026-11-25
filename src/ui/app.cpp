@@ -322,6 +322,7 @@ int run_app(const std::string &shots_dir, bool keydump) {
 
     static App app;
     app.chat.create(screen);
+    app.art.create(screen);                        // over the chat; the menu, the breathing screen and the banner over it
     app.menu.create(screen);
     app.breath.create(screen);
     app.banner.create(screen);

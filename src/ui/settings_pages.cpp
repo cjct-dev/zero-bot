@@ -151,6 +151,10 @@ void device_rows(Menu &menu, std::vector<MenuItem> &items) {
     items.push_back(MenuItem::val("Screen off after", [] { return screen::off_label(S().screen_off_min); }, nullptr, [](int dir) {
         change([dir](Settings &s) { s.screen_off_min = screen::step_off_choice(s.screen_off_min, dir); });
     }));
+    // A moving picture of what plays (ui/art): on, off, or only while the battery is not discharging.
+    items.push_back(MenuItem::val("Dynamic art", [] { return screen::art_label(S().dynamic_art); }, nullptr, [](int dir) {
+        change([dir](Settings &s) { s.dynamic_art = screen::step_art_mode(s.dynamic_art, dir); });
+    }));
     items.push_back(MenuItem::val("Microphone gain", [] { return std::to_string(S().mic_gain) + "%"; }, nullptr, [](int dir) {
         audio::set_mic_gain(change([dir](Settings &s) { s.mic_gain = clampi(s.mic_gain + dir * 20, 20, 300); }).mic_gain);
     }));

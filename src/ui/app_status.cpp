@@ -1,6 +1,6 @@
 // The app's periodic work: the footer and the status bar, timers and their alarm, reminders, the
-// screen's light (dimmed, off, lit), the main loop's tick (periodic) and how long the loop sleeps
-// between ticks (sleep_ms).
+// screen's light (dimmed, off, lit), the art's scene of what plays, the main loop's tick (periodic) and
+// how long the loop sleeps between ticks (sleep_ms).
 #include "ui/app_impl.h"
 
 #include <algorithm>
@@ -77,6 +77,7 @@ void App::update_indicators() {
     const power::Battery gauge = power::battery();
     battery = gauge.percent;
     charging = gauge.charging;
+    on_battery = gauge.discharging;
 #endif
     chat.set_indicators(online, phone, battery, charging, util::format_time(time(nullptr), "%H:%M"));
     audio::Music &music = audio::Music::get();
@@ -177,10 +178,32 @@ bool App::wake_screen(unsigned long now) {
 }
 
 // Every second: dims, then goes off after the minutes set, unless something is going on that
-// the user is watching or waiting for. Music and radio play on with the screen off.
+// the user is watching or waiting for. Music and radio play on with the screen off, but a scene in
+// front of the chat keeps it on, dimmed.
 void App::tick_screen(unsigned long now, bool busy) {
     const screen::Light was = idle.light();
-    set_light(was, idle.update(now, busy, Settings::get().screen_off_min));
+    set_light(was, idle.update(now, busy, Settings::get().screen_off_min, art.in_front()));
+}
+
+// ------------------------------------------------------------ the art (ui/art)
+// The scene of what plays now: the radio's mast while a station plays (not paused); nothing else has one yet.
+App::Playing App::playing() {
+    audio::Music &music = audio::Music::get();
+    if (music.live() && !music.paused()) return {"radio", music.title()};
+    return {};
+}
+
+// On every pass of the main loop: the scene of what plays, when Dynamic art allows it; whether it is in front of
+// the chat (screen_idle.h: after 20 s unused, never over what the user has in front of it); its next frame or
+// dissolve step. Under the menu or the breathing screen, or on a dark screen, nobody would see it dissolve: it
+// goes at once. A key (wake_screen) is a use, so the scene dissolves in the same pass that the key did its job in.
+void App::follow_art(unsigned long now, const Playing &what) {
+    const bool wanted = !what.scene.empty() && screen::art_allowed(Settings::get().dynamic_art, on_battery);
+    art.play(wanted ? what.scene : "", wanted ? what.title : "");
+    const bool covered = menu.open() || breath.active();
+    const bool blocked = covered || chat.typing() || recorder.active() || banner.visible();
+    art.front(screen::scene_in_front(idle, now, wanted, blocked), now, covered || idle.light() == screen::Light::Off);
+    art.tick(now);
 }
 
 void App::periodic() {
@@ -230,6 +253,7 @@ void App::periodic() {
         last_indicators = now ? now : 1;
         update_indicators();
     }
+    follow_art(now, playing());
 }
 
 // ------------------------------------------------------------ how long the main loop sleeps
@@ -249,14 +273,16 @@ bool App::lively() {
 // shows: the footer goes back to its hints), until the next tick. Else until the next of the
 // once-a-second, indicator and model work, and while a timer runs, the wall clock's next second (its
 // countdown changes then, and its alarm rings on one). On the device that is one or two wake-ups a
-// second instead of sixty-two (ZB-036).
+// second instead of sixty-two (ZB-036). Whatever it is, no later than the art's next frame or dissolve
+// step (4 a second while the radio's scene shows, none while it does not).
 unsigned long App::sleep_ms(unsigned long now) {
     if (lively()) quiet_since = 0;
     else if (!quiet_since) quiet_since = now;
     auto until = [now](unsigned long at) { return at > now ? at - now : 0; };
-    if (!quiet_since || now - quiet_since < kSettleMs) return until(last_tick + kTickMs);
-    const unsigned long work = until(std::min({last_second + kSecondMs, last_indicators + kIndicatorsMs,
-                                               last_model_try + model_retry_ms}));
+    const unsigned long art_next = art.ms_to_next(now);
+    if (!quiet_since || now - quiet_since < kSettleMs) return std::min(until(last_tick + kTickMs), art_next);
+    const unsigned long work = std::min(art_next, until(std::min({last_second + kSecondMs, last_indicators + kIndicatorsMs,
+                                                                  last_model_try + model_retry_ms})));
     return Store::get().next_timer_end() ? std::min(work, timers::ms_to_next_second()) : work;
 }
 

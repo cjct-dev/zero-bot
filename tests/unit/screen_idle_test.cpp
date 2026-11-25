@@ -185,6 +185,46 @@ std::string crash(int sig, int restore, bool fault, const std::string &file, boo
     return text.str();
 }
 
+// A scene of the art (ui/art) while something plays: it comes in front of the chat after 20 seconds unused, never
+// over the menu, a text field, the microphone, the breathing exercise or the alarm banner, never on a screen that
+// is off; a key takes it away at once and it comes back 20 seconds later; while it is there the screen dims and
+// stays on past "Screen off after".
+void test_scene() {
+    Idle idle;
+    idle.use(kStart);
+    check(!screen::scene_in_front(idle, kStart + screen::kSceneAfterMs - 1, true, false), "no scene before 20 seconds unused");
+    check(screen::scene_in_front(idle, kStart + screen::kSceneAfterMs, true, false), "a scene after 20 seconds unused");
+    check(!screen::scene_in_front(idle, kStart + kMin, false, false), "no scene while nothing plays (or art is off)");
+    check(!screen::scene_in_front(idle, kStart + kMin, true, true), "never over the menu, a text field or the alarm banner");
+    // Kept on, dimmed, however long the scene shows; it goes off once nothing plays any more.
+    Light light = Light::Lit;
+    for (unsigned long t = kStart; t <= kStart + 60 * kMin; t += 1000)
+        light = idle.update(t, false, 1, screen::scene_in_front(idle, t, true, false));
+    expect(light, Light::Dimmed, "an hour of a scene with \"Screen off after\" one minute: dimmed, still on");
+    const unsigned long later = kStart + 60 * kMin;
+    expect(idle.update(later + 1000, false, 1, false), Light::Off, "the station stopped: off at the next tick");
+    check(!screen::scene_in_front(idle, later + 2000, true, false), "never on a screen that is off");
+    // A key: the chat comes forward at once, and the scene comes back 20 seconds later by itself.
+    idle.use(later + 3000);
+    check(!screen::scene_in_front(idle, later + 3000, true, false), "a key takes the scene away");
+    check(!screen::scene_in_front(idle, later + 3000 + screen::kSceneAfterMs - 1, true, false), "not back before 20 seconds");
+    check(screen::scene_in_front(idle, later + 3000 + screen::kSceneAfterMs, true, false), "back by itself 20 seconds after the key");
+    // A request or its spoken answer counts as use (busy), so the scene waits until 20 seconds after it ends.
+    idle.update(later + 30000, true, 1);
+    check(!screen::scene_in_front(idle, later + 30000 + screen::kSceneAfterMs - 1, true, false), "not back during 20 s after a request");
+
+    // The setting: on, off, or only while plugged in (the battery not discharging).
+    check(screen::art_allowed("on", true) && screen::art_allowed("on", false), "on: always");
+    check(!screen::art_allowed("off", false) && !screen::art_allowed("off", true), "off: never");
+    check(screen::art_allowed("plugged", false) && !screen::art_allowed("plugged", true), "when plugged in: not on battery");
+    check(screen::art_label("on") == "On" && screen::art_label("off") == "Off" && screen::art_label("plugged") == "When plugged in",
+          "the setting's labels");
+    check(screen::step_art_mode("on", 1) == "off" && screen::step_art_mode("off", 1) == "plugged" &&
+              screen::step_art_mode("plugged", 1) == "on", "right goes round: on, off, when plugged in");
+    check(screen::step_art_mode("on", -1) == "plugged" && screen::step_art_mode("plugged", -1) == "off", "left goes back round");
+    check(screen::step_art_mode("sometimes", 1) == "off", "a value that is no choice counts as on");
+}
+
 void test_crash() {
     const char *tmp = getenv("TMPDIR");
     std::string dir = std::string(tmp && *tmp ? tmp : "/tmp") + "/zb-backlight-XXXXXX";
@@ -214,6 +254,7 @@ int main() {
     test_busy();
     test_order();
     test_choices();
+    test_scene();
     test_crash();
     printf("screen idle: %d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? 1 : 0;

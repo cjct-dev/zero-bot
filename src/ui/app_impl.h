@@ -15,6 +15,7 @@
 #include "platform/audio.h"
 #include "platform/keys.h"
 #include "ui/alarm_view.h"
+#include "ui/art/art_view.h"
 #include "ui/breath_view.h"
 #include "ui/chat_view.h"
 #include "ui/key_guide.h"
@@ -55,6 +56,7 @@ struct Shots;   // --shots: what its groups of screens share (shots.cpp)
 
 struct App {
     ChatView chat;
+    art::ArtView art;                 // the scene of what plays, in front of the chat while nobody uses it (ui/art)
     Menu menu;
     BreathView breath;
     AlarmView banner;                 // over everything else while a timer's alarm rings
@@ -89,7 +91,8 @@ struct App {
     bool muted = false;
     unsigned long esc_down = 0;
     bool esc_armed = false;
-    screen::Idle idle;                // when the screen dims and goes off (screen_idle.h)
+    screen::Idle idle;                // when the screen dims and goes off, and when a scene comes (screen_idle.h)
+    bool on_battery = false;          // the battery's gauge says discharging (update_indicators): for Dynamic art
     unsigned long last_tick = 0, last_second = 0, last_indicators = 0, last_model_try = 0;
     unsigned long quiet_since = 0;    // since when nothing has needed the ticks (sleep_ms); 0 while something does
     // Choosing models without the user (auto_select_models): how long until the service is asked again,
@@ -162,6 +165,12 @@ struct App {
     void set_light(screen::Light from, screen::Light to);
     bool wake_screen(unsigned long now);
     void tick_screen(unsigned long now, bool busy);
+    // What plays, as a scene of the art: its name ("radio") and title, or none.
+    struct Playing {
+        std::string scene, title;
+    };
+    Playing playing();
+    void follow_art(unsigned long now, const Playing &what);
     void periodic();
     bool lively();
     unsigned long sleep_ms(unsigned long now);
@@ -174,6 +183,7 @@ struct App {
     void shots_dark_chat(Shots &shots);
     void shots_keys(Shots &shots);
     void shots_volume(Shots &shots);
+    void shots_art(Shots &shots);
     void shots_breathing(Shots &shots);
     void shots_timers(Shots &shots);
     void shots_sample_data(Shots &shots);

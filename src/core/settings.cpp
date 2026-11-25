@@ -129,7 +129,7 @@ json Settings::to_json() const {
     return {
         {"api_base", api_base}, {"api_key", api_key}, {"llm_model", llm_model}, {"vision_model", vision_model},
         {"stt_model", stt_model}, {"tts_model", tts_model}, {"tts_voice", tts_voice}, {"speak_replies", speak_replies}, {"fast_mode", fast_mode}, {"compress_audio", compress_audio}, {"phone_fallback", phone_fallback}, {"setup_done", setup_done},
-        {"search", search_to_json(search)}, {"volume", volume}, {"brightness", brightness}, {"screen_off_min", screen_off_min}, {"mic_gain", mic_gain},
+        {"search", search_to_json(search)}, {"volume", volume}, {"brightness", brightness}, {"screen_off_min", screen_off_min}, {"mic_gain", mic_gain}, {"dynamic_art", dynamic_art},
         {"agent_name", agent_name}, {"user_name", user_name}, {"home_city", home_city}, {"home_country", home_country}, {"home_place", place_to_json(home_place)}, {"date_order", date_order}, {"camera_flip", camera_flip}, {"mic_builtin", mic_builtin}, {"timezone", timezone},
         {"units", units}, {"tv_brand", tv_brand}, {"music_dir", music_dir},
     };
@@ -154,6 +154,8 @@ void Settings::from_json(const json &j) {
     brightness = jget(j, "brightness", brightness);
     screen_off_min = std::max(0, std::min(24 * 60, jget(j, "screen_off_min", screen_off_min)));
     mic_gain = jget(j, "mic_gain", mic_gain);
+    const std::string art = jget(j, "dynamic_art", dynamic_art);
+    dynamic_art = art == "off" || art == "plugged" ? art : "on";
     agent_name = jget(j, "agent_name", agent_name);
     user_name = jget(j, "user_name", user_name);
     home_city = jget(j, "home_city", home_city);

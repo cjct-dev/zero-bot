@@ -272,6 +272,23 @@ void test_search_settings(const std::string &root) {
 // All-day alerts are measured from 09:00 on the day. Built by adding nine hours to midnight they
 // came at 10:00 on the day the clocks go forward and 08:00 on the day they go back; "tomorrow" was
 // "now plus 24 hours", which is the day after tomorrow late on the evening before a 23-hour day.
+// Device > Dynamic art: "on" (the default), "off" or "plugged"; anything else in the file reads as "on"; saved as set.
+void test_dynamic_art_setting() {
+    g_test = "the dynamic art setting";
+    Settings s;
+    CHECK_EQ(s.dynamic_art, "on");
+    for (const char *mode : {"off", "plugged", "on"}) {
+        s.from_json({{"dynamic_art", mode}});
+        CHECK_EQ(s.dynamic_art, mode);
+        CHECK_EQ(s.to_json().value("dynamic_art", ""), mode);
+    }
+    s.from_json({{"dynamic_art", "plugged"}});
+    s.from_json({{"dynamic_art", "sometimes"}});
+    CHECK_EQ(s.dynamic_art, "on");
+    s.from_json({{"dynamic_art", 3}});
+    CHECK_EQ(s.dynamic_art, "on");
+}
+
 void test_all_day_alerts(const std::string &root) {
     g_test = "all-day alerts when the clocks change";
     util::apply_timezone("Europe/London");
@@ -445,11 +462,12 @@ void test_result() {
 
 void test_battery(const std::string &root) {
     g_test = "the battery";
-    struct Gauge { const char *name, *capacity, *status; int percent; bool charging; };
-    const Gauge gauges[] = {{"charging", "85\n", "Charging\n", 85, true},    {"discharging", "40\n", "Discharging\n", 40, false},
-                            {"full", "100\n", "Full\n", 100, false},         {"garbage", "abc\n", "Charging\n", -1, true},
-                            {"empty", "", "", -1, false},                    {"no-status", "12\n", nullptr, 12, false},
-                            {"none", nullptr, nullptr, -1, false},           {"lower-case", "50", "charging", 50, false}};
+    struct Gauge { const char *name, *capacity, *status; int percent; bool charging, discharging; };
+    const Gauge gauges[] = {{"charging", "85\n", "Charging\n", 85, true, false},  {"discharging", "40\n", "Discharging\n", 40, false, true},
+                            {"full", "100\n", "Full\n", 100, false, false},       {"not-charging", "100\n", "Not charging\n", 100, false, false},
+                            {"garbage", "abc\n", "Charging\n", -1, true, false},  {"empty", "", "", -1, false, false},
+                            {"no-status", "12\n", nullptr, 12, false, false},     {"none", nullptr, nullptr, -1, false, false},
+                            {"lower-case", "50", "charging", 50, false, false}};
     for (const Gauge &g : gauges) {
         const std::string dir = root + "/gauge-" + g.name;
         util::make_dirs(dir);
@@ -458,6 +476,7 @@ void test_battery(const std::string &root) {
         const power::Battery b = power::battery(dir);
         CHECK_EQ(b.percent, g.percent);
         CHECK(b.charging == g.charging);
+        CHECK(b.discharging == g.discharging);
     }
 }
 
@@ -730,6 +749,7 @@ int main(int argc, char **argv) {
     test_atomic_writes(root);
     test_settings_threads(root);
     test_search_settings(root);
+    test_dynamic_art_setting();
     test_all_day_alerts(root);
     test_store_writes_unlocked();
     test_ui_wake();

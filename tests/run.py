@@ -160,6 +160,9 @@ GROUPS = [
     dict(name="scorer", secs=5, needs=[], file="tests/agent/scorer_test.py",
          cmds=[pyi("tests/agent/scorer_test.py")],
          about="the live sets' scoring, checked offline on saved answers"),
+    dict(name="art", secs=2, needs=[], cmds=[pyi("tests/art_check.py"), pyi("tests/art_check.py", "--self-test")],
+         about="the art's pictures (assets/art/): 8-bit indexed PNGs holding only their pixels and palette, each colour "
+               "exact in RGB565, the sizes a scene expects, a scene's land the same at dusk and at night; and the check itself"),
     dict(name="packaging", secs=2, needs=[], cmds=[pyi("tests/sim/packaging_test.py")],
          about="scripts/package-deb.sh's package, built from a stand-in binary and read back, and its maintainer "
                "scripts (the wake screen's diversion) against a stand-in dpkg-divert"),
@@ -250,6 +253,9 @@ PATH_RULES = [
      "the package and its maintainer scripts"),
     (r"^(scripts/|extras/|\.github/)", [], "deployment: no offline test covers it"),
     (r"^tests/run\.py$", ["runner"], "this runner"),
+    (r"^tests/art_check\.py$", ["art"], "the art's check"),
+    (r"^assets/art/", ["art", "unit", "sim-build", "screens"],
+     "the art's pictures (checked; the unit tests read them, the device build embeds them, the screens show them)"),
     (r"^tests/netguard\.py$", ["runner", "tools", "loop", "scorer", "search-contract"], "the network boundary of every test process"),
     (r"^tests/(agent/exp_compare|agent/exp_report)\.py$", ["runner"], "the gate and the reports (their self-test is in runner)"),
     (r"^tests/tools/web_contract\.py$", ["runner", "search-contract"],
@@ -1339,6 +1345,10 @@ def self_test():
     check("a driver's e2e", groups("tests/sim/wiz_e2e.py") == ["wiz"])
     check("a driver's unit test", groups("tests/unit/shelly_test.cpp") == ["unit", "shelly"])
     check("golden shots", groups("tests/sim/screens/golden/01-chat.png") == ["screens"])
+    check("the art's pictures: their check, the unit tests, the build and the screens",
+          groups("assets/art/radio/sky-dusk.png") == ["unit", "art", "sim-build", "screens"], groups("assets/art/radio/sky-dusk.png"))
+    check("the art's check", groups("tests/art_check.py") == ["art"], groups("tests/art_check.py"))
+    check("the art engine: as the screens", groups("src/ui/art/canvas.cpp") == ["unit", "sim-build", "screens"], groups("src/ui/art/canvas.cpp"))
     check("this runner", groups("tests/run.py") == ["runner"])
     check("the package", groups("scripts/package-deb.sh", "packaging/postrm", "tests/sim/packaging_test.py") ==
           ["packaging"], groups("scripts/package-deb.sh", "packaging/postrm", "tests/sim/packaging_test.py"))

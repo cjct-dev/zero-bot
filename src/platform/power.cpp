@@ -11,6 +11,7 @@ Battery battery(const std::string &gauge) {
     std::string status;
     std::ifstream(gauge + "/status") >> status;
     b.charging = status == "Charging";
+    b.discharging = status == "Discharging";
     return b;
 }
 
