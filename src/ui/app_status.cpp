@@ -193,12 +193,15 @@ App::Playing App::playing() {
     return {};
 }
 
-// On every pass of the main loop: the scene of what plays, when Dynamic art allows it; whether it is in front of
-// the chat (screen_idle.h: after 20 s unused, never over what the user has in front of it); its next frame or
-// dissolve step. Under the menu or the breathing screen, or on a dark screen, nobody would see it dissolve: it
-// goes at once. A key (wake_screen) is a use, so the scene dissolves in the same pass that the key did its job in.
+// On every pass of the main loop: the breathing screen's scene, or its counter, as Dynamic art allows; the scene of
+// what plays, when Dynamic art allows it; whether it is in front of the chat (screen_idle.h: after 20 s unused, never
+// over what the user has in front of it); its next frame or dissolve step. Under the menu or the breathing screen, or
+// on a dark screen, nobody would see it dissolve: it goes at once. A key (wake_screen) is a use, so the scene
+// dissolves in the same pass that the key did its job in.
 void App::follow_art(unsigned long now, const Playing &what) {
-    const bool wanted = !what.scene.empty() && screen::art_allowed(Settings::get().dynamic_art, on_battery);
+    const bool allowed = screen::art_allowed(Settings::get().dynamic_art, on_battery);
+    breath.follow_art(allowed, now);
+    const bool wanted = !what.scene.empty() && allowed;
     art.play(wanted ? what.scene : "", wanted ? what.title : "");
     const bool covered = menu.open() || breath.active();
     const bool blocked = covered || chat.typing() || recorder.active() || banner.visible();
@@ -221,7 +224,7 @@ void App::periodic() {
         }
         update_timers(now);
     }
-    // Wait for the assistant to finish its sentence before the orb takes over the screen.
+    // Wait for the assistant to finish its sentence before the breathing exercise takes over the screen.
     if (breath_minutes > 0 && !recorder.active() && Agent::get().state() == AgentState::Idle && !Agent::get().busy() &&
         !Agent::get().has_pending() && !SpeechQueue::get().active()) {
         if (menu.open()) menu.close();
@@ -274,12 +277,12 @@ bool App::lively() {
 // once-a-second, indicator and model work, and while a timer runs, the wall clock's next second (its
 // countdown changes then, and its alarm rings on one). On the device that is one or two wake-ups a
 // second instead of sixty-two (ZB-036). Whatever it is, no later than the art's next frame or dissolve
-// step (4 a second while the radio's scene shows, none while it does not).
+// step (4 a second while the radio's or the breathing scene shows, none while neither does).
 unsigned long App::sleep_ms(unsigned long now) {
     if (lively()) quiet_since = 0;
     else if (!quiet_since) quiet_since = now;
     auto until = [now](unsigned long at) { return at > now ? at - now : 0; };
-    const unsigned long art_next = art.ms_to_next(now);
+    const unsigned long art_next = std::min(art.ms_to_next(now), breath.ms_to_next(now));
     if (!quiet_since || now - quiet_since < kSettleMs) return std::min(until(last_tick + kTickMs), art_next);
     const unsigned long work = std::min(art_next, until(std::min({last_second + kSecondMs, last_indicators + kIndicatorsMs,
                                                                   last_model_try + model_retry_ms})));

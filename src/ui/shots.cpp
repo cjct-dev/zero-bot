@@ -780,6 +780,37 @@ bool art_rules_ok(App &app) {
     return comes_and_goes && stays_behind;
 }
 
+// The breathing screen's art end to end, through follow_art (every pass of the main loop runs it): the scene while
+// Dynamic art allows it, with its next frame due within 250 ms; the counter the moment the setting is switched off,
+// with nothing due, and the scene again when it is switched on; the alarm banner over the scene; and nothing left
+// due once the exercise ends. Checked, not pictured; the setting is put back.
+bool breathing_rules_ok(App &app) {
+    const std::string mode = Settings::get().dynamic_art;
+    const unsigned long t = sys::now_ms();
+    app.breath.start("box", 5);
+    set([](Settings &s) { s.dynamic_art = "on"; });
+    app.follow_art(t, {});
+    const bool scene = app.breath.scene_shown() && app.breath.ms_to_next(t) <= 250;
+    set([](Settings &s) { s.dynamic_art = "off"; });
+    app.follow_art(t + 1000, {});
+    const bool counter = !app.breath.scene_shown() && app.breath.ms_to_next(t + 1000) == art::kNever;
+    set([](Settings &s) { s.dynamic_art = "on"; });
+    app.follow_art(t + 2000, {});
+    const bool back = app.breath.scene_shown();
+    app.banner.show("Time's up", "Tea");
+    lv_refr_now(nullptr);
+    const bool banner_over = pixel_at(300, 100) == theme::kThink;   // the banner's right-hand side, over the scene
+    app.banner.hide();
+    app.breath.stop();
+    app.follow_art(t + 3000, {});
+    const bool gone = !app.breath.scene_shown() && app.breath.ms_to_next(t + 3000) == art::kNever;
+    set([&mode](Settings &s) { s.dynamic_art = mode; });
+    if (!(scene && counter && back && banner_over && gone))
+        fprintf(stderr, "the breathing screen's art went wrongly (the scene with the art on %d, the counter with it off %d, the "
+                        "scene again %d, under the banner %d, nothing due at the end %d)\n", scene, counter, back, banner_over, gone);
+    return scene && counter && back && banner_over && gone;
+}
+
 }  // namespace
 
 // ------------------------------------------------------------ screenshots
@@ -1067,14 +1098,33 @@ void App::shots_art(Shots &shots) {
     chat.set_now_playing("");
 }
 
+// The breathing exercise (ZB-064): its scene over the whole screen at dusk (half way in, full, nearly out) and at night
+// (a little way in, half way out), with the phase and its seconds at the foot; with Dynamic art off, the counter on
+// black. Then its rules, checked (breathing_rules_ok).
 void App::shots_breathing(Shots &shots) {
-    auto snap = [&shots](const char *name) { shots.snap(name); };
-    for (const auto &shot : {std::make_pair("box", 2500L), std::make_pair("box", 6000L), std::make_pair("sigh", 9000L)}) {
-        breath.start(shot.first, 5);
-        breath.show_at(shot.second);
-        snap(shot.second == 2500L ? "breathing-in" : shot.second == 6000L ? "breathing-hold" : "breathing-out");
-    }
+    struct Shot {
+        const char *name, *pattern;
+        long ms;
+        bool night;
+    };
+    const std::string mode = Settings::get().dynamic_art;
+    const unsigned long t = sys::now_ms();
+    auto shoot = [&](const Shot &shot) {
+        breath.start(shot.pattern, 5);
+        follow_art(t, {});
+        breath.show_at(t, shot.ms, shot.night);
+        shots.snap(shot.name);
+    };
+    set([](Settings &s) { s.dynamic_art = "on"; });
+    for (const Shot &shot : {Shot{"breathing-in", "box", 2500, false}, Shot{"breathing-hold", "box", 6000, false},
+                             Shot{"breathing-out", "sigh", 9000, false}, Shot{"breathing-night-in", "box", 1500, true},
+                             Shot{"breathing-night-out", "calm", 7000, true}})
+        shoot(shot);
+    set([](Settings &s) { s.dynamic_art = "off"; });
+    shoot({"breathing-art-off", "box", 2500, false});
     breath.stop();
+    set([&mode](Settings &s) { s.dynamic_art = mode; });
+    if (!breathing_rules_ok(*this)) shots.failed = true;
 }
 
 void App::shots_timers(Shots &shots) {

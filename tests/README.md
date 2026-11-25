@@ -100,9 +100,12 @@ each lighting adds (`lights`, `twinkle`). `--self-test` runs it against pictures
 - `art_test.cpp`: the art engine without its view (`src/ui/art/`): the canvas (pictures in order, clear pixels, the
   edges, the areas it returns: every change in one, none bigger than its changes, at most 16), the 2x copy for the
   screen, PNG decoding (the repository's pictures; broken, cut-short and other kinds of PNG refused), every scene for
-  20 s through a model of the panel (an update every 50 ms at most, whole 4 KiB pages) against its budget in
-  `kBudgetKBps` (a tripwire: raise it knowingly; a scene without one fails), the radio's 16 frames at dusk and at night
-  against the hashes of its finished animation's frames (pixel for pixel, the loop included), and the registry.
+  20 s (with a box breath, `core/breath`) through a model of the panel (an update every 50 ms at most, whole 4 KiB
+  pages, only the rows the scene is shown in: the chat's stage, or the whole screen for those in `kFullScreen`, the
+  breathing scene) against its budget in `kBudgetKBps` (a tripwire: raise it knowingly; a scene without one fails),
+  the radio's 16 frames and the breathing scene's 64 (each at the size its animation took from the breath) at dusk and
+  at night against the hashes of the finished animations' frames (pixel for pixel, the loop included; a breath past
+  full is full, one that is not a number empty), and the registry.
 - `radio_test.cpp`: the station file, names, nicknames and tags (a station by tag, focus mode as the tool describes
   it), the tool absent without stations, the check of a stream
   against `radio_peer.py`, the player's live mode against a stand-in `ffplay`.
@@ -281,7 +284,9 @@ that every key, password and code is typed hidden (bullets, `--keydump` quiet me
 closes) while an e-mail or user name is not, that input waiting for the phone goes with a cancelled request, the art's
 rules end to end (the radio's scene in front after 20 s unused, dissolving in and out in 50 ms steps, nothing composed
 while it is away, the screen kept on dimmed, never over the menu, under the alarm banner, as Dynamic art is set:
-`art_rules_ok`), and how long the main loop sleeps: `shots_idle`). `sim/screens/shots_compare.py` renders them into a temporary folder and
+`art_rules_ok`), the breathing screen's (its scene while Dynamic art allows it, a frame due within 250 ms, the counter
+the moment the setting goes off and the scene when it comes back, under the alarm banner, nothing due once it ends:
+`breathing_rules_ok`), and how long the main loop sleeps: `shots_idle`). `sim/screens/shots_compare.py` renders them into a temporary folder and
 compares each with `sim/screens/golden/` (small tolerance; differences drawn to `build/shots-diff/`), with the wall
 clock pinned (`sim/screens/fixclock.c`, built with `cc` and preloaded) and stand-ins on `PATH` for the audio, volume
 and network helpers, so it plays no sound and changes nothing on the PC (plain `--shots` plays a chime and sets the
