@@ -439,6 +439,7 @@ def run_all(root):
     search_measured(root)
     search_allowance(root)
     search_answers(root)
+    brave_limits(root)
     nested_too_deep(root)
     no_real_web(root)
     web_wraps()
@@ -966,6 +967,56 @@ def search_allowance(root):
         check("and the refused key is not sent again", server.seen == [] and "tavily: key refused" in out, (server.seen, out))
     finally:
         server.close()
+
+
+def brave_limits(root):
+    """ZB-130, found by tests/tools/search_contract.py: Brave's monthly limit is 0 on an unlimited plan, which says
+    nothing of an allowance (searches go on, the service is never marked spent), and the query Brave is sent is cut to
+    its documented 75 words and 600 characters, at a word. Against a look-alike of its answer here, so that the
+    stand-in web (hashed into every live case) stays as it is."""
+    import http.server
+    import threading
+    import urllib.parse
+    asked = []
+
+    class Brave(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            asked.append(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("q", [""])[0])
+            body = json.dumps({"type": "search", "web": {"results": [
+                {"title": "Eiffel Tower", "url": "https://example.org/eiffel", "description": "The tower is 330 metres tall."}]}}).encode()
+            self.send_response(200)
+            for name, value in (("Content-Type", "application/json"), ("X-RateLimit-Limit", "1, 0"),
+                                ("X-RateLimit-Remaining", "0, 0"), ("X-RateLimit-Reset", "1, 0"), ("Content-Length", str(len(body)))):
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Brave)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        g = State(root, "brave-limits")
+        write_services(g, [["brave", "stand-in-key"]])
+        web = "http://127.0.0.1:%d" % server.server_address[1]
+        first = g.run("web_search", {"query": "how tall is the eiffel tower"}, ZB_EXP_WEB=web)
+        second = g.run("web_search", {"query": "how tall is the eiffel tower in feet"}, ZB_EXP_WEB=web)
+        check("an unlimited plan (a month's limit of 0): every search answered", "330 metres" in first and "330 metres" in second,
+              (first[:160], second[:160]))
+        check("an unlimited plan: Brave is asked again, never passed over as spent", len(asked) == 2, asked)
+        usage = json.dumps(g.file("data", "zero-bot", "search_usage.json") or {})
+        check("an unlimited plan: no spent allowance is kept", "spent" not in usage.lower() or '"spent_until": 0' in usage, usage[:200])
+        words = ["word%d" % i for i in range(120)]
+        g.run("web_search", {"query": " ".join(words)}, ZB_EXP_WEB=web)
+        sent = asked[-1] if len(asked) == 3 else ""
+        check("a long query is cut to Brave's 75 words, at a word", sent.split() == words[:75], sent[:80])
+        g.run("web_search", {"query": " ".join(["abcdefghijklmnopqrstuvwxyz"] * 40)}, ZB_EXP_WEB=web)
+        sent = asked[-1] if len(asked) == 4 else ""
+        check("a long query is cut to Brave's 600 characters, at a word", 0 < len(sent.encode()) <= 600 and
+              set(sent.split()) == {"abcdefghijklmnopqrstuvwxyz"}, len(sent.encode()))
+    finally:
+        server.shutdown()
 
 
 def search_answers(root):

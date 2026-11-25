@@ -35,15 +35,32 @@ std::vector<long> windows(const std::map<std::string, std::string> &headers, con
 // What the month's window says, into `reply`: left, of how much, and in how many seconds it comes back. The month is
 // the last window, so a figure is taken only from a header with as many windows as the limit header and that has two
 // or more (one alone could be the second's: a 0 there would switch search off for hours); anything else says nothing.
+// A month's limit of 0 is an unlimited plan (Brave's rate-limit guide), which says nothing either: its "0 left", if
+// it sent one, would mark the service spent after every search (ZB-130, found by tests/tools/search_contract.py).
 void monthly(const std::map<std::string, std::string> &headers, Reply &reply) {
     const std::vector<long> limit = windows(headers, "x-ratelimit-limit");
-    if (limit.size() < 2) return;
+    if (limit.size() < 2 || limit.back() == 0) return;
     const std::vector<long> left = windows(headers, "x-ratelimit-remaining"), reset = windows(headers, "x-ratelimit-reset");
     if (left.size() == limit.size()) {
         reply.left = left.back();
         reply.limit = limit.back();
     }
     if (reset.size() == limit.size()) reply.reset_s = reset.back();
+}
+
+// The query as Brave takes it: at most 75 words and 600 characters (its reference's q; what a longer one gets is not
+// documented, and a refusal would only pass the search to the next service). Cut at a word, counted in bytes, which
+// are never fewer than the characters.
+constexpr size_t kMaxQueryWords = 75, kMaxQueryBytes = 600;
+std::string fitted(const std::string &query) {
+    std::string out;
+    size_t words = 0;
+    for (const std::string &w : util::split(query, ' ')) {
+        if (w.empty()) continue;
+        if (++words > kMaxQueryWords || out.size() + (out.empty() ? 0 : 1) + w.size() > kMaxQueryBytes) break;
+        out += (out.empty() ? "" : " ") + w;
+    }
+    return out.empty() ? util::truncate_utf8(query, kMaxQueryBytes, "") : out;
 }
 
 // The code of an error Brave answered with ({"type": "ErrorResponse", "error": {"code": ...}}); "" for any other body.
@@ -161,7 +178,8 @@ public:
         Reply reply;
         tools::Fetched got;
         std::string err;
-        const json j = send("https://api.search.brave.com/res/v1/web/search?q=" + http::url_encode(query) + "&count=5", how, ctx, got, err);
+        const json j = send("https://api.search.brave.com/res/v1/web/search?q=" + http::url_encode(fitted(query)) + "&count=5", how, ctx, got,
+                            err);
         reply.outcome = meaning(got, err);
         reply.status = got.status;
         monthly(got.headers, reply);
