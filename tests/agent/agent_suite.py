@@ -644,9 +644,12 @@ def main():
     ap.add_argument("--web-seed", type=int, default=None, help="the stand-in web's seed (default ZB_EVAL_SEED, else %d)" % ev.EVERYDAY_SEED)
     ap.add_argument("--held-out", action="store_true", help="the release profile's held-out run: a seed from %d up (default %d)"
                     % (ev.HELD_OUT_FROM, ev.HELD_OUT_SEED))
+    ap.add_argument("--search-kind", default=ev.DEFAULT_SEARCH, help="the one search service set up, in the stand-in's shape "
+                    "(default %s; another for a shape trial)" % ev.DEFAULT_SEARCH)
     args = ap.parse_args()
     if not (args.validate or args.list):
         ev.set_web_seed(args.web_seed if args.web_seed is not None else ev.HELD_OUT_SEED if args.held_out else ev.WEB_SEED, args.held_out)
+        ev.set_search_kind(args.search_kind, args.held_out)
 
     cases = json.load(open(args.cases, encoding="utf-8"))
     if args.validate:
@@ -712,7 +715,7 @@ def main():
         print("no cases selected")
         return
     print("\n%s | %s" % (ev.outcome_line(results), ev.timing_summary(results)))
-    print("stand-in web: seed %d%s, fixtures %s" % (ev.WEB_SEED, " (held out)" if ev.WEB_SEED >= ev.HELD_OUT_FROM else "", ev.web_version()[:12]))
+    print(ev.web_line())
     print("by tag: " + ", ".join("%s %d/%d%s" % (t, ok, k, " (%d unscorable)" % u if u else "")
                                  for t, (ok, k, u) in sorted(per_tag.items(), key=lambda kv: (kv[1][0] / kv[1][1], kv[0]))))
     slow = sorted(results, key=lambda r: -r["seconds"])[:args.slowest]

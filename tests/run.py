@@ -12,6 +12,7 @@ one line per group and a short summary instead of each script's own output.
     tests/run.py --groups live-suite --tags timer --repeat 5
     tests/run.py --groups live-scored --scored-only radio_ --repeat 5
     tests/run.py --groups live-suite --exp ZB_EXP_OFF=second_look --baseline B.json    a variant, gated
+    tests/run.py --groups live-suite --tags search --search-kind brave --baseline B.json    another search service, gated
     tests/run.py ... --plan                      say what would run and why; run nothing
 
 Each group's whole output goes to build/test-runs/<date-time>/<group>.log, with plan.txt and
@@ -23,7 +24,7 @@ run folder) is "passes" and covers its set. Live runs are always traced (--trace
 must be traced too.
 
 A release (--profile release, or --groups release: the same thing) runs every case of both sets as they
-are defined: --tags, --sample, --skip-tags, --only, --scored-only, --fast and --exp are refused, and
+are defined: --tags, --sample, --skip-tags, --only, --scored-only, --fast, --exp and --search-kind are refused, and
 --no-search is accepted and changes nothing: every live case's web reads go to the stand-in web
 (tests/mocks/fake_web.py; the runners refuse a case that could reach a real web service), so no run spends
 a search allowance and none needs a search key. It builds first unless
@@ -221,7 +222,7 @@ LIVE_FILE = {"live-scored": "eval.json", "live-suite": "suite.json"}   # their r
 SCRUB = ("ZB_UNIT_BUILD_ONLY", "ZB_UNIT_SKIP_SCRIPTS", "ZB_UPDATE_SHOTS", "ZB_UPDATE_SNAPSHOTS", "HUE_E2E_ONLY",
          "ZB_FAST_MODE", "ZB_EVAL_TRACE")   # ZB_EVAL_TRACE: the live runs are traced by --trace, which records it
 # What a release refuses: it runs every case of both sets as they are defined.
-RELEASE_REFUSES = ("tags", "sample", "skip_tags", "only", "scored_only", "fast", "exp")
+RELEASE_REFUSES = ("tags", "sample", "skip_tags", "only", "scored_only", "fast", "exp", "search_kind")
 RUNNER_EXP = ("ZB_EXP_TRACE", "ZB_EXP_WEB", "ZB_EXP_NO_HARDWARE", "ZB_EXP_NET")   # set by the live sets' runners per case
 
 PROFILES = {
@@ -478,6 +479,8 @@ def eval_command(o, run):
         cmd += ["--repeat", str(o.repeat)]
     if o.fast is not None:
         cmd += ["--fast", o.fast]
+    if o.search_kind:
+        cmd += ["--search-kind", o.search_kind]
     return cmd
 
 
@@ -492,6 +495,8 @@ def suite_command(o, run):
         cmd += ["--repeat", str(o.repeat)]
     if o.fast is not None:
         cmd += ["--fast", o.fast]
+    if o.search_kind:
+        cmd += ["--search-kind", o.search_kind]
     return cmd
 
 
@@ -529,6 +534,8 @@ def live_notes(o, chosen):
             notes.append("not passed on from the environment: %s (use --exp NAME=VALUE for a variant)" % ", ".join(exp))
         if o.exp:
             notes.append("experiment switches for the live sets: %s; the results are of that variant" % ", ".join(o.exp))
+        if o.search_kind:
+            notes.append("search: %s alone is set up, in the stand-in's shape; the results are of that variant" % o.search_kind)
         if os.environ.get("ZB_EVAL_MUSIC_DIR") is not None:
             notes.append("ZB_EVAL_MUSIC_DIR is set: the suite's music library is not the stand-in one")
     return notes
@@ -1226,6 +1233,8 @@ def parse(argv):
                     help="live sets: an experiment switch for a variant's run (inherited ZB_EXP_* are not passed on)")
     ap.add_argument("--repeat", type=int, default=1, help="live sets: run each case this many times")
     ap.add_argument("--fast", default=None, help="live sets: force fast mode on (1) or off (0)")
+    ap.add_argument("--search-kind", default="", metavar="KIND",
+                    help="live sets: set up this search service alone, in the stand-in web's shape (a shape trial; default Tavily)")
     ap.add_argument("--calibrate", type=int, default=0, metavar="N",
                     help="with --groups held-out only: run the held-out set N (3 or more) times to set its floors (HELD_OUT_FLOOR); "
                          "never to tune on: read only the per-group rates it prints")
@@ -1542,8 +1551,14 @@ def self_test():
             else:
                 os.environ[k] = v
     check("--exp", exp_env(parse(["--exp", "ZB_EXP_OFF=say"])) == {"ZB_EXP_OFF": "say"})
+    shape = parse(["--groups", "live-scored,live-suite", "--search-kind", "brave"])
+    check("--search-kind goes to both live sets", eval_command(shape, "/r")[-2:] == suite_command(shape, "/r")[-2:] ==
+          ["--search-kind", "brave"] and any("brave alone" in n for n in live_notes(shape, ["live-suite"])))
+    check("without --search-kind the runners' own default", "--search-kind" not in eval_command(parse([]), "/r") +
+          suite_command(parse([]), "/r"))
     for bad in (["--exp", "ZB_EXP_WEB=http://127.0.0.1:1"], ["--exp", "OTHER=1"], ["--exp", "ZB_EXP_OFF"],
-                ["--profile", "release", "--exp", "ZB_EXP_OFF=say"]):
+                ["--profile", "release", "--exp", "ZB_EXP_OFF=say"], ["--profile", "release", "--search-kind", "brave"],
+                ["--groups", "held-out", "--calibrate", "3", "--search-kind", "brave"]):
         try:
             with contextlib.redirect_stderr(io.StringIO()):
                 parse(bad)

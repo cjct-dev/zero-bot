@@ -25,7 +25,10 @@ those fields agree, on each side and between the sides; the rest are left out an
 changed case, a different scorer, traced against untraced, different fixtures. Results from before the
 manifest are compared by name only, which the report says; the generated suite's names are positions
 (timer-001), so a case inserted since the baseline can pair two different requests. tests/run.py always
-runs the live sets with --trace, so a baseline for the gate must be traced too.
+runs the live sets with --trace, so a baseline for the gate must be traced too. `search` is the search
+service a run was made with (the runners' --search-kind; records without it searched with Tavily): a case
+whose runs on one side used several is left out ("mixed search services"); the sides may differ, which is
+a shape trial and the report says so, but not in a release, which is measured with Tavily alone.
 
 A release (--release, what tests/run.py's release mode passes) is judged against the roster: every case
 defined in this tree (tests/agent/agent_eval.py's CASES and tests/agent/suite/cases.json), by name and current
@@ -103,6 +106,10 @@ MIN_COVERAGE = 0.9     # --release: share of each set's roster that must be comp
 MAX_UNSCORABLE = 0.02  # share of a side's runs that may be unscorable before the evidence is incomplete
 MANIFEST = ("case_hash", "scorer", "trace")       # required in a release
 PROVENANCE = MANIFEST + ("fixtures",)             # compared wherever recorded
+# The search service a run was made with ("search": tests/agent/agent_eval.py's DEFAULT_SEARCH unless --search-kind named
+# another, for a shape trial; records from before the field searched with it alone). One side holds runs of one service
+# per case; the sides may differ (the trial itself), which the report says, but a release is measured with the default.
+DEFAULT_SEARCH = "tavily"
 OUTCOMES = ("pass", "fail", "unscorable")
 SETS = ("scored", "suite")
 VERDICT_EXIT = {"passes": 0, "fails": 1, "inconclusive": 3, "incomplete": 4}
@@ -160,9 +167,9 @@ def roster_critical(roster):
 
 def matches_roster(r, entry, roster, trace=None):
     """The record is a valid, scorable run of the case as the roster defines it now, scored by the current
-    scorer (and, when TRACE is given, traced or not as it says)."""
+    scorer, searching with the default service (and, when TRACE is given, traced or not as it says)."""
     return (not record_problems(r) and outcome(r) in ("pass", "fail") and r.get("case_hash") == entry["hash"]
-            and r.get("scorer") == roster["scorer"] and (trace is None or r.get("trace") is trace))
+            and r.get("scorer") == roster["scorer"] and (trace is None or r.get("trace") is trace) and searched(r) == DEFAULT_SEARCH)
 
 
 def roster_gaps(records, roster, side, need, not_run=(), trace=None):
@@ -183,7 +190,7 @@ def roster_gaps(records, roster, side, need, not_run=(), trace=None):
             gaps.append("the %s has a scorable run of the current case for %d of the %d %s cases (%s needed)%s%s"
                         % (side, len(good), len(expected), s, "all" if need >= 1 else "%.0f%%" % (100 * need),
                            "; not run: %s" % short(absent) if absent else "",
-                           "; another version of the case, another scorer%s or unscorable: %s"
+                           "; another version of the case, another scorer, another search service%s or unscorable: %s"
                            % (", untraced" if trace else "", short(stale)) if stale else ""))
         lost = sorted(n for n in expected if n in crit and n not in good)
         if lost:
@@ -202,6 +209,11 @@ def set_of(r):
     return r.get("set") or ("suite" if "tags" in r else "scored")
 
 
+def searched(r):
+    """The search service a run was made with: "search" when recorded, else the default."""
+    return r.get("search") or DEFAULT_SEARCH
+
+
 def record_problems(r):
     """Why a result record is not a valid one ([] when it is). Records from before the manifest (no case_hash,
     scorer, trace or outcome) need only a case name, a list of turns and a list of problems."""
@@ -218,6 +230,8 @@ def record_problems(r):
         problems = None
     if "set" in r and r["set"] not in SETS:
         bad.append("set %r" % (r["set"],))
+    if "search" in r and (not isinstance(r["search"], str) or not r["search"]):
+        bad.append("search is not text")
     present = [f for f in MANIFEST if f in r]
     if present or "outcome" in r:
         missing = [f for f in MANIFEST + ("outcome",) if f not in r]
@@ -286,7 +300,7 @@ def by_case(results):
         name = r.get("case") if isinstance(r.get("case"), str) else "(no name)"
         c = cases.setdefault(name, {"runs": [], "n": 0, "tags": r.get("tags") if isinstance(r.get("tags"), list) else [],
                                     "set": set_of(r) if set_of(r) in SETS else "scored", "unscorable": 0, "invalid": 0,
-                                    "legacy": 0, **{f: set() for f in PROVENANCE}})
+                                    "legacy": 0, "search": set(), **{f: set() for f in PROVENANCE}})
         o = outcome(r)
         c["n"] += 1
         if o in ("pass", "fail"):
@@ -295,6 +309,7 @@ def by_case(results):
         c["invalid"] += o == "invalid"
         if any(f not in r for f in MANIFEST):
             c["legacy"] += 1
+        c["search"].add(searched(r))
         for f in PROVENANCE:
             if f in r:
                 c[f].add(json.dumps(r[f], sort_keys=True))
@@ -311,11 +326,16 @@ EXCLUDED = (("case_hash", "changed case"), ("scorer", "different scorer"), ("tra
 
 def pair_problem(b, v, strict=False):
     """Why a case on both sides cannot be compared, or None. Only the fields both sides recorded count, but
-    with STRICT (a release) a field recorded on one side only is a difference too."""
+    with STRICT (a release) a field recorded on one side only is a difference too. The search service may
+    differ between the sides (a shape trial), but not within one, nor in a release."""
     for field, why in EXCLUDED:
         if len(b[field]) > 1 or len(v[field]) > 1 or (b[field] and v[field] and b[field] != v[field]) \
                 or (strict and bool(b[field]) != bool(v[field])):
             return why
+    if len(b["search"]) > 1 or len(v["search"]) > 1:
+        return "mixed search services"
+    if strict and b["search"] != v["search"]:
+        return "another search service"
     if not b["runs"] or not v["runs"]:
         return "no scorable run"
     return None
@@ -431,6 +451,10 @@ def compare(a, base_res, var_res, load_problems=(), out=None, roster=None):
     if legacy:
         notes.append("no case hashes: comparison by name only for %d of %d cases (results from before the manifest "
                      "fields; a changed case or scorer cannot be seen)" % (len(legacy), len(compared)))
+    services = [", ".join(sorted({searched(r) for r in res})) or "-" for res in (base_res, var_res)]
+    if services[0] != services[1]:
+        notes.append("search services: the baseline searched with %s, the variant with %s: the same requests, another "
+                     "service's answers (a shape trial, --search-kind)" % tuple(services))
     for n in notes:
         say(n)
     say("")
@@ -757,7 +781,8 @@ def held_out_verdict(results, load_problems, floors, roster, repeats=1, max_unsc
     for n, (s_, x) in defined.items():
         rs = runs.get(n, [])
         ok = [r for r in rs if not record_problems(r) and set_of(r) == s_ and r.get("case_hash") == x.get("hash_by_date", {}).get(r.get("web_date"), x["hash"])
-              and r.get("scorer") == roster["scorer"] and r.get("web_seed") == roster["seed"] and executed(r, x)]
+              and r.get("scorer") == roster["scorer"] and r.get("web_seed") == roster["seed"] and searched(r) == DEFAULT_SEARCH
+              and executed(r, x)]
         ids = [r.get("run_id") for r in ok]
         if len(set(ids)) != len(ids):   # three copies of one run are one run
             ok = [r for k, r in enumerate(ok) if r.get("run_id") not in ids[:k]]
@@ -767,7 +792,7 @@ def held_out_verdict(results, load_problems, floors, roster, repeats=1, max_unsc
     wrong_count += [n for n, ok in good.items() if len(ok) != len(runs.get(n, [])) and n not in wrong_count and n not in stale]
     if stale:
         v["reasons"].append("%d cases have records that are not valid runs of the current case at seed %s (case, scorer, seed, "
-                            "run id, trace, requests, answered turns): %s" % (len(stale), roster["seed"], short(stale)))
+                            "search service, run id, trace, requests, answered turns): %s" % (len(stale), roster["seed"], short(stale)))
         incomplete = True
     if wrong_count:
         v["reasons"].append("%d cases do not have exactly %d runs: %s" % (len(wrong_count), repeats, short(wrong_count)))
@@ -1058,6 +1083,22 @@ def self_test():
     v, _ = gate(side(), var, "--release", roster=roster_of(side()))
     check("a release: fixtures recorded on one side only are left out", v["sets"]["scored"]["excluded"].get("different fixtures") == 1,
           v["sets"])
+    # the search service (a shape trial, ZB-102): may differ between the sides, never within one, nor in a release
+    brave = [dict(r, search="brave") for r in side()]
+    v, text = gate(side(), brave)
+    check("search: a shape trial is compared, and said", v["compared"] == 100 and v["verdict"] == "passes" and
+          "baseline searched with tavily, the variant with brave" in text, (v["compared"], v["verdict"]))
+    v, _ = gate([dict(r, search="tavily") for r in side()], side())
+    check("search: a record without it searched with the default", v["compared"] == 100 and not v["notes"], v["notes"])
+    v, _ = gate(side(), side() + [dict(rec("s07"), search="brave")])
+    check("search: one case's runs of two services on a side are left out",
+          v["sets"]["scored"]["excluded"].get("mixed search services") == 1, v["sets"])
+    v, _ = gate(FULL, [dict(r, search="brave") for r in FULL], "--release", roster=ROSTER)
+    check("search: a release is measured with the default", v["verdict"] == "incomplete" and
+          v["sets"]["scored"]["excluded"].get("another search service") == 41, v["sets"])
+    check("search: the roster takes only the default's runs", roster_gaps([dict(r, search="brave") for r in FULL], ROSTER, "baseline",
+                                                                          MIN_COVERAGE, trace=True) != [])
+    check("search: not text is not a valid record", record_problems(dict(rec("s01"), search=3)) == ["search is not text"])
     v, _ = gate([], side())
     check("nothing to compare is incomplete", v["verdict"] == "incomplete", v)
 
@@ -1162,7 +1203,7 @@ def self_test():
                     ("another request's trace (r3)", lambda r: r["turns"][0].update(trace=[{"ev": "request", "req": 2}])),
                     ("an empty answer (r3)", lambda r: r["turns"][0].update(answer=" ")),
                     ("other requests", lambda r: r.update(requests=["y"])), ("untraced", lambda r: r.update(trace=False)),
-                    ("no run id", lambda r: r.pop("run_id"))):
+                    ("no run id", lambda r: r.pop("run_id")), ("another search service", lambda r: r.update(search="brave"))):
         v = tamper(f)
         check("held-out (r2): a critical pass with %s is no evidence: incomplete" % what, v["verdict"] == "incomplete" and
               "home_after_web_no" in str(v["reasons"]), v["reasons"])

@@ -299,7 +299,11 @@ and hostile reply), all made from the same rules, so the same facts come back wh
 for the failover between them put one service on a bad day while the others answer as usual (`tavily_down`,
 `tavily_spent`, `tavily_slow`, `tavily_empty`, `brave_key_refused`, `brave_left_0`, `brave_spent`, `brave_busy`;
 `all_down` fails every one; `search_hostile` sends each one's hostile reply), and are used offline only
-(`sim/tools_cli.py`): the live sets search with one service, Tavily. **Variety, not
+(`sim/tools_cli.py`): the live sets search with one service, Tavily, unless `--search-kind KIND` (both runners and
+`run.py`) names another for a shape trial (ZB-102): that service alone is then set up, in the settings' list with the
+stand-in's key (`ZB_SEARCH_KEY` is only ever Tavily's), and each result records which it was (`search`). The gate leaves
+out a case whose runs on one side used two services, says when the sides used different ones, and measures a release
+with Tavily alone (`run.py` refuses the option there, and on the held-out run). **Variety, not
 volume:** every answer is drawn from a seed (values, wording, number of results, an unrelated result mixed in;
 forecasts made up for the place and season; rates and prices moved a few per cent), the same for the same seed and
 request, so checks work the right answer out from what was served, never from a number written into the case:
