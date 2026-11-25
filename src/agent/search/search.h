@@ -23,6 +23,10 @@
 // summary alone are not kept, and any change to the services in the settings (one switched on or off, moved,
 // another key, a refusal), even one taken back since, empties it; an answer that came while they changed is
 // not kept.
+//
+// Each service asked, and each answer from the cache, is noted in the experiments' trace (ZB_EXP_TRACE, "search")
+// and the activity log: the service's kind, what came of it, its HTTP status and how long it took; no query and
+// no words of the answer.
 #pragma once
 #include <cstdint>
 #include <string>

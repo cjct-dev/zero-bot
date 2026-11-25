@@ -1455,7 +1455,50 @@ with open(path, "w") as f:
         rec(ev="state", turn=n, state={"now": 1, "reminders": [], "calendar": [], "memory": []})
         rec(ev="turn_end", turn=n, total=0.1, first=0.05, answer=json.dumps(env), tool_calls=0, responses=[])
     rec(ev="end", turns=n)
+if os.environ.get("FAKE_SEARCH_TRACE") and os.environ.get("ZB_EXP_TRACE"):   # the experiments' trace, with web searches (ZB-103)
+    with open(os.environ["ZB_EXP_TRACE"], "a") as t:
+        line = lambda **e: t.write(json.dumps(e) + "\n")
+        line(ev="start", version="0", pid=1)
+        line(ev="search", kind="tavily", outcome="ok", status=200, ms=3, cached=False)   # outside a request (--tool)
+        for k in range(1, len([x for x in turns if x != "/new"]) + 1):
+            line(ev="call", req=k, call=1, purpose="decide", usage={"prompt_tokens": 100})
+            line(ev="search", req=k, kind="tavily", outcome="failing", status=503, ms=40, cached=False)
+            line(ev="search", req=k, kind="brave", outcome="ok", status=200, ms=300, cached=False)
+            if k > 1: line(ev="search", req=k, kind=None, outcome="ok", status=0, ms=0, cached=True)
+            line(ev="request", req=k, first_sentence_ms=500, tools=[{"name": "web_search", "ms": 350, "outcome": "ok"}], calls=1)
 '''
+
+
+@test
+def trace_with_searches():
+    """ZB-103: the trace's web search lines ("search": each service asked, or the cache's answer) are read with the rest:
+    each turn keeps its own request's lines, searches included; one made outside a request belongs to no turn; the turn
+    still counts as traced, and the trace's summary and the reports read it as before."""
+    folder = tempfile.mkdtemp(prefix="zb-scorer-test-")
+    try:
+        app = os.path.join(folder, "fake_app")
+        with open(app, "w") as f: f.write(FAKE_APP)
+        os.chmod(app, os.stat(app).st_mode | stat.S_IEXEC)
+        got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1", HOME=folder, ZB_EVAL_TRACE="1", FAKE_SEARCH_TRACE="1"),
+                          bare("look up the louvre", "and again"))
+        turns = got["turns"]
+        searches = [[(e.get("kind"), e.get("cached")) for e in t.get("trace", []) if e.get("ev") == "search"] for t in turns]
+        check("search trace: each turn keeps its own request's searches, the cache's answer included",
+              got["trace"] is True and searches == [[("tavily", False), ("brave", False)], [("tavily", False), ("brave", False), (None, True)]],
+              searches)
+        check("search trace: one made outside a request is in no turn", all(e.get("req") for t in turns for e in t.get("trace", [])), turns)
+        import exp_compare
+        import exp_report
+        check("search trace: each turn still counts as traced (the held-out judge's evidence)",
+              all(exp_compare.traced_turn(t, k) for k, t in enumerate(turns)), turns)
+        check("search trace: the summary counts the requests and calls as before",
+              ev.trace_summary([{"turns": turns}]).startswith("trace: 2 requests | model calls per request median 1"),
+              ev.trace_summary([{"turns": turns}]))
+        calls, req, tts = exp_report.turn_trace(turns[1])
+        check("search trace: the reports read a turn's calls and request as before", len(calls) == 1 and req and req["req"] == 2 and tts == [],
+              (calls, req))
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 @test

@@ -29,6 +29,7 @@
 #include "agent/search/provider.h"
 #include "agent/search/search.h"
 #include "agent/search/usage.h"
+#include "core/activity.h"
 #include "core/settings.h"
 #include "core/util.h"
 
@@ -728,6 +729,51 @@ void test_cache(Trio &t) {
     check(t.a.asked.size() == 34, "the oldest went first");
 }
 
+// ---------------------------------------------------------------- each service asked, in the activity log
+// The activity log's lines from line `from` on, without their time stamps ("2026-11-18 12:00:00 ").
+std::vector<std::string> log_lines(size_t from) {
+    std::string text;
+    util::read_file(activity::path(), text);
+    std::vector<std::string> out;
+    for (const std::string &line : util::split(text, '\n'))
+        if (!line.empty()) out.push_back(line.substr(std::min<size_t>(20, line.size())));
+    return std::vector<std::string>(out.begin() + static_cast<long>(std::min(from, out.size())), out.end());
+}
+
+std::string joined(const std::vector<std::string> &lines) {
+    std::string out;
+    for (const std::string &l : lines) out += (out.empty() ? "" : " | ") + l;
+    return out;
+}
+
+void test_measured(Trio &t) {
+    t.reset(kAB);
+    t.a.will({failure(Outcome::Failing, 503)});
+    t.a.takes_ms = 1200;
+    t.b.takes_ms = 300;
+    const size_t mark = log_lines(0).size();
+    search_for("zebracorn opening hours");
+    search_for("ZEBRACORN  opening hours");
+    const std::vector<std::string> lines = log_lines(mark);
+    check(lines == std::vector<std::string>{"search alpha -> failing, HTTP 503 (1200 ms)", "search beta -> ok (300 ms)",
+                                            "search (cache) -> ok (0 ms)"},
+          "each service asked is a line of the activity log, its outcome, status and time; then the cache's answer (" +
+              joined(lines) + ")");
+    std::string text;
+    util::read_file(activity::path(), text);
+    check(text.find("zebracorn") == std::string::npos && text.find("From beta") == std::string::npos &&
+              text.find("Title") == std::string::npos && text.find("key-") == std::string::npos,
+          "the activity log has neither the query, the answer's words nor a key");
+
+    t.reset({{"alpha", "key-a"}});
+    t.a.will({failure(Outcome::KeyRefused, 401)});
+    const size_t again = log_lines(0).size();
+    search_for("one");
+    search_for("two");
+    check(log_lines(again) == std::vector<std::string>{"search alpha -> key_refused, HTTP 401 (0 ms)"},
+          "a key refused is noted once: a service passed over was not asked, and is not noted");
+}
+
 // ---------------------------------------------------------------- what the settings page says
 void test_states(Trio &t) {
     t.reset(kAB);
@@ -1088,6 +1134,7 @@ int main(int argc, char **argv) {
     test_spent_kept(t);
     test_daily_cap(t);
     test_cache(t);
+    test_measured(t);
     test_states(t);
     test_ask_allowance(t);
     test_sent_for_real(*sender);

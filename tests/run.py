@@ -161,6 +161,10 @@ GROUPS = [
                "scripts (the wake screen's diversion) against a stand-in dpkg-divert"),
     dict(name="tools", secs=2, needs=["cli"], cmds=[pyi("tests/sim/tools_cli.py", "build/cli/zero_bot")],
          about="the offline tools through the cli build: good, wrong and hostile arguments"),
+    dict(name="search-contract", secs=2, needs=[],
+         cmds=[pyi("tests/tools/search_contract.py"), pyi("tests/tools/search_contract.py", "--self-test")],
+         about="each web search service as its documentation describes it (tests/tools/contracts/) against the stand-in web's "
+               "shape and the app's provider, offline; its --spend, one real search, is the owner's alone and refused here"),
     dict(name="loop", secs=30, needs=["cli"],
          cmds=[py("tests/sim/home_chat_e2e.py"), py("tests/sim/selfheal_chat_e2e.py"),
                pyi("tests/sim/agent_loop_test.py", "-q", "build/cli/zero_bot")],
@@ -241,21 +245,26 @@ PATH_RULES = [
      "the package and its maintainer scripts"),
     (r"^(scripts/|extras/|\.github/)", [], "deployment: no offline test covers it"),
     (r"^tests/run\.py$", ["runner"], "this runner"),
-    (r"^tests/netguard\.py$", ["runner", "tools", "loop", "scorer"], "the network boundary of every test process"),
-    (r"^tests/(agent/exp_compare|agent/exp_report|tools/web_contract)\.py$", ["runner"], "the gate and the reports (their self-test is in runner)"),
+    (r"^tests/netguard\.py$", ["runner", "tools", "loop", "scorer", "search-contract"], "the network boundary of every test process"),
+    (r"^tests/(agent/exp_compare|agent/exp_report)\.py$", ["runner"], "the gate and the reports (their self-test is in runner)"),
+    (r"^tests/tools/web_contract\.py$", ["runner", "search-contract"],
+     "the web contract (its self-test is in runner; the search contract compares shapes with it)"),
+    (r"^tests/tools/(search_contract\.py|contracts/)", ["search-contract"], "the search services' contracts and their check"),
     (r"^tests/agent/scorer_test\.py$", ["scorer"], "the scorer's own test"),
     (r"^tests/agent/agent_eval\.py$", ["scorer", "cases", "tools"],
      "the scored set and the scoring both live sets use (tools_cli.py runs its runner against a scripted model)"),
     (r"^tests/lib/answered\.py$", ["tapo", "wiz", "kasa", "shelly", "homekit", "firetv"],
      "who answered at a device's address, as the app reads a driver's error (the drivers' end-to-end scripts)"),
+    (r"^tests/lib/search_services\.py$", ["tools", "search-contract"],
+     "the search services built in, read from the app's registry (tools_cli.py's search checks, the search contract)"),
     (r"^tests/lib/", ["scorer", "cases", "tools", "loop"],
      "code the test folders share: the cli's account of a run and the stand-in music library (agent_eval.py, agent_loop_test.py)"),
     (r"^tests/agent/agent_suite\.py$", ["scorer", "cases"], "the suite's runner"),
     (r"^tests/agent/suite/from_conversation\.py$", ["cases", "scorer", "loop"],
      "drafts a case from a saved conversation (agent_loop_test.py runs it)"),
     (r"^tests/agent/suite/", ["cases", "scorer"], "the generated suite (scorer_test.py reads its cases)"),
-    (r"^tests/mocks/(fake_web\.py|web/)", ["cases", "scorer", "tools"],
-     "the stand-in web (its fixtures: the validators and scorer_test.py; tools_cli.py starts it)"),
+    (r"^tests/mocks/(fake_web\.py|web/)", ["cases", "scorer", "tools", "search-contract"],
+     "the stand-in web (its fixtures: the validators and scorer_test.py; tools_cli.py starts it; its search shapes: the contract)"),
     (r"^tests/sim/screens/", ["screens"], "the golden screenshots"),
     (r"^tests/mocks/mock_tapo\.py$", ["tapo", "loop"],
      "the simulated Tapo plugs (home_chat_e2e.py and selfheal_chat_e2e.py start them too)"),
@@ -278,6 +287,8 @@ PATH_RULES = [
     (r"^src/ui/", ["unit", "sim-build", "screens"], "the screens and keys"),
     (r"^src/platform/(display|input)", ["sim-build", "screens"], "the screen and keyboard (sim build)"),
     (r"^src/platform/", ["unit", "tools", "loop", "sim-build"], "audio, camera, helper programs"),
+    (r"^src/agent/search/providers/", ["unit", "loop", "tools", "sim-build", "search-contract"],
+     "a web search service (its contract compares what it sends and reads with the documentation)"),
     (r"^src/(agent/|main\.cpp$)", ["unit", "loop", "tools", "sim-build"], "the request loop and the tools"),
     (r"^src/core/", ["unit", "tools", "loop", "sim-build"], "settings, stores, timers, radio, utilities"),
     (r"^(CMakeLists\.txt|CMakePresets\.json|cmake/|third_party/)", [QUICK, "sim-build"], "the build itself"),
@@ -806,6 +817,12 @@ def commands_of(group, o, run):
     return [c for c in (c(o, run) if callable(c) else c for c in group["cmds"]) if c]
 
 
+def spends(cmd):
+    """Whether CMD would spend a real search with the owner's key (tests/tools/search_contract.py --spend KIND --key-file
+    PATH): no group runs such a command, in any profile. Only the owner types it, by hand."""
+    return any(w in ("--spend", "--key-file") or w.startswith(("--spend=", "--key-file=")) for w in cmd)
+
+
 def presets_needed(chosen):
     needs = set()
     for n in chosen:
@@ -1046,6 +1063,9 @@ def run_group(group, o, run, gate_follows, warnings):
         with open(logpath, "w") as log:
             log.write("# %s: %s\n" % (name, group["about"]))
             cmds = commands_of(group, o, run)
+            if any(spends(c) for c in cmds):
+                log.write("refused: a command of this group spends a real search (--spend); only the owner runs that, by hand\n")
+                rc_all, cmds = 2, []
             for k, cmd in enumerate(cmds):
                 rc = RUN_COMMAND(cmd, log, env, group.get("timeout", 900))
                 log.write("(exit %d)\n" % rc)
@@ -1296,8 +1316,13 @@ def self_test():
           groups("tests/mocks/mock_tapo.py"))
     check("hue's mock files: its unit test reads them", groups("tests/mocks/hue/certs/bridge.pem") == ["unit", "hue"])
     check("firetv's mock files: its unit test reads them", groups("tests/mocks/firetv/mock_firetv.py") == ["unit", "firetv"])
-    check("the stand-in web: validators, scorer and tools", groups("tests/mocks/fake_web.py") == ["cases", "scorer", "tools"],
-          groups("tests/mocks/fake_web.py"))
+    check("the stand-in web: validators, scorer, tools and the search contract", groups("tests/mocks/fake_web.py") ==
+          ["cases", "scorer", "tools", "search-contract"], groups("tests/mocks/fake_web.py"))
+    for path, want in (("tests/tools/search_contract.py", ["search-contract"]), ("tests/tools/contracts/brave.json", ["search-contract"]),
+                       ("tests/lib/search_services.py", ["tools", "search-contract"]),
+                       ("src/agent/search/providers/brave.cpp", ["unit", "tools", "search-contract", "loop", "sim-build"]),
+                       ("src/agent/search/search.cpp", ["unit", "tools", "loop", "sim-build"])):
+        check("%s: %s" % (path, ", ".join(want)), groups(path) == want, groups(path))
     check("a driver's e2e", groups("tests/sim/wiz_e2e.py") == ["wiz"])
     check("a driver's unit test", groups("tests/unit/shelly_test.cpp") == ["unit", "shelly"])
     check("golden shots", groups("tests/sim/screens/golden/01-chat.png") == ["screens"])
@@ -1316,7 +1341,7 @@ def self_test():
     for path, want in (("tests/unit/run_unit.sh", ["unit"]), ("tests/unit/snapshots/plugs_only.json", ["unit"]),
                        ("tests/sim/screens/fixclock.c", ["screens"]), ("tests/sim/tools_cli.py", ["tools"]),
                        ("tests/sim/agent_loop_test.py", ["loop"]), ("tests/agent/scorer_test.py", ["scorer"]),
-                       ("tests/tools/web_contract.py", ["runner"])):
+                       ("tests/tools/web_contract.py", ["runner", "search-contract"])):
         check("%s: %s" % (path, ", ".join(want)), groups(path) == want, groups(path))
     want =[g["name"] for g in GROUPS if g["name"] in set(PROFILES["quick"][1]) | {"sim-build"}]
     check("the build", groups("CMakeLists.txt") == want, groups("CMakeLists.txt"))
@@ -1381,6 +1406,8 @@ def self_test():
     check("the held-out run and the web contract are in no other profile", all("held-out" not in g and "web-contract" not in g
                                                                                 for n, (_, g) in PROFILES.items() if g and n != "release"))
     check("the web contract is in no profile at all (it reaches the internet)", all("web-contract" not in g for _, g in PROFILES.values() if g))
+    check("the search contract's offline check is in quick and offline", "search-contract" in quick and "search-contract" in OFFLINE)
+    spend_guard(check)
     o = parse(["--profile", "release", "--baseline", "b.json"])
     chosen = choose(o)[0]
     check("release with a baseline: the live sets, the gate, then the held-out run", chosen[-4:] == LIVE + ["gate", "held-out"], chosen)
@@ -1816,6 +1843,33 @@ def self_test():
         print("FAIL " + f)
     print("runner self-test: %d checks, %d failed" % (counted[0], len(failures)))
     return 1 if failures else 0
+
+
+def spend_guard(check):
+    """No group runs a real search (search_contract.py --spend) in any profile: none of their commands spends one, and a
+    group that held one is refused before anything is started."""
+    global RUN_COMMAND
+    o = parse(["--profile", "release", "--baseline", "b.json"])
+    choose(o)
+    spending = [g["name"] for g in GROUPS if any(spends(c) for c in commands_of(g, o, "/r"))]
+    check("no group's command spends a real search", spending == [], spending)
+    check("spends: --spend and --key-file, in either form", spends(["x", "--spend", "brave"]) and spends(["x", "--spend=brave"]) and
+          spends(["x", "--key-file=/k"]) and not spends(py("tests/tools/search_contract.py")), None)
+    calls, saved = [], RUN_COMMAND
+    RUN_COMMAND = lambda cmd, *a, **k: calls.append(cmd) or 0
+    run = tempfile.mkdtemp(prefix="zb-run-spend-")
+    try:
+        for form in (["--spend", "tavily", "--key-file", "/k"], ["--spend=tavily", "--key-file=/k"]):
+            group = dict(name="spender", needs=[], about="a group that would spend a search",
+                         cmds=[py("tests/tools/search_contract.py"), py("tests/tools/search_contract.py", *form)])
+            status, _, _ = run_group(group, parse([]), run, False, {})
+            with open(os.path.join(run, "spender.log")) as f:
+                log = f.read()
+            check("a group with %s is refused, nothing of it started" % " ".join(form), status == "fail" and calls == [] and
+                  "refused" in log, (status, calls, log))
+    finally:
+        RUN_COMMAND = saved
+        shutil.rmtree(run, ignore_errors=True)
 
 
 if __name__ == "__main__":

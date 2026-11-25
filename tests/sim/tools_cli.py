@@ -47,6 +47,8 @@ sys.path.insert(0, TESTS)
 sys.path.insert(1, os.path.join(TESTS, "agent"))   # the live sets' runner (agent_eval), whose web guard no_real_web runs
 sys.dont_write_bytecode = True
 import netguard   # noqa: E402  the network boundary (tests/netguard.py)
+sys.path.insert(2, os.path.join(TESTS, "lib"))
+from search_services import registered as registered_services   # noqa: E402  (kind, name) of each service built in
 APP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(TESTS, "..", "build", "cli", "zero_bot")
 
 checks = failed = 0
@@ -433,6 +435,7 @@ def run_all(root):
     search_services(root)
     search_shapes(root)
     search_failover(root)
+    search_measured(root)
     search_allowance(root)
     search_answers(root)
     nested_too_deep(root)
@@ -621,12 +624,6 @@ def search_services(root):
         web.wait(timeout=10)
 
 
-def registered_services():
-    """The search services built into the app, in their order: (kind, name) from src/agent/search/providers/registry.cpp."""
-    with open(os.path.join(TESTS, "..", "src", "agent", "search", "providers", "registry.cpp"), encoding="utf-8") as f:
-        return re.findall(r'^\s*X\((\w+), "([^"]+)"\)', f.read(), re.M)
-
-
 class StandInWeb:
     """tests/mocks/fake_web.py, logging every request: url(fixture) is ZB_EXP_WEB for that fixture, and since(mark) the
     requests logged after `mark` (a count of lines)."""
@@ -724,11 +721,11 @@ def search_shapes(root):
         web.close()
 
 
-def searches_in_one_run(g, web, fixture, services, n, same=False):
+def searches_in_one_run(g, web, fixture, services, n, same=False, **extra):
     """N web searches in one run of the app (--chat, against a scripted model that searches once for each message, each
     time in other words for the same rule of the stand-in, or with `same` in the same words, which the app's cache then
-    answers), with SERVICES as the settings' list at the stand-in's FIXTURE: the services the stand-in was asked, in
-    order, and the tool results."""
+    answers), with SERVICES as the settings' list at the stand-in's FIXTURE (EXTRA: more of the app's environment): the
+    services the stand-in was asked, in order, and the tool results."""
     write_services(g, services)
     script = g.dir + "/search-script.json"
     searches = [{"when": {"last": "user", "said": "search number %d" % i},
@@ -741,7 +738,8 @@ def searches_in_one_run(g, web, fixture, services, n, same=False):
     try:
         line = model.stdout.readline().split()
         mark = len(web.lines())
-        env = g.env(ZB_EXP_WEB=web.url(fixture), ZB_API_BASE="http://127.0.0.1:%s/v1" % line[2], ZB_API_KEY="test", ZB_FAST_MODE="0")
+        env = g.env(ZB_EXP_WEB=web.url(fixture), ZB_API_BASE="http://127.0.0.1:%s/v1" % line[2], ZB_API_KEY="test", ZB_FAST_MODE="0",
+                    **extra)
         p = subprocess.run([APP, "--chat"], input="".join("search number %d\n" % i for i in range(n)), env=env,
                            capture_output=True, text=True, timeout=60 + 10 * n)
         return [a.get("service") for a in web.since(mark)], p.stdout
@@ -842,6 +840,56 @@ TAVILY_USAGE = {"key": {"usage": 150, "limit": 1000, "search_usage": 100, "extra
 
 def usage_file(g):
     return g.file("data", "zero-bot", "search_usage.json") or {}
+
+
+def search_lines(g):
+    """The activity log's lines for the services a web search asked (activity::search), without their time stamps."""
+    path = os.path.join(g.dir, "cache", "zero-bot", "activity.log")
+    lines = open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else []
+    return [l[20:] for l in lines if l[20:].startswith("search ")]
+
+
+def trace_of(path):
+    return [json.loads(l) for l in open(path, encoding="utf-8")] if os.path.exists(path) else []
+
+
+def search_measured(root):
+    """Every service a web search asks, and every answer from its cache, is noted (ZB-103): in the experiments' trace
+    (ZB_EXP_TRACE, "search": the service's kind, the outcome, its status, the time, whether the cache answered; in its
+    request, "req", when there is one) and in the activity log (DIAGNOSTICS, temporary), with no words: not the query,
+    not the answer's."""
+    TB = [["tavily", "stand-in"], ["brave", "stand-in"]]
+    web = StandInWeb(root)
+    try:
+        g = State(root, "measured")
+        trace = os.path.join(g.dir, "trace.jsonl")
+        write_services(g, TB)
+        out = g.run("web_search", {"query": SEARCHED}, ZB_EXP_WEB=web.url("tavily_down"), ZB_EXP_TRACE=trace)
+        events = [e for e in trace_of(trace) if e.get("ev") == "search"]
+        got = [(e.get("kind"), e.get("outcome"), e.get("status"), e.get("cached")) for e in events]
+        check("the trace notes each service asked: Tavily down, then Brave's answer", got == [("tavily", "failing", 503, False),
+              ("brave", "ok", 200, False)], events)
+        check("each with its time, and outside a request no request number", all(isinstance(e.get("ms"), int) and e["ms"] >= 0 and
+              "req" not in e for e in events), events)
+        lines = search_lines(g)
+        check("the activity log has a line for each service asked", len(lines) == 2 and
+              re.match(r"^search tavily -> failing, HTTP 503 \(\d+ ms\)$", lines[0]) and
+              re.match(r"^search brave -> ok, HTTP 200 \(\d+ ms\)$", lines[1]), lines)
+        words = [w for w in SEARCHED.split() if len(w) > 3 and w in (json.dumps(events) + " ".join(lines)).lower()]
+        check("neither holds a word of the query or the answer", not words and '"results"' in out and
+              not any(chunk in " ".join(lines) + json.dumps(events) for chunk in re.findall(r'"title":"([^"]{12})', out)), words)
+
+        g = State(root, "measured-cache")
+        trace = os.path.join(g.dir, "trace.jsonl")
+        asked, _ = searches_in_one_run(g, web, "default", TB, 2, same=True, ZB_EXP_TRACE=trace)
+        events = [e for e in trace_of(trace) if e.get("ev") == "search"]
+        got = [(e.get("req"), e.get("kind"), e.get("outcome"), e.get("cached")) for e in events]
+        check("in a conversation each search is in its own request: the service asked, then the cache's answer",
+              asked == ["tavily"] and got == [(1, "tavily", "ok", False), (2, None, "ok", True)], (asked, events))
+        lines = search_lines(g)
+        check("the cache's answer is a line of the activity log too", len(lines) == 2 and lines[1] == "search (cache) -> ok (0 ms)", lines)
+    finally:
+        web.close()
 
 
 def search_status(g, base):

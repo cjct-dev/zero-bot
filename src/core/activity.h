@@ -4,6 +4,7 @@
 //   src/agent/agent.cpp     Agent::Turn::run and Agent::Turn::run_tools (the log), trim_history and
 //                           reset_conversation (what a save keeps), whole_conversation
 //   src/agent/agent.h       Agent::whole_conversation, earlier_
+//   src/agent/search/search.cpp   measured (each service a web search asks, and each answer from its cache)
 //   src/ui/app_keys.cpp     save_conversation, settings_may_open, settle_keys; SPACE in handle_key
 //                           (twice saves the conversation; one SPACE waits out the double tap)
 //   src/ui/app_impl.h       space_tap, diagnostics_shots
@@ -23,9 +24,12 @@
 //
 // 1. The activity log: what the assistant did, each tool call with its arguments and result, so
 // that a problem the owner reports ("it said it could not turn the TV on") can be diagnosed
-// afterwards. It lives in ~/.cache/zero-bot/activity.log (mode 0600), at most about 256 kB plus one
-// older file. What the user said is not written, nor anything secret: tool arguments and results
-// never carry passwords or tokens (the smart-home results are names and states only).
+// afterwards, and each service a web search asked, with what came of it and how long it took, so
+// that the services' order and deadlines can be set from the device's own figures (ZB-103). It
+// lives in ~/.cache/zero-bot/activity.log (mode 0600), at most about 256 kB plus one older file.
+// What the user said is not written, nor anything secret: tool arguments and results never carry
+// passwords or tokens (the smart-home results are names and states only), and a search's line has
+// neither the query nor the answer.
 //
 // 2. Saved conversations: only when the user asks for it (SPACE twice on the chat screen), the
 // conversation so far, from its start, as the model saw it: each user message with its time stamp,
@@ -48,6 +52,9 @@ namespace activity {
 void request();
 // One tool call: its name, arguments (JSON), result and how long it took.
 void tool(const std::string &name, const std::string &args, const std::string &result, long ms);
+// One service a web search asked: its kind, what came of it in a word (search.cpp), the HTTP status it answered with
+// (0: none came) and how long it took; with `cached`, that the search's cache answered and no service was asked.
+void search(const std::string &kind, const std::string &outcome, long status, long ms, bool cached);
 // Where the log is.
 std::string path();
 

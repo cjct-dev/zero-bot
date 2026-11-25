@@ -63,8 +63,9 @@ UPGRADE="src/core/upgrade.cpp"
 HELPERS="src/platform/power.cpp src/core/breath.cpp"
 # What every thread shares: files saved at once, the settings, the calendar's alerts (store.cpp
 # from TIMERS, util.cpp from above, settings.cpp from DIAG).
-# Web search's layer and every service built in (agent/search), with settings.cpp from DIAG and the smart-home
-# objects (the layer marks a web page's words as untrusted): providers/registry.cpp names each service's
+# Web search's layer and every service built in (agent/search), with settings.cpp and activity.cpp from DIAG (each
+# service asked is noted in the activity log) and the smart-home objects (the layer marks a web page's words as
+# untrusted): providers/registry.cpp names each service's
 # make_<kind>_provider(), so a service registered there links here with nothing else to change.
 SEARCH="src/agent/search/search.cpp src/agent/search/usage.cpp $(echo src/agent/search/providers/*.cpp) src/agent/tools/web.cpp src/agent/tools/common.cpp"
 
@@ -142,7 +143,7 @@ $WRAP $CXX -o "$OUT/core_test" "$OUT/tests_unit_core_test.o" "$(obj_of src/core/
     "$(obj_of src/core/breath.cpp)" -lpthread \
     -Wl,--wrap=fsync
 # Web search's layer against stand-in services (no service built in is asked).
-search_objs="$(obj_of src/core/settings.cpp)"
+search_objs="$(obj_of src/core/settings.cpp) $(obj_of src/core/activity.cpp)"
 for src in $SEARCH; do search_objs="$search_objs $(obj_of "$src")"; done
 $WRAP $CXX -o "$OUT/search_test" "$OUT/tests_unit_search_test.o" $search_objs $objs -lcurl -lcrypto -lpthread
 # DIAGNOSTICS (temporary): saved conversations.
