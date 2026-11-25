@@ -1442,7 +1442,9 @@ if os.environ.get("FAKE_NO_RECORDS") or not path:
     sys.exit(0)
 env = {k: os.environ.get(k) for k in ("ZB_EXP_NO_HARDWARE", "ZB_FAKE_CAMERA", "ZB_DRY_RUN", "ZB_EXP_TRACE", "ZB_EVAL_RECORDS", "HOME",
                                        "ZB_TEST_NETWORK", "NO_PROXY", "no_proxy", "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
-                                       "ALL_PROXY", "all_proxy", "ftp_proxy", "FTP_PROXY")}
+                                       "ALL_PROXY", "all_proxy", "ftp_proxy", "FTP_PROXY", "ZB_SEARCH_KEY")}
+try: env["search"] = json.load(open(os.environ["XDG_CONFIG_HOME"] + "/zero-bot/settings.json")).get("search")
+except (KeyError, OSError, ValueError): env["search"] = None   # the probe's run has no settings file
 def rec(**r): f.write(json.dumps(dict(r, v=2, mono=0, wall=0)) + "\n")
 with open(path, "w") as f:
     rec(ev="start", caps=os.environ.get("FAKE_CAPS", "records,web,web_all,no_hardware,net").split(","))
@@ -1471,6 +1473,28 @@ def runner_with_a_stand_in_app():
         check("runner: the records file is read", got["evidence"] == "records" and got["unscorable"] == [] and got["process"]["exit"] == 0, got)
         check("runner (A3): every case has no hardware and a fixture camera", env.get("ZB_EXP_NO_HARDWARE") == "1" and
               env.get("ZB_FAKE_CAMERA") == ev.CAMERA_FIXTURE and os.path.getsize(ev.CAMERA_FIXTURE) > 1000, env)
+        check("runner: Tavily by default, set up by ZB_SEARCH_KEY alone", env.get("ZB_SEARCH_KEY") == ev.SEARCH_DUMMY and
+              env.get("search") is None, env)
+        saved_kind = ev.SEARCH_KIND
+        try:
+            ev.set_search_kind("brave")
+            got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1"), c)
+            env = json.loads(got["turns"][0]["answer"]) if got["turns"] else {}
+            check("runner (ZB-102): --search-kind brave sets up Brave alone, with the dummy key, and no Tavily key",
+                  env.get("search") == [{"kind": "brave", "key": ev.SEARCH_DUMMY, "enabled": True}] and env.get("ZB_SEARCH_KEY") is None, env)
+            record = ev.result_record(c, got, *ev.verdict(c, got))
+            check("runner (ZB-102): the result records the search service", record["search"] == "brave", record.get("search"))
+            check("runner (ZB-102): a case that asks for no key gets no service at all",
+                  ev.search_services(case("search_no_key")) == [] and ev.search_services(case("search")) != [])
+            with contextlib.redirect_stderr(io.StringIO()):
+                for kind, held_out in (("nonesuch", False), ("brave", True)):
+                    try:
+                        ev.set_search_kind(kind, held_out)
+                        check("runner (ZB-102): --search-kind %s%s is refused" % (kind, " on the held-out run" if held_out else ""), False)
+                    except SystemExit:
+                        pass
+        finally:
+            ev.SEARCH_KIND = saved_kind
         got = ev.run_case(app, dict(os.environ, ZB_DRY_RUN="1", FAKE_NO_RECORDS="1"), c)
         check("runner: an app that writes no records, and exits normally, is unscorable", ev.verdict(c, got)[0] == "unscorable", got)
         saved = os.environ.pop("ZB_EVAL_MUSIC_DIR", None)
@@ -1559,6 +1583,19 @@ def provenance_kept():
     del no_key["ZB_SEARCH_KEY"]
     check("web guard: no key only for a case that asks for none", ev.web_guard(no_key, {"ZB_SEARCH_KEY": None}) == [] and
           ev.web_guard(no_key, {}) != [])
+    saved_kind = ev.SEARCH_KIND
+    try:
+        ev.SEARCH_KIND = "brave"   # a shape trial (ZB-102): Brave alone, its dummy key in the settings, never Tavily's beside it
+        dummy = [{"kind": "brave", "key": ev.SEARCH_DUMMY}]
+        check("web guard: another service alone, with the dummy key, passes", ev.web_guard(no_key, {}, dummy) == [], ev.web_guard(no_key, {}, dummy))
+        check("web guard: ... with Tavily's key beside it is refused", any("alone" in p for p in ev.web_guard(ok_env, {}, dummy)))
+        check("web guard: ... with a key that is not the dummy is refused",
+              any("not the stand-in's dummy" in p for p in ev.web_guard(no_key, {}, [{"kind": "brave", "key": "real"}])))
+        check("web guard: ... every scored case as run_case sets it up, without a Tavily key whatever it inherits",
+              all(ev.web_guard(netguard.child_env(ev.case_web_env({"ZB_SEARCH_KEY": "x"}, c), keep=("ZB_SEARCH_KEY",), ZB_TEST_NETWORK="1"),
+                               c.get("env") or {}, ev.search_services(c)) == [] for c in ev.CASES))
+    finally:
+        ev.SEARCH_KIND = saved_kind
     saved_keys = list(ev.REAL_KEYS)
     ev.REAL_KEYS[:] = ["real-key-42"]
     try:

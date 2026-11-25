@@ -12,6 +12,7 @@ Usage:
     . path/to/env.sh            # sets ZB_API_BASE and ZB_API_KEY (the AI service; nothing else)
     tests/agent/agent_eval.py [--bin build/cli/zero_bot] [--repeat N] [--only substring[,substring]]
                         [--fast 0|1] [--jobs N] [--json out.json] [--rescore out.json] [--trace]
+                        [--search-kind KIND]
 
 --trace records the experiments' trace (src/agent/experiment.h, cli build) of every turn into
 --json: model calls with their timings and token counts, tools, guards. tests/agent/exp_report.py
@@ -20,7 +21,8 @@ summarises such files. --validate checks the cases as written and runs nothing.
 Side effects are disabled (ZB_DRY_RUN): no music plays, no infrared is sent and no smart-home
 device is switched. No case reaches a real web service: every web read a tool makes (search, forecasts,
 place names, exchange rates, prices) goes to the stand-in web (tests/mocks/fake_web.py, ZB_EXP_WEB, set
-last by run_case), search gets a dummy key, an inherited ZB_SEARCH_KEY never reaches the app, and a run
+last by run_case), search gets a dummy key (Tavily's; --search-kind sets up another service of the stand-in's alone,
+for a shape trial, and each result records which: "search"), an inherited ZB_SEARCH_KEY never reaches the app, and a run
 refuses to start when a case or the binary could still reach a real one (web_guard, probe_binary). Every case starts from an empty calendar, memory and settings, in a home folder
 of the run's own with a stand-in music library (MUSIC_LIBRARY), a fixture photo for the camera and
 ZB_EXP_NO_HARDWARE (camera and infrared refuse); the smart-home cases start from a made-up home on
@@ -724,6 +726,13 @@ def web(fixture="default"):
     return {"ZB_EXP_WEB": "@web/" + fixture}
 
 SEARCH_DUMMY = "stand-in"
+# The one search service a run sets up: Tavily, the first of the app's list and the one whose key ZB_SEARCH_KEY is,
+# unless --search-kind names another of the stand-in's shapes (fake_web.SEARCH_SHAPES) for a shape trial (ZB-102). That
+# service is then set up alone, in the settings' list with the dummy key (ZB_SEARCH_KEY is only ever Tavily's), and each
+# result records which one it was ("search"), so that the gate never pools two services' runs of a case on one side and
+# a release is measured with the default (tests/agent/exp_compare.py).
+DEFAULT_SEARCH = "tavily"
+SEARCH_KIND = DEFAULT_SEARCH
 WEB = web()
 # Which variant of every web answer the stand-in serves (tests/mocks/fake_web.py --seed): one fixed everyday
 # seed for every day-to-day run, so that a variant and its baseline see the same world, and a held-out seed
@@ -747,6 +756,15 @@ def set_web_seed(seed, held_out=False):
                  % (seed, "is held out" if seed >= HELD_OUT_FROM else "is not held out", HELD_OUT_FROM))
     if _web: sys.exit("the seed is set before the stand-in web starts")
     WEB_SEED = seed
+
+def set_search_kind(kind, held_out=False):
+    """The search service this run sets up (before any case starts): one whose shape the stand-in serves, and never
+    another than the default on the held-out run, whose floors were set with the default."""
+    global SEARCH_KIND
+    shapes = _fake_web().SEARCH_SHAPES
+    if kind not in shapes: sys.exit("--search-kind %s: the stand-in web answers as %s" % (kind, ", ".join(shapes)))
+    if held_out and kind != DEFAULT_SEARCH: sys.exit("--search-kind %s: the held-out run searches with %s" % (kind, DEFAULT_SEARCH))
+    SEARCH_KIND = kind
 _web = {}
 WEB_LOG = None   # a file for the stand-in's request log (tests/sim/tools_cli.py no_real_web)
 WEB_DATE = None  # the run's date, frozen when the stand-in starts (fake_web.py --date) and recorded in each turn and result
@@ -756,13 +774,24 @@ WEB_KEYS = ("ZB_SEARCH_KEY",)
 REAL_KEYS = [v for v in (os.environ.get(k) for k in WEB_KEYS) if v and v != SEARCH_DUMMY]
 STAND_IN = re.compile(r"http://127\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){2}(?::\d{1,5})?(?:/[\w.-]*)*")
 
+def wants_no_key(c):
+    """Whether case c runs without a search service (its env sets ZB_SEARCH_KEY to null)."""
+    return (c.get("env") or {}).get("ZB_SEARCH_KEY", SEARCH_DUMMY) is None
+
 def case_web_env(env, c):
-    """ENV with the web as run_case sets it for case c: the stand-in, and the dummy key unless c asks for none."""
+    """ENV with the web as run_case sets it for case c: the stand-in, and the dummy key as Tavily's unless c asks for
+    none or the run sets up another service (search_services)."""
     env = dict(env, ZB_EXP_WEB=web_base() + "/" + web_fixture(c))
     for k in WEB_KEYS:
-        if (c.get("env") or {}).get(k, SEARCH_DUMMY) is None: env.pop(k, None)
+        if wants_no_key(c) or SEARCH_KIND != DEFAULT_SEARCH: env.pop(k, None)
         else: env[k] = SEARCH_DUMMY
     return env
+
+def search_services(c):
+    """The settings' list of search services for case c: none for the default (ZB_SEARCH_KEY sets it up) or for a case
+    that asks for no key; otherwise the run's service alone, with the dummy key."""
+    if SEARCH_KIND == DEFAULT_SEARCH or wants_no_key(c): return []
+    return [{"kind": SEARCH_KIND, "key": SEARCH_DUMMY, "enabled": True}]
 
 def preflight(env, cases, validate_errors):
     """Why a live run must not start: a case as written could reach a real web service (VALIDATE_ERRORS, the
@@ -771,7 +800,7 @@ def preflight(env, cases, validate_errors):
     for c in cases:
         e = netguard.child_env(case_web_env(env, c), keep=("ZB_API_BASE", "ZB_API_KEY", "ZB_SEARCH_KEY"),
                                allow_origin=env.get("ZB_API_BASE", ""))
-        problems += ["%s: %s" % (c["name"], p) for p in web_guard(e, c.get("env") or {})]
+        problems += ["%s: %s" % (c["name"], p) for p in web_guard(e, c.get("env") or {}, search_services(c))]
     return problems
 
 WEB_TOOLS = {"web_search", "weather", "convert_currency", "stock_price"}   # the held-out "web" floor's tools
@@ -798,17 +827,20 @@ def web_fixture(c):
     v = (c.get("env") or {}).get("ZB_EXP_WEB")
     return v[5:] if isinstance(v, str) and v.startswith("@web/") and v[5:] else "default"
 
-def web_guard(env, case_env=None):
+def web_guard(env, case_env=None, services=()):
     """Why this environment could still reach a real web service or carry a real key ([] when it cannot): the
     stand-in must be set to an http://127.x address, the search key must be the dummy or absent (absent only
-    when the case asks for no key), and no variable may hold a real key."""
+    when the case asks for no key, or the run sets up another service: then every key of the settings' list of
+    SERVICES is the dummy), and no variable may hold a real key."""
     problems = []
     if not STAND_IN.fullmatch(env.get("ZB_EXP_WEB") or ""):
         problems.append("ZB_EXP_WEB is %r, not the stand-in web on 127.x" % env.get("ZB_EXP_WEB"))
     for k in WEB_KEYS:
         if k in env and env[k] != SEARCH_DUMMY: problems.append("%s is not the stand-in's dummy key" % k)
-        elif k not in env and case_env is not None and case_env.get(k, "") is not None:
+        elif k in env and SEARCH_KIND != DEFAULT_SEARCH: problems.append("%s is set: the run sets up %s alone" % (k, SEARCH_KIND))
+        elif k not in env and SEARCH_KIND == DEFAULT_SEARCH and case_env is not None and case_env.get(k, "") is not None:
             problems.append("%s is missing (only a case that asks for no key goes without)" % k)
+    if any(s.get("key") != SEARCH_DUMMY for s in services): problems.append("a search service's key is not the stand-in's dummy")
     for name, value in env.items():
         if any(key in str(value) for key in REAL_KEYS): problems.append("%s holds a real web-service key" % name)
     trap = netguard.trap().url
@@ -2007,6 +2039,8 @@ def run_case(binary, base_env, c):
     settings = {"home_city": "London", "user_name": "Sam"}
     for key in ("llm_model", "stt_model", "tts_model", "music_dir"):
         if os.environ.get("ZB_EVAL_" + key.upper()): settings[key] = os.environ["ZB_EVAL_" + key.upper()]
+    services = search_services(c)
+    if services: settings["search"] = services
     json.dump(settings, open(state + "/config/zero-bot/settings.json", "w"))
     env = dict(base_env)
     records = state + "/records.jsonl"
@@ -2040,7 +2074,7 @@ def run_case(binary, base_env, c):
     # The network boundary outside the app: every proxy variable at the runner's trap, which refuses whatever
     # reaches it, and only 127.0.0.1, localhost and the AI service's host exempt.
     env = netguard.child_env(env, keep=("ZB_API_BASE", "ZB_API_KEY", "ZB_SEARCH_KEY"), allow_origin=env.get("ZB_API_BASE", ""))
-    refused = web_guard(env, c["env"])
+    refused = web_guard(env, c["env"], services)
     if refused:
         shutil.rmtree(state, ignore_errors=True)
         raise RuntimeError("%s: refused, it could reach a real web service: %s" % (c["name"], "; ".join(refused)))
@@ -2152,9 +2186,9 @@ def verdict(c, run):
 
 def run_from_saved(r, c=None):
     """A result saved by --json, as run_case returns one, for --rescore. It keeps where it came from (its
-    requests, case_hash, fixtures, trace and evidence; result_record writes those, not the current case's),
-    so that scoring old evidence again never gives it a new identity; a saved run whose requests are not
-    case c's is unscorable. Results saved before a field existed are scored as they are: what they lack
+    requests, case_hash, fixtures, trace, search service and evidence; result_record writes those, not the
+    current case's), so that scoring old evidence again never gives it a new identity; a saved run whose
+    requests are not case c's is unscorable. Results saved before a field existed are scored as they are: what they lack
     makes their checks unscorable."""
     why = list(r.get("unscorable_why", r.get("unscorable") if isinstance(r.get("unscorable"), list) else []) or [])
     if c is not None and r.get("requests") != case_turns(c):
@@ -2162,7 +2196,7 @@ def run_from_saved(r, c=None):
     return {"turns": r.get("turns"), "process": r.get("process"), "evidence": r.get("evidence", "stdout"), "unscorable": why,
             "trace": r.get("trace"),
             "run_id": r.get("run_id"),
-            "provenance": {k: r.get(k) for k in ("requests", "case_hash", "fixtures", "trace", "web_seed", "web_date")}}
+            "provenance": {k: r.get(k) for k in ("requests", "case_hash", "fixtures", "trace", "web_seed", "web_date", "search")}}
 
 def trace_summary(results):
     """One line from the traces of a --trace run: model calls, tokens and upload per request."""
@@ -2397,16 +2431,18 @@ def case_hash(c):
 def result_record(c, run, outcome, problems, traced=None, which="scored", **extra):
     """What --json keeps of one run: the verdict ("outcome"; "unscorable" is true for an unscorable run, with
     the reasons in "problems"), the evidence it rests on ("unscorable_why": what made the records themselves
-    unusable, kept for --rescore), and what makes it comparable: case_hash, fixtures, scorer, trace and the
-    set it belongs to ("set": "scored" or "suite"). "trace" is whether the app was traced (run_case says;
-    `traced` only for a run that does not). A run scored again (run_from_saved) keeps the requests,
-    case_hash, fixtures and trace it was made with."""
+    unusable, kept for --rescore), and what makes it comparable: case_hash, fixtures, scorer, trace, the
+    set it belongs to ("set": "scored" or "suite") and the search service it ran with ("search"). "trace" is whether
+    the app was traced (run_case says; `traced` only for a run that does not). A run scored again (run_from_saved)
+    keeps the requests, case_hash, fixtures, trace and search service it was made with (the default for a run saved
+    before the field)."""
     prov = run.get("provenance")
     trace = run.get("trace") if run.get("trace") is not None or prov else traced
     return dict({"case": c["name"], "set": which, "case_hash": prov["case_hash"] if prov else case_hash(c),
                  "fixtures": prov["fixtures"] if prov else fixture_version(c), "scorer": SCORER_VERSION,
                  "web_seed": prov.get("web_seed") if prov else WEB_SEED,
                  "web_date": prov.get("web_date") if prov else WEB_DATE, "run_id": run.get("run_id"),
+                 "search": (prov.get("search") or DEFAULT_SEARCH) if prov else SEARCH_KIND,
                  "trace": None if trace is None else bool(trace), "outcome": outcome, "unscorable": outcome == "unscorable",
                  "requests": prov["requests"] if prov else case_turns(c), "problems": problems, "turns": run["turns"],
                  "process": run.get("process"), "evidence": run.get("evidence"), "unscorable_why": run.get("unscorable") or []}, **extra)
@@ -2500,6 +2536,11 @@ def isolated_env(home):
     env["ZB_FAKE_CAMERA"] = camera_path()   # an inherited ZB_FAKE_CAMERA is not the picture the hash names
     return env
 
+def web_line():
+    """What the stand-in served this run: its seed, its fixtures' version and the search service set up."""
+    return "stand-in web: seed %d%s, fixtures %s, search %s" % (WEB_SEED, " (held out)" if WEB_SEED >= HELD_OUT_FROM else "",
+                                                                web_version()[:12], SEARCH_KIND)
+
 def outcome_line(results):
     """"N/M passed" with the failures and the unscorable runs counted apart (an unscorable run is no pass)."""
     n = len(results)
@@ -2521,9 +2562,12 @@ def main():
     ap.add_argument("--web-seed", type=int, default=None, help="the stand-in web's seed (default ZB_EVAL_SEED, else %d)" % EVERYDAY_SEED)
     ap.add_argument("--held-out", action="store_true", help="the release profile's held-out run: a seed from %d up (default %d)"
                     % (HELD_OUT_FROM, HELD_OUT_SEED))
+    ap.add_argument("--search-kind", default=DEFAULT_SEARCH, help="the one search service set up, in the stand-in's shape "
+                    "(default %s; another for a shape trial)" % DEFAULT_SEARCH)
     args = ap.parse_args()
     if not args.validate:
         set_web_seed(args.web_seed if args.web_seed is not None else HELD_OUT_SEED if args.held_out else WEB_SEED, args.held_out)
+        set_search_kind(args.search_kind, args.held_out)
     if args.validate:
         errors = validate(CASES)
         for e in errors: print("INVALID " + e)
@@ -2570,7 +2614,7 @@ def main():
             results.append(result_record(c, got, outcome, problems, traced))
     shutil.rmtree(home, ignore_errors=True)
     print("\n%s | %s" % (outcome_line(results), timing_summary(results)))
-    print("stand-in web: seed %d%s, fixtures %s" % (WEB_SEED, " (held out)" if WEB_SEED >= HELD_OUT_FROM else "", web_version()[:12]))
+    print(web_line())
     if args.trace: print(trace_summary(results))
     if failed_names:
         print("not passed: " + ", ".join("%s%s" % (k, " x%d" % v if args.repeat > 1 else "") for k, v in sorted(failed_names.items())))

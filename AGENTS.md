@@ -371,12 +371,13 @@ groups need first. Which to use:
   leaves out Fire TV's end-to-end test and the live sets). `--profile offline` includes Fire TV.
 - Named groups: `tests/run.py --groups unit,hue`; a live check:
   `tests/run.py --groups live-suite --tags timer --repeat 5`; a variant against a
-  baseline: `--exp ZB_EXP_OFF=second_look --baseline B.json` (inherited `ZB_EXP_*` are never passed on).
+  baseline: `--exp ZB_EXP_OFF=second_look --baseline B.json` (inherited `ZB_EXP_*` are never passed on); another
+  search service's answers in place of Tavily's: `--search-kind brave` (a shape trial; tests/README.md, agent/).
 - Before a release: `tests/run.py --profile release --baseline EVAL.json,SUITE.json` (or `--groups
   release`, the same mode) builds (unless `--no-build`: then a build older than any input stops it),
   runs every offline group, every case of both live sets once, then the gate of `tests/agent/exp_compare.py`
   with `--release`. It refuses `--tags`, `--sample`, `--skip-tags`, `--only`, `--scored-only`,
-  `--fast` and `--exp`. Live cases run only on a cli build
+  `--fast`, `--exp` and `--search-kind`. Live cases run only on a cli build
   that is an experiments build, whose hardware guard holds and which writes the records. It does not
   start without a baseline that covers the roster (below): record one with
   `tests/run.py --groups live-scored,live-suite` (its `eval.json` and `suite.json`). It also builds
