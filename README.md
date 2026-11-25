@@ -569,6 +569,9 @@ devices, with or without this app.
   Should a search service echo the key it was sent, the key is taken out before the assistant reads the
   answer.
   Weather, currency and share-price lookups go to Open-Meteo, open.er-api.com and Yahoo Finance.
+  Your home city's name also goes to Open-Meteo's place search once when it is set or changed, and nothing
+  else with it: where the sun rises and sets there gives the scenes their dusk and night. Its coordinates and
+  time zone are kept in the settings file.
 - Python runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox with no
   network, no access to your files, a 20-second limit and a memory cap.
 - Reminders and timers only fire while the app is running.

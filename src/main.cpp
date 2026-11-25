@@ -21,7 +21,9 @@
 #include "agent/search/usage.h"
 #include "agent/speech.h"
 #include "agent/tools.h"
+#include "agent/tools/places.h"
 #include "core/activity.h"
+#include "core/dusk.h"
 #include "core/music_lib.h"
 #include "core/settings.h"
 #include "core/store.h"
@@ -43,7 +45,7 @@ struct Args {
     std::string tool_name, tool_args = "{}";
     std::string stt_file, tts_text, tts_out, bench_wav, bench_opus, shots;
     bool chat = false, keydump = false, discover = false, home_refresh = false, show_prompt = false, show_schema = false;
-    bool search_status = false, version = false;
+    bool search_status = false, dusk = false, version = false;
 };
 
 // One option: its flag, its arguments as the usage line names them and how many must follow, what it
@@ -99,6 +101,10 @@ const Option kOptions[] = {
                                "settings page shows them, asking those that can say for free what is left of\n"
                                "their allowance (Tavily), as the page's button does",
      [](Args &a, char **, int &, int) { a.search_status = true; }},
+    {"--dusk", "", 0, "print where the scenes' dusk and night are reckoned for, today's sunrise and sunset\n"
+                          "there and the light now; a home city whose place is not known is looked up first,\n"
+                          "as the app does in the background",
+     [](Args &a, char **, int &, int) { a.dusk = true; }},
     {"--codec-bench", "FILE.wav FILE.opus", 2, "time compressing a recording to MP3 and decompressing an Opus reply\n"
                                                "on this machine (three runs)",
      [](Args &a, char **v, int &i, int) { a.bench_wav = v[++i]; a.bench_opus = v[++i]; }},
@@ -690,6 +696,31 @@ int search_status(const Args &) {
     return 0;
 }
 
+// Where the scenes' dusk and night are reckoned for, today's sun there and the light now (--dusk). A home city
+// whose place is not known is looked up first, as App::locate_home does.
+int dusk_now(const Args &) {
+    const Settings s = Settings::get();
+    if (!s.home_city.empty() && !s.home_place.known()) {
+        tools::Context ctx;
+        static const char *const kGot[] = {"found", "not known to the place service", "not reached"};
+        printf("home city: %s\n", kGot[static_cast<int>(tools::locate_home(s.home_city, s.home_country, ctx))]);
+    }
+    const dusk::Where where = dusk::where_now();
+    static const char *const kFrom[] = {"fixed hours", "the time zone's city", "the home city"};
+    printf("from: %s; zone %s\n", kFrom[static_cast<int>(where.from)], where.zone.c_str());
+    const time_t now = time(nullptr);
+    if (where.from != dusk::Where::From::Hours) {
+        const util::LocalTime today = util::local_fields(now);
+        const dusk::Sun sun = dusk::sun_on(today.year, today.month, today.day, where.lat, where.lon);
+        static const char *const kDay[] = {"", " (the sun does not set)", " (the sun does not rise)"};
+        printf("at: %.3f, %.3f; sunrise %s, sunset %s%s\n", where.lat, where.lon, util::format_time(sun.rise, "%a %H:%M").c_str(),
+               util::format_time(sun.set, "%a %H:%M").c_str(), kDay[static_cast<int>(sun.day)]);
+    }
+    const dusk::Light light = dusk::light_at(now, where);
+    printf("now: %s, blend %.2f\n", light.night ? "night" : "dusk", light.blend);
+    return 0;
+}
+
 // Calls one tool directly and prints its result (--tool).
 int tool(const Args &a) {
     MusicLibrary::get().refresh(Settings::get().eff_music_dir());
@@ -709,6 +740,7 @@ const struct {
     {[](const Args &a) { return a.discover; }, discover},
     {[](const Args &a) { return a.show_prompt || a.show_schema; }, show},
     {[](const Args &a) { return a.search_status; }, search_status},
+    {[](const Args &a) { return a.dusk; }, dusk_now},
     {[](const Args &a) { return !a.tool_name.empty(); }, tool},
     {[](const Args &a) { return !a.ask.empty() || !a.ask_wav.empty() || a.chat; }, run_cli},
 };

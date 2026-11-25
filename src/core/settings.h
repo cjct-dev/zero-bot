@@ -5,6 +5,7 @@
 // out a snapshot, copied under a lock, that cannot be written to and stays as it was for as long
 // as it is used; every change goes through update(), made under the same lock, then saved.
 #pragma once
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -28,6 +29,15 @@ struct SearchService {
     // Which typing of the key this is, in this run only (0: as read): each set_search_key gives a new one, so
     // that a refusal of the key as sent before it was typed again marks nothing. Not saved.
     uint64_t typed = 0;
+};
+
+// Where the home city is, for the scenes' dusk and night (core/dusk.h): looked up once by the city's name
+// (tools::locate_home), never shown or typed. Settings::update forgets it whenever the home city or country
+// changes. Saved as "home_place", null while not known.
+struct HomePlace {
+    double lat = NAN, lon = NAN;   // degrees, north and east positive; NAN: not known
+    std::string zone;              // the city's time zone (IANA), when the service named one
+    bool known() const { return std::isfinite(lat) && std::isfinite(lon); }
 };
 
 struct Settings {
@@ -72,6 +82,7 @@ struct Settings {
     bool mic_builtin = true;          // always record from the device's own microphone
     bool camera_flip = true;          // turn photos the right way up (the sensor is mounted inverted)
     std::string home_country;   // tells same-named cities apart (London, Canada)
+    HomePlace home_place;       // the home city's coordinates and zone, once looked up
     std::string timezone;        // IANA name; empty = system
     std::string units = "metric";
     std::string tv_brand = "auto";

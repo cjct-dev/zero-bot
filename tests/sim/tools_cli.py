@@ -22,7 +22,10 @@ cache's answer, noted in the experiments' trace and the activity log, with no wo
 cap stops a search before any service is asked, the same query again in one run is answered from the cache, and
 zero_bot --search-status asks Tavily's GET /usage (a stand-in of its own) for what is left, with the key and nothing
 else. search_answers: what the services built in make of answers no fixture holds (too long, '&' everywhere, results
-that say nothing, the wrong shape, Brave's rate-limit figures and error codes, a /usage error). A tool call's arguments
+that say nothing, the wrong shape, Brave's rate-limit figures and error codes, a /usage error). home_place: the home
+city's place for the scenes' dusk and night (zero_bot --dusk), looked up by the city's name alone, kept and not asked
+for again, left unknown when the service does not know the city, cannot be reached or answers with a place off the
+globe, and set aside for a zone the user set elsewhere. A tool call's arguments
 and a web service's answer nested deeper than 32 levels are not read (nested_too_deep, against a local server of its
 own). no_real_web runs
 one case through the live sets' own runner
@@ -42,6 +45,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 
 TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/: netguard.py, mocks/
 sys.path.insert(0, TESTS)
@@ -440,6 +444,7 @@ def run_all(root):
     search_allowance(root)
     search_answers(root)
     brave_limits(root)
+    home_place(root)
     nested_too_deep(root)
     no_real_web(root)
     web_wraps()
@@ -1017,6 +1022,81 @@ def brave_limits(root):
               set(sent.split()) == {"abcdefghijklmnopqrstuvwxyz"}, len(sent.encode()))
     finally:
         server.shutdown()
+
+
+def home_place(root):
+    """ZB-132: where the scenes' dusk and night are reckoned for (zero_bot --dusk, which looks the home city up as
+    App::locate_home does). The home city is found at the stand-in's place service, the country choosing among the
+    places it lists, kept with its zone and not asked for again; a zone the user set for another place (travelling)
+    wins over it, one with no city of its own (Etc/UTC) does not. A city the service does not know, a service that
+    cannot be reached and a place off the globe leave it unknown. The request carries the city's name and nothing
+    else (a look-alike of the service sees it whole: the stand-in logs no query)."""
+    def dusk(g, web, **settings):
+        os.makedirs(g.dir + "/config/zero-bot", exist_ok=True)
+        path = g.dir + "/config/zero-bot/settings.json"
+        saved = json.load(open(path)) if os.path.exists(path) else {}
+        saved.update(settings)
+        with open(path, "w") as f:
+            json.dump(saved, f)
+        p = subprocess.run([APP, "--dusk"], env=g.env(ZB_EXP_WEB=web), capture_output=True, timeout=60)
+        out = p.stdout.decode("utf-8", "replace")
+        check("--dusk with %s exits normally" % json.dumps(settings), p.returncode == 0, (p.returncode, out[:200]))
+        return out, (g.file("config", "zero-bot", "settings.json") or {}).get("home_place")
+
+    web = StandInWeb(root)
+    try:
+        g = State(root, "home-place")
+        mark = len(web.lines())
+        out, place = dusk(g, web.url("default"), home_city="Sydney", home_country="Australia", timezone="Etc/UTC")
+        check("a home city: found, and the sun reckoned for it", "home city: found" in out and "from: the home city" in out, out)
+        check("a home city: its coordinates and zone saved", place and abs(place["lat"] + 33.87) < 0.01 and
+              abs(place["lon"] - 151.21) < 0.01 and place["zone"] == "Australia/Sydney", place)
+        check("a home city: one request, to the place service", [(r["host"], r["path"]) for r in web.since(mark)] ==
+              [("geocoding-api.open-meteo.com", "/v1/search")], web.since(mark))
+        mark = len(web.lines())
+        out, place = dusk(g, web.url("default"))
+        check("a home city's place known: not asked for again", web.since(mark) == [] and "home city:" not in out and
+              "from: the home city" in out, (out, web.since(mark)))
+        out, _ = dusk(g, web.url("default"), timezone="Asia/Tokyo")
+        check("a zone set for another place (travelling): that zone's city", "from: the time zone's city; zone Asia/Tokyo" in out, out)
+        out, _ = dusk(g, web.url("default"), timezone="Australia/Sydney")
+        check("the home city's own zone set: the home city", "from: the home city" in out, out)
+
+        canada = State(root, "home-place-canada")
+        out, place = dusk(canada, web.url("default"), home_city="Sydney", home_country="Canada", timezone="Etc/UTC")
+        check("the country chooses among the places listed", place and abs(place["lat"] - 46.14) < 0.01 and
+              place["zone"] == "America/Glace_Bay", place)
+
+        unknown = State(root, "home-place-unknown")
+        out, place = dusk(unknown, web.url("default"), home_city="Atlantis", timezone="Etc/UTC")
+        check("a city the service does not know: said, left unknown, fixed hours", "home city: not known to the place service" in out and
+              place is None and "from: fixed hours; zone Etc/UTC" in out, (out, place))
+        out, place = dusk(unknown, web.url("default"), timezone="Europe/London")
+        check("no home place: the zone's city", "from: the time zone's city; zone Europe/London" in out, out)
+    finally:
+        web.close()
+
+    service = Answering()
+    try:
+        g = State(root, "home-place-look-alike")
+        service.body = json.dumps({"results": [{"name": "Sydney", "latitude": -33.87, "longitude": 151.21, "country_code": "AU",
+                                                "country": "Australia", "timezone": "../../etc/passwd"}]})
+        out, place = dusk(g, service.url, home_city="Sydney", home_country="Australia", timezone="Etc/UTC")
+        line = service.seen[-1][0] if service.seen else ""
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(line.split(" ")[1] if " " in line else "").query)
+        check("the request carries the city's name and nothing else", query == {"language": ["en"], "count": ["10"], "name": ["Sydney"]},
+              line)
+        check("a zone that is not one is not kept", place and place["zone"] == "", place)
+        g2 = State(root, "home-place-off-globe")
+        service.body = json.dumps({"results": [{"name": "Sydney", "latitude": 123, "longitude": 151.21, "timezone": "Australia/Sydney"}]})
+        out, place = dusk(g2, service.url, home_city="Sydney", timezone="Etc/UTC")
+        check("a place off the globe: not kept", "home city: not known" in out and place is None, (out, place))
+        g3 = State(root, "home-place-unreached")
+        service.status, service.body = 503, "<html>down</html>"
+        out, place = dusk(g3, service.url, home_city="Sydney", timezone="Etc/UTC")
+        check("a place service that cannot be reached: said, left unknown", "home city: not reached" in out and place is None, (out, place))
+    finally:
+        service.close()
 
 
 def search_answers(root):

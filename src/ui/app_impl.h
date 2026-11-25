@@ -33,13 +33,16 @@ inline constexpr double kMaxSpeechSeconds = 90;
 // waits for something (App::lively); otherwise the main loop sleeps to the next second's work.
 inline constexpr unsigned long kTickMs = 66;
 // The rest of the periodic work: reminders, the screen's light and music holds every second, the
-// status bar's clock, battery and connection every five.
+// status bar's clock, battery and connection every five (and with them, while unknown, the home city's place).
 inline constexpr unsigned long kSecondMs = 1000, kIndicatorsMs = 5000;
 // After anything happens (a key, something posted, the end of a request) the ticks go on this long
 // before the main loop sleeps to the next second (sleep_ms).
 inline constexpr unsigned long kSettleMs = 1000;
 // The service's model list, while it cannot be reached: asked again after this long, doubling up to the most.
 inline constexpr unsigned long kModelRetryMs = 15000, kModelRetryMaxMs = 5 * 60 * 1000;
+// The home city's place, when the geocoding service could not be asked: asked again after this long, or as soon
+// as the connection comes back.
+inline constexpr unsigned long kHomeRetryMs = 15 * 60 * 1000;
 
 extern std::atomic<bool> g_exit;   // set to leave the main loop (run_app)
 
@@ -97,6 +100,11 @@ struct App {
     bool was_online = true;
     std::atomic<bool> selecting_models{false};
     bool warned_models = false;
+    // The home city's place (locate_home): a look-up under way; the city and country the service did not know,
+    // not asked about again in this run; and, after a failure on the way, when to ask again.
+    bool locating_home = false;
+    std::string home_unknown;
+    unsigned long home_retry_at = 0;
     // While the app tries the phone (when_online): input that waits to be handed over, in the order it came.
     bool connecting_phone = false;
     std::vector<std::function<void()>> waiting_input;
@@ -107,6 +115,7 @@ struct App {
     std::optional<llm::Service> models_wanted() const;
     void models_answered(const models::List &list, const std::string &err, const llm::Service &service);
     void follow_connection(bool online);
+    void locate_home(bool online);
     void welcome();
 
     // ------------------------------------------------------------ recording

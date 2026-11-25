@@ -9,9 +9,10 @@
 # all-day alerts when the clocks change, the store's lock while its files are written, the main
 # loop's sleep and what wakes it) and the small shared helpers (failure shape, battery,
 # Wi-Fi list, default route, monotonic count, start of a day, numeric and typed dates, an event's
-# next time, the breathing timing), the speaker stopped on another thread, the microphone's route
-# with a plug in the jack, the music player (its queue under the holds, its MP3 path), which models
-# are chosen (ui/models.h), a streamed reply's parts (agent/llm_stream.h), web search's layer against
+# next time, the breathing timing), dusk and night from the sun (sunrise and sunset, polar day and
+# night, the zone tables' coordinates, the home city's place in the settings), the speaker stopped on
+# another thread, the microphone's route with a plug in the jack, the music player (its queue under
+# the holds, its MP3 path), which models are chosen (ui/models.h), a streamed reply's parts (agent/llm_stream.h), web search's layer against
 # stand-in services (agent/search) and the diagnostics (the activity log and saved conversations; temporary). Nothing but 127.0.0.1 is contacted, and no AI
 # service, sound or screen is needed (stand-ins take the place of pw-cat, pacat, amixer and ffplay).
 #
@@ -61,6 +62,8 @@ DIAG="src/core/activity.cpp src/core/settings.cpp"
 UPGRADE="src/core/upgrade.cpp"
 # The shared helpers core_test checks, with net_status.cpp and sys.cpp from APP, and the breathing timing.
 HELPERS="src/platform/power.cpp src/core/breath.cpp"
+# Dusk and night from the sun, with settings.cpp from DIAG and util.cpp and proc.cpp from above.
+DUSK="src/core/dusk.cpp"
 # What every thread shares: files saved at once, the settings, the calendar's alerts (store.cpp
 # from TIMERS, util.cpp from above, settings.cpp from DIAG).
 # Web search's layer and every service built in (agent/search), with settings.cpp and activity.cpp from DIAG (each
@@ -73,7 +76,7 @@ obj_of() { echo "$OUT/$(echo "$1" | tr '/' '_' | sed 's/\.cpp$/.o/')"; }
 
 # Objects are rebuilt only when their source or a header in src/ is newer.
 newest_header=$(find src -name '*.h' -newer "$OUT/.stamp" 2>/dev/null | head -n 1 || true)
-for src in $APP $TIMERS $RADIO $TOOLS $DIAG $UPGRADE $HELPERS $SEARCH tests/unit/search_test.cpp tests/unit/activity_test.cpp tests/unit/core_test.cpp tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp tests/unit/mic_route_test.cpp tests/unit/music_test.cpp tests/unit/speaker_test.cpp \
+for src in $APP $TIMERS $RADIO $TOOLS $DIAG $UPGRADE $HELPERS $DUSK $SEARCH tests/unit/dusk_test.cpp tests/unit/search_test.cpp tests/unit/activity_test.cpp tests/unit/core_test.cpp tests/unit/smarthome_test.cpp tests/unit/http_test.cpp tests/unit/timers_test.cpp tests/unit/mic_route_test.cpp tests/unit/music_test.cpp tests/unit/speaker_test.cpp \
            tests/unit/radio_test.cpp tests/unit/tools_test.cpp tests/unit/firetv_test.cpp tests/unit/firetv_cli.cpp \
            tests/unit/homekit_test.cpp tests/unit/homekit_cli.cpp tests/unit/hue_test.cpp tests/unit/hue_cli.cpp \
            tests/unit/kasa_test.cpp tests/unit/kasa_cli.cpp tests/unit/wiz_test.cpp tests/unit/wiz_cli.cpp \
@@ -142,6 +145,9 @@ $WRAP $CXX -o "$OUT/core_test" "$OUT/tests_unit_core_test.o" "$(obj_of src/core/
     "$(obj_of src/platform/net_status.cpp)" "$(obj_of src/platform/power.cpp)" "$(obj_of src/platform/sys.cpp)" \
     "$(obj_of src/core/breath.cpp)" -lpthread \
     -Wl,--wrap=fsync
+# Dusk and night from the sun (core/dusk.h), and the home city's place in the settings.
+$WRAP $CXX -o "$OUT/dusk_test" "$OUT/tests_unit_dusk_test.o" "$(obj_of src/core/dusk.cpp)" \
+    "$(obj_of src/core/settings.cpp)" "$(obj_of src/core/util.cpp)" "$(obj_of src/platform/proc.cpp)" -lpthread
 # Web search's layer against stand-in services (no service built in is asked).
 search_objs="$(obj_of src/core/settings.cpp) $(obj_of src/core/activity.cpp)"
 for src in $SEARCH; do search_objs="$search_objs $(obj_of "$src")"; done
@@ -183,6 +189,8 @@ echo "=== a streamed reply: lines and thinking markers"
 "$OUT/llm_stream_test" || failed=1
 echo "=== core: files saved at once, settings shared between threads, all-day alerts and clock changes, the store's lock, the main loop's sleep, an old drop-in, dates said, typed and repeated, breathing"
 "$OUT/core_test" "$state/core" || failed=1
+echo "=== dusk and night: sunrise and sunset, polar day and night, the zone tables, the home city's place"
+"$OUT/dusk_test" "$state/dusk" || failed=1
 echo "=== web search: the registry, outcomes, set up or not, what the model reads"
 "$OUT/search_test" "$state/search" || failed=1
 echo "=== diagnostics: saved conversations (temporary)"

@@ -70,6 +70,7 @@ void App::update_indicators() {
     const std::string link = tether::default_link();
     bool online = !link.empty(), charging = false;
     follow_connection(online);
+    locate_home(online);
     const bool phone = link.compare(0, 4, "bnep") == 0;
     int battery = -1;
 #if !ZB_DESKTOP
