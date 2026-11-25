@@ -1080,7 +1080,8 @@ as Brave's 429 for a spent month), maps the answer onto `Reply` (summary, hits, 
 something; the wrong shape is `Garbled`) and says what it meant as an `Outcome` (`outcome_of` for what any HTTP
 service means, plus the service's own codes: Tavily's 432 and 433 for a spent allowance, Brave's error code with the
 status it belongs to, from the body, `Fetched::body`, and its allowance in reply headers kept through
-`Fetch::keep_headers`, taken only when they are whole numbers in the windows they should be), with what the service
+`Fetch::keep_headers`, taken only when they are whole numbers in the windows they should be, and a month's limit of 0,
+an unlimited plan, as none; its query cut to the documented 75 words and 600 characters), with what the service
 says of its allowance (`left` and `limit` in its own units, `reset_s`): the layer acts on them (a refused key is never
 sent again, a spent allowance is passed over until it comes back, the figure is kept for the settings page), so a
 refusal must never be reported as a mere failure. A service that can say what is left without spending any of it

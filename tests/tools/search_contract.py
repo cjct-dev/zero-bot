@@ -213,7 +213,7 @@ def app_side(kind, contract, source):
             out.append("the app's key: not sent as %s: %s<key>" % (e["key"]["header"], e["key"]["prefix"]))
     q = c["query"]
     sends_query = ('{"%s", query}' % q["name"]) in source if q["in"] == "body" else \
-        re.search(r'[?&]%s=" \+ http::url_encode\(query\)' % re.escape(q["name"]), source)
+        re.search(r'[?&]%s=" \+ http::url_encode\((\w+\()?query\)?\)' % re.escape(q["name"]), source)   # fitted(query) too
     if not sends_query:
         out.append("the app's query: not sent as the %s's %s" % (q["in"], q["name"]))
     if q["in"] == "body":

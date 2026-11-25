@@ -97,8 +97,8 @@
   },
   "notes": [
     "No example error body is documented: the error samples here are the reference's fields with stand-in values.",
-    "X-RateLimit-Limit's month is 0 for an unlimited plan (rate-limit guide). The app takes the month's figures as they come (brave.cpp monthly); what X-RateLimit-Remaining says on such a plan is not documented.",
-    "The query may hold at most 600 characters and 75 words (the reference's q); the app sends the model's query whole. What a longer one is answered is not documented: any refusal of the request reads as the service's own trouble (Failing), and the next service is asked."
+    "X-RateLimit-Limit's month is 0 for an unlimited plan (rate-limit guide). The app reads a month's limit of 0 as no figure at all (brave.cpp monthly, ZB-130), so such a plan is never marked spent; what X-RateLimit-Remaining says on it is not documented.",
+    "The query may hold at most 600 characters and 75 words (the reference's q); the app cuts the model's query to that, at a word (brave.cpp fitted, ZB-130)."
   ],
   "known": [
     {"difference": "the stand-in's down: status 503, the documentation lists none",
