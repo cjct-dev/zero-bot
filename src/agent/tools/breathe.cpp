@@ -15,7 +15,7 @@ std::string t_breathe(const json &a, Context &ctx) {
     const int m = breath::clamp_minutes(minutes);
     if (ctx.on_breathe) ctx.on_breathe(p.id, m);
     return json{{"started", p.title}, {"minutes", m},
-                {"note", "The exercise appears on screen as soon as you finish speaking, and the user follows the orb. "
+                {"note", "The exercise appears on screen as soon as you finish speaking, and the user follows the screen. "
                          "Say one short, calm sentence and nothing more."}}.dump();
 }
 
@@ -23,7 +23,7 @@ std::string t_breathe(const json &a, Context &ctx) {
 
 Tool make_breathe() {
     return {"breathe", "Starting a breathing exercise",
-            "Show a guided breathing exercise on the screen: an orb grows and shrinks to pace the breath. Use it when "
+            "Show a guided breathing exercise on the screen, which paces the breath. Use it when "
             "the user says they are stressed, anxious, overwhelmed, cannot settle or sleep, or asks to meditate, "
             "breathe or calm down. Start it straight away; do not ask which kind or for how long unless they bring it "
             "up, and do not give advice instead.",
