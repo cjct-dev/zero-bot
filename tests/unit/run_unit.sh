@@ -155,10 +155,11 @@ $WRAP $CXX -o "$OUT/dusk_test" "$OUT/tests_unit_dusk_test.o" "$(obj_of src/core/
 search_objs="$(obj_of src/core/settings.cpp) $(obj_of src/core/activity.cpp)"
 for src in $SEARCH; do search_objs="$search_objs $(obj_of "$src")"; done
 $WRAP $CXX -o "$OUT/search_test" "$OUT/tests_unit_search_test.o" $search_objs $objs -lcurl -lcrypto -lpthread
-# The art engine: the canvas, PNG decoding (libpng), every scene against its panel budget and the radio against its animation.
+# The art engine: the canvas, PNG decoding (libpng), every scene against its panel budget and the radio and the breathing
+# scene against their animations (with the breathing timing, which the breathing scene follows).
 art_objs=""
 for src in $ART; do art_objs="$art_objs $(obj_of "$src")"; done
-$WRAP $CXX -o "$OUT/art_test" "$OUT/tests_unit_art_test.o" $art_objs -lpng -lz -lpthread
+$WRAP $CXX -o "$OUT/art_test" "$OUT/tests_unit_art_test.o" $art_objs "$(obj_of src/core/breath.cpp)" -lpng -lz -lpthread
 # DIAGNOSTICS (temporary): saved conversations.
 $WRAP $CXX -o "$OUT/activity_test" "$OUT/tests_unit_activity_test.o" "$(obj_of src/core/activity.cpp)" \
     "$(obj_of src/core/settings.cpp)" "$(obj_of src/core/util.cpp)" -lpthread

@@ -27,6 +27,7 @@ is built in.
 | Timers | "The food needs to come out of the oven in 5 minutes.", "I want to study for an hour, set a timer.", "How long is left?", "Cancel the study timer." |
 | Reminders | "Remind me at 7 tomorrow to call the hotel." |
 | Things to remember | "Remember that I'm allergic to shellfish." |
+| A breathing exercise | "I'm feeling stressed.", "Help me wind down for ten minutes." |
 | Web search | "What time does the Louvre open on Sundays?" |
 | Weather | "Do I need an umbrella in Lisbon tomorrow?" |
 | Currency | "How much is 85 euros in pounds, split three ways?" |
@@ -101,6 +102,22 @@ keeps working meanwhile: talking, typing, settings, music, the breathing exercis
   (as it can be when the device first goes online after starting).
 
 ![Two timers running](docs/screenshots/timer-two.png) ![A timer's alarm](docs/screenshots/timer-alarm.png)
+
+### Breathing exercise
+
+Say you are stressed, cannot settle or want to calm down, and the assistant starts a guided breathing exercise
+once it has finished its sentence: box breathing (in, hold, out, hold, four seconds each) unless you ask for slow
+breathing (in for four, out for six) or calming sighs, for five minutes unless you say otherwise. It takes the whole
+screen and keeps it lit, and a soft note sounds when the last breath is done.
+
+With *Dynamic art* on (see [Settings](#settings)), a sun sets between two mountains at dusk, or the moon hangs over
+the sea at night (night from 45 minutes after sunset where you are, as for the other scenes), growing as you breathe
+in and shrinking as you breathe out, its light on the water growing with it, while waves lap up the beach and slide
+back. What to do and its seconds are at the foot of the screen, the exercise and the time left at the top. With
+*Dynamic art* off, or set to *When plugged in* while on battery, it is a counter on black instead: the seconds left
+in each step, large, and the step under them. **ESC** ends it; **TAB** ends it and starts listening.
+
+![Breathing at dusk](docs/screenshots/breathing-dusk.png) ![Breathing at night](docs/screenshots/breathing-night.png)
 
 ## Install
 
@@ -256,14 +273,15 @@ crash while the screen is off or dimmed, the backlight is put back at the bright
 *Dynamic art* (under *Device*: on, off, or when plugged in; on by default) shows a moving picture of
 what plays while you are not using the device: for the radio, a mast on a hill at dusk or at night
 (night from 45 minutes after sunset where you are, without the network: your home city or your time
-zone tells where), sending out rings of radio waves, with the station's name. It
-comes by itself after 20 seconds without a key, and any key takes you back to the conversation at
+zone tells where), sending out rings of radio waves, with the station's name; and during a
+[breathing exercise](#breathing-exercise), a sun or a moon that grows and shrinks with your breath. The radio's
+scene comes by itself after 20 seconds without a key, and any key takes you back to the conversation at
 once with a short dissolve, while the key does its own job too (**TAB** starts listening straight
 away). It never comes over settings, text being typed, the breathing exercise or a timer's alarm.
 While it shows, the screen dims after 45 seconds as usual but does not go off at *Screen off
 after*; that costs a little battery, so *When plugged in* shows it only while the device is on
 USB power (charging or full), and *Off* leaves the conversation screen as it was, with the station
-in the status bar.
+in the status bar, and shows the breathing exercise as a counter on black.
 
 ### Calendar
 

@@ -7,7 +7,7 @@
 namespace theme {
 
 namespace {
-lv_font_t *g_body = nullptr, *g_small = nullptr, *g_bold = nullptr, *g_large = nullptr;
+lv_font_t *g_body = nullptr, *g_small = nullptr, *g_bold = nullptr, *g_large = nullptr, *g_huge = nullptr;
 
 const char *first_existing(std::initializer_list<const char *> paths) {
     for (const char *p : paths)
@@ -41,12 +41,14 @@ void init() {
     g_small = load(regular, 10, cjk10 ? cjk10 : &lv_font_montserrat_10);
     g_bold = load(strong, 12, cjk12 ? cjk12 : &lv_font_montserrat_12);
     g_large = load(strong, 16, cjk12 ? cjk12 : &lv_font_montserrat_16);
+    g_huge = load(strong, 40, &lv_font_montserrat_16);
 }
 
 const lv_font_t *body() { return g_body ? g_body : &lv_font_montserrat_12; }
 const lv_font_t *small() { return g_small ? g_small : &lv_font_montserrat_10; }
 const lv_font_t *bold() { return g_bold ? g_bold : body(); }
 const lv_font_t *large() { return g_large ? g_large : &lv_font_montserrat_16; }
+const lv_font_t *huge() { return g_huge ? g_huge : large(); }
 const lv_font_t *icons() { return &lv_font_montserrat_12; }
 
 lv_color_t color(uint32_t hex) { return lv_color_hex(hex); }

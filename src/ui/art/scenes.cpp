@@ -8,6 +8,7 @@
 
 #define ZB_SCENES(X) \
     X(radio) \
+    X(breathe) \
     /* end of the list */
 
 #define ZB_DECLARE(name) std::unique_ptr<art::Scene> make_##name##_scene();
@@ -28,6 +29,15 @@ const std::vector<std::string> &names() {
     static const std::vector<std::string> all = {ZB_SCENES(ZB_NAME)};
 #undef ZB_NAME
     return all;
+}
+
+std::vector<int> add_stars(Canvas &canvas, const Image *twinkle) {
+    std::vector<int> stars;
+    if (!twinkle) return stars;
+    for (int x = 0; x < twinkle->w; ++x)
+        for (int y = 0; y < twinkle->h; ++y)
+            if (twinkle->at(x, y)) stars.push_back(canvas.add(*twinkle, {x, y, 1, 1}, x, y, false));
+    return stars;
 }
 
 }  // namespace art

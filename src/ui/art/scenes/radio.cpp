@@ -27,8 +27,6 @@ public:
     Spot title_spot() const override { return {4, 21, 88}; }   // the sky left of the rings, clear of the moon
 
 private:
-    void add_stars(Canvas &canvas, const Image *twinkle);
-
     std::array<int, kAges> rings_{};
     std::vector<int> stars_;   // from left to right
     int light_ = -1;
@@ -40,22 +38,13 @@ bool Radio::start(Canvas &canvas, Assets &assets, const Moment &m) {
                 *land = assets.image("radio/land" + lighting), *light = assets.image("radio/light.png");
     if (!sky || !rings || !land || !light) return false;
     canvas.add(*sky);
-    add_stars(canvas, assets.image("radio/twinkle" + lighting));
+    stars_ = add_stars(canvas, assets.image("radio/twinkle" + lighting));
     for (int age = kAges - 1; age >= 0; --age)   // the oldest first, so that newer rings lie on top
         rings_[static_cast<size_t>(age)] = canvas.add(*rings, {age * kCell, 0, kCell, kCell}, kTipX - kCell / 2, kTipY - kCell / 2, false);
     canvas.add(*land);
     if (const Image *lights = assets.image("radio/lights" + lighting)) canvas.add(*lights);   // windows lit at night
     light_ = canvas.add(*light, {0, 0, light->w, light->h}, kTipX, kTipY, false);
     return true;
-}
-
-// The stars that twinkle, if this lighting has any: each pixel of the picture is the colour one takes when it goes out.
-void Radio::add_stars(Canvas &canvas, const Image *twinkle) {
-    stars_.clear();
-    if (!twinkle) return;
-    for (int x = 0; x < twinkle->w; ++x)
-        for (int y = 0; y < twinkle->h; ++y)
-            if (twinkle->at(x, y)) stars_.push_back(canvas.add(*twinkle, {x, y, 1, 1}, x, y, false));
 }
 
 void Radio::frame(Canvas &canvas, const Moment &m) {

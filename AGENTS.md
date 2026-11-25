@@ -99,12 +99,14 @@ src/ui/             the app controller: app.cpp (wiring, the agent's events, rec
                     lists is replaced by the one labelled for its use, ZB-119; by hand the settings
                     list those labelled for the use, else the unlabelled ones, else all); the keys and their
                     guide (key_guide), when the screen dims and goes off and when a scene comes in
-                    front of the chat (screen_idle), breathing screen, alarm banner, theme; and art/,
+                    front of the chat (screen_idle), breathing screen (its scene, or a counter
+                    with the art off), alarm banner, theme; and art/,
                     the moving pictures (ZB-061): canvas (indexed pictures composed into RGB565, only
                     what changed; no LVGL), assets (the PNGs, read with libpng), scene.h (a scene's
-                    interface, Moment), scenes.cpp (the registry), scenes/ (one file per scene),
-                    art_view (the LVGL side: one image on the chat's stage, its title, the
-                    dissolve; dusk or night from core/dusk.h)
+                    interface, Moment), scenes.cpp (the registry, and what scenes share: add_stars),
+                    scenes/ (one file per scene), art_view (the LVGL side: one image on the chat's
+                    stage or over the whole screen, its title, the dissolve; dusk or night from
+                    core/dusk.h)
 tests/              run.py, the entry point that runs the tests in groups by profile (section 6),
                     netguard.py, the network boundary of every test process, and art_check.py, the
                     art's pictures; unit/ (the C++ unit
@@ -1055,10 +1057,13 @@ key went at a stand-in service on 127.0.0.1 (`lookups_keep_their_service`).
 in RGB565, index 0 clear, holding nothing but IHDR, PLTE, tRNS, IDAT and IEND (`tests/art_check.py` checks it
 all; no picture, file name or commit may say how the art was made). A `sky-<lighting>` and a `land-<lighting>`
 for dusk and night, the land the same pixels in both (two palettes); what one lighting adds on the land (lit
-windows) in a layer of its own; a sprite sheet drawn in both lightings the same pixels in both. What moves behind
-the land (the radio's rings) is added between the sky and the land. The scene is
+windows) or to a moving part (the breathing scene's wet sand at dusk) in a picture of its own; a sprite sheet drawn
+in both lightings the same pixels in both (where one lighting has a detail the other has not, as the moon's spots,
+an index the other's palette paints in the colour round it). What moves behind the land (the radio's rings) is
+added between the sky and the land. The scene is
 `src/ui/art/scenes/<name>.cpp`, implementing `art::Scene` (scene.h): `start` adds its pictures to the canvas in
-the order they are drawn, `frame` works out everything from `Moment::ms` alone (nothing stepped frame by frame),
+the order they are drawn, `frame` works out everything from the `Moment` alone (its `ms`, and for the breathing
+scene its `level`, how full the breath is; nothing stepped frame by frame),
 `period_ms` is its one clock (every part steps on it, never under 50 ms: the panel's limit), `title_spot` a band
 where nothing moves. Then one line, `X(<name>)`, in `ZB_SCENES` in `src/ui/art/scenes.cpp`; a budget in
 `kBudgetKBps` (`tests/unit/art_test.cpp`: what it may send the panel, the test fails without one) and a test of
@@ -1066,6 +1071,14 @@ its frames there; its frames in `App::shots_art`; and what plays it in `App::pla
 embeds the pictures and `run_unit.sh` links every file in `scenes/` by themselves. Keep what moves in every frame
 within few rows: the panel is sent whole rows from the first changed to the last (section 2). When it shows, and
 how it hands over to the chat, is `screen_idle`'s and `ArtView`'s, the same for every scene.
+A scene can also fill the whole screen, under a screen's own words: an `ArtView` of its own made with
+`Place::FullScreen` (all 85 art rows, where the chat's is `Place::Stage`, rows 9 to 75), as `BreathView` has for
+the breathing scene. Its owner drives it as the app drives the chat's (`play`, `front`, `tick` on every pass of the
+main loop: `App::follow_art` calls `BreathView::follow_art`; its `ms_to_next` among `App::sleep_ms`'s deadlines), at
+once rather than with a dissolve when the whole screen comes and goes with it; the scene is listed in `kFullScreen`
+in `art_test.cpp` (every row reaches the panel), and its frames go in the owner's group of `--shots`. Words over it
+go on a band of the art where nothing moves, next to what moves anyway: a label at the top that changed in the same
+50 ms as the waves at the foot would have the panel sent every row between them.
 
 **Something shown over every screen** (the timer's alarm banner, `AlarmView`): make it a child
 of the screen, created after the other views, and `raise()` it again whenever another view

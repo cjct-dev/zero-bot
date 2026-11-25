@@ -1,17 +1,20 @@
 // Unit tests for the art engine (src/ui/art, no LVGL): the canvas (pictures in order, clear pixels, edges, the
 // areas it returns, at most kMaxAreas of them, the 2x copy for the screen), PNG decoding (the repository's
-// pictures, and broken or hostile files), every scene's frames on a fake clock through a model of the panel
-// against a budget per scene (a tripwire: raise it knowingly), the radio's frames against the finished animation
-// (each frame's hash, taken from the animation's own frames when its pictures were exported) and the registry. Run
-// from the repository (it reads assets/art/). Each failure prints a line.
+// pictures, and broken or hostile files), every scene's frames on a fake clock (and a box breath) through a model
+// of the panel against a budget per scene (a tripwire: raise it knowingly), the radio's and the breathing scene's
+// frames against the finished animations (each frame's hash, taken from the animation's own frames when its pictures
+// were exported) and the registry. Run from the repository (it reads assets/art/). Each failure prints a line.
+#include "core/breath.h"
 #include "ui/art/assets.h"
 #include "ui/art/canvas.h"
 #include "ui/art/scene.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -223,6 +226,13 @@ void test_decode() {
     check(!decode(handmade_png(1, 1, 8, 3, 0, std::string("\0\0", 2)), img, err), "an indexed PNG without a palette is refused");
     check(!decode(handmade_png(70000, 1, 8, 3, 1, std::string(70001, '\0')), img, err), "an impossible size is refused");
 
+    check(decode(files("breathe/disc-dusk.png"), img, err) && img.w == 8 * 21 && img.h == 38, "the disc's sheet: 8 sizes across");
+    check(decode(files("breathe/waves-night.png"), img, err) && img.w == kW && img.h == 16 * 15, "the waves' sheet: 16 frames down");
+    decode(files("breathe/disc-dusk.png"), dusk, err);
+    decode(files("breathe/disc-night.png"), night, err);
+    check(dusk.px == night.px && dusk.pal.size() == 5 && dusk.pal[3] == dusk.pal[1] && night.pal[3] != night.pal[1],
+          "the disc: the same pixels at dusk and at night, the moon's spots in the sun's own colour at dusk");
+
     Assets assets(files);
     const Image *a = assets.image("radio/sky-dusk.png");
     check(a && assets.image("radio/sky-dusk.png") == a, "a picture is decoded once and kept");
@@ -232,11 +242,13 @@ void test_decode() {
 // ------------------------------------------------------------------ the scenes
 // The panel (AGENTS.md section 2; the kernel's deferred I/O for the framebuffer): the first write after an update opens a
 // 50 ms window, everything written in it goes in one update, and an update is one full-width band from the first to
-// the last 4 KiB page written. Only the chat's stage (art rows 9 to 75) reaches the screen.
+// the last 4 KiB page written. Only the rows the scene is shown in reach the screen: the chat's stage (art rows 9 to
+// 75), or all of them (the breathing screen).
 class Panel {
 public:
+    explicit Panel(bool full_screen) : shown_first_(full_screen ? 0 : 9), shown_rows_(full_screen ? kH : 67) {}
     void write(unsigned long t, const Rect &art) {
-        const Rect r = overlap(art, {0, kStageFirst, kW, kStageRows});
+        const Rect r = overlap(art, {0, shown_first_, kW, shown_rows_});
         if (r.empty()) return;
         if (open_ && t - since_ >= 50) flush();
         if (!open_) { open_ = true; since_ = t; first_ = 2 * r.y; last_ = 2 * (r.y + r.h) - 1; }
@@ -250,10 +262,10 @@ public:
         bytes_ += to - from;
     }
     long bytes() const { return bytes_; }
-    static constexpr int kStageFirst = 9, kStageRows = 67;
 
 private:
     static constexpr long kRowBytes = 640, kPage = 4096, kScreenBytes = 640 * 170;
+    const int shown_first_, shown_rows_;   // the art rows that reach the screen
     bool open_ = false;
     unsigned long since_ = 0;
     int first_ = 0, last_ = 0;
@@ -261,8 +273,12 @@ private:
 };
 
 // What each scene may send the panel, in kB a second over 20 s in either lighting: a tripwire, as the first
-// request's 32,000 bytes is. The radio's finished animation measured 217.
-const std::map<std::string, double> kBudgetKBps = {{"radio", 250}};
+// request's 32,000 bytes is. The finished animations measured: the radio 217; the breathing scene 103 at dusk and 110
+// at night over its 16 s loop of one box breath, and here 116 and 122, as these 20 s end on a second breath in, while
+// the sun or the moon grows on every frame.
+const std::map<std::string, double> kBudgetKBps = {{"radio", 250}, {"breathe", 130}};
+// The scenes shown over the whole screen (the breathing screen's); the others on the chat's stage.
+const std::set<std::string> kFullScreen = {"breathe"};
 
 // A scene started on a fresh canvas in a lighting; nullptr (with a failure) when it cannot start.
 std::unique_ptr<Scene> started(const std::string &name, Canvas &c, Assets &assets, bool night) {
@@ -281,10 +297,11 @@ void test_budgets() {
             Canvas c;
             std::unique_ptr<Scene> scene = started(name, c, assets, night);
             if (!scene || budget == kBudgetKBps.end()) continue;
-            Panel panel;
+            Panel panel(kFullScreen.count(name) > 0);
             constexpr unsigned long kRunMs = 20000;
             for (unsigned long t = 0; t < kRunMs; t += scene->period_ms()) {
-                scene->frame(c, {t, night});
+                const float level = breath::at(breath::pattern("box"), static_cast<long>(t), kRunMs).level;
+                scene->frame(c, {t, night, level});
                 for (const Rect &r : c.compose()) panel.write(t, r);
             }
             panel.flush();
@@ -340,8 +357,78 @@ void test_radio_frames() {
     }
 }
 
+// The breathing scene's 64 frames (16 s: one box breath, the waves' 4 s loop four times, each star out once) against
+// the finished animation's in both lightings, each at the size the animation took from the breath on that frame (a
+// level of k/7 for size k), and the loop: frame 64 is frame 0 again. The areas returned cover every change. A level
+// past full is full, and one that is not a number is empty.
+void test_breathe_frames() {
+    const char *const sizes = "0001122334556677777777777777777777766554432211000000000000000000";
+    const uint64_t dusk[64] = {
+        0x4ffd582135783ebbull, 0x14c496e05e0b6b59ull, 0xfc2844b7dd796359ull, 0x4f0c951f2570d781ull,
+        0x1d9a5c25bc2e872bull, 0x1a82bbaeebd77fcdull, 0xc2f02e622c2a72e5ull, 0x140cfa1d98c6c6e2ull,
+        0x220b8079f42adadaull, 0xcb49aafd729e3df3ull, 0x7d290b97f64dcf09ull, 0x63fcaea7abd3b419ull,
+        0x7a5bc18aec51f8caull, 0x87490ff2db1634b7ull, 0x0030e70cadc022a3ull, 0xee23c2837e3c8af1ull,
+        0x58d4983768df6577ull, 0x255d54ab3fad2fddull, 0x5d897c5d8492589dull, 0x8b62b90d0f0525f7ull,
+        0xbfd0891cc14c5365ull, 0x3829247b02f91aa9ull, 0x8fd6b98607960e21ull, 0x1002ee970f11baf8ull,
+        0x2635ac6eea924db8ull, 0x6838c8c1fa127a24ull, 0x4356e601a9faf888ull, 0x6bb37849af71fcf8ull,
+        0x5af7d7b082884c00ull, 0x8fd6b98607960e21ull, 0x0030e70cadc022a3ull, 0xee23c2837e3c8af1ull,
+        0x58d4983768df6577ull, 0x255d54ab3fad2fddull, 0x5d897c5d8492589dull, 0x8e13f7c373d722a1ull,
+        0xb6e6b7925dc9624bull, 0x77d6c56237ca8110ull, 0x120492258beb4908ull, 0x08cee3862715f73full,
+        0x60cce1e2f907548full, 0x93d3a38f8157fd62ull, 0x83f2efef412c950cull, 0x44caa5f3e3f89b8cull,
+        0x765502f559ba83aaull, 0x1742d95f424c2c97ull, 0xf1ff53665bb2523full, 0x4f0dd94f8dc060edull,
+        0x4ffd582135783ebbull, 0x14c496e05e0b6b59ull, 0xfc2844b7dd796359ull, 0xf52bb580093dc7bbull,
+        0xc1808bdd505f3be1ull, 0xff82609e2628e3e5ull, 0x9481b9d6daa25a3dull, 0xf3e73156d158fc94ull,
+        0xc22e0e4def4ea3d4ull, 0xe0d3f8ca86f66d90ull, 0x84cb3965b62eb594ull, 0x1cfbd7704516e9d4ull,
+        0x9a6c24db090859ccull, 0x9481b9d6daa25a3dull, 0xf1ff53665bb2523full, 0x4f0dd94f8dc060edull};
+    const uint64_t night[64] = {
+        0x7cda8e0922d565c0ull, 0xe88daaa71a93aff9ull, 0xa291d05a5b261b7dull, 0x85a2e62798661e45ull,
+        0x4fd0bc6b384b3aa8ull, 0xf772153d629f0047ull, 0x6c656dd0a8b9373eull, 0x472c4239f0788e8full,
+        0x96b8b361e86b6533ull, 0x2a81ecea465940cbull, 0xb621d398711dc384ull, 0xd6f376532d6b09e6ull,
+        0x640a613036359a92ull, 0x23590f8924f0a124ull, 0x6ece635503ebf405ull, 0x6ece635503ebf405ull,
+        0xe9c9c9ee26826ef0ull, 0x7ce3496913502c09ull, 0x3e32624bbe866098ull, 0xa9d3c3ce49bd0369ull,
+        0x78807e0c3bbc6789ull, 0xe9a4ffb6487c2b44ull, 0xc97962e0340a1d71ull, 0x6a09aed68735914aull,
+        0xcad0570bf1551bdeull, 0xc9bbe950292ed325ull, 0x65f714588123c5c0ull, 0x521a899227304412ull,
+        0x4d721a71119036efull, 0xc97962e0340a1d71ull, 0x6ece635503ebf405ull, 0xcb3bfec7eb388783ull,
+        0x24ad8e16320fd90aull, 0x7ce3496913502c09ull, 0xa5b8176c200bec4dull, 0xee180823c0bcdb51ull,
+        0xa0b59bb1d1f2b514ull, 0x8bee1f9be89c5590ull, 0x4274235fb46929fdull, 0xde89589dac405658ull,
+        0xef090f3dd7ddd9dcull, 0x31e0c5e98773c7f4ull, 0xa6786d76663d5233ull, 0x5bdf5ca062233595ull,
+        0xdd18b513c0888e86ull, 0x3cbe0e9b6b22ca20ull, 0x71061003898d10f5ull, 0x71061003898d10f5ull,
+        0x7cda8e0922d565c0ull, 0xe88daaa71a93aff9ull, 0xa291d05a5b261b7dull, 0x48d2e067f3295cd4ull,
+        0xf26fdc5d204fb579ull, 0x200c92db40e6e5d4ull, 0x27911613cd85a4a1ull, 0xee96a85e55562c1aull,
+        0x035fe2a087746f6eull, 0x9a2cd5555fac1e95ull, 0x53da369b68ea80b0ull, 0x86d0e1bec3a90922ull,
+        0x547727090ee1e8bfull, 0x27911613cd85a4a1ull, 0x71061003898d10f5ull, 0x71061003898d10f5ull};
+    Assets assets(folder(kArt));
+    for (bool is_night : {false, true}) {
+        const uint64_t *want = is_night ? night : dusk;
+        const std::string lighting = is_night ? "night" : "dusk";
+        Canvas c;
+        std::unique_ptr<Scene> scene = started("breathe", c, assets, is_night);
+        if (!scene) continue;
+        check(scene->period_ms() == 250, "the breathing scene steps 4 times a second");
+        int same = 0;
+        for (int f = 0; f <= 64; ++f) {
+            const std::vector<uint16_t> before = snapshot(c);
+            const float level = static_cast<float>(sizes[f % 64] - '0') / 7;
+            scene->frame(c, {static_cast<unsigned long>(f) * 250 + 100, is_night, level});
+            const std::vector<Rect> areas = c.compose();
+            if (f > 0) areas_exact(before, c, areas, "breathe " + lighting + " frame " + std::to_string(f));
+            if (frame_hash(c) == want[f % 64]) ++same;
+            else printf("     breathe %s frame %d: hash 0x%016llx\n", lighting.c_str(), f, static_cast<unsigned long long>(frame_hash(c)));
+        }
+        check(same == 65, "breathe at " + lighting + ": every frame of the loop is the animation's, pixel for pixel (" +
+                              std::to_string(same) + " of 65)");
+        scene->frame(c, {16 * 250, is_night, 3.f});
+        c.compose();
+        check(frame_hash(c) == want[16] && sizes[16] == '7', "breathe at " + lighting + ": a level past full is full");
+        scene->frame(c, {0, is_night, std::nanf("")});
+        c.compose();
+        check(frame_hash(c) == want[0] && sizes[0] == '0', "breathe at " + lighting + ": a level that is not a number is empty");
+    }
+}
+
 void test_registry() {
     check(!names().empty() && names().front() == "radio", "the registry lists the radio");
+    check(std::count(names().begin(), names().end(), "breathe") == 1, "the registry lists the breathing scene");
     for (const std::string &name : names()) check(make(name) != nullptr, name + " is made by its name");
     check(make("nothing") == nullptr, "an unknown scene is none");
     Canvas c;
@@ -359,6 +446,7 @@ int main() {
     test_decode();
     test_budgets();
     test_radio_frames();
+    test_breathe_frames();
     test_registry();
     printf("art: %d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? 1 : 0;
