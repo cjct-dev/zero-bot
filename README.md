@@ -271,16 +271,29 @@ and while a timer's alarm rings; an alarm or a reminder turns it on at once. If 
 crash while the screen is off or dimmed, the backlight is put back at the brightness you set.
 
 *Dynamic art* (under *Device*: on, off, or when plugged in; on by default) shows a moving picture of
-what plays while you are not using the device: for the radio, a mast on a hill at dusk or at night
-(night from 45 minutes after sunset where you are, without the network: your home city or your time
-zone tells where), sending out rings of radio waves, with the station's name; and during a
-[breathing exercise](#breathing-exercise), a sun or a moon that grows and shrinks with your breath. The radio's
-scene comes by itself after 20 seconds without a key, and any key takes you back to the conversation at
-once with a short dissolve, while the key does its own job too (**TAB** starts listening straight
-away). It never comes over settings, text being typed, the breathing exercise or a timer's alarm.
+what plays while you are not using the device, with its name over it (a song's title, and its artist
+when there is room). Each picture has a dusk and a night: night from 45 minutes after sunset where you
+are, without the network (your home city or your time zone tells where), and the picture turns from one
+to the other over 20 minutes. Which picture plays:
+
+- a station: a mast on a hill sending out rings of radio waves;
+- a station tagged `focus`, `lofi`, `study`, `chill`, `ambient` or `downtempo`, and chill, lo-fi and
+  ambient songs: a city seen from a rooftop, a train crossing it, windows going dark and light, clouds
+  at dusk and stars at night, or rain. The weather is chosen when the city comes on and kept until it
+  has played for half an hour in all, so it changes slowly (rain about one time in three);
+- a song from your music library, by its genre (the tag your files carry): electronic music a sun over
+  a neon grid, rock a festival stage with its lamps on the beat, jazz and blues a club's doorway with
+  a saxophone sign, classical music a grand piano by tall windows in candlelight, and pop, anything
+  else and songs without a genre bars dancing on a lake;
+- during a [breathing exercise](#breathing-exercise), a sun or a moon that grows and shrinks with your
+  breath.
+
+The picture of what plays comes by itself after 20 seconds without a key, and any key takes you back
+to the conversation at once with a short dissolve, while the key does its own job too (**TAB** starts
+listening straight away). It never comes over settings, text being typed, the breathing exercise or a timer's alarm.
 While it shows, the screen dims after 45 seconds as usual but does not go off at *Screen off
 after*; that costs a little battery, so *When plugged in* shows it only while the device is on
-USB power (charging or full), and *Off* leaves the conversation screen as it was, with the station
+USB power (charging or full), and *Off* leaves the conversation screen as it was, with what plays
 in the status bar, and shows the breathing exercise as a counter on black.
 
 ### Calendar
@@ -363,7 +376,7 @@ Say "play Harbour FM" or "put on the jazz station"; "stop the radio" or **ESC** 
 radio pauses while you talk and while the assistant answers, then rejoins the live broadcast.
 **fn**+**Q** (or plain **Q** on the conversation screen) pauses and resumes, **fn**+**W** and
 **fn**+**E** (or **W** and **E**) move to the previous and next station in your list, and the
-status bar shows the station's name. Left alone for 20 seconds, the screen shows the radio's
+status bar shows the station's name. Left alone for 20 seconds, the screen shows the station's
 picture (see *Dynamic art* under [Settings](#settings)). If a stream stops and cannot
 be joined again (the station is off the air, the Wi-Fi has gone), a note on the screen says so. A
 stream does not say what is on; with web search, the assistant can look the schedule up.
@@ -374,7 +387,8 @@ Tag a station `focus` and it is what plays when you ask for something to help yo
 concentrate: "Help me focus.", "Help me study.", "Put on some study music." "Play some lo-fi" plays it
 too, unless another station is tagged `lofi`. It plays like any other station (by its name too),
 pausing while you talk. Without a station tagged `focus`, the assistant says how to add the tag
-rather than picking another station. For example:
+rather than picking another station. While a station tagged `focus` (or `lofi`, `study`, `chill`,
+`ambient` or `downtempo`) plays, *Dynamic art* shows the city. For example:
 
 ```json
 {"name": "SomaFM Fluid", "nicknames": ["Fluid"], "url": "https://somafm.com/m3u/fluid.m3u",
@@ -717,7 +731,8 @@ The groups are:
   dims and goes off, the speaker, the microphone with a plug in the headphone socket, the music
   player, which models are chosen, reading the service's streamed replies, the calculator, dates,
   time zones and helper programs, the breathing exercise's timing, what every thread shares, the
-  art (its drawing, its pictures, each scene frame by frame and what it sends the screen), and saved
+  art (its drawing, its pictures, each scene frame by frame and what it sends the screen, dusk turning
+  into night, which scene plays for which genre or station, the city's weather), and saved
   conversations;
 - the art's pictures (`tests/art_check.py`): plain indexed PNGs with nothing in them but pixels and
   a palette of screen-exact colours, the sizes each scene expects, and the same land at dusk and night;
@@ -789,7 +804,7 @@ src/agent/      the conversation loop and what it checks, prompt, tools (one fil
 src/core/       settings, calendar/reminder/timer/memory store, timers, music library, radio stations, utilities
 src/platform/   display, keyboard, audio, camera, infrared, battery, network status, subprocess helpers
 src/ui/         chat screen, menus, settings pages, setup guide, alarm banner, screen off, app controller, screenshots (--shots);
-                art/: the moving pictures (a canvas, the PNG loader, one file per scene in scenes/, the view)
+                art/: the moving pictures (a canvas, the PNG loader, the scenes in scenes/, which plays for what, the view)
 assets/art/     the pictures of each scene (indexed PNGs), built into the program
 src/net/        HTTP client (libcurl)
 src/smarthome/  device discovery, saved devices and their things, the smart_home tool, drivers and their shared helpers

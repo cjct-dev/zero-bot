@@ -16,6 +16,7 @@
 #include "platform/keys.h"
 #include "ui/alarm_view.h"
 #include "ui/art/art_view.h"
+#include "ui/art/pick.h"
 #include "ui/breath_view.h"
 #include "ui/chat_view.h"
 #include "ui/key_guide.h"
@@ -57,6 +58,7 @@ struct Shots;   // --shots: what its groups of screens share (shots.cpp)
 struct App {
     ChatView chat;
     art::ArtView art;                 // the scene of what plays, in front of the chat while nobody uses it (ui/art)
+    art::Weather weather;             // the city's, by session (ui/art/pick.h)
     Menu menu;
     BreathView breath;
     AlarmView banner;                 // over everything else while a timer's alarm rings
@@ -170,6 +172,10 @@ struct App {
         std::string scene, title;
     };
     Playing playing();
+    Playing station_playing(const std::string &name);
+    Playing song_playing(const std::string &path);
+    std::string playing_of;           // what playing() last looked up (a station's name, a song's path)...
+    Playing playing_found;            // ...and its scene
     void follow_art(unsigned long now, const Playing &what);
     void periodic();
     bool lively();

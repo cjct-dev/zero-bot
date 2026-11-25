@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <utility>
 
 namespace art {
 
@@ -75,18 +76,23 @@ void Canvas::touch(const Item &item) {
 }
 
 // Areas that overlap are joined (each pixel is composed once, and the areas returned do not overlap), and so are
-// areas whose join wastes little; past kMaxAreas, one area round them all. The panel sends whole rows anyway.
+// areas whose join wastes little; past kMaxAreas, one area round them all. The panel sends whole rows anyway. An
+// area that has grown takes in the rest as it goes, and the passes end when one joins nothing: the hundreds that
+// moving rain leaves take a few passes, not a pass for each join.
 void Canvas::merge_dirty() {
     for (bool merged = true; merged;) {
         merged = false;
-        for (size_t i = 0; i < dirty_.size() && !merged; ++i)
-            for (size_t j = i + 1; j < dirty_.size() && !merged; ++j) {
+        for (size_t i = 0; i < dirty_.size(); ++i)
+            for (size_t j = i + 1; j < dirty_.size();) {
                 const Rect u = join(dirty_[i], dirty_[j]);
-                if (!overlap(dirty_[i], dirty_[j]).empty() || area_of(u) <= area_of(dirty_[i]) + area_of(dirty_[j]) + kJoinSlack) {
-                    dirty_[i] = u;
-                    dirty_.erase(dirty_.begin() + static_cast<long>(j));
-                    merged = true;
+                if (overlap(dirty_[i], dirty_[j]).empty() && area_of(u) > area_of(dirty_[i]) + area_of(dirty_[j]) + kJoinSlack) {
+                    ++j;
+                    continue;
                 }
+                dirty_[i] = u;
+                dirty_[j] = dirty_.back();
+                dirty_.pop_back();
+                merged = true;
             }
     }
     if (dirty_.size() > static_cast<size_t>(kMaxAreas)) {
@@ -109,19 +115,26 @@ std::vector<Rect> Canvas::compose() {
 
 // Composes one area; returns the smallest rectangle round the pixels that changed in it.
 Rect Canvas::compose_area(const Rect &area) {
-    std::vector<const Item *> over;   // the pictures that reach into the area, bottom first
-    for (const Item &item : items_)
-        if (item.shown && !overlap(item.bounds(), area).empty()) over.push_back(&item);
+    std::vector<std::pair<const Item *, Rect>> over;   // the pictures that reach into the area, bottom first
+    for (const Item &item : items_) {
+        const Rect reach = overlap(item.bounds(), area);
+        if (item.shown && !reach.empty()) over.emplace_back(&item, reach);
+    }
+    std::vector<const Item *> row;   // those that reach into one row of it: a few of many (streaks of rain)
     int x1 = INT_MAX, y1 = INT_MAX, x2 = INT_MIN, y2 = INT_MIN;
-    for (int y = area.y; y < area.y + area.h; ++y)
+    for (int y = area.y; y < area.y + area.h; ++y) {
+        row.clear();
+        for (const auto &o : over)
+            if (y >= o.second.y && y < o.second.y + o.second.h) row.push_back(o.first);
         for (int x = area.x; x < area.x + area.w; ++x) {
-            const uint16_t c = colour_at(x, y, over);
+            const uint16_t c = colour_at(x, y, row);
             uint16_t &px = px_[static_cast<size_t>(y) * kW + static_cast<size_t>(x)];
             if (c == px) continue;
             px = c;
             x1 = std::min(x1, x); y1 = std::min(y1, y);
             x2 = std::max(x2, x); y2 = std::max(y2, y);
         }
+    }
     if (x2 < x1) return {};
     return {x1, y1, x2 - x1 + 1, y2 - y1 + 1};
 }

@@ -1,10 +1,12 @@
 #include "ui/art/assets.h"
 
+#include <cmath>
 #include <csetjmp>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <utility>
 
 #include <png.h>
 
@@ -39,6 +41,16 @@ void on_warning(png_structp, png_const_charp) {}   // a warning leaves the pictu
 
 uint16_t rgb565(const png_color &c) {
     return static_cast<uint16_t>(((c.red >> 3) << 11) | ((c.green >> 2) << 5) | (c.blue >> 3));
+}
+
+// A colour `t` of the way from a to b (RGB565), each of red, green and blue on its own.
+uint16_t mix(uint16_t a, uint16_t b, float t) {
+    unsigned out = 0;
+    for (const auto &part : {std::make_pair(11, 0x1F), std::make_pair(5, 0x3F), std::make_pair(0, 0x1F)}) {
+        const float from = (a >> part.first) & part.second, to = (b >> part.first) & part.second;
+        out |= static_cast<unsigned>(std::lround(from + (to - from) * t)) << part.first;
+    }
+    return static_cast<uint16_t>(out);
 }
 
 // The picture into d->out; false with d->error set when libpng refuses it.
@@ -119,6 +131,19 @@ const Image *Assets::image(const std::string &path) {
         }
     }
     return (images_[path] = std::move(img)).get();
+}
+
+const Image *Assets::lit(const std::string &stem, float blend) {
+    const Image *dusk = image(stem + "-dusk.png"), *night = image(stem + "-night.png");
+    if (!dusk || !night || dusk->px != night->px || dusk->pal.size() != night->pal.size()) return nullptr;
+    if (blend <= 0) return dusk;
+    if (blend >= 1) return night;
+    std::unique_ptr<Image> &mixed = images_[stem + "@" + std::to_string(blend)];
+    if (!mixed) {
+        mixed = std::make_unique<Image>(*dusk);
+        for (size_t i = 0; i < mixed->pal.size(); ++i) mixed->pal[i] = mix(dusk->pal[i], night->pal[i], blend);
+    }
+    return mixed.get();
 }
 
 void Assets::clear() { images_.clear(); }

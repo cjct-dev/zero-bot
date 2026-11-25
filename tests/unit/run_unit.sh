@@ -14,7 +14,7 @@
 # another thread, the microphone's route with a plug in the jack, the music player (its queue under
 # the holds, its MP3 path), which models are chosen (ui/models.h), a streamed reply's parts (agent/llm_stream.h), web search's layer against
 # stand-in services (agent/search), the art engine (ui/art: the canvas, its pictures, every scene's frames and
-# what they send the panel) and the diagnostics (the activity log and saved conversations; temporary). Nothing but 127.0.0.1 is contacted, and no AI
+# what they send the panel, which scene plays for what) and the diagnostics (the activity log and saved conversations; temporary). Nothing but 127.0.0.1 is contacted, and no AI
 # service, sound or screen is needed (stand-ins take the place of pw-cat, pacat, amixer and ffplay).
 #
 #   tests/unit/run_unit.sh                          build into build/unit and run
@@ -72,8 +72,9 @@ DUSK="src/core/dusk.cpp"
 # untrusted): providers/registry.cpp names each service's
 # make_<kind>_provider(), so a service registered there links here with nothing else to change.
 SEARCH="src/agent/search/search.cpp src/agent/search/usage.cpp $(echo src/agent/search/providers/*.cpp) src/agent/tools/web.cpp src/agent/tools/common.cpp"
-# The art engine without its view (ui/art): every scene in scenes/ links here as it is added (registry: scenes.cpp).
-ART="src/ui/art/canvas.cpp src/ui/art/assets.cpp src/ui/art/scenes.cpp $(echo src/ui/art/scenes/*.cpp)"
+# The art engine without its view (ui/art): every scene in scenes/ links here as it is added (registry: scenes.cpp),
+# and which scene plays for what (pick.cpp, with util.cpp and proc.cpp from above).
+ART="src/ui/art/canvas.cpp src/ui/art/assets.cpp src/ui/art/scenes.cpp src/ui/art/pick.cpp $(echo src/ui/art/scenes/*.cpp)"
 
 obj_of() { echo "$OUT/$(echo "$1" | tr '/' '_' | sed 's/\.cpp$/.o/')"; }
 
@@ -155,9 +156,9 @@ $WRAP $CXX -o "$OUT/dusk_test" "$OUT/tests_unit_dusk_test.o" "$(obj_of src/core/
 search_objs="$(obj_of src/core/settings.cpp) $(obj_of src/core/activity.cpp)"
 for src in $SEARCH; do search_objs="$search_objs $(obj_of "$src")"; done
 $WRAP $CXX -o "$OUT/search_test" "$OUT/tests_unit_search_test.o" $search_objs $objs -lcurl -lcrypto -lpthread
-# The art engine: the canvas, PNG decoding (libpng), every scene against its panel budget and the radio and the breathing
-# scene against their animations (with the breathing timing, which the breathing scene follows).
-art_objs=""
+# The art engine: the canvas, PNG decoding (libpng), every scene against its panel budget and its animation (the
+# breathing scene with the breathing timing, which it follows), which scene plays for what.
+art_objs="$(obj_of src/core/util.cpp) $(obj_of src/platform/proc.cpp)"
 for src in $ART; do art_objs="$art_objs $(obj_of "$src")"; done
 $WRAP $CXX -o "$OUT/art_test" "$OUT/tests_unit_art_test.o" $art_objs "$(obj_of src/core/breath.cpp)" -lpng -lz -lpthread
 # DIAGNOSTICS (temporary): saved conversations.
@@ -201,7 +202,7 @@ echo "=== dusk and night: sunrise and sunset, polar day and night, the zone tabl
 "$OUT/dusk_test" "$state/dusk" || failed=1
 echo "=== web search: the registry, outcomes, set up or not, what the model reads"
 "$OUT/search_test" "$state/search" || failed=1
-echo "=== art: the canvas, its pictures, every scene's frames and what they send the panel"
+echo "=== art: the canvas, its pictures, every scene's frames and what they send the panel, which scene plays for what"
 "$OUT/art_test" || failed=1
 echo "=== diagnostics: saved conversations (temporary)"
 "$OUT/activity_test" "$state/activity" || failed=1

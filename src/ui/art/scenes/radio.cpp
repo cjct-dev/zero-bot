@@ -2,7 +2,7 @@
 // waves spreading from its tip over the sky. The rings lie behind the land, so the mast and the hills stay in
 // front of them. Four frames a second, a loop of 16 (4 s): a ring leaves the tip every second and grows for two,
 // fading; the light is on for half of every second; at night two stars twinkle. The pictures are
-// assets/art/radio/, added in the order they are drawn.
+// assets/art/radio/, added in the order they are drawn; the land and the rings blend from dusk to night.
 #include <array>
 
 #include "ui/art/scene.h"
@@ -34,8 +34,8 @@ private:
 
 bool Radio::start(Canvas &canvas, Assets &assets, const Moment &m) {
     const std::string lighting = m.night ? "-night.png" : "-dusk.png";
-    const Image *sky = assets.image("radio/sky" + lighting), *rings = assets.image("radio/rings" + lighting),
-                *land = assets.image("radio/land" + lighting), *light = assets.image("radio/light.png");
+    const Image *sky = assets.image("radio/sky" + lighting), *rings = assets.lit("radio/rings", m.blend),
+                *land = assets.lit("radio/land", m.blend), *light = assets.image("radio/light.png");
     if (!sky || !rings || !land || !light) return false;
     canvas.add(*sky);
     stars_ = add_stars(canvas, assets.image("radio/twinkle" + lighting));

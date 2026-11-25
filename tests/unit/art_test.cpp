@@ -1,12 +1,15 @@
 // Unit tests for the art engine (src/ui/art, no LVGL): the canvas (pictures in order, clear pixels, edges, the
 // areas it returns, at most kMaxAreas of them, the 2x copy for the screen), PNG decoding (the repository's
 // pictures, and broken or hostile files), every scene's frames on a fake clock (and a box breath) through a model
-// of the panel against a budget per scene (a tripwire: raise it knowingly), the radio's and the breathing scene's
-// frames against the finished animations (each frame's hash, taken from the animation's own frames when its pictures
-// were exported) and the registry. Run from the repository (it reads assets/art/). Each failure prints a line.
+// of the panel against a budget per scene (a tripwire: raise it knowingly), every scene's frames against its finished
+// animation (the radio's and the breathing scene's frame by frame, the others' whole loops, by hashes taken from the
+// animations' own frames when their pictures were exported), dusk turning into night (the land's colours mixed), the
+// registry, and which scene plays for what (pick.h: every genre of the map, a station's tags, the city's weather). Run
+// from the repository (it reads assets/art/). Each failure prints a line.
 #include "core/breath.h"
 #include "ui/art/assets.h"
 #include "ui/art/canvas.h"
+#include "ui/art/pick.h"
 #include "ui/art/scene.h"
 
 #include <algorithm>
@@ -71,6 +74,12 @@ void areas_exact(const std::vector<uint16_t> &before, const Canvas &c, const std
 }
 
 std::vector<uint16_t> snapshot(const Canvas &c) { return std::vector<uint16_t>(c.pixels(), c.pixels() + kW * kH); }
+
+std::string util_upper(const char *text) {
+    std::string out = text;
+    for (char &ch : out) ch = static_cast<char>(toupper(static_cast<unsigned char>(ch)));
+    return out;
+}
 
 // ------------------------------------------------------------------ the canvas
 // Pictures in the order added, each through its own palette; clear pixels show what is under them.
@@ -272,20 +281,29 @@ private:
     long bytes_ = 0;
 };
 
-// What each scene may send the panel, in kB a second over 20 s in either lighting: a tripwire, as the first
-// request's 32,000 bytes is. The finished animations measured: the radio 217; the breathing scene 103 at dusk and 110
-// at night over its 16 s loop of one box breath, and here 116 and 122, as these 20 s end on a second breath in, while
-// the sun or the moon grows on every frame.
-const std::map<std::string, double> kBudgetKBps = {{"radio", 250}, {"breathe", 130}};
+// What each scene may send the panel, in kB a second over 80 s (every scene's loop; the breathing scene with a box
+// breath) in either lighting: a tripwire, as the first request's 32,000 bytes is. The finished animations measured
+// (over the whole screen's rows, in 4 KiB pages): the radio 217; the breathing scene 103 at dusk and 110 at
+// night over its 16 s loop of one box breath; the city 81 at dusk and 28 at night, in the rain 358; pop 342, rock 117,
+// jazz 212, electronic 125, classical 60.
+const std::map<std::string, double> kBudgetKBps = {{"radio", 250}, {"breathe", 130}, {"city", 100}, {"city_rain", 380},
+                                                   {"pop", 360}, {"rock", 130}, {"jazz", 230}, {"electronic", 140},
+                                                   {"classical", 75}};
 // The scenes shown over the whole screen (the breathing screen's); the others on the chat's stage.
 const std::set<std::string> kFullScreen = {"breathe"};
 
 // A scene started on a fresh canvas in a lighting; nullptr (with a failure) when it cannot start.
-std::unique_ptr<Scene> started(const std::string &name, Canvas &c, Assets &assets, bool night) {
+std::unique_ptr<Scene> started(const std::string &name, Canvas &c, Assets &assets, const Moment &m) {
     std::unique_ptr<Scene> scene = make(name);
-    const bool ok = scene && scene->start(c, assets, {0, night});
-    check(ok, name + " starts " + (night ? "at night" : "at dusk"));
+    const bool ok = scene && scene->start(c, assets, m);
+    char what[96];
+    snprintf(what, sizeof(what), "%s starts %.2f of the way from dusk to night", name.c_str(), m.blend);
+    check(ok, what);
     return ok ? std::move(scene) : nullptr;
+}
+
+std::unique_ptr<Scene> started(const std::string &name, Canvas &c, Assets &assets, bool night) {
+    return started(name, c, assets, Moment::at(0, night ? 1.f : 0.f));
 }
 
 void test_budgets() {
@@ -298,10 +316,10 @@ void test_budgets() {
             std::unique_ptr<Scene> scene = started(name, c, assets, night);
             if (!scene || budget == kBudgetKBps.end()) continue;
             Panel panel(kFullScreen.count(name) > 0);
-            constexpr unsigned long kRunMs = 20000;
+            constexpr unsigned long kRunMs = 80000;
             for (unsigned long t = 0; t < kRunMs; t += scene->period_ms()) {
                 const float level = breath::at(breath::pattern("box"), static_cast<long>(t), kRunMs).level;
-                scene->frame(c, {t, night, level});
+                scene->frame(c, Moment::at(t, night, level));
                 for (const Rect &r : c.compose()) panel.write(t, r);
             }
             panel.flush();
@@ -315,9 +333,10 @@ void test_budgets() {
     }
 }
 
-// FNV-1a over a frame's RGB565 values, little-endian, row by row, as the export took it of the animation's frames.
-uint64_t frame_hash(const Canvas &c) {
-    uint64_t h = 0xcbf29ce484222325ull;
+// FNV-1a over a frame's RGB565 values, little-endian, row by row, as the export took it of the animation's frames;
+// from `h`, the hash of the frames before it in a loop.
+constexpr uint64_t kFnvStart = 0xcbf29ce484222325ull;
+uint64_t frame_hash(const Canvas &c, uint64_t h = kFnvStart) {
     for (int i = 0; i < kW * kH; ++i)
         for (const uint8_t byte : {static_cast<uint8_t>(c.pixels()[i] & 0xff), static_cast<uint8_t>(c.pixels()[i] >> 8)})
             h = (h ^ byte) * 0x100000001b3ull;
@@ -346,7 +365,7 @@ void test_radio_frames() {
         int same = 0;
         for (int f = 0; f <= 16; ++f) {
             const std::vector<uint16_t> before = snapshot(c);
-            scene->frame(c, {static_cast<unsigned long>(f) * 250 + 100, is_night});   // any time within the frame
+            scene->frame(c, Moment::at(static_cast<unsigned long>(f) * 250 + 100, is_night));   // any time within the frame
             const std::vector<Rect> areas = c.compose();
             if (f > 0) areas_exact(before, c, areas, "radio " + lighting + " frame " + std::to_string(f));
             if (frame_hash(c) == want[f % 16]) ++same;
@@ -356,6 +375,188 @@ void test_radio_frames() {
                               std::to_string(same) + " of 17)");
     }
 }
+
+// Every scene's whole loop at dusk and at night against its finished animation: one hash over all its frames in order
+// (taken from the animation's own frames), the areas returned covering every change, and the loop closing (the frame
+// after the last is the first again).
+void test_scene_loops() {
+    const struct {
+        const char *scene;
+        bool night;
+        int frames;
+        uint64_t hash;
+    } kLoops[] = {
+        {"city", false, 640, 0x1a831313ff2a7b84ull},      {"city", true, 640, 0xaafac9f9371301bbull},
+        {"city_rain", false, 640, 0x683f768d009acd94ull}, {"city_rain", true, 640, 0x3edfc0000667cf52ull},
+        {"pop", false, 64, 0xd49cea480f034895ull},        {"pop", true, 64, 0x615a79c58fca6c65ull},
+        {"rock", false, 64, 0x732a9e3557e52f2dull},       {"rock", true, 64, 0xf2b668aec89d0a71ull},
+        {"jazz", false, 64, 0x860a28166f7dc381ull},       {"jazz", true, 64, 0x25596f9938be57c9ull},
+        {"electronic", false, 64, 0x12745575edebee55ull}, {"electronic", true, 64, 0xda41dad9d7b6fab9ull},
+        {"classical", false, 64, 0xad20d9a44a288a45ull},  {"classical", true, 64, 0xeaca8a70467e7e35ull},
+    };
+    Assets assets(folder(kArt));
+    for (const auto &loop : kLoops) {
+        const std::string what = std::string(loop.scene) + (loop.night ? " at night" : " at dusk");
+        Canvas c;
+        std::unique_ptr<Scene> scene = started(loop.scene, c, assets, loop.night);
+        if (!scene) continue;
+        check(scene->period_ms() == 125, what + " steps 8 times a second");
+        uint64_t h = kFnvStart, first = 0;
+        bool covered = true;
+        for (int f = 0; f <= loop.frames; ++f) {
+            const std::vector<uint16_t> before = snapshot(c);
+            scene->frame(c, Moment::at(static_cast<unsigned long>(f) * 125 + 60, loop.night));   // any time within the frame
+            const std::vector<Rect> areas = c.compose();
+            for (int i = 0; i < kW * kH && covered; ++i)
+                if (before[static_cast<size_t>(i)] != c.pixels()[i] && f > 0 && !inside(areas, i % kW, i / kW)) covered = false;
+            if (f == 0) first = frame_hash(c);
+            if (f < loop.frames) h = frame_hash(c, h);
+            else check(frame_hash(c) == first, what + ": the loop closes");
+        }
+        check(covered, what + ": the areas returned cover every change");
+        check(h == loop.hash, what + ": every frame of the loop is the animation's, pixel for pixel");
+        if (h != loop.hash) printf("     %s: hash 0x%016llx\n", what.c_str(), static_cast<unsigned long long>(h));
+    }
+}
+
+// Dusk turning into night: the land's colours mixed from the two lightings' (each part of RGB565 on its own), the
+// same pixels; dusk's and the night's own pictures at the ends; no mixing of pictures that differ; and every scene
+// starts anywhere on the way.
+void test_blend() {
+    Assets assets(folder(kArt));
+    const Image *dusk = assets.lit("radio/land", 0), *night = assets.lit("radio/land", 1), *half = assets.lit("radio/land", 0.5f);
+    check(dusk && dusk == assets.image("radio/land-dusk.png") && night == assets.image("radio/land-night.png"),
+          "dusk's and the night's own land at the ends");
+    bool between = half && half->px == dusk->px, moved = false;
+    for (size_t i = 0; half && i < half->pal.size(); ++i)
+        for (const auto &part : {std::make_pair(11, 0x1F), std::make_pair(5, 0x3F), std::make_pair(0, 0x1F)}) {
+            const int a = dusk->pal[i] >> part.first & part.second, b = night->pal[i] >> part.first & part.second,
+                      m = half->pal[i] >> part.first & part.second;
+            between = between && std::abs(2 * m - (a + b)) <= 1;
+            moved = moved || m != a;
+        }
+    check(between && moved, "half way, the land's colours are half way from dusk's to the night's, its pixels dusk's");
+    check(assets.lit("radio/land", 0.5f) == half, "a mix is made once for each light");
+    check(!assets.lit("radio/sky", 0.5f), "pictures that differ are not mixed");
+    check(!assets.lit("radio/none", 0.5f), "nor missing ones");
+    check(Moment::at(0, 0.49f).night == false && Moment::at(0, 0.5f).night, "the night's pictures from half way");
+    for (const std::string &name : names())
+        for (const float blend : {0.25f, 0.75f}) {
+            Canvas c;
+            if (std::unique_ptr<Scene> scene = started(name, c, assets, Moment::at(0, blend))) {
+                scene->frame(c, Moment::at(1000, blend));
+                c.compose();
+            }
+        }
+}
+
+// ------------------------------------------------------------------ which scene plays (pick.h)
+// Every ID3v1 genre in its family (the genre map: all 148), the free text's rules in their order, and the
+// default.
+void test_genres() {
+    const std::map<std::string, std::vector<const char *>> kId3v1 = {
+        {"city", {"New Age", "Ambient", "Trip-Hop", "Space", "Meditative", "Dream", "Lo-Fi", "Easy Listening", "Acoustic"}},
+        {"electronic", {"Dance", "Techno", "Industrial", "Euro-Techno", "Trance", "Acid", "House", "Game", "Noise", "Bass",
+                        "Darkwave", "Techno-Industrial", "Electronic", "Eurodance", "Jungle", "New Wave", "Rave", "Club",
+                        "Euro-House", "Goa", "Drum & Bass", "Club-House", "Hardcore", "Terror", "Synthpop"}},
+        {"rock", {"Classic Rock", "Grunge", "Metal", "Alternative", "Death Metal", "Alternative Rock", "Punk",
+                  "Instrumental Rock", "Gothic", "Southern Rock", "Psychedelic", "Acid Punk", "Rock & Roll", "Hard Rock",
+                  "Folk-Rock", "Gothic Rock", "Progressive Rock", "Psychedelic Rock", "Symphonic Rock", "Slow Rock", "Rock",
+                  "Primus", "Power Ballad", "Punk Rock", "Drum Solo", "Indie", "BritPop", "Afro-Punk", "Polsk Punk",
+                  "Heavy Metal", "Black Metal", "Crossover", "Christian Rock", "Thrash Metal"}},
+        {"jazz", {"Blues", "Funk", "Jazz", "R&B", "Jazz+Funk", "Fusion", "Gospel", "Soul", "Cabaret", "Acid Jazz", "Swing",
+                  "Fast Fusion", "Bebop", "Big Band", "Chanson", "Slow Jam", "Rhythmic Soul"}},
+        {"classical", {"Classical", "Soundtrack", "Avantgarde", "Chorus", "Opera", "Chamber Music", "Sonata", "Symphony"}},
+        {"pop", {"Country", "Disco", "Hip-Hop", "Oldies", "Other", "Pop", "Rap", "Reggae", "Ska", "Pranks", "Vocal",
+                 "Instrumental", "Sound Clip", "Instrumental Pop", "Ethnic", "Pop-Folk", "Comedy", "Cult", "Gangsta", "Top 40",
+                 "Christian Rap", "Pop/Funk", "Native American", "Showtunes", "Trailer", "Tribal", "Polka", "Retro", "Musical",
+                 "Folk", "National Folk", "Latin", "Revival", "Celtic", "Bluegrass", "Humour", "Speech", "Booty Bass",
+                 "Porn Groove", "Satire", "Tango", "Samba", "Folklore", "Ballad", "Freestyle", "Duet", "A Cappella",
+                 "Dance Hall", "Beat", "Christian Gangsta Rap", "Contemporary Christian", "Merengue", "Salsa", "Anime", "JPop"}},
+    };
+    size_t count = 0;
+    for (const auto &family : kId3v1)
+        for (const char *genre : family.second) {
+            ++count;
+            const std::string got = scene_for_genre(genre);
+            check(got == family.first, std::string("ID3v1's \"") + genre + "\" plays " + family.first + " (got " + got + ")");
+            check(scene_for_genre(util_upper(genre)) == family.first, std::string("\"") + genre + "\" in capitals too");
+        }
+    check(count == 148, "all 148 of ID3v1's genres are mapped (" + std::to_string(count) + ")");
+    const std::vector<std::pair<const char *, const char *>> kFree = {
+        // 1. chill, lo-fi, ambient: the city
+        {"Chillout", "city"}, {"chillhop", "city"}, {"Chillwave", "city"}, {"lo-fi hip hop", "city"}, {"Lo_Fi", "city"},
+        {"lo.fi beats", "city"}, {"LoFi", "city"}, {"Dark Ambient", "city"}, {"Downtempo", "city"}, {"Sleep sounds", "city"},
+        {"Study beats", "city"},
+        // 2. jazz and blues, before rock: "jazz rock" is jazz
+        {"Jazz Rock", "jazz"}, {"Delta Blues", "jazz"}, {"Neo-Soul", "jazz"}, {"Funky", "jazz"}, {"Western Swing", "jazz"},
+        {"Hard Bop Bebop", "jazz"}, {"Contemporary R&B", "jazz"}, {"RnB", "jazz"}, {"Southern Gospel", "jazz"},
+        {"Lounge", "jazz"}, {"Motown", "jazz"},
+        // 3. rock, before electronic: "pop rock", "symphonic metal" and "indie electronic" are rock
+        {"Pop Rock", "rock"}, {"Symphonic Metal", "rock"}, {"Krautrock", "rock"}, {"Pop-Punk", "rock"}, {"post-grunge", "rock"},
+        {"Emo", "rock"}, {"Shoegaze", "rock"}, {"Indie Electronic", "rock"},
+        // 4. electronic
+        {"Electronica", "electronic"}, {"Electropop", "electronic"}, {"Minimal Techno", "electronic"}, {"Deep House", "electronic"},
+        {"Psytrance", "electronic"}, {"EDM", "electronic"}, {"Dubstep", "electronic"}, {"Drum and Bass", "electronic"},
+        {"drum & bass", "electronic"}, {"DnB", "electronic"}, {"Synthwave", "electronic"}, {"Rave", "electronic"},
+        {"IDM", "electronic"}, {"Breakbeat", "electronic"}, {"UK Garage", "electronic"}, {"Chiptune", "electronic"},
+        {"Retrowave", "electronic"}, {"Vaporwave", "electronic"}, {"Outrun", "electronic"},
+        // 5. classical
+        {"Modern Classical", "classical"}, {"Orchestral", "classical"}, {"Symphonic", "classical"}, {"Opera buffa", "classical"},
+        {"Baroque", "classical"}, {"Choral", "classical"}, {"Piano Concerto", "classical"}, {"Piano Sonata", "classical"},
+        {"Chamber Pop", "classical"}, {"Piano Solo", "classical"}, {"Film Score", "classical"},
+        // 6. anything else, or none: pop
+        {"", "pop"}, {"K-Pop", "pop"}, {"Hip Hop", "pop"}, {"Klezmer", "pop"}, {"  ", "pop"}};
+    for (const auto &c : kFree) {
+        const std::string got = scene_for_genre(c.first);
+        check(got == c.second, std::string("\"") + c.first + "\" plays " + c.second + " (got " + got + ")");
+    }
+}
+
+// A calm station (focus, lofi, study, chill, ambient, downtempo, in any case) shows the city; any other the radio.
+void test_stations() {
+    for (const char *tag : {"focus", "lofi", "study", "chill", "ambient", "downtempo", "Focus", "LOFI"})
+        check(scene_for_station({"talk", tag}) == "city", std::string("a station tagged ") + tag + " shows the city");
+    for (const std::vector<std::string> &tags : std::vector<std::vector<std::string>>{{}, {"talk"}, {"classical", "news"}, {"lofi radio"}})
+        check(scene_for_station(tags) == "radio", "a station tagged otherwise shows the radio (" + std::to_string(tags.size()) + " tags)");
+}
+
+// The city's weather: chosen as the city comes on, never changed while it plays, kept from one time to the next until
+// it has played 30 minutes with it, then chosen again; rain about one time in three; other scenes pass as they are.
+void test_weather() {
+    const time_t noon = 1795003200;
+    int rainy = 0;
+    for (int minute = 0; minute < 3000; ++minute) {
+        Weather w;
+        rainy += w.follow("city", 0, noon + 60 * minute) == "city_rain";
+    }
+    check(rainy > 800 && rainy < 1200, "rain about one time in three (" + std::to_string(rainy) + " of 3000)");
+    time_t rain_at = noon, clear_at = noon;
+    for (int minute = 0; minute < 100; ++minute) {
+        Weather w;
+        (w.follow("city", 0, noon + 60 * minute) == "city_rain" ? rain_at : clear_at) = noon + 60 * minute;
+    }
+    Weather w;
+    check(w.follow("pop", 0, rain_at) == "pop" && w.follow("", 10, rain_at) == "", "other scenes pass as they are");
+    check(w.follow("city", 1000, rain_at) == "city_rain", "the city comes on in the rain");
+    bool kept = true;
+    unsigned long t = 1000;
+    for (; t < 1000 + 2 * Weather::kKeepMs; t += 60000) kept = kept && w.follow("city", t, clear_at) == "city_rain";
+    check(kept, "the weather never changes while the city plays, an hour on");
+    w.follow("rock", t, clear_at);
+    check(w.follow("city", t + 1000, clear_at) == "city", "after 30 minutes of it, the next time chooses again");
+    // 29 minutes of the city over three times, then a 30th: kept until then, whatever the clock says.
+    const unsigned long minute = 60000;
+    Weather v;
+    check(v.follow("city", 0, rain_at) == "city_rain", "rain chosen");
+    v.follow("", 10 * minute, rain_at);
+    check(v.follow("city", 11 * minute, clear_at) == "city_rain", "kept from one time to the next within minutes");
+    v.follow("jazz", 30 * minute, clear_at);
+    check(v.follow("city", 31 * minute, clear_at) == "city_rain", "kept after 29 minutes of it in all");
+    v.follow("", 32 * minute, clear_at);
+    check(v.follow("city", 33 * minute, clear_at) == "city", "chosen again after 30 minutes of it in all");
+}
+
 
 // The breathing scene's 64 frames (16 s: one box breath, the waves' 4 s loop four times, each star out once) against
 // the finished animation's in both lightings, each at the size the animation took from the breath on that frame (a
@@ -409,7 +610,7 @@ void test_breathe_frames() {
         for (int f = 0; f <= 64; ++f) {
             const std::vector<uint16_t> before = snapshot(c);
             const float level = static_cast<float>(sizes[f % 64] - '0') / 7;
-            scene->frame(c, {static_cast<unsigned long>(f) * 250 + 100, is_night, level});
+            scene->frame(c, Moment::at(static_cast<unsigned long>(f) * 250 + 100, is_night, level));
             const std::vector<Rect> areas = c.compose();
             if (f > 0) areas_exact(before, c, areas, "breathe " + lighting + " frame " + std::to_string(f));
             if (frame_hash(c) == want[f % 64]) ++same;
@@ -417,10 +618,10 @@ void test_breathe_frames() {
         }
         check(same == 65, "breathe at " + lighting + ": every frame of the loop is the animation's, pixel for pixel (" +
                               std::to_string(same) + " of 65)");
-        scene->frame(c, {16 * 250, is_night, 3.f});
+        scene->frame(c, Moment::at(16 * 250, is_night, 3.f));
         c.compose();
         check(frame_hash(c) == want[16] && sizes[16] == '7', "breathe at " + lighting + ": a level past full is full");
-        scene->frame(c, {0, is_night, std::nanf("")});
+        scene->frame(c, Moment::at(0, is_night, std::nanf("")));
         c.compose();
         check(frame_hash(c) == want[0] && sizes[0] == '0', "breathe at " + lighting + ": a level that is not a number is empty");
     }
@@ -433,7 +634,7 @@ void test_registry() {
     check(make("nothing") == nullptr, "an unknown scene is none");
     Canvas c;
     Assets none(folder("/nonexistent"));
-    check(!make("radio")->start(c, none, {0, false}), "a scene without its pictures does not start");
+    for (const std::string &name : names()) check(!make(name)->start(c, none, {}), name + " without its pictures does not start");
 }
 
 }  // namespace
@@ -447,7 +648,12 @@ int main() {
     test_budgets();
     test_radio_frames();
     test_breathe_frames();
+    test_scene_loops();
+    test_blend();
     test_registry();
+    test_genres();
+    test_stations();
+    test_weather();
     printf("art: %d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? 1 : 0;
 }

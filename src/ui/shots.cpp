@@ -761,6 +761,36 @@ bool art_stays_behind(App &app, const App::Playing &radio, unsigned long t) {
     return not_over_menu && banner_over && follows_setting;
 }
 
+// The city and the music's scenes (ui/art/pick.h: which plays for what), each at dusk and at night, at a moment
+// something moves (the train is on the viaduct), with the title of what plays; and the city a quarter of the way
+// from dusk to night (the land's colours mixed, the sky still dusk's). A song's artist goes with its title only
+// when both fit on one line.
+bool snap_scenes(App &app, Shots &shots, unsigned long t) {
+    const struct {
+        const char *scene, *shot, *title;
+        unsigned long ms;
+    } kScenes[] = {{"city", "city", "Harbour Lo-fi Radio", 15000}, {"city_rain", "city-rain", "Rooftop Rain", 15000},
+                   {"pop", "pop", "Lakeside · Paper Boats", 1000}, {"rock", "rock", "Stage Dive · Static", 1000},
+                   {"jazz", "jazz", "Blue Corner · Quartet", 1000}, {"electronic", "electronic", "Neon Mile · Gridrunner", 1000},
+                   {"classical", "classical", "Nocturne in E flat", 1000}};
+    for (const auto &shot : kScenes)
+        for (const float blend : {0.f, 1.f}) {
+            app.chat.set_now_playing(shot.title, true);
+            app.art.play(shot.scene, shot.title);
+            app.art.show_at(t, shot.ms, blend);
+            shots.snap((std::string(shot.shot) + (blend > 0 ? "-scene-night" : "-scene-dusk")).c_str());
+        }
+    app.chat.set_now_playing("Harbour Lo-fi Radio", true);
+    app.art.play("city", "Harbour Lo-fi Radio");
+    app.art.show_at(t, 15000, 0.25f);
+    shots.snap("city-scene-turning");
+    const bool fits = app.art.title_fits("pop", "Lakeside · Paper Boats") &&
+                      !app.art.title_fits("pop", "A Very Long Song Title Indeed · And An Artist With A Long Name Too");
+    if (!fits) fprintf(stderr, "the art's title_fits does not tell a title that fits from one that does not\n");
+    app.art.front(false, t, true);
+    return fits;
+}
+
 // The art's rules end to end, at made-up times after the screenshots, through follow_art (every pass of the main
 // loop runs it) and wake_screen (every key calls it). Checked, not pictured; the light, the clock of the screen's
 // idle time and the settings are put back.
@@ -1084,6 +1114,8 @@ void App::shots_art(Shots &shots) {
     for (unsigned long step = 0; step < art::kSteps / 2; ++step) art.tick(t + step * art::kStepMs);
     snap("radio-scene-dissolving");
     art.front(false, t, true);
+    if (!snap_scenes(*this, shots, t)) shots.failed = true;
+    chat.set_now_playing("Harbour Classic FM", true);
     const std::string mode = Settings::get().dynamic_art;
     set([](Settings &s) { s.dynamic_art = "off"; });
     wake_screen(t);

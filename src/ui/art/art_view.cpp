@@ -1,5 +1,6 @@
 #include "ui/art/art_view.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <utility>
@@ -29,6 +30,7 @@ constexpr int kWidth = kW * 2;                        // in screen pixels, whate
 constexpr int kBlock = 4;                             // the dissolve's blocks: 2x2 art pixels
 constexpr int kBlockColumns = kWidth / kBlock;
 constexpr unsigned long kLightingEveryMs = 60000;    // how often the lighting is looked at while a scene shows
+constexpr float kBlendSteps = dusk::kBlendMin;       // the light in steps of a minute of its 20-minute change
 
 Source embedded() {
     return [](const std::string &path) {
@@ -95,6 +97,14 @@ void ArtView::play(const std::string &scene, const std::string &title) {
     load(scene);
 }
 
+bool ArtView::title_fits(const std::string &scene, const std::string &title) const {
+    const std::unique_ptr<Scene> s = make(scene);
+    lv_point_t size{};
+    lv_text_get_size(&size, title.c_str(), theme::bold(), lv_obj_get_style_text_letter_space(title_, LV_PART_MAIN), 0, LV_COORD_MAX,
+                     LV_TEXT_FLAG_NONE);
+    return s && size.x <= 2 * s->title_spot().w;
+}
+
 // Lets go of the scene shown (hidden at once) and takes up `scene`, not yet started: front() starts it.
 void ArtView::load(const std::string &scene) {
     name_ = scene;
@@ -133,23 +143,24 @@ void ArtView::front(bool on, unsigned long now, bool at_once) {
     next_step_ = now;
 }
 
-// The scene composed as it is at `now`: started (in the lighting of the local sunset: core/dusk.h) the first time,
-// and again when the lighting has changed since.
+// The scene composed as it is at `now`: started (in the light of the local sunset: core/dusk.h) the first time, and
+// again when the light has changed since by a step. While dusk turns into night, or back, that is once a minute (the
+// light is looked at once a minute), and the land's colours are mixed again; otherwise the light does not change.
 bool ArtView::catch_up(unsigned long now) {
-    const bool night = dusk::now_light().night;
+    const float blend = std::round(dusk::now_light().blend * kBlendSteps) / kBlendSteps;
     night_checked_ = now;
     if (!started_) clock_ = now;
-    if (!started_ || night != night_) return begin(now - clock_, night);
+    if (!started_ || blend != blend_) return begin(now - clock_, blend);
     draw_frame(now);
     return true;
 }
 
-// Starts the scene in a lighting at `ms` on its clock, composed whole. False (the scene let go of) when its
-// pictures are missing.
-bool ArtView::begin(unsigned long ms, bool night) {
+// Starts the scene in a light at `ms` on its clock, composed whole. False (the scene let go of) when its pictures are
+// missing.
+bool ArtView::begin(unsigned long ms, float blend) {
     canvas_.clear();
     assets_.clear();
-    const Moment m{ms, night, level_};
+    const Moment m = Moment::at(ms, blend, level_);
     started_ = scene_->start(canvas_, assets_, m);
     if (!started_) {
         fprintf(stderr, "art: the %s scene's pictures are missing\n", name_.c_str());
@@ -157,7 +168,7 @@ bool ArtView::begin(unsigned long ms, bool night) {
         scene_.reset();
         return false;
     }
-    night_ = night;
+    blend_ = blend;
     frame_ = ms / scene_->period_ms();
     scene_->frame(canvas_, m);
     ++frames_;
@@ -168,7 +179,7 @@ bool ArtView::begin(unsigned long ms, bool night) {
 void ArtView::draw_frame(unsigned long now) {
     const unsigned long ms = now - clock_;
     frame_ = ms / scene_->period_ms();
-    scene_->frame(canvas_, {ms, night_, level_});
+    scene_->frame(canvas_, Moment::at(ms, blend_, level_));
     ++frames_;
     draw(canvas_.compose());
 }
@@ -239,10 +250,10 @@ void ArtView::set_opaque(bool opaque) {
 
 void ArtView::fill_alpha(uint8_t alpha) { memset(stage_.data() + pixels(), alpha, pixels()); }
 
-void ArtView::show_at(unsigned long now, unsigned long ms, bool night) {
+void ArtView::show_at(unsigned long now, unsigned long ms, float blend) {
     if (!scene_) return;
     clock_ = now - ms;
-    if (!begin(ms, night)) return;
+    if (!begin(ms, blend)) return;
     night_checked_ = now;
     front_ = true;
     step_ = kSteps;
