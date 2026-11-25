@@ -16,7 +16,8 @@ included), and a settings file saved again keeps the list. search_shapes: every 
 src/agent/search/providers/registry.cpp) has its shape in the stand-in web, is asked there with the stand-in's key, gives
 the model the same facts as every other, and a refused key and a hostile answer come back as an ERROR or capped and
 cleaned. search_failover: the failover between the services against the stand-in's fixtures that put one on a bad day
-(one search a run, and several in one run against a scripted model). search_allowance: the allowance file
+(one search a run, and several in one run against a scripted model). search_measured: each service asked, and the
+cache's answer, noted in the experiments' trace and the activity log, with no words. search_allowance: the allowance file
 (search_usage.json) counts searches and keeps Brave's figure, a spent allowance is passed over by a later run, the day's
 cap stops a search before any service is asked, the same query again in one run is answered from the cache, and
 zero_bot --search-status asks Tavily's GET /usage (a stand-in of its own) for what is left, with the key and nothing
