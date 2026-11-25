@@ -85,8 +85,8 @@ src/smarthome/      discovery (mDNS, SSDP, TP-Link and WiZ broadcasts); driver.h
 src/ui/             the app controller: app.cpp (wiring, the agent's events, recording, the
                     first-run guide's start, run_app and the main loop), app_keys.cpp (what each
                     key does), app_status.cpp (footer and status bar, timers and the alarm banner,
-                    reminders, the screen's light, the art's scene of what plays: follow_art, the
-                    periodic work), app_impl.h (the App struct,
+                    reminders, the screen's light, the art's scene of what plays: playing,
+                    follow_art, the periodic work), app_impl.h (the App struct,
                     shared by those and shots.cpp only), shots.cpp (--shots, one function per
                     group of screens); chat screen (chat_view), menu system (menu); settings
                     pages: settings_pages.cpp (the top page and sections, the status page, the
@@ -102,11 +102,14 @@ src/ui/             the app controller: app.cpp (wiring, the agent's events, rec
                     front of the chat (screen_idle), breathing screen (its scene, or a counter
                     with the art off), alarm banner, theme; and art/,
                     the moving pictures (ZB-061): canvas (indexed pictures composed into RGB565, only
-                    what changed; no LVGL), assets (the PNGs, read with libpng), scene.h (a scene's
-                    interface, Moment), scenes.cpp (the registry, and what scenes share: add_stars),
-                    scenes/ (one file per scene), art_view (the LVGL side: one image on the chat's
-                    stage or over the whole screen, its title, the dissolve; dusk or night from
-                    core/dusk.h)
+                    what changed; no LVGL), assets (the PNGs, read with libpng; a land's colours
+                    mixed between dusk and night: lit), scene.h (a scene's interface, Moment, and
+                    what scenes share: add_overlay, add_dots, add_stars, wrap), scenes.cpp (the
+                    registry, and those), scenes/ (radio, breathe, city: clear and rain, music: the
+                    five genre families), pick (which scene plays for a song's genre and a
+                    station's tags, the city's weather), art_view (the LVGL side: one image on the
+                    chat's stage or over the whole screen, its title, the dissolve; the light from
+                    core/dusk.h, in steps of a minute)
 tests/              run.py, the entry point that runs the tests in groups by profile (section 6),
                     netguard.py, the network boundary of every test process, and art_check.py, the
                     art's pictures; unit/ (the C++ unit
@@ -119,8 +122,8 @@ tests/              run.py, the entry point that runs the tests in groups by pro
                     contracts/, against the stand-in and the app), mocks/ (simulated devices, chat services, the
                     stand-in web, fixtures), lib/ (code they share); tests/README.md says what each is
 scripts/            toolchain setup, deploy over ADB, .deb packaging, ADB wrapper
-assets/art/         the scenes' pictures, a folder per scene (indexed PNGs: tests/art_check.py), built
-                    into the program by cmake/embed.cmake
+assets/art/         the scenes' pictures, a folder per scene (the music's: music-<family>; indexed PNGs:
+                    tests/art_check.py), built into the program by cmake/embed.cmake
 packaging/          the launcher entry and icon, Zero's picture for the launcher's wake screen
                     (lockscreen.png), and the package's maintainer scripts (preinst, postrm)
 ```
@@ -887,7 +890,18 @@ key, real audio), say so plainly rather than implying it was.
   (lit windows, glints) have colours of their own, and one index space for both lightings needed 25
   colours. So every picture has its own palette, the land is one picture with a palette per lighting, and
   what a lighting adds lies in a layer of its own (`lights-night`). The canvas, fed the exported pictures,
-  gives the finished animation's frames pixel for pixel (`art_test`'s hashes).
+  gives the finished animation's frames pixel for pixel (`art_test`'s hashes). The city's and the music's
+  lands differ more (the city's street glow and sun are each lighting's own, so they are in its lights), and
+  the city's land has four palettes (clear and rain, dusk and night).
+- What the art scripts drew is what was approved, quirks included: the city's rain falls 2 rows a step but
+  for its first streak, which falls 10 (the script reused a variable), and `scenes/city.cpp` does the same,
+  so that every frame stays the approved one. Floating point that decides a pixel (the pop bars' heights, the
+  grid's rows, the steam's sway) was checked to stay well away from a rounding edge (7e-5 at the least), so
+  the device's arithmetic draws the same; the searchlights, whose edges sit on one, are a sprite sheet.
+- Moving rain left a few hundred changed areas a step, and the canvas joined them by starting its search
+  again after each join: three quarters of a frame's time. It now lets an area take in the rest as it goes,
+  and composes row by row with only the pictures that reach the row: the rain's frame fell from 430 to 64 us
+  on this PC.
 - A test that walks menus by counted key presses breaks without a word when a row is added: every
   later screenshot shifted. `--shots` walks by row label (`Shots::menu_to`), pressing the keys a
   user would, and the pictures came out identical, pixel for pixel.
@@ -1052,25 +1066,32 @@ holds the setup guide's late answers in the UI queue until the user has moved on
 them (`late_setup_answers_ignored`, `returned_setup_answers_ignored`); it notes where each lookup's
 key went at a stand-in service on 127.0.0.1 (`lookups_keep_their_service`).
 
-**A scene of the art** (the moving picture of what plays; ZB-061). Its pictures go in `assets/art/<name>/`:
-8-bit indexed PNGs of 160x85 art pixels (each shown 2x2), each with its own palette of at most 24 colours exact
-in RGB565, index 0 clear, holding nothing but IHDR, PLTE, tRNS, IDAT and IEND (`tests/art_check.py` checks it
-all; no picture, file name or commit may say how the art was made). A `sky-<lighting>` and a `land-<lighting>`
-for dusk and night, the land the same pixels in both (two palettes); what one lighting adds on the land (lit
-windows) or to a moving part (the breathing scene's wet sand at dusk) in a picture of its own; a sprite sheet drawn
-in both lightings the same pixels in both (where one lighting has a detail the other has not, as the moon's spots,
-an index the other's palette paints in the colour round it). What moves behind the land (the radio's rings) is
-added between the sky and the land. The scene is
-`src/ui/art/scenes/<name>.cpp`, implementing `art::Scene` (scene.h): `start` adds its pictures to the canvas in
-the order they are drawn, `frame` works out everything from the `Moment` alone (its `ms`, and for the breathing
-scene its `level`, how full the breath is; nothing stepped frame by frame),
-`period_ms` is its one clock (every part steps on it, never under 50 ms: the panel's limit), `title_spot` a band
-where nothing moves. Then one line, `X(<name>)`, in `ZB_SCENES` in `src/ui/art/scenes.cpp`; a budget in
-`kBudgetKBps` (`tests/unit/art_test.cpp`: what it may send the panel, the test fails without one) and a test of
-its frames there; its frames in `App::shots_art`; and what plays it in `App::playing` (app_status.cpp). CMake
-embeds the pictures and `run_unit.sh` links every file in `scenes/` by themselves. Keep what moves in every frame
-within few rows: the panel is sent whole rows from the first changed to the last (section 2). When it shows, and
-how it hands over to the chat, is `screen_idle`'s and `ArtView`'s, the same for every scene.
+**A scene of the art** (the moving picture of what plays; ZB-061). Its pictures go in `assets/art/<name>/` (a
+music family's in `music-<family>/`): 8-bit indexed PNGs of 160x85 art pixels (each shown 2x2), each with its own
+palette of at most 24 colours exact in RGB565, index 0 clear, holding nothing but IHDR, PLTE, tRNS, IDAT and IEND
+(`tests/art_check.py` checks it all; no picture, file name or commit may say how the art was made). A
+`sky-<lighting>` and a `land-<lighting>` for dusk and night, the land the same pixels in both (two palettes);
+what one lighting adds on the land (lit windows) or to a moving part (the breathing scene's wet sand at dusk) in a
+picture of its own; a sprite sheet drawn in both lightings the same pixels in both (where one lighting has a detail
+the other has not, as the moon's spots, an index the other's palette paints in the colour round it; a variant, such
+as the city's weather, goes before the lighting: `land-rain-night`). What moves behind the land (the radio's rings)
+is added between the sky and the land. The scene is `src/ui/art/scenes/<name>.cpp` (or with its kin: `music.cpp`
+holds the five music scenes, `city.cpp` the city in both weathers; scene.h has what several share: an overlay
+cropped to its pixels, a picture's pixels as items of their own, stars that twinkle), implementing `art::Scene`
+(scene.h): `start` adds its pictures to the canvas in the order they are drawn, those the night only recolours
+through `Assets::lit` (their colours mixed while dusk turns into night, `Moment::blend`; the rest by
+`Moment::night`, which switches half way), `frame` works out everything from the `Moment` alone (its `ms`, and for
+the breathing scene its `level`, how full the breath is; nothing stepped frame by frame), `period_ms` is its one
+clock (every part steps on it, never under 50 ms: the panel's limit), `title_spot` a band where nothing moves. Then
+one line, `X(<name>)`, in `ZB_SCENES` in `src/ui/art/scenes.cpp`; a budget in `kBudgetKBps`
+(`tests/unit/art_test.cpp`: what it may send the panel, the test fails without one) and a test of its frames there
+(each frame's hash, or one hash of its whole loop, from the finished animation's own frames); its frames in
+`App::shots_art`; and what plays it in `App::playing` (app_status.cpp, through `ui/art/pick.h`). CMake embeds the
+pictures and `run_unit.sh` links every file in `scenes/` by themselves. Keep what moves in every frame within few
+rows: the panel is sent whole rows from the first changed to the last (section 2). When it shows, and how it hands
+over to the chat, is `screen_idle`'s and `ArtView`'s, the same for every scene; so is the light: `ArtView` looks at
+it once a minute and starts the scene again when it has moved by a step (a minute of the 20-minute change), so the
+land's colours are mixed again at most once a minute, and only while dusk turns into night or back.
 A scene can also fill the whole screen, under a screen's own words: an `ArtView` of its own made with
 `Place::FullScreen` (all 85 art rows, where the chat's is `Place::Stage`, rows 9 to 75), as `BreathView` has for
 the breathing scene. Its owner drives it as the app drives the chat's (`play`, `front`, `tick` on every pass of the

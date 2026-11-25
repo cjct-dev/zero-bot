@@ -42,12 +42,14 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
 
 ## art_check.py: the art's pictures
 
-`art_check.py` (group `art`) reads every picture under `assets/art/<scene>/`, standard library only: each an 8-bit
-indexed PNG holding only IHDR, PLTE, tRNS, IDAT and IEND (no text, time, colour profile or other metadata), its
-checksums right, index 0 its one clear entry, at most 24 colours each exact in RGB565, no pixel outside its palette;
-only PNGs, named in small letters, digits and dashes; each scene's layers 160x85, a sky and a land for dusk and for
-night, the land the same pixels in both (two palettes), and so every other part drawn in both but the sky and what
-each lighting adds (`lights`, `twinkle`). `--self-test` runs it against pictures made wrong on purpose.
+`art_check.py` (group `art`) reads every picture under `assets/art/<folder>/` (a scene's, or a music family's),
+standard library only: each an 8-bit indexed PNG holding only IHDR, PLTE, tRNS, IDAT and IEND (no text, time, colour
+profile or other metadata), its checksums right, index 0 its one clear entry, at most 24 colours each exact in RGB565,
+no pixel outside its palette; only PNGs, named in small letters, digits and dashes (`<part>[-<variant>]-<lighting>`:
+the city's weather is a variant); each folder's layers 160x85, a sky and a land for dusk and for night (of each
+variant), the land the same pixels in both (two palettes), and so every other part drawn in both but the sky and what
+each lighting has of its own (`lights`, `twinkle`, the `roof` the rain splashes on). `--self-test` runs it against
+pictures made wrong on purpose.
 
 ## lib/: shared code
 
@@ -100,12 +102,18 @@ each lighting adds (`lights`, `twinkle`). `--self-test` runs it against pictures
 - `art_test.cpp`: the art engine without its view (`src/ui/art/`): the canvas (pictures in order, clear pixels, the
   edges, the areas it returns: every change in one, none bigger than its changes, at most 16), the 2x copy for the
   screen, PNG decoding (the repository's pictures; broken, cut-short and other kinds of PNG refused), every scene for
-  20 s (with a box breath, `core/breath`) through a model of the panel (an update every 50 ms at most, whole 4 KiB
-  pages, only the rows the scene is shown in: the chat's stage, or the whole screen for those in `kFullScreen`, the
-  breathing scene) against its budget in `kBudgetKBps` (a tripwire: raise it knowingly; a scene without one fails),
-  the radio's 16 frames and the breathing scene's 64 (each at the size its animation took from the breath) at dusk and
-  at night against the hashes of the finished animations' frames (pixel for pixel, the loop included; a breath past
-  full is full, one that is not a number empty), and the registry.
+  80 s (every scene's loop; with a box breath, `core/breath`) through a model of the panel (an update every 50 ms at
+  most, whole 4 KiB pages, only the rows the scene is shown in: the chat's stage, or the whole screen for those in
+  `kFullScreen`, the breathing scene) against its budget in `kBudgetKBps` (a tripwire: raise it knowingly; a scene
+  without one fails), the radio's 16 frames and the breathing scene's 64 (each at the size its animation took from the
+  breath) at dusk and at night against the hashes of the finished animations' frames (pixel for pixel, the loop
+  included; a breath past full is full, one that is not a number empty), every other scene's whole loop (the city's
+  640 frames, clear and in the rain; each music scene's 64) against one hash of its animation's frames (pixel for
+  pixel, the loop closing, the areas returned covering every change), dusk turning into night (the land's colours
+  mixed part by part, pictures that differ never mixed, every scene starting anywhere on the way), the registry, and
+  which scene plays for what (`pick.h`: all 148 ID3v1 genres in their families, the free text's rules in their order
+  and the default, a station's calm tags in any case, and the city's weather: rain about one time in three, never
+  changed while the city plays, kept from one time to the next until it has played 30 minutes in all).
 - `radio_test.cpp`: the station file, names, nicknames and tags (a station by tag, focus mode as the tool describes
   it), the tool absent without stations, the check of a stream
   against `radio_peer.py`, the player's live mode against a stand-in `ffplay`.
@@ -282,7 +290,8 @@ when the service is asked for its models, that a key a web search service refuse
 that Left and Right move a service in the order, that the Web search pages follow a search made while they are open,
 that every key, password and code is typed hidden (bullets, `--keydump` quiet meanwhile, the field emptied when it
 closes) while an e-mail or user name is not, that input waiting for the phone goes with a cancelled request, the art's
-rules end to end (the radio's scene in front after 20 s unused, dissolving in and out in 50 ms steps, nothing composed
+rules end to end (every scene at dusk and at night with its title, the city in the rain and a quarter of the way to
+night, a title with its artist only when both fit: `snap_scenes`; the radio's scene in front after 20 s unused, dissolving in and out in 50 ms steps, nothing composed
 while it is away, the screen kept on dimmed, never over the menu, under the alarm banner, as Dynamic art is set:
 `art_rules_ok`), the breathing screen's (its scene while Dynamic art allows it, a frame due within 250 ms, the counter
 the moment the setting goes off and the scene when it comes back, under the alarm banner, nothing due once it ends:

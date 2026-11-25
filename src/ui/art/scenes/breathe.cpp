@@ -3,7 +3,8 @@
 // slide back every 4 s on their own; at night four stars twinkle, each for half a second in 16. Four frames a second.
 // The disc takes one of 8 sizes from how full the breath is (Moment::level), never from the time, so that it
 // follows any pattern. The breathing exercise shows it over the whole screen (BreathView), its words over the dark
-// bands at the top and the foot. The pictures are assets/art/breathe/, added in the order they are drawn.
+// bands at the top and the foot. The pictures are assets/art/breathe/, added in the order they are drawn; the land,
+// the disc and the waves blend from dusk to night.
 #include <algorithm>
 
 #include "ui/art/scene.h"
@@ -36,8 +37,8 @@ private:
 
 bool Breathe::start(Canvas &canvas, Assets &assets, const Moment &m) {
     const std::string lighting = m.night ? "-night.png" : "-dusk.png";
-    const Image *sky = assets.image("breathe/sky" + lighting), *land = assets.image("breathe/land" + lighting),
-                *disc = assets.image("breathe/disc" + lighting), *waves = assets.image("breathe/waves" + lighting);
+    const Image *sky = assets.image("breathe/sky" + lighting), *land = assets.lit("breathe/land", m.blend),
+                *disc = assets.lit("breathe/disc", m.blend), *waves = assets.lit("breathe/waves", m.blend);
     if (!sky || !land || !disc || !waves) return false;
     canvas.add(*sky);
     stars_ = add_stars(canvas, assets.image("breathe/twinkle" + lighting));
@@ -54,8 +55,7 @@ bool Breathe::start(Canvas &canvas, Assets &assets, const Moment &m) {
 void Breathe::frame(Canvas &canvas, const Moment &m) {
     const int f = static_cast<int>(m.ms / kPeriodMs % kLoop);
     for (size_t k = 0; k < stars_.size(); ++k) {
-        const int since = ((f - kTwinkleStep * static_cast<int>(k) - kTwinkleFirst) % kLoop + kLoop) % kLoop;
-        canvas.show(stars_[k], since < kTwinkleFrames);
+        canvas.show(stars_[k], wrap(f - kTwinkleStep * static_cast<int>(k) - kTwinkleFirst, kLoop) < kTwinkleFrames);
     }
     const float level = m.level > 0 ? std::min(m.level, 1.f) : 0.f;   // and 0 for a level that is not a number
     const int size = static_cast<int>(level * (kSizes - 1) + 0.5f);

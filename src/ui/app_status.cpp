@@ -11,6 +11,7 @@
 #include "agent/agent.h"
 #include "agent/speech.h"
 #include "core/music_lib.h"
+#include "core/radio.h"
 #include "core/settings.h"
 #include "core/store.h"
 #include "core/tether.h"
@@ -88,6 +89,7 @@ void App::update_indicators() {
         chat.add_note(ended, theme::kListen);
         Agent::get().add_context(ended);
     }
+    playing_of.clear();   // the art's scene of what plays is looked up again (App::playing)
     if (music.live()) chat.set_now_playing(music.title(), true);   // shown for hours: it never scrolls
     else if (current.empty()) chat.set_now_playing("");
     else {
@@ -186,23 +188,45 @@ void App::tick_screen(unsigned long now, bool busy) {
 }
 
 // ------------------------------------------------------------ the art (ui/art)
-// The scene of what plays now: the radio's mast while a station plays (not paused); nothing else has one yet.
+// The scene of what plays now (not paused), with its title (ui/art/pick.h): a station's (the city for a calm one,
+// else the radio's mast) under its name, or a song's by its genre under its title, and its artist when both fit.
+// Looked up when what plays changes, and again with the status bar (a station's tags or a song's genre may change).
 App::Playing App::playing() {
     audio::Music &music = audio::Music::get();
-    if (music.live() && !music.paused()) return {"radio", music.title()};
-    return {};
+    if (music.paused()) return {};
+    const bool live = music.live();
+    const std::string what = live ? music.title() : music.current();
+    if (what.empty()) return {};
+    if (what != playing_of) {
+        playing_of = what;
+        playing_found = live ? station_playing(what) : song_playing(what);
+    }
+    return playing_found;
+}
+
+App::Playing App::station_playing(const std::string &name) {
+    const std::vector<radio::Station> list = radio::stations();
+    const int at = radio::find(list, name);
+    return {art::scene_for_station(at < 0 ? std::vector<std::string>() : list[static_cast<size_t>(at)].tags), name};
+}
+
+App::Playing App::song_playing(const std::string &path) {
+    const Track t = MusicLibrary::get().lookup(path);
+    const std::string scene = art::scene_for_genre(t.genre), both = t.title + " · " + t.artist;
+    return {scene, !t.artist.empty() && art.title_fits(scene, both) ? both : t.title};
 }
 
 // On every pass of the main loop: the breathing screen's scene, or its counter, as Dynamic art allows; the scene of
-// what plays, when Dynamic art allows it; whether it is in front of the chat (screen_idle.h: after 20 s unused, never
-// over what the user has in front of it); its next frame or dissolve step. Under the menu or the breathing screen, or
-// on a dark screen, nobody would see it dissolve: it goes at once. A key (wake_screen) is a use, so the scene
-// dissolves in the same pass that the key did its job in.
+// what plays (the city in its weather), when Dynamic art allows it; whether it is in front of the chat
+// (screen_idle.h: after 20 s unused, never over what the user has in front of it); its next frame or dissolve step.
+// Under the menu or the breathing screen, or on a dark screen, nobody would see it dissolve: it goes at once. A key
+// (wake_screen) is a use, so the scene dissolves in the same pass that the key did its job in.
 void App::follow_art(unsigned long now, const Playing &what) {
     const bool allowed = screen::art_allowed(Settings::get().dynamic_art, on_battery);
     breath.follow_art(allowed, now);
     const bool wanted = !what.scene.empty() && allowed;
-    art.play(wanted ? what.scene : "", wanted ? what.title : "");
+    const std::string scene = weather.follow(wanted ? what.scene : "", now, time(nullptr));
+    art.play(scene, wanted ? what.title : "");
     const bool covered = menu.open() || breath.active();
     const bool blocked = covered || chat.typing() || recorder.active() || banner.visible();
     art.front(screen::scene_in_front(idle, now, wanted, blocked), now, covered || idle.light() == screen::Light::Off);
@@ -277,7 +301,7 @@ bool App::lively() {
 // once-a-second, indicator and model work, and while a timer runs, the wall clock's next second (its
 // countdown changes then, and its alarm rings on one). On the device that is one or two wake-ups a
 // second instead of sixty-two (ZB-036). Whatever it is, no later than the art's next frame or dissolve
-// step (4 a second while the radio's or the breathing scene shows, none while neither does).
+// step (4 or 8 a second while a scene shows, none while none does).
 unsigned long App::sleep_ms(unsigned long now) {
     if (lively()) quiet_since = 0;
     else if (!quiet_since) quiet_since = now;

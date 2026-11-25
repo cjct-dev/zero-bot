@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The art's pictures (assets/art/<scene>/*.png), checked as the app and the publishing rules need them:
+"""The art's pictures (assets/art/<folder>/*.png: a scene's, or a music family's), checked as the app and the publishing
+rules need them:
 
     tests/art_check.py                every picture in assets/art/
     tests/art_check.py --self-test    this checker, against pictures made wrong on purpose
@@ -9,10 +10,13 @@
   physical size or other metadata that a program adds), every checksum right, not interlaced.
 - Its palette: 24 colours at most after index 0, which is the clear one (tRNS is exactly one byte, 0), each colour
   exact in RGB565 (the panel's colours, so the screenshots and the device show the same); no pixel outside it.
+- A picture is named <part>[-<variant>][-<lighting>].png: "land-dusk", the city's "land-rain-night" (its weather),
+  "flames" (the same in every lighting). A part's kind is its first word.
 - The sizes a scene expects: its layers (sky, land, lights, twinkle) are 160x85 art pixels.
-- Each scene has a sky and a land for dusk and for night, and the land is the same picture in both (identical
-  pixels, two palettes: the owner's "same scene" rule). So is every other part drawn in both lightings (a sprite
-  sheet), but the sky and what each lighting adds on its own (lights, twinkle), which are free to differ.
+- Each folder has a sky and a land for dusk and for night (of each variant it has), and the land is the same
+  picture in both (identical pixels, two palettes: the owner's "same scene" rule). So is every other part drawn in
+  both lightings (a sprite sheet), but the sky and what each lighting has of its own (lights, twinkle, the roof the
+  rain splashes on), which are free to differ.
 
 Exits 1 when anything is wrong, with a line for each. Standard library only."""
 import os
@@ -27,7 +31,7 @@ CHUNKS = (b"IHDR", b"PLTE", b"tRNS", b"IDAT", b"IEND")
 MAX_COLOURS = 24
 LAYER = (160, 85)
 LAYERS = ("sky", "land", "lights", "twinkle")     # full-size layers: 160x85
-FREE = ("sky", "lights", "twinkle")               # parts each lighting draws its own way
+FREE = ("sky", "lights", "twinkle", "roof")       # parts each lighting draws its own way
 LIGHTINGS = ("dusk", "night")
 NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*\.png$")
 
@@ -128,16 +132,19 @@ def check_scene(name, files, say):
         if lighting not in LIGHTINGS:   # drawn the same in every lighting ("light.png")
             part, lighting = f[:-4], ""
         parts.setdefault(part, {})[lighting] = pic
-    for part in ("sky", "land"):
-        for lighting in LIGHTINGS:
-            if lighting not in parts.get(part, {}):
-                say("%s: no %s-%s.png" % (name, part, lighting))
+    kind = lambda part: part.split("-")[0]
+    for need in ("sky", "land"):
+        variants = [p for p in parts if kind(p) == need] or [need]
+        for part in variants:
+            for lighting in LIGHTINGS:
+                if lighting not in parts.get(part, {}):
+                    say("%s: no %s-%s.png" % (name, part, lighting))
     for part, by_lighting in sorted(parts.items()):
         for lighting, (w, h, _, _) in by_lighting.items():
-            if part in LAYERS and (w, h) != LAYER:
+            if kind(part) in LAYERS and (w, h) != LAYER:
                 say("%s: %s is %dx%d, not %dx%d" % (name, part + ("-" + lighting if lighting else ""), w, h, *LAYER))
         drawn = [by_lighting[l] for l in LIGHTINGS if l in by_lighting]
-        if part not in FREE and len(drawn) > 1 and any(d[:2] != drawn[0][:2] or d[3] != drawn[0][3] for d in drawn[1:]):
+        if kind(part) not in FREE and len(drawn) > 1 and any(d[:2] != drawn[0][:2] or d[3] != drawn[0][3] for d in drawn[1:]):
             say("%s: %s is not the same picture at dusk and at night (only its palette may differ)" % (name, part))
 
 
@@ -234,6 +241,14 @@ def self_test():
     expect("a layer of the wrong size", any("is 2x1" in p for p in scene_problems(dict(base, **{"lights-night.png": good}))))
     expect("no night sky", any("no sky-night" in p for p in scene_problems({k: v for k, v in base.items() if k != "sky-night.png"})))
     expect("a file that is not a PNG", any("only PNGs" in p for p in scene_problems(dict(base, **{"notes.txt": b"x"}))))
+    weather = {"sky-rain-dusk.png": layer, "sky-rain-night.png": make_png(160, 85, night, other), "land-rain-dusk.png": layer,
+               "land-rain-night.png": layer_night}
+    expect("a scene in its weather passes: %s" % scene_problems(weather), scene_problems(weather) == [])
+    expect("a weather's land that differs at night", any("land-rain is not the same" in p for p in scene_problems(
+        dict(weather, **{"land-rain-night.png": make_png(160, 85, night, other)}))))
+    expect("a weather without its night sky", any("no sky-rain-night" in p for p in scene_problems(
+        {k: v for k, v in weather.items() if k != "sky-rain-night.png"})))
+    expect("a weather's layer of the wrong size", any("is 2x1" in p for p in scene_problems(dict(weather, **{"lights-rain-dusk.png": good}))))
     expect("a name with capitals", any("only PNGs" in p for p in scene_problems(dict(base, **{"Sky-dusk.png": layer}))))
     for f in failures:
         print("FAIL", f)

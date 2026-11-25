@@ -25,6 +25,11 @@ public:
     // The picture at `path`, decoded the first time it is asked for; nullptr when there is no such file, or
     // it cannot be decoded (said on stderr). It stays until clear().
     const Image *image(const std::string &path);
+    // The picture `<stem>-dusk.png` or `<stem>-night.png` in a moment's light (Moment::blend): dusk's at 0, the
+    // night's at 1, and in between dusk's pixels in colours that far from dusk's to the night's. The two must have
+    // the same pixels and as many colours (tests/art_check.py checks every pair): nullptr when they do not, or one is
+    // missing.
+    const Image *lit(const std::string &stem, float blend);
     void clear();   // lets go of every picture: none may be on a canvas any more
 
 private:
