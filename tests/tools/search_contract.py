@@ -229,16 +229,23 @@ def app_side(kind, contract, source):
             out.append("the app's parameters: %s is not sent as %s" % (name, written))
         out += param_problems(name, value, c["params"])
     out += read_differences(contract, source)
-    if "header_reads" in c["answer"]:
-        kept = set(re.findall(r'"([\w-]+)"', (re.search(r"keep_headers = \{([^}]*)\}", source) or re.match("", "")).group(0)))
-        documented_headers = {h.lower() for h in c["answer"]["headers"]}
-        if {h.lower() for h in kept} != {h.lower() for h in c["answer"]["header_reads"]} or not kept <= {h for h in kept if h.lower() in documented_headers}:
-            out.append("the app's headers: it keeps %s, the contract reads %s" % (sorted(kept), c["answer"]["header_reads"]))
+    out += kept_header_differences(c["answer"], source)
     for mode in BAD_DAYS:
         code = c["errors"][mode].get("code") if c["errors"][mode].get("app_reads_code", True) else None
         if code and '"%s"' % code not in source:
             out.append("the app's %s: it does not read the code %s" % (mode, code))
     return out
+
+
+def kept_header_differences(answer, source):
+    """The reply headers the app keeps (Fetch::keep_headers) against those the contract says it reads, and the documented."""
+    block = re.search(r"keep_headers = \{([^}]*)\}", source)
+    kept = {h.lower() for h in re.findall(r'"([\w-]+)"', block.group(1))} if block else set()
+    out = []
+    if kept != {h.lower() for h in answer.get("header_reads", [])}:
+        out.append("the app's headers: it keeps %s, the contract says it reads %s" % (sorted(kept), answer.get("header_reads", [])))
+    documented = {h.lower() for h in answer.get("headers", {})}
+    return out + ["the app's headers: it keeps %s, which the documentation does not list" % h for h in sorted(kept - documented)]
 
 
 def param_problems(name, value, params):
@@ -276,11 +283,12 @@ def documentation_side(contract):
     return out
 
 
-def differences(kind):
-    """Every difference for the service KIND, and the contract (None when there is none)."""
+def differences(kind, contract=None):
+    """Every difference for the service KIND (against CONTRACT, else its file), and the contract (None when there is
+    none)."""
     import fake_web
     try:
-        contract = contract_of(kind)
+        contract = contract or contract_of(kind)
     except (OSError, ValueError) as e:
         return ["no contract that can be read: %s" % e], None
     out = []
@@ -297,9 +305,9 @@ def differences(kind):
     return out, contract
 
 
-def compare(kind, out=print):
+def compare(kind, out=print, contract=None):
     """One service: prints each difference (known or not) and the contract's notes; the count of failures."""
-    found, contract = differences(kind)
+    found, contract = differences(kind, contract)
     known = {k["difference"]: k["why"] for k in (contract or {}).get("known", [])}
     failures = 0
     for d in found:
@@ -385,7 +393,6 @@ def spend(kind, key_file, env=None, is_tty=None, ask=None, opener=None, base=Non
         return 2
     contract = contract_of(kind)
     method, url, headers, body = request_for(contract, key, base)
-    del key
     opener = opener or netguard.local_opener()   # no proxy, no redirect followed: the key goes to the service only
     t0 = time.monotonic()
     try:
@@ -453,7 +460,6 @@ def self_test():
     with one others can read, for a service without a contract, and when the owner does not confirm, sending nothing; and
     once confirmed, exactly one request to a local peer, as documented, its report without the key or a result's words."""
     import copy
-    import tempfile
     import fake_web
     n, failed = 0, []
 
@@ -480,7 +486,7 @@ def self_test():
         contract = contract_of(kind)
         source = search_services.source(kind)
         shape = fake_web.SEARCH_SHAPES[kind]
-        base = sorted(stand_in_side(kind, shape, contract["search"]) + app_side(kind, contract, source))
+        base = sorted(differences(kind, contract)[0])
         for what, change in (("another address", lambda c: c["search"].update(url=c["search"]["url"] + "x")),
                              ("another key header", lambda c: c["search"]["key"].update(header="X-Elsewhere")),
                              ("another prefix", lambda c: c["search"]["key"].update(prefix="Token ")),
@@ -491,21 +497,21 @@ def self_test():
                              ("another status for a refused key", lambda c: c["search"]["errors"]["refused"].update(status=[418]))):
             changed = copy.deepcopy(contract)
             change(changed)
-            got = sorted(stand_in_side(kind, shape, changed["search"]) + app_side(kind, changed, source) + documentation_side(changed))
-            check("%s: %s is found" % (kind, what), got != base, got[:3])
+            got = sorted(differences(kind, changed)[0])
+            check("%s: %s is found" % (kind, what), [d for d in got if d not in base], got[:3])
         check("%s: the app reading a field the contract does not list is found" % kind,
               any("does not say it reads" in d for d in read_differences(contract, source + '\njget(r, "secret_field", 0)')))
         lines = []
+        check("%s: as the contract has it, nothing fails" % kind, compare(kind, lines.append) == 0, lines)
         stale = copy.deepcopy(contract)
         stale.setdefault("known", []).append({"difference": "a difference that never happens", "why": "a test"})
-        failures, _ = 0, None
-        saved = contract_of
-        globals()["contract_of"] = lambda k: stale
-        try:
-            failures = compare(kind, out=lines.append)
-        finally:
-            globals()["contract_of"] = saved
-        check("%s: a known difference that no longer happens fails" % kind, failures >= 1 and any(l.startswith("STALE") for l in lines), lines)
+        lines = []
+        failures = compare(kind, lines.append, stale)
+        check("%s: a known difference that no longer happens fails" % kind, failures == 1 and any(l.startswith("STALE") for l in lines), lines)
+        if contract.get("known"):
+            lines, unknown = [], dict(contract, known=contract["known"][1:])
+            check("%s: a difference the contract does not know fails" % kind, compare(kind, lines.append, unknown) == 1 and
+                  any(l.startswith("DIFF") for l in lines), lines)
     spend_checks(check)
     for f in failed: print("FAIL  " + f)
     print("search contract self-test: %d checks, %d failed" % (n, len(failed)))

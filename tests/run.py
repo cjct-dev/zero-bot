@@ -39,6 +39,9 @@ runs the held-out group: both sets once on the stand-in web's held-out seed (nev
 its own by tests/agent/exp_compare.py --held-out (pass-rate floors, critical cases), its verdict in heldout.json
 beside gate.json. The web-contract group (tests/tools/web_contract.py: the stand-in's shapes against the real
 weather, place, rate and price services; never the search) is in no profile: run it by name before a release.
+The search-contract group (tests/tools/search_contract.py) compares each search service's documented request and
+answers with the stand-in's shape and the app's provider, offline; its --spend, one real search with the owner's
+key, is refused in every group and profile (spends): only the owner types it.
 
 Groups never inherit switches that change what they test (ZB_UPDATE_SHOTS, ZB_UPDATE_SNAPSHOTS,
 ZB_UNIT_BUILD_ONLY, ZB_UNIT_SKIP_SCRIPTS, HUE_E2E_ONLY, ZB_FAST_MODE, ZB_EVAL_TRACE, any ZB_EXP_*); a

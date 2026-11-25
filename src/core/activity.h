@@ -17,7 +17,8 @@
 //                           checks in shots_keys
 //   src/main.cpp            "/save" in --chat
 // Also README "Diagnostics (temporary)" and the SPACE SPACE key, AGENTS.md sections 3, 6 and 7,
-// tests/unit/activity_test.cpp (and its lines in tests/unit/run_unit.sh), test_double_tap in
+// tests/unit/activity_test.cpp (and its lines in tests/unit/run_unit.sh, activity.cpp in search_test's too),
+// test_measured in tests/unit/search_test.cpp, search_lines in tests/sim/tools_cli.py, test_double_tap in
 // tests/unit/key_guide_test.cpp, conversation_saved in tests/sim/agent_loop_test.py, the last three
 // golden screenshots (tests/sim/screens/golden/*save*) and tests/agent/suite/from_conversation.py. Removing it
 // should also delete the files on the device.

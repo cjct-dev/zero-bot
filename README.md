@@ -579,7 +579,8 @@ Two records exist for now to diagnose problems and improve the assistant. Both w
 a later version (and their files deleted from the device).
 
 - **The activity log**, `~/.cache/zero-bot/activity.log`: every tool the assistant used, with
-  what it was asked, what came back and how long it took, request by request. It is always kept,
+  what it was asked, what came back and how long it took, request by request, and each web search
+  service it asked, with what came of it and how long it took (not what was searched for). It is always kept,
   readable only by your user, about 256 kB at most plus one older file. What you say is not
   written to it, nor any password or token. Delete it whenever you like.
 - **Saved conversations**, `~/.local/share/zero-bot/conversations/`: only when you press **SPACE**
