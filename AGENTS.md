@@ -54,8 +54,9 @@ src/agent/          the request loop (agent: Agent::Turn and its steps), what th
                     common.h (argument and schema helpers), say_checks (weekday_slip, claims_new, claims_start),
                     sensitive (the card and ID numbers no search query or memory carries),
                     web (fetch_json, with its options: Fetch, Fetched), places and events (what several
-                    tools share); and web search in search/: provider.h (the contract every search
-                    service implements, like smarthome/driver.h), providers/ (one file per service;
+                    tools share; places also finds the home city's place for the scenes' dusk and
+                    night: locate_home); and web search in search/: provider.h (the contract every
+                    search service implements, like smarthome/driver.h), providers/ (one file per service;
                     registry.cpp lists them), search.{h,cpp} (which service answers, from the user's
                     list in Settings::search, and the failover between them; what the model reads, the
                     same whatever the service; the ten-minute cache; how each service stands, for the
@@ -63,10 +64,12 @@ src/agent/          the request loop (agent: Agent::Turn and its steps), what th
                     per day, what each service said is left, spent allowances, the daily cap)
 src/core/           settings, calendar/reminder/timer/memory store, timers (the timer tool, which
                     timer words mean, the alarm's logic), music library, radio (the user's station
-                    file, the radio tool, the check of a stream), breathing timing,
-                    phone tethering, what an upgrade leaves behind (upgrade), the one failure
-                    shape (result.h: fail, failed, words), the UI queue (ui_queue.h), the
-                    diagnostics (activity; temporary), utilities (dates, files, strings)
+                    file, the radio tool, the check of a stream), breathing timing, the scenes'
+                    dusk and night (dusk: sunrise and sunset, the zone tables' coordinates, where
+                    the sun is reckoned for, now_light for the scenes), phone tethering, what an
+                    upgrade leaves behind (upgrade), the one failure shape (result.h: fail,
+                    failed, words), the UI queue (ui_queue.h), the diagnostics (activity;
+                    temporary), utilities (dates, files, strings)
 src/net/            libcurl wrapper: DNS answers and TLS sessions shared by every thread, connections kept by
                     each thread for its next request
 src/platform/       display, keyboard (input, keys.h), audio (recorder, speaker, music), codecs,
@@ -126,7 +129,7 @@ through `Settings::update([](Settings &s) { ... })`, which makes it under that l
 | Speech | `SpeechQueue::run` | Synthesises and plays sentence by sentence; a watcher per sentence lets `stop()` cut a synthesis short. |
 | Key reader | `input::start` (device only) | Reads the keypad and makes the auto-repeat; its queue is drained by the UI thread. |
 | Recorder, music | `audio::Recorder`, `audio::Music` (and a feeder per MP3, `run_live` for the radio) | `Music::ctl_` serialises `play`, `play_live` and `stop`, which the UI and the agent call at once. |
-| Short helpers, detached | alarm rings (`AlarmSound`, one per ring), chimes, `set_volume_async`, the microphone lookup and the jack's put-back (audio.cpp), `radio::check_async`, `background()`, the app's thumbnail, model choice and phone link (app.cpp), `upgrade`'s reload | Each hands its result to the UI through `uiq::post`, or touches nothing shared. |
+| Short helpers, detached | alarm rings (`AlarmSound`, one per ring), chimes, `set_volume_async`, the microphone lookup and the jack's put-back (audio.cpp), `radio::check_async`, `background()`, the app's thumbnail, model choice, phone link and the home city's place (app.cpp: `locate_home`), `upgrade`'s reload | Each hands its result to the UI through `uiq::post`, or touches nothing shared. |
 | Smart-home fan-out | `run_parallel` in `home::execute` (control.cpp) | Joined before the command returns; one lock per device (`device_lock`), so two commands never talk to one device at once. |
 | cli build only | `main.cpp`'s talk-over and follow-up helpers, the experiments' TTS probe | Not in the device build. |
 

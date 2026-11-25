@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <mutex>
@@ -64,6 +65,21 @@ bool same_services(const std::vector<SearchService> &a, const std::vector<Search
     });
 }
 
+json place_to_json(const HomePlace &p) {
+    return p.known() ? json{{"lat", p.lat}, {"lon", p.lon}, {"zone", p.zone}} : json();
+}
+
+// The home city's place as saved (`fallback` when the file has none): coordinates on the globe, else not known.
+HomePlace place_from_json(const json &j, const HomePlace &fallback) {
+    using util::jget;
+    const auto it = j.find("home_place");
+    if (it == j.end()) return fallback;
+    if (!it->is_object()) return {};
+    HomePlace p{jget(*it, "lat", double(NAN)), jget(*it, "lon", double(NAN)), jget(*it, "zone", std::string())};
+    if (!(std::fabs(p.lat) <= 90 && std::fabs(p.lon) <= 180)) return {};   // NAN is neither
+    return p;
+}
+
 // Writes the settings of version `version`, unless a newer version is already on disk.
 void write(const json &j, uint64_t version) {
     std::lock_guard<std::mutex> lk(g_file_mtx);
@@ -85,8 +101,11 @@ Settings Settings::update(const std::function<void(Settings &)> &change, bool sa
     {
         std::lock_guard<std::mutex> lk(g_mtx);
         const std::vector<SearchService> search_before = g_current.search;
+        const std::string city_before = g_current.home_city, country_before = g_current.home_country;
         change(g_current);
         if (!same_services(search_before, g_current.search)) ++g_current.search_revision;
+        // The home city's place belongs to the name it was looked up for.
+        if (g_current.home_city != city_before || g_current.home_country != country_before) g_current.home_place = HomePlace();
         version = ++g_version;
         after = g_current;
         if (save_now) j = g_current.to_json();
@@ -111,7 +130,7 @@ json Settings::to_json() const {
         {"api_base", api_base}, {"api_key", api_key}, {"llm_model", llm_model}, {"vision_model", vision_model},
         {"stt_model", stt_model}, {"tts_model", tts_model}, {"tts_voice", tts_voice}, {"speak_replies", speak_replies}, {"fast_mode", fast_mode}, {"compress_audio", compress_audio}, {"phone_fallback", phone_fallback}, {"setup_done", setup_done},
         {"search", search_to_json(search)}, {"volume", volume}, {"brightness", brightness}, {"screen_off_min", screen_off_min}, {"mic_gain", mic_gain},
-        {"agent_name", agent_name}, {"user_name", user_name}, {"home_city", home_city}, {"home_country", home_country}, {"date_order", date_order}, {"camera_flip", camera_flip}, {"mic_builtin", mic_builtin}, {"timezone", timezone},
+        {"agent_name", agent_name}, {"user_name", user_name}, {"home_city", home_city}, {"home_country", home_country}, {"home_place", place_to_json(home_place)}, {"date_order", date_order}, {"camera_flip", camera_flip}, {"mic_builtin", mic_builtin}, {"timezone", timezone},
         {"units", units}, {"tv_brand", tv_brand}, {"music_dir", music_dir},
     };
 }
@@ -139,6 +158,7 @@ void Settings::from_json(const json &j) {
     user_name = jget(j, "user_name", user_name);
     home_city = jget(j, "home_city", home_city);
     home_country = jget(j, "home_country", home_country);
+    home_place = place_from_json(j, home_place);
     date_order = jget(j, "date_order", date_order);
     camera_flip = jget(j, "camera_flip", camera_flip);
     mic_builtin = jget(j, "mic_builtin", mic_builtin);

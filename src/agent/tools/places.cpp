@@ -2,10 +2,13 @@
 #include "agent/tools/places.h"
 #include "agent/tools/common.h"
 
+#include <cmath>
+
 #include <sys/stat.h>
 
 #include "agent/experiment.h"
 #include "agent/tools/web.h"
+#include "core/settings.h"
 #include "net/http.h"
 
 namespace tools {
@@ -31,7 +34,7 @@ bool in_region(const json &r, const std::string &region_in) {
 
 // `country` narrows a bare city name to one country; it is only a preference, so a city that
 // does not exist there still resolves to its best-known namesake.
-bool geocode(const std::string &query, Place &out, std::string &err, Context &ctx, const std::string &country) {
+bool geocode(const std::string &query, Place &out, std::string &err, Context &ctx, const std::string &country, bool *unknown) {
     const std::string base = "https://geocoding-api.open-meteo.com/v1/search?language=en&count=";
     json j = fetch_json(experiment::web(base + (country.empty() ? "1" : "10") + "&name=" + http::url_encode(query)), err, ctx);
     if (!err.empty()) return false;
@@ -62,6 +65,7 @@ bool geocode(const std::string &query, Place &out, std::string &err, Context &ct
     if (!j.contains("results") || !j["results"].is_array() || j["results"].empty()) {
         err = "could not find a place called '" + query + "'. No weather or time is available for it; ask the user "
               "which town or city they mean";
+        if (unknown) *unknown = true;
         return false;
     }
     const json &r = j["results"][pick];
@@ -72,6 +76,19 @@ bool geocode(const std::string &query, Place &out, std::string &err, Context &ct
     out.lat = jget(r, "latitude", 0.0);
     out.lon = jget(r, "longitude", 0.0);
     return true;
+}
+
+Located locate_home(const std::string &city, const std::string &country, Context &ctx) {
+    Place p;
+    std::string err;
+    bool unknown = false;
+    if (!geocode(city, p, err, ctx, country, &unknown)) return unknown ? Located::Unknown : Located::Unreached;
+    if (!(std::fabs(p.lat) <= 90 && std::fabs(p.lon) <= 180)) return Located::Unknown;
+    const HomePlace place{p.lat, p.lon, util::timezone_exists(p.timezone) ? p.timezone : ""};
+    Settings::update([&](Settings &s) {
+        if (s.home_city == city && s.home_country == country) s.home_place = place;
+    });
+    return Located::Found;
 }
 
 // "Australia", "Brazil", "Canada", "US": the zone database has a folder of that name because the

@@ -78,6 +78,13 @@ tool makes no request outside 127.x, and every `fetch_json` address goes through
   keeps everything it writes in a temporary folder of its own, so running it by hand is safe too.
 - `key_guide_test.cpp`: what each key does on the chat screen, and that the key guide says so.
 - `screen_idle_test.cpp`: when the screen dims and goes off, what keeps it lit and what wakes it.
+- `dusk_test.cpp`: the scenes' dusk and night (`core/dusk.h`): sunrise and sunset against an almanac's times
+  (timeanddate.com: Southampton in winter, summer and either side of the clocks going forward, Sydney in summer and
+  winter, Tromso in March) within 2.5 minutes, the midnight sun and the polar night, the night's edges and the blend,
+  no jump anywhere minute by minute (the poles, the date line, the polar night beginning), fixed hours by the clock
+  either side of the clocks changing, the zone tables' coordinates (a table's lines, the system's own, zones with
+  none), where the sun is reckoned for from the settings, and the home city's place saved and forgotten when the city
+  or country changes.
 - `radio_test.cpp`: the station file, names, nicknames and tags (a station by tag, focus mode as the tool describes
   it), the tool absent without stations, the check of a stream
   against `radio_peer.py`, the player's live mode against a stand-in `ffplay`.
@@ -226,7 +233,11 @@ fixture holds (`search_answers`, at `Answering` too: 32 MB cut off and no answer
 '&' read in time that does not grow as its square, results that say nothing passed over, the wrong shape no answer,
 Brave's rate-limit figures taken only as whole numbers in windows matching its limit header and only the month's at 0
 a spent allowance, Brave's key refused only by a 422 with its code or a 401, a 429 for a spent month sent once and one
-for too many at once sent twice, and a `GET /usage` error shown in the app's words, none of the answer's), and that a
+for too many at once sent twice, and a `GET /usage` error shown in the app's words, none of the answer's), the home
+city's place for the scenes' dusk and night (`home_place`, through `--dusk`: found at the stand-in's place service with
+the country choosing among the places listed, kept with its zone and not asked for again, a zone set elsewhere taking
+over; a city the service does not know, a service that cannot be reached and a place off the globe leaving it unknown;
+at `Answering`, the request carrying the city's name and nothing else), and that a
 live case reaches no real web service (`no_real_web`, which imports the live sets' runner, `agent/agent_eval.py`, to
 run one).
 
@@ -434,7 +445,9 @@ request, transcribed by the service), `--chat` (`/wav FILE.wav` in it is a spoke
 that long after it closes, as when the app connects to the phone), `--follow-ups "a|b|c"` (chain requests inside one
 run), `--stt FILE.wav`, `--tts "text" OUT.raw`, `--codec-bench FILE.wav FILE.opus` (time the MP3 and Opus codecs on
 this machine), `--discover` (smart-home scan), `--home-refresh` (read saved smart-home devices), `--search-status`
-(how each web search service stands and its use, asking Tavily what is left, as its settings page's button does), `--prompt` /
+(how each web search service stands and its use, asking Tavily what is left, as its settings page's button does),
+`--dusk` (where the scenes' dusk and night are reckoned for, today's sun there and the light now; a home city whose
+place is not known is looked up first, as the app does), `--prompt` /
 `--schema` (the system prompt and tools a request would get now), `--shots DIR` (render every screen to PNG; `sim`
 build), `--keydump`, `--version`. `--help` lists them; each is one row of `kOptions` in `main.cpp`.
 

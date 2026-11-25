@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "agent/agent.h"
+#include "agent/tools/places.h"
 #include "core/settings.h"
 #include "core/tether.h"
 #include "core/ui_queue.h"
@@ -27,6 +28,7 @@
 #include "platform/keys.h"
 #include "platform/proc.h"
 #include "ui/models.h"
+#include "ui/settings_internal.h"
 #include "ui/settings_pages.h"
 #include "ui/theme.h"
 
@@ -141,13 +143,36 @@ void App::models_answered(const models::List &list, const std::string &err, cons
 }
 
 // A connection that comes back asks at once for the service's models, when this run has not read them yet
-// (auto_select_models).
+// (auto_select_models), and for the home city's place (locate_home).
 void App::follow_connection(bool online) {
     if (online && !was_online) {
         model_retry_ms = kModelRetryMs;
         last_model_try = 0;
+        home_retry_at = 0;
     }
     was_online = online;
+}
+
+// The home city's coordinates, for the scenes' dusk and night (core/dusk.h): looked up in the background
+// while online, once there is a home city without them (at the start, or since it changed: Settings::update
+// forgets them then). A city the service does not know is not asked about again in this run.
+void App::locate_home(bool online) {
+    const Settings s = Settings::get();
+    const std::string asked = s.home_city + '\n' + s.home_country;
+    if (!online || s.home_city.empty() || s.home_place.known() || locating_home || asked == home_unknown ||
+        sys::now_ms() < home_retry_at)
+        return;
+    locating_home = true;
+    background(
+        [city = s.home_city, country = s.home_country] {
+            tools::Context ctx;
+            return tools::locate_home(city, country, ctx);
+        },
+        [this, asked](tools::Located got) {
+            locating_home = false;
+            if (got == tools::Located::Unknown) home_unknown = asked;
+            if (got == tools::Located::Unreached) home_retry_at = sys::now_ms() + kHomeRetryMs;
+        });
 }
 
 void App::welcome() {
